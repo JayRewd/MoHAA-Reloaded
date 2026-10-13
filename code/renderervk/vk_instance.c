@@ -1,0 +1,767 @@
+/*
+===========================================================================
+Copyright (C) 2026 the OpenMoHAA team
+
+This file is part of OpenMoHAA source code.
+
+OpenMoHAA source code is free software; you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 2 of the License,
+or (at your option) any later version.
+
+OpenMoHAA source code is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with OpenMoHAA source code; if not, write to the Free Software
+Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+===========================================================================
+*/
+
+// vk_instance.c -- Vulkan loader, instance, device and swapchain
+
+#include "vk_local.h"
+
+#ifdef USE_INTERNAL_SDL_HEADERS
+#	include "SDL.h"
+#	include "SDL_vulkan.h"
+#else
+#	include <SDL.h>
+#	include <SDL_vulkan.h>
+#endif
+
+extern SDL_Window *SDL_window;
+
+#define VK_DEFINE_FUNCTION( name ) PFN_##name q##name;
+VK_GLOBAL_FUNCTIONS( VK_DEFINE_FUNCTION )
+VK_INSTANCE_FUNCTIONS( VK_DEFINE_FUNCTION )
+VK_INSTANCE_FUNCTIONS_OPTIONAL( VK_DEFINE_FUNCTION )
+VK_DEVICE_FUNCTIONS( VK_DEFINE_FUNCTION )
+#undef VK_DEFINE_FUNCTION
+
+static PFN_vkGetInstanceProcAddr qvkGetInstanceProcAddr;
+
+#define VK_MAX_EXTENSIONS 16
+
+/*
+====================================================================
+
+ERRORS
+
+====================================================================
+*/
+
+const char *VK_ResultString( VkResult result ) {
+	switch ( result ) {
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_INCOMPLETE: return "VK_INCOMPLETE";
+	case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+	case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+	case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+	case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+	case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+	default: return va( "VkResult %d", (int)result );
+	}
+}
+
+void VK_Check( VkResult result, const char *what ) {
+	if ( result < 0 ) {
+		ri.Error( ERR_FATAL, "Vulkan: %s failed: %s", what, VK_ResultString( result ) );
+	}
+}
+
+/*
+====================================================================
+
+VALIDATION
+
+====================================================================
+*/
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL VK_DebugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+	VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT *data, void *userData )
+{
+	const char *level;
+
+	if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ) {
+		level = S_COLOR_RED "ERROR";
+	} else if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ) {
+		level = S_COLOR_YELLOW "WARNING";
+	} else {
+		level = "info";
+	}
+
+	// PRINT_WARNING only shows with developer set
+	ri.Printf( PRINT_ALL, "Vulkan validation %s" S_COLOR_WHITE ": %s\n", level, data->pMessage );
+
+	return VK_FALSE;
+}
+
+static void VK_FillDebugMessengerInfo( VkDebugUtilsMessengerCreateInfoEXT *info ) {
+	Com_Memset( info, 0, sizeof( *info ) );
+	info->sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+	info->messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+	info->messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+		| VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+	info->pfnUserCallback = VK_DebugCallback;
+}
+
+/*
+====================================================================
+
+INSTANCE
+
+====================================================================
+*/
+
+static qboolean VK_HasExtension( const VkExtensionProperties *list, uint32_t count, const char *name ) {
+	uint32_t i;
+
+	for ( i = 0; i < count; i++ ) {
+		if ( !strcmp( list[i].extensionName, name ) ) {
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+static void VK_AddExtension( const char **list, uint32_t *count, const char *name ) {
+	uint32_t i;
+
+	for ( i = 0; i < *count; i++ ) {
+		if ( !strcmp( list[i], name ) ) {
+			return;
+		}
+	}
+	if ( *count == VK_MAX_EXTENSIONS ) {
+		ri.Error( ERR_FATAL, "Vulkan: too many extensions" );
+	}
+	list[( *count )++] = name;
+}
+
+static void VK_CreateInstance( void ) {
+	PFN_vkEnumerateInstanceVersion qvkEnumerateInstanceVersion;
+	VkApplicationInfo appInfo;
+	VkInstanceCreateInfo createInfo;
+	VkDebugUtilsMessengerCreateInfoEXT debugInfo;
+	VkValidationFeaturesEXT validationFeatures;
+	VkValidationFeatureEnableEXT enabledValidation[1];
+	VkExtensionProperties *available, *layerExtensions;
+	uint32_t numAvailable, numLayerExtensions;
+	const char *extensions[VK_MAX_EXTENSIONS];
+	const char **sdlExtensions;
+	uint32_t numExtensions;
+	unsigned int numSdlExtensions;
+	const char *layers[1];
+	uint32_t numLayers;
+	uint32_t apiVersion;
+	qboolean debugUtils;
+	unsigned int i;
+	VkResult result;
+
+	qvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+	if ( !qvkGetInstanceProcAddr ) {
+		ri.Error( ERR_FATAL, "Vulkan: no Vulkan loader (SDL_Vulkan_GetVkGetInstanceProcAddr: %s)", SDL_GetError() );
+	}
+
+#define VK_LOAD_GLOBAL( name ) \
+	q##name = (PFN_##name)qvkGetInstanceProcAddr( VK_NULL_HANDLE, #name ); \
+	if ( !q##name ) ri.Error( ERR_FATAL, "Vulkan: can't load %s", #name );
+	VK_GLOBAL_FUNCTIONS( VK_LOAD_GLOBAL )
+#undef VK_LOAD_GLOBAL
+
+	apiVersion = VK_API_VERSION_1_0;
+	qvkEnumerateInstanceVersion = (PFN_vkEnumerateInstanceVersion)qvkGetInstanceProcAddr( VK_NULL_HANDLE, "vkEnumerateInstanceVersion" );
+	if ( qvkEnumerateInstanceVersion ) {
+		qvkEnumerateInstanceVersion( &apiVersion );
+	}
+	if ( apiVersion < VK_API_VERSION_1_1 ) {
+		ri.Error( ERR_FATAL, "Vulkan: the Vulkan loader only supports version %d.%d, 1.1 is required",
+			VK_API_VERSION_MAJOR( apiVersion ), VK_API_VERSION_MINOR( apiVersion ) );
+	}
+
+	// extensions SDL needs for the window surface
+	if ( !SDL_Vulkan_GetInstanceExtensions( SDL_window, &numSdlExtensions, NULL ) ) {
+		ri.Error( ERR_FATAL, "Vulkan: SDL_Vulkan_GetInstanceExtensions failed: %s", SDL_GetError() );
+	}
+	sdlExtensions = ri.Hunk_AllocateTempMemory( sizeof( *sdlExtensions ) * ( numSdlExtensions + 1 ) );
+	if ( !SDL_Vulkan_GetInstanceExtensions( SDL_window, &numSdlExtensions, sdlExtensions ) ) {
+		ri.Error( ERR_FATAL, "Vulkan: SDL_Vulkan_GetInstanceExtensions failed: %s", SDL_GetError() );
+	}
+
+	numExtensions = 0;
+	for ( i = 0; i < numSdlExtensions; i++ ) {
+		VK_AddExtension( extensions, &numExtensions, sdlExtensions[i] );
+	}
+
+	VK_CHECK( qvkEnumerateInstanceExtensionProperties( NULL, &numAvailable, NULL ) );
+	available = ri.Hunk_AllocateTempMemory( sizeof( *available ) * ( numAvailable + 1 ) );
+	VK_CHECK( qvkEnumerateInstanceExtensionProperties( NULL, &numAvailable, available ) );
+
+	createInfo.flags = 0;
+	if ( VK_HasExtension( available, numAvailable, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME ) ) {
+		// MoltenVK only shows up with this
+		VK_AddExtension( extensions, &numExtensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME );
+		createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+	}
+
+	// validation layer
+	numLayers = 0;
+	debugUtils = qfalse;
+	layerExtensions = NULL;
+	numLayerExtensions = 0;
+	if ( r_vkValidation->integer ) {
+		VkLayerProperties *layerList;
+		uint32_t numLayerList;
+
+		VK_CHECK( qvkEnumerateInstanceLayerProperties( &numLayerList, NULL ) );
+		layerList = ri.Hunk_AllocateTempMemory( sizeof( *layerList ) * ( numLayerList + 1 ) );
+		VK_CHECK( qvkEnumerateInstanceLayerProperties( &numLayerList, layerList ) );
+		for ( i = 0; i < numLayerList; i++ ) {
+			if ( !strcmp( layerList[i].layerName, "VK_LAYER_KHRONOS_validation" ) ) {
+				break;
+			}
+		}
+		if ( i < numLayerList ) {
+			layers[numLayers++] = "VK_LAYER_KHRONOS_validation";
+
+			VK_CHECK( qvkEnumerateInstanceExtensionProperties( "VK_LAYER_KHRONOS_validation", &numLayerExtensions, NULL ) );
+			layerExtensions = ri.Hunk_AllocateTempMemory( sizeof( *layerExtensions ) * ( numLayerExtensions + 1 ) );
+			VK_CHECK( qvkEnumerateInstanceExtensionProperties( "VK_LAYER_KHRONOS_validation", &numLayerExtensions, layerExtensions ) );
+		} else {
+			ri.Printf( PRINT_ALL, S_COLOR_YELLOW "WARNING: r_vkValidation: VK_LAYER_KHRONOS_validation is not installed\n" );
+		}
+		ri.Hunk_FreeTempMemory( layerList );
+
+		if ( VK_HasExtension( available, numAvailable, VK_EXT_DEBUG_UTILS_EXTENSION_NAME )
+			|| VK_HasExtension( layerExtensions, numLayerExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME ) ) {
+			VK_AddExtension( extensions, &numExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME );
+			debugUtils = qtrue;
+		} else {
+			ri.Printf( PRINT_ALL, S_COLOR_YELLOW "WARNING: r_vkValidation: %s is not available, validation messages can't be printed\n", VK_EXT_DEBUG_UTILS_EXTENSION_NAME );
+		}
+	}
+
+	Com_Memset( &appInfo, 0, sizeof( appInfo ) );
+	appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+	appInfo.pApplicationName = PRODUCT_NAME;
+	appInfo.applicationVersion = 1;
+	appInfo.pEngineName = PRODUCT_NAME;
+	appInfo.engineVersion = 1;
+	appInfo.apiVersion = VK_API_VERSION_1_1;
+
+	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+	createInfo.pNext = NULL;
+	createInfo.pApplicationInfo = &appInfo;
+	createInfo.enabledLayerCount = numLayers;
+	createInfo.ppEnabledLayerNames = layers;
+	createInfo.enabledExtensionCount = numExtensions;
+	createInfo.ppEnabledExtensionNames = extensions;
+
+	if ( debugUtils ) {
+		// also reports problems of vkCreateInstance and vkDestroyInstance
+		VK_FillDebugMessengerInfo( &debugInfo );
+		createInfo.pNext = &debugInfo;
+
+		// r_vkValidation 2 also checks synchronization
+		if ( r_vkValidation->integer >= 2 ) {
+			if ( VK_HasExtension( layerExtensions, numLayerExtensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME ) ) {
+				VK_AddExtension( extensions, &numExtensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
+				createInfo.enabledExtensionCount = numExtensions;
+
+				enabledValidation[0] = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+				Com_Memset( &validationFeatures, 0, sizeof( validationFeatures ) );
+				validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+				validationFeatures.enabledValidationFeatureCount = ARRAY_LEN( enabledValidation );
+				validationFeatures.pEnabledValidationFeatures = enabledValidation;
+				debugInfo.pNext = &validationFeatures;
+			} else {
+				ri.Printf( PRINT_ALL, S_COLOR_YELLOW "WARNING: r_vkValidation 2: %s is not available\n", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
+			}
+		}
+	}
+
+	result = qvkCreateInstance( &createInfo, NULL, &vk.instance );
+	if ( result == VK_ERROR_INCOMPATIBLE_DRIVER ) {
+		ri.Error( ERR_FATAL, "Vulkan: no compatible Vulkan driver found" );
+	}
+	VK_CHECK( result );
+
+	if ( layerExtensions ) {
+		ri.Hunk_FreeTempMemory( layerExtensions );
+	}
+	ri.Hunk_FreeTempMemory( available );
+	ri.Hunk_FreeTempMemory( sdlExtensions );
+
+#define VK_LOAD_INSTANCE( name ) \
+	q##name = (PFN_##name)qvkGetInstanceProcAddr( vk.instance, #name ); \
+	if ( !q##name ) ri.Error( ERR_FATAL, "Vulkan: can't load %s", #name );
+	VK_INSTANCE_FUNCTIONS( VK_LOAD_INSTANCE )
+#undef VK_LOAD_INSTANCE
+
+#define VK_LOAD_INSTANCE_OPTIONAL( name ) \
+	q##name = (PFN_##name)qvkGetInstanceProcAddr( vk.instance, #name );
+	VK_INSTANCE_FUNCTIONS_OPTIONAL( VK_LOAD_INSTANCE_OPTIONAL )
+#undef VK_LOAD_INSTANCE_OPTIONAL
+
+	if ( debugUtils && qvkCreateDebugUtilsMessengerEXT ) {
+		VK_FillDebugMessengerInfo( &debugInfo );
+		VK_CHECK( qvkCreateDebugUtilsMessengerEXT( vk.instance, &debugInfo, NULL, &vk.debugMessenger ) );
+		ri.Printf( PRINT_ALL, "Vulkan validation enabled%s\n", r_vkValidation->integer >= 2 ? " (with synchronization validation)" : "" );
+	}
+}
+
+/*
+====================================================================
+
+DEVICE
+
+====================================================================
+*/
+
+// returns a score for the device, 0 if it can't be used
+static int VK_RateDevice( VkPhysicalDevice device, uint32_t *queueFamily ) {
+	VkPhysicalDeviceProperties props;
+	VkQueueFamilyProperties *families;
+	VkExtensionProperties *extensions;
+	uint32_t numFamilies, numExtensions, i;
+	qboolean hasSwapchain;
+	int score;
+
+	qvkGetPhysicalDeviceProperties( device, &props );
+	if ( props.apiVersion < VK_API_VERSION_1_1 ) {
+		ri.Printf( PRINT_ALL, "...%s: Vulkan %d.%d, 1.1 is required\n", props.deviceName,
+			VK_API_VERSION_MAJOR( props.apiVersion ), VK_API_VERSION_MINOR( props.apiVersion ) );
+		return 0;
+	}
+
+	VK_CHECK( qvkEnumerateDeviceExtensionProperties( device, NULL, &numExtensions, NULL ) );
+	extensions = ri.Hunk_AllocateTempMemory( sizeof( *extensions ) * ( numExtensions + 1 ) );
+	VK_CHECK( qvkEnumerateDeviceExtensionProperties( device, NULL, &numExtensions, extensions ) );
+	hasSwapchain = VK_HasExtension( extensions, numExtensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME );
+	ri.Hunk_FreeTempMemory( extensions );
+	if ( !hasSwapchain ) {
+		ri.Printf( PRINT_ALL, "...%s: no %s\n", props.deviceName, VK_KHR_SWAPCHAIN_EXTENSION_NAME );
+		return 0;
+	}
+
+	// one queue for graphics, transfers and presentation
+	qvkGetPhysicalDeviceQueueFamilyProperties( device, &numFamilies, NULL );
+	families = ri.Hunk_AllocateTempMemory( sizeof( *families ) * ( numFamilies + 1 ) );
+	qvkGetPhysicalDeviceQueueFamilyProperties( device, &numFamilies, families );
+	for ( i = 0; i < numFamilies; i++ ) {
+		VkBool32 present = VK_FALSE;
+
+		if ( !( families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT ) || !families[i].queueCount ) {
+			continue;
+		}
+		VK_CHECK( qvkGetPhysicalDeviceSurfaceSupportKHR( device, i, vk.surface, &present ) );
+		if ( present ) {
+			break;
+		}
+	}
+	ri.Hunk_FreeTempMemory( families );
+	if ( i == numFamilies ) {
+		ri.Printf( PRINT_ALL, "...%s: can't present to the window\n", props.deviceName );
+		return 0;
+	}
+	*queueFamily = i;
+
+	switch ( props.deviceType ) {
+	case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+		score = 5;
+		break;
+	case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+		score = 4;
+		break;
+	case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+		score = 3;
+		break;
+	case VK_PHYSICAL_DEVICE_TYPE_CPU:
+		score = 1;
+		break;
+	default:
+		score = 2;
+		break;
+	}
+	return score;
+}
+
+static void VK_SelectPhysicalDevice( void ) {
+	VkPhysicalDevice *devices;
+	uint32_t numDevices, i, queueFamily;
+	int score, bestScore;
+
+	VK_CHECK( qvkEnumeratePhysicalDevices( vk.instance, &numDevices, NULL ) );
+	if ( !numDevices ) {
+		ri.Error( ERR_FATAL, "Vulkan: no Vulkan device found" );
+	}
+	devices = ri.Hunk_AllocateTempMemory( sizeof( *devices ) * numDevices );
+	VK_CHECK( qvkEnumeratePhysicalDevices( vk.instance, &numDevices, devices ) );
+
+	bestScore = 0;
+	for ( i = 0; i < numDevices; i++ ) {
+		score = VK_RateDevice( devices[i], &queueFamily );
+		if ( score > bestScore ) {
+			bestScore = score;
+			vk.physicalDevice = devices[i];
+			vk.queueFamily = queueFamily;
+		}
+	}
+	ri.Hunk_FreeTempMemory( devices );
+
+	if ( !bestScore ) {
+		ri.Error( ERR_FATAL, "Vulkan: no usable Vulkan device found" );
+	}
+
+	qvkGetPhysicalDeviceProperties( vk.physicalDevice, &vk.deviceProperties );
+	qvkGetPhysicalDeviceMemoryProperties( vk.physicalDevice, &vk.memoryProperties );
+}
+
+static void VK_CreateLogicalDevice( void ) {
+	VkPhysicalDeviceFeatures supported;
+	VkDeviceQueueCreateInfo queueInfo;
+	VkDeviceCreateInfo createInfo;
+	VkExtensionProperties *available;
+	const char *extensions[VK_MAX_EXTENSIONS];
+	uint32_t numAvailable, numExtensions;
+	const float priority = 1.0f;
+	char *s;
+	uint32_t i;
+
+	qvkGetPhysicalDeviceFeatures( vk.physicalDevice, &supported );
+
+	// only what the renderer uses; all optional
+	Com_Memset( &vk.enabledFeatures, 0, sizeof( vk.enabledFeatures ) );
+	vk.enabledFeatures.fillModeNonSolid = supported.fillModeNonSolid;		// GLS_POLYMODE_LINE
+	vk.enabledFeatures.wideLines = supported.wideLines;					// debug lines
+	vk.enabledFeatures.samplerAnisotropy = supported.samplerAnisotropy;
+	vk.enabledFeatures.textureCompressionBC = supported.textureCompressionBC;	// DDS textures
+	vk.enabledFeatures.shaderClipDistance = supported.shaderClipDistance;	// portal clip plane
+
+	VK_CHECK( qvkEnumerateDeviceExtensionProperties( vk.physicalDevice, NULL, &numAvailable, NULL ) );
+	available = ri.Hunk_AllocateTempMemory( sizeof( *available ) * ( numAvailable + 1 ) );
+	VK_CHECK( qvkEnumerateDeviceExtensionProperties( vk.physicalDevice, NULL, &numAvailable, available ) );
+
+	numExtensions = 0;
+	VK_AddExtension( extensions, &numExtensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME );
+	// must be enabled when the device has it (MoltenVK)
+	if ( VK_HasExtension( available, numAvailable, "VK_KHR_portability_subset" ) ) {
+		VK_AddExtension( extensions, &numExtensions, "VK_KHR_portability_subset" );
+	}
+	ri.Hunk_FreeTempMemory( available );
+
+	Com_Memset( &queueInfo, 0, sizeof( queueInfo ) );
+	queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	queueInfo.queueFamilyIndex = vk.queueFamily;
+	queueInfo.queueCount = 1;
+	queueInfo.pQueuePriorities = &priority;
+
+	Com_Memset( &createInfo, 0, sizeof( createInfo ) );
+	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	createInfo.queueCreateInfoCount = 1;
+	createInfo.pQueueCreateInfos = &queueInfo;
+	createInfo.enabledExtensionCount = numExtensions;
+	createInfo.ppEnabledExtensionNames = extensions;
+	createInfo.pEnabledFeatures = &vk.enabledFeatures;
+
+	VK_CHECK( qvkCreateDevice( vk.physicalDevice, &createInfo, NULL, &vk.device ) );
+
+#define VK_LOAD_DEVICE( name ) \
+	q##name = (PFN_##name)qvkGetDeviceProcAddr( vk.device, #name ); \
+	if ( !q##name ) ri.Error( ERR_FATAL, "Vulkan: can't load %s", #name );
+	VK_DEVICE_FUNCTIONS( VK_LOAD_DEVICE )
+#undef VK_LOAD_DEVICE
+
+	qvkGetDeviceQueue( vk.device, vk.queueFamily, 0, &vk.queue );
+
+	// reported by gfxinfo
+	s = glConfig.extensions_string;
+	s[0] = 0;
+	for ( i = 0; i < numExtensions; i++ ) {
+		Q_strcat( s, sizeof( glConfig.extensions_string ), extensions[i] );
+		Q_strcat( s, sizeof( glConfig.extensions_string ), " " );
+	}
+}
+
+void VK_CreateDevice( void ) {
+	ri.Printf( PRINT_ALL, "Initializing Vulkan\n" );
+
+	VK_CreateInstance();
+
+	if ( !SDL_Vulkan_CreateSurface( SDL_window, vk.instance, &vk.surface ) ) {
+		ri.Error( ERR_FATAL, "Vulkan: SDL_Vulkan_CreateSurface failed: %s", SDL_GetError() );
+	}
+
+	VK_SelectPhysicalDevice();
+	VK_CreateLogicalDevice();
+}
+
+void VK_DestroyDevice( void ) {
+	if ( vk.device ) {
+		qvkDestroyDevice( vk.device, NULL );
+		vk.device = VK_NULL_HANDLE;
+	}
+	if ( vk.surface ) {
+		qvkDestroySurfaceKHR( vk.instance, vk.surface, NULL );
+		vk.surface = VK_NULL_HANDLE;
+	}
+	if ( vk.debugMessenger ) {
+		qvkDestroyDebugUtilsMessengerEXT( vk.instance, vk.debugMessenger, NULL );
+		vk.debugMessenger = VK_NULL_HANDLE;
+	}
+	if ( vk.instance ) {
+		qvkDestroyInstance( vk.instance, NULL );
+		vk.instance = VK_NULL_HANDLE;
+	}
+}
+
+/*
+====================================================================
+
+SWAPCHAIN
+
+====================================================================
+*/
+
+static qboolean VK_FormatSupportsBlitDst( VkFormat format ) {
+	VkFormatProperties props;
+
+	qvkGetPhysicalDeviceFormatProperties( vk.physicalDevice, format, &props );
+	return ( props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT ) != 0;
+}
+
+static VkSurfaceFormatKHR VK_ChooseSurfaceFormat( void ) {
+	static const VkFormat preferred[] = {
+		VK_FORMAT_B8G8R8A8_UNORM,
+		VK_FORMAT_R8G8B8A8_UNORM,
+		VK_FORMAT_A8B8G8R8_UNORM_PACK32
+	};
+	VkSurfaceFormatKHR *formats, chosen;
+	uint32_t numFormats, i, j;
+
+	VK_CHECK( qvkGetPhysicalDeviceSurfaceFormatsKHR( vk.physicalDevice, vk.surface, &numFormats, NULL ) );
+	if ( !numFormats ) {
+		ri.Error( ERR_FATAL, "Vulkan: the window has no surface format" );
+	}
+	formats = ri.Hunk_AllocateTempMemory( sizeof( *formats ) * numFormats );
+	VK_CHECK( qvkGetPhysicalDeviceSurfaceFormatsKHR( vk.physicalDevice, vk.surface, &numFormats, formats ) );
+
+	// a plain 8-bit UNORM format, like the GL framebuffer (no sRGB encoding)
+	chosen.format = VK_FORMAT_UNDEFINED;
+	for ( j = 0; j < ARRAY_LEN( preferred ) && chosen.format == VK_FORMAT_UNDEFINED; j++ ) {
+		for ( i = 0; i < numFormats; i++ ) {
+			if ( formats[i].format == preferred[j] && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+				&& VK_FormatSupportsBlitDst( formats[i].format ) ) {
+				chosen = formats[i];
+				break;
+			}
+		}
+	}
+
+	// anything we can blit to
+	for ( i = 0; i < numFormats && chosen.format == VK_FORMAT_UNDEFINED; i++ ) {
+		if ( formats[i].format != VK_FORMAT_UNDEFINED && VK_FormatSupportsBlitDst( formats[i].format ) ) {
+			chosen = formats[i];
+		}
+	}
+
+	ri.Hunk_FreeTempMemory( formats );
+
+	if ( chosen.format == VK_FORMAT_UNDEFINED ) {
+		ri.Error( ERR_FATAL, "Vulkan: no swapchain format supports blitting" );
+	}
+	return chosen;
+}
+
+static VkPresentModeKHR VK_ChoosePresentMode( void ) {
+	VkPresentModeKHR *modes;
+	VkPresentModeKHR wanted[2], chosen;
+	uint32_t numModes, numWanted, i, j;
+
+	VK_CHECK( qvkGetPhysicalDeviceSurfacePresentModesKHR( vk.physicalDevice, vk.surface, &numModes, NULL ) );
+	modes = ri.Hunk_AllocateTempMemory( sizeof( *modes ) * ( numModes + 1 ) );
+	VK_CHECK( qvkGetPhysicalDeviceSurfacePresentModesKHR( vk.physicalDevice, vk.surface, &numModes, modes ) );
+
+	// r_swapInterval like SDL_GL_SetSwapInterval: 0 no vsync, > 0 vsync,
+	// < 0 adaptive vsync; FIFO is always available
+	numWanted = 0;
+	if ( r_swapInterval->integer == 0 ) {
+		wanted[numWanted++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+		wanted[numWanted++] = VK_PRESENT_MODE_MAILBOX_KHR;
+	} else if ( r_swapInterval->integer < 0 ) {
+		wanted[numWanted++] = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+	}
+
+	chosen = VK_PRESENT_MODE_FIFO_KHR;
+	for ( j = 0; j < numWanted && chosen == VK_PRESENT_MODE_FIFO_KHR; j++ ) {
+		for ( i = 0; i < numModes; i++ ) {
+			if ( modes[i] == wanted[j] ) {
+				chosen = wanted[j];
+				break;
+			}
+		}
+	}
+	ri.Hunk_FreeTempMemory( modes );
+
+	return chosen;
+}
+
+static const char *VK_PresentModeName( VkPresentModeKHR mode ) {
+	switch ( mode ) {
+	case VK_PRESENT_MODE_IMMEDIATE_KHR: return "immediate";
+	case VK_PRESENT_MODE_MAILBOX_KHR: return "mailbox";
+	case VK_PRESENT_MODE_FIFO_KHR: return "fifo";
+	case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "fifo relaxed";
+	default: return "?";
+	}
+}
+
+/*
+===============
+VK_CreateSwapchain
+
+Creates the swapchain for the current window size, replacing the previous
+one. Leaves vk.swapchain NULL when the window has no area (minimized).
+===============
+*/
+void VK_CreateSwapchain( void ) {
+	VkSurfaceCapabilitiesKHR caps;
+	VkSurfaceFormatKHR format;
+	VkSwapchainCreateInfoKHR createInfo;
+	VkSwapchainKHR oldSwapchain;
+	VkExtent2D extent;
+	uint32_t imageCount;
+	int width, height;
+
+	vk.swapchainOutOfDate = qfalse;
+
+	VK_CHECK( qvkGetPhysicalDeviceSurfaceCapabilitiesKHR( vk.physicalDevice, vk.surface, &caps ) );
+
+	SDL_Vulkan_GetDrawableSize( SDL_window, &width, &height );
+	vk.swapchainDrawableWidth = width;
+	vk.swapchainDrawableHeight = height;
+	if ( caps.currentExtent.width != 0xFFFFFFFF ) {
+		extent = caps.currentExtent;
+	} else {
+		extent.width = Com_Clamp( caps.minImageExtent.width, caps.maxImageExtent.width, width );
+		extent.height = Com_Clamp( caps.minImageExtent.height, caps.maxImageExtent.height, height );
+	}
+
+	oldSwapchain = vk.swapchain;
+
+	if ( !extent.width || !extent.height ) {
+		VK_DestroySwapchain();
+		return;
+	}
+
+	if ( !( caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) ) {
+		ri.Error( ERR_FATAL, "Vulkan: swapchain images can't be transfer destinations" );
+	}
+
+	format = VK_ChooseSurfaceFormat();
+	vk.presentMode = VK_ChoosePresentMode();
+
+	// one more image than the minimum so acquiring doesn't wait on the
+	// presentation engine
+	imageCount = caps.minImageCount + 1;
+	if ( caps.maxImageCount && imageCount > caps.maxImageCount ) {
+		imageCount = caps.maxImageCount;
+	}
+	if ( imageCount > VK_MAX_SWAPCHAIN_IMAGES ) {
+		imageCount = VK_MAX_SWAPCHAIN_IMAGES;
+	}
+
+	Com_Memset( &createInfo, 0, sizeof( createInfo ) );
+	createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+	createInfo.surface = vk.surface;
+	createInfo.minImageCount = imageCount;
+	createInfo.imageFormat = format.format;
+	createInfo.imageColorSpace = format.colorSpace;
+	createInfo.imageExtent = extent;
+	createInfo.imageArrayLayers = 1;
+	createInfo.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	createInfo.preTransform = caps.currentTransform;
+	if ( caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ) {
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	} else if ( caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR ) {
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+	} else if ( caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR ) {
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;	// alpha is always 1
+	} else {
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+	}
+	createInfo.presentMode = vk.presentMode;
+	createInfo.clipped = VK_TRUE;
+	createInfo.oldSwapchain = oldSwapchain;
+
+	// nothing may use the old swapchain while it's replaced
+	if ( oldSwapchain ) {
+		VK_CHECK( qvkDeviceWaitIdle( vk.device ) );
+	}
+
+	VK_CHECK( qvkCreateSwapchainKHR( vk.device, &createInfo, NULL, &vk.swapchain ) );
+
+	if ( oldSwapchain ) {
+		qvkDestroySwapchainKHR( vk.device, oldSwapchain, NULL );
+	}
+
+	vk.swapchainFormat = format.format;
+	vk.swapchainExtent = extent;
+
+	VK_CHECK( qvkGetSwapchainImagesKHR( vk.device, vk.swapchain, &vk.swapchainImageCount, NULL ) );
+	if ( vk.swapchainImageCount > VK_MAX_SWAPCHAIN_IMAGES ) {
+		ri.Error( ERR_FATAL, "Vulkan: too many swapchain images (%u)", vk.swapchainImageCount );
+	}
+	VK_CHECK( qvkGetSwapchainImagesKHR( vk.device, vk.swapchain, &vk.swapchainImageCount, vk.swapchainImages ) );
+
+	ri.Printf( PRINT_DEVELOPER, "Vulkan swapchain: %ux%u, %u images, %s\n", extent.width, extent.height,
+		vk.swapchainImageCount, VK_PresentModeName( vk.presentMode ) );
+}
+
+void VK_DestroySwapchain( void ) {
+	if ( vk.swapchain ) {
+		// no VK_CHECK: also called by vk_shutdown, which can follow a lost
+		// device, and a second fatal error would skip the window shutdown
+		qvkDeviceWaitIdle( vk.device );
+		qvkDestroySwapchainKHR( vk.device, vk.swapchain, NULL );
+		vk.swapchain = VK_NULL_HANDLE;
+	}
+	vk.swapchainImageCount = 0;
+	vk.swapchainExtent.width = vk.swapchainExtent.height = 0;
+}
+
+/*
+===============
+VK_SwapchainPresentModeName
+===============
+*/
+const char *VK_SwapchainPresentModeName( void ) {
+	return VK_PresentModeName( vk.presentMode );
+}
+
+/*
+===============
+VK_GetDrawableSize
+===============
+*/
+void VK_GetDrawableSize( int *width, int *height ) {
+	SDL_Vulkan_GetDrawableSize( SDL_window, width, height );
+}

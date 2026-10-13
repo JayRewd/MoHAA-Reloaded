@@ -23,7 +23,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // vk.h -- interface between the renderer and its GPU backend
 //
 // The renderer (tr_*.c) contains no graphics API calls: every GPU operation
-// goes through the functions declared here, and vk.c implements them.
+// goes through the functions declared here, and the vk*.c files implement
+// them with Vulkan (see vk_local.h).
 //
 // The interface mirrors the fixed-function state the original GL1 renderer was
 // written against, so rendering stays identical to it. State setters only

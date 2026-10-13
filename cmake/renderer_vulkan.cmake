@@ -9,6 +9,11 @@ endif()
 include(utils/set_output_dirs)
 include(renderer_common)
 
+# Only the headers are used (Vulkan::Headers): Vulkan is loaded at runtime
+# through SDL (SDL_Vulkan_GetVkGetInstanceProcAddr), the renderer doesn't
+# link libvulkan. FindVulkan still needs the loader to consider Vulkan found.
+find_package(Vulkan REQUIRED)
+
 set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_backend.c
     ${SOURCE_DIR}/renderervk/tr_bsp.c
@@ -44,6 +49,10 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_vis.cpp
     ${SOURCE_DIR}/renderervk/tr_world.c
     ${SOURCE_DIR}/renderervk/vk.c
+    ${SOURCE_DIR}/renderervk/vk_image.c
+    ${SOURCE_DIR}/renderervk/vk_instance.c
+    ${SOURCE_DIR}/renderervk/vk_pipeline.c
+    ${SOURCE_DIR}/renderervk/vk_shaders.c
 )
 
 # No OpenGL: the window is created by sdl_vkimp.c instead of sdl_glimp.c
@@ -64,7 +73,7 @@ list(APPEND RENDERER_VULKAN_BINARY_SOURCES
 
 add_library(${RENDERER_VULKAN_BINARY} SHARED ${RENDERER_VULKAN_BINARY_SOURCES})
 
-target_link_libraries(      ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_LIBRARIES})
+target_link_libraries(      ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_LIBRARIES} Vulkan::Headers)
 target_include_directories( ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_INCLUDE_DIRS})
 target_compile_definitions( ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_DEFINITIONS} USE_VULKAN)
 target_compile_options(     ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_COMPILE_OPTIONS})
