@@ -43,6 +43,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define VK_MAX_FRAMES				2		// frames in flight
 #define VK_MAX_SWAPCHAIN_IMAGES		16
 #define VK_MAX_TEXTURES				4096	// live texture handles
+#define VK_MAX_DEPTH_READS			256		// vk_queue_depth_reads per frame
 
 /*
 ====================================================================
@@ -163,11 +164,18 @@ FUNCTION POINTERS
 	X( vkUpdateDescriptorSets ) \
 	X( vkWaitForFences )
 
+// optional device functions, NULL when the extension is not enabled;
+// vkCmdSetLineStippleEXT is loaded under the name of the enabled
+// extension (VK_KHR_line_rasterization or VK_EXT_line_rasterization)
+#define VK_DEVICE_FUNCTIONS_OPTIONAL( X ) \
+	X( vkCmdSetLineStippleEXT )
+
 #define VK_DECLARE_FUNCTION( name ) extern PFN_##name q##name;
 VK_GLOBAL_FUNCTIONS( VK_DECLARE_FUNCTION )
 VK_INSTANCE_FUNCTIONS( VK_DECLARE_FUNCTION )
 VK_INSTANCE_FUNCTIONS_OPTIONAL( VK_DECLARE_FUNCTION )
 VK_DEVICE_FUNCTIONS( VK_DECLARE_FUNCTION )
+VK_DEVICE_FUNCTIONS_OPTIONAL( VK_DECLARE_FUNCTION )
 #undef VK_DECLARE_FUNCTION
 
 /*
@@ -245,6 +253,17 @@ typedef struct {
 
 	vkDeferredDestroy_t	*destroyList;
 	int				numDestroy, maxDestroy;
+
+	// depth reads (vk_queue_depth_reads) recorded in this frame, and the
+	// results of the frame that used this slot before, copied when the slot
+	// is reused
+	uint64_t		serial;			// vk.frameSerial of the frame recorded in this slot
+	vkBuffer_t		depthReadBuffer;	// one 4-byte texel per read
+	int				numDepthReads;
+	byte			depthReadInside[VK_MAX_DEPTH_READS];	// qfalse: outside of the framebuffer, reads 0
+	uint64_t		resultSerial;	// frame whose results are in depthResults, 0 for none
+	int				numDepthResults;
+	float			depthResults[VK_MAX_DEPTH_READS];
 } vkFrame_t;
 
 typedef struct {
@@ -256,6 +275,8 @@ typedef struct {
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceFeatures enabledFeatures;
 	qboolean			depthClipControl;	// VK_EXT_depth_clip_control: GL clip space depth (z in [-w, w])
+	qboolean			bresenhamLines;		// VK_KHR/EXT_line_rasterization: GL's diamond-exit line rule
+	qboolean			lineStipple;		// stippledBresenhamLines
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 	VkDevice			device;
 	uint32_t			queueFamily;
@@ -300,6 +321,7 @@ typedef struct {
 	vkFrame_t			frames[VK_MAX_FRAMES];
 	int					frameIndex;
 	vkFrame_t			*frame;			// current frame, NULL between frames
+	uint64_t			frameSerial;	// incremented when a frame starts, the first frame is 1
 	qboolean			uploadCmdRecording;
 	qboolean			renderPassActive;
 	uint64_t			segment;		// incremented each time the main command buffer is submitted
@@ -384,6 +406,7 @@ VkPipeline	VK_GetPipeline( const vkPipelineKey_t *key );
 #define VK_PIPE_STENCILOP_SHIFT		33		// 3 x stencilOp_t, 2 bits each
 #define VK_PIPE_FOG					( 1ull << 39 )	// linear fog
 #define VK_PIPE_CLIPPLANE			( 1ull << 40 )	// user clip plane
+#define VK_PIPE_STIPPLE				( 1ull << 41 )	// line stipple (lines and polygon edges)
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,

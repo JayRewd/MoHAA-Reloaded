@@ -6,12 +6,16 @@
 The list file has one directive per line ('#' starts a comment):
 
   map <name>                     map to load with devmap (first line)
+  spmap <name>                   same with spdevmap: single player game type
+                                 and one client, which the `script` console
+                                 command needs (e.g. to give an entity a light)
   set <console command>          console command run before the next shot
-  shot <name> x y z pitch yaw roll
+  shot <name> x y z pitch yaw roll [wait]
 
 Each shot teleports the player (noclip, god mode, no HUD, no view weapon) to
-the position, sets the view angles, waits 2 s of game time, pauses the game
-and takes the screenshot <name>. The game runs with `fixedtime 16`: every
+the position, sets the view angles, waits 2 s of game time (or [wait]
+milliseconds, e.g. to catch a fade), pauses the game and takes the
+screenshot <name>. The game runs with `fixedtime 16`: every
 frame advances the game by 16 ms whatever the real frame time, and `wait`
 counts game milliseconds, so every run reaches each screenshot after the
 same number of frames at the same game time (sway, animated shaders, sky,
@@ -44,8 +48,8 @@ def main():
         if not line:
             continue
         cmd, _, rest = line.partition(" ")
-        if cmd == "map":
-            out += [f"devmap {rest}", "wait 3000", "finishloadingscreen", "wait 1000",
+        if cmd in ("map", "spmap"):
+            out += [f"{'devmap' if cmd == 'map' else 'spdevmap'} {rest}", "wait 3000", "finishloadingscreen", "wait 1000",
                     "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0"]
             started = True
         elif cmd == "set":
@@ -55,7 +59,8 @@ def main():
                 sys.exit("shot before map")
             parts = rest.split()
             shot, pos, ang = parts[0], parts[1:4], parts[4:7]
-            out += [f"tele {' '.join(pos)}", f"face {' '.join(ang)}", "wait 2000",
+            wait = parts[7] if len(parts) > 7 else "2000"
+            out += [f"tele {' '.join(pos)}", f"face {' '.join(ang)}", f"wait {wait}",
                     "pause", "wait 300", f"screenshot {shot}", "wait 100", 'centerprint " "',
                     "pause", "wait 100"]
         else:

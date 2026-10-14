@@ -51,7 +51,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define VK_DIRTY_STENCIL		16
 #define VK_DIRTY_MVP			32		// vertex stage push constants
 #define VK_DIRTY_FOG			64		// fragment stage push constants
-#define VK_DIRTY_ALL			127
+#define VK_DIRTY_STIPPLE		128		// line stipple, applied with stippled pipelines only
+#define VK_DIRTY_ALL			255
 
 vkInstance_t	vk;
 cvar_t			*r_vkValidation;
@@ -82,9 +83,7 @@ typedef struct {
 	float			fogStart, fogEnd;
 	qboolean		clipPlaneEnabled;
 	float			clipPlane[4];		// eye space
-
-	// recorded but not applied yet (later milestones, see README.md)
-	int				lineStippleFactor;
+	int				lineStippleFactor;	// 0: no stipple
 	unsigned short	lineStipplePattern;
 } vkState_t;
 
@@ -280,6 +279,50 @@ FRAMES AND COMMAND BUFFERS
 ====================================================================
 */
 
+/*
+===============
+VK_DepthTexelValue
+
+Window-space depth of a texel copied from the depth aspect of the depth
+target
+===============
+*/
+static float VK_DepthTexelValue( const byte *texel ) {
+	float depth;
+
+	if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT ) {
+		return *(const unsigned short *)texel / 65535.0f;
+	}
+	if ( vk.depthFormat == VK_FORMAT_D24_UNORM_S8_UINT ) {
+		return ( *(const unsigned int *)texel & 0xFFFFFF ) / 16777215.0f;
+	}
+	Com_Memcpy( &depth, texel, sizeof( depth ) );
+	return depth;
+}
+
+/*
+===============
+VK_CollectDepthReads
+
+Called once the fence of a frame slot has been waited for: keeps the
+results of the depth reads the slot's last frame recorded
+===============
+*/
+static void VK_CollectDepthReads( vkFrame_t *frame ) {
+	int i;
+
+	for ( i = 0; i < frame->numDepthReads; i++ ) {
+		if ( frame->depthReadInside[i] ) {
+			frame->depthResults[i] = VK_DepthTexelValue( frame->depthReadBuffer.mapped + i * 4 );
+		} else {
+			frame->depthResults[i] = 0.0f;
+		}
+	}
+	frame->numDepthResults = frame->numDepthReads;
+	frame->resultSerial = frame->serial;
+	frame->numDepthReads = 0;
+}
+
 static void VK_BeginMainCommandBuffer( void ) {
 	VkCommandBufferBeginInfo info;
 
@@ -305,9 +348,11 @@ void VK_BeginFrameIfNeeded( void ) {
 	// the last frame that used this slot must be done
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &frame->fence, VK_TRUE, UINT64_MAX ) );
 	VK_ProcessDestroyList( frame );
+	VK_CollectDepthReads( frame );
 
 	frame->vertexOffset = 0;
 	frame->stagingOffset = 0;
+	frame->serial = ++vk.frameSerial;
 
 	vk.frame = frame;
 	vk.uploadCmdRecording = qfalse;
@@ -601,6 +646,8 @@ static void VK_CreateFrames( void ) {
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 		VK_CreateBuffer( &frame->stagingBuffer, VK_STAGING_BUFFER_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0 );
+		VK_CreateBuffer( &frame->depthReadBuffer, VK_MAX_DEPTH_READS * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
 	}
 
 	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
@@ -623,6 +670,7 @@ static void VK_DestroyFrames( void ) {
 		}
 		VK_DestroyBuffer( &frame->vertexBuffer );
 		VK_DestroyBuffer( &frame->stagingBuffer );
+		VK_DestroyBuffer( &frame->depthReadBuffer );
 		if ( frame->imageAcquired ) {
 			qvkDestroySemaphore( vk.device, frame->imageAcquired, NULL );
 		}
@@ -1178,8 +1226,10 @@ void vk_set_line_width( float width ) {
 }
 
 void vk_set_line_stipple( int factor, unsigned short pattern ) {
-	vks.lineStippleFactor = factor;
+	// GL clamps the factor to [1, 256]; 0 disables stippling here
+	vks.lineStippleFactor = factor > 0 ? Q_min( factor, 256 ) : 0;
 	vks.lineStipplePattern = pattern;
+	vk_dirty |= VK_DIRTY_STIPPLE;
 }
 
 void vk_set_projection( const float *matrix ) {
@@ -1272,7 +1322,7 @@ static void VK_ComputeMVP( float *mvp ) {
 	}
 }
 
-static void VK_ApplyDynamicState( VkCommandBuffer cmd ) {
+static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 	if ( vk_dirty & VK_DIRTY_VIEWPORT ) {
 		VkViewport viewport;
 
@@ -1354,7 +1404,16 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd ) {
 			(const byte *)&pc + VK_PUSH_VERTEX_SIZE );
 	}
 
-	vk_dirty = 0;
+	if ( stippled ) {
+		if ( vk_dirty & VK_DIRTY_STIPPLE ) {
+			qvkCmdSetLineStippleEXT( cmd, vks.lineStippleFactor, vks.lineStipplePattern );
+		}
+		vk_dirty = 0;
+	} else {
+		// a pipeline with static stipple state invalidates the dynamic one:
+		// set it again for the next stippled pipeline
+		vk_dirty = VK_DIRTY_STIPPLE;
+	}
 }
 
 static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const drawGeometry_t *geometry, vkTexture_t **textures ) {
@@ -1382,12 +1441,18 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 
 	if ( prim == PRIM_LINES ) {
 		bits |= VK_PIPE_LINES;
+		if ( vks.lineStippleFactor && vk.lineStipple ) {
+			bits |= VK_PIPE_STIPPLE;
+		}
 	} else {
 		// culling, polygon mode and polygon offset only apply to polygons
 		bits |= (uint64_t)vks.cull << VK_PIPE_CULL_SHIFT;
 		if ( stateBits & GLS_POLYMODE_LINE ) {
 			if ( vk.enabledFeatures.fillModeNonSolid ) {
 				bits |= VK_PIPE_POLYMODE_LINE;
+				if ( vks.lineStippleFactor && vk.lineStipple ) {
+					bits |= VK_PIPE_STIPPLE;
+				}
 			}
 		} else if ( vks.polygonOffset ) {
 			// GL_POLYGON_OFFSET_FILL: filled polygons only
@@ -1625,7 +1690,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		}
 	}
 
-	VK_ApplyDynamicState( cmd );
+	VK_ApplyDynamicState( cmd, ( key.bits & VK_PIPE_STIPPLE ) != 0 );
 	VK_UploadGeometry( cmd, geometry, numIndexes, indexes );
 
 	qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
@@ -1877,15 +1942,8 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 			break;
 		case READ_DEPTH_FLOAT:
 			for ( col = 0; col < w; col++ ) {
-				float depth;
+				float depth = VK_DepthTexelValue( src + col * texelSize );
 
-				if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT ) {
-					depth = ( (const unsigned short *)src )[col] / 65535.0f;
-				} else if ( vk.depthFormat == VK_FORMAT_D24_UNORM_S8_UINT ) {
-					depth = ( ( (const unsigned int *)src )[col] & 0xFFFFFF ) / 16777215.0f;
-				} else {
-					depth = ( (const float *)src )[col];
-				}
 				Com_Memcpy( dst + col * sizeof( float ), &depth, sizeof( float ) );
 			}
 			break;
@@ -1895,4 +1953,119 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 			break;
 		}
 	}
+}
+
+/*
+===============
+vk_queue_depth_reads
+
+Records copies of single depth texels into the frame's depth read buffer,
+in order with the draws; the results are collected when the frame slot is
+reused (VK_CollectDepthReads), so nothing waits for the GPU. An id is the
+frame serial (low 24 bits) and the index of the read in the frame.
+===============
+*/
+void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
+	VkBufferImageCopy regions[VK_MAX_DEPTH_READS];
+	VkBufferMemoryBarrier bufferBarrier;
+	VkCommandBuffer cmd;
+	vkFrame_t *frame;
+	int i, numRegions;
+
+	if ( count <= 0 ) {
+		return;
+	}
+	if ( !vk.device ) {
+		Com_Memset( ids, 0, sizeof( *ids ) * count );
+		return;
+	}
+
+	VK_BeginFrameIfNeeded();
+	frame = vk.frame;
+
+	numRegions = 0;
+	for ( i = 0; i < count; i++ ) {
+		int x = xy[i * 2 + 0];
+		int y = xy[i * 2 + 1];
+		int index = frame->numDepthReads;
+
+		if ( index == VK_MAX_DEPTH_READS ) {
+			ids[i] = 0;
+			continue;
+		}
+		frame->numDepthReads++;
+		ids[i] = (unsigned int)( ( frame->serial & 0xFFFFFF ) << 8 ) | index;
+
+		frame->depthReadInside[index] = x >= 0 && y >= 0 && x < vk.width && y < vk.height;
+		if ( !frame->depthReadInside[index] ) {
+			continue;
+		}
+
+		Com_Memset( &regions[numRegions], 0, sizeof( regions[numRegions] ) );
+		regions[numRegions].bufferOffset = index * 4;
+		regions[numRegions].imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		regions[numRegions].imageSubresource.layerCount = 1;
+		regions[numRegions].imageOffset.x = x;
+		regions[numRegions].imageOffset.y = vk.height - 1 - y;
+		regions[numRegions].imageExtent.width = 1;
+		regions[numRegions].imageExtent.height = 1;
+		regions[numRegions].imageExtent.depth = 1;
+		numRegions++;
+	}
+
+	if ( !numRegions ) {
+		return;
+	}
+
+	VK_EndRenderPass();
+	cmd = frame->mainCmd;
+
+	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT );
+
+	qvkCmdCopyImageToBuffer( cmd, vk.depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, frame->depthReadBuffer.buffer, numRegions, regions );
+
+	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT );
+
+	// the host reads the buffer after waiting for the frame fence
+	Com_Memset( &bufferBarrier, 0, sizeof( bufferBarrier ) );
+	bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	bufferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	bufferBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+	bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bufferBarrier.buffer = frame->depthReadBuffer.buffer;
+	bufferBarrier.size = VK_WHOLE_SIZE;
+	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &bufferBarrier, 0, NULL );
+}
+
+depthReadStatus_t vk_get_depth_read( unsigned int id, float *depth ) {
+	unsigned int serial = id >> 8;
+	int index = id & 255;
+	int i;
+
+	if ( !id || !vk.device ) {
+		return DEPTHREAD_LOST;
+	}
+
+	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
+		const vkFrame_t *frame = &vk.frames[i];
+
+		if ( frame->resultSerial && ( frame->resultSerial & 0xFFFFFF ) == serial && index < frame->numDepthResults ) {
+			*depth = frame->depthResults[index];
+			return DEPTHREAD_DONE;
+		}
+		// recorded in a frame that is being recorded or still in flight
+		if ( frame->serial && ( frame->serial & 0xFFFFFF ) == serial && index < frame->numDepthReads ) {
+			return DEPTHREAD_PENDING;
+		}
+	}
+
+	return DEPTHREAD_LOST;
 }

@@ -10,6 +10,9 @@
 # WIDE=1 runs at 4160x240: wider than 4096 pixels both radeonsi and RADV
 # rasterize with 1/256 pixel precision, so the frames can be compared to the
 # bit (see README.md, Testing). DIFFARGS is passed to tgadiff.py.
+# A <list>.shader file next to the view list is installed as
+# main/scripts/aaa_<list>.shader for the runs (the first shader file in
+# alphabetical order overrides the others), to test shaders no game data has.
 
 . "$(dirname "$0")/env.sh"
 
@@ -22,6 +25,13 @@ if [ -n "$WIDE" ]; then
 fi
 SS=$MOH_HOMEPATH/main/screenshots
 python3 "$TOOLS/shots.py" "$LIST" "$CFG" >/dev/null || exit 2
+SHADER=${LIST%.txt}.shader
+INSTALLED=
+if [ -f "$SHADER" ]; then
+	INSTALLED=$MOH_HOMEPATH/main/scripts/aaa_$CFG.shader
+	mkdir -p "$MOH_HOMEPATH/main/scripts"
+	cp "$SHADER" "$INSTALLED"
+fi
 VIEWS=$(awk '$1 == "shot" { print $2 }' "$LIST")
 
 for R in opengl1 vulkan; do
@@ -36,6 +46,8 @@ for R in opengl1 vulkan; do
 		fi
 	done
 done
+
+[ -n "$INSTALLED" ] && rm -f "$INSTALLED"
 
 SUMMARY=$MOH_OUT/$CFG$TAG.txt
 : > "$SUMMARY"

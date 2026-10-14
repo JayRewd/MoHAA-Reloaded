@@ -5,7 +5,7 @@ surfaces are, to pick camera positions for tests (standard library only).
   bspinfo.py <map, e.g. dm/mohdm1> [keyword ...]
 
 Prints the worldspawn keys (farplane fog, sky), then every shader used by
-world surfaces whose script contains one of the keywords (default:
+world surfaces whose name or script contains one of the keywords (default:
 polygonoffset), with the centers of its first surfaces. Reads the pk3 files
 of $MOH_BASEPATH/main (default ~/Documents/moh/main). The player spawn
 points (for tele) are info_player_* entities in the entity lump.
@@ -110,7 +110,7 @@ def main():
     for name, lst in sorted(by_shader.items()):
         body = scripts.get(name.lower(), "")
         low = body.lower()
-        if not any(k in low for k in keywords):
+        if not any(k in low or k in name.lower() for k in keywords):
             continue
         props = sorted({k for k in ("polygonoffset", "blendfunc", "alphafunc", "deformvertexes", "tcmod",
                                      "nofog", "fogonly", "sky", "portal", "cull", "sort", "rgbgen", "alphagen")

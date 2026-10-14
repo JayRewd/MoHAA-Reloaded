@@ -112,11 +112,12 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	VkPipelineViewportStateCreateInfo viewportState;
 	VkPipelineViewportDepthClipControlCreateInfoEXT depthClipControl;
 	VkPipelineRasterizationStateCreateInfo rasterization;
+	VkPipelineRasterizationLineStateCreateInfoEXT lineState;
 	VkPipelineMultisampleStateCreateInfo multisample;
 	VkPipelineDepthStencilStateCreateInfo depthStencil;
 	VkPipelineColorBlendAttachmentState blendAttachment;
 	VkPipelineColorBlendStateCreateInfo blend;
-	VkDynamicState dynamicStates[7];
+	VkDynamicState dynamicStates[8];
 	VkPipelineDynamicStateCreateInfo dynamicState;
 	VkGraphicsPipelineCreateInfo createInfo;
 	VkPipeline pipeline;
@@ -221,6 +222,16 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterization.depthBiasEnable = ( bits & VK_PIPE_DEPTHBIAS ) ? VK_TRUE : VK_FALSE;
 	rasterization.lineWidth = 1.0f;
+	if ( vk.bresenhamLines && ( lines || rasterization.polygonMode == VK_POLYGON_MODE_LINE ) ) {
+		// GL's line rasterization, with stippling
+		Com_Memset( &lineState, 0, sizeof( lineState ) );
+		lineState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
+		lineState.lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT;
+		lineState.stippledLineEnable = ( bits & VK_PIPE_STIPPLE ) ? VK_TRUE : VK_FALSE;
+		lineState.lineStippleFactor = 1;
+		lineState.lineStipplePattern = 0xFFFF;
+		rasterization.pNext = &lineState;
+	}
 
 	Com_Memset( &multisample, 0, sizeof( multisample ) );
 	multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -288,7 +299,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 
 	Com_Memset( &dynamicState, 0, sizeof( dynamicState ) );
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = ARRAY_LEN( dynamicStates );
+	dynamicState.dynamicStateCount = 7;
+	if ( bits & VK_PIPE_STIPPLE ) {
+		dynamicStates[dynamicState.dynamicStateCount++] = VK_DYNAMIC_STATE_LINE_STIPPLE_EXT;
+	}
 	dynamicState.pDynamicStates = dynamicStates;
 
 	Com_Memset( &createInfo, 0, sizeof( createInfo ) );

@@ -39,6 +39,7 @@ VK_GLOBAL_FUNCTIONS( VK_DEFINE_FUNCTION )
 VK_INSTANCE_FUNCTIONS( VK_DEFINE_FUNCTION )
 VK_INSTANCE_FUNCTIONS_OPTIONAL( VK_DEFINE_FUNCTION )
 VK_DEVICE_FUNCTIONS( VK_DEFINE_FUNCTION )
+VK_DEVICE_FUNCTIONS_OPTIONAL( VK_DEFINE_FUNCTION )
 #undef VK_DEFINE_FUNCTION
 
 static PFN_vkGetInstanceProcAddr qvkGetInstanceProcAddr;
@@ -437,6 +438,8 @@ static void VK_SelectPhysicalDevice( void ) {
 static void VK_CreateLogicalDevice( void ) {
 	VkPhysicalDeviceFeatures supported;
 	VkPhysicalDeviceDepthClipControlFeaturesEXT clipControl;
+	VkPhysicalDeviceLineRasterizationFeaturesEXT lineFeatures;
+	const char *lineExtension;
 	VkDeviceQueueCreateInfo queueInfo;
 	VkDeviceCreateInfo createInfo;
 	VkExtensionProperties *available;
@@ -484,6 +487,37 @@ static void VK_CreateLogicalDevice( void ) {
 			vk.depthClipControl = qtrue;
 		}
 	}
+
+	// GL rasterizes aliased lines with the diamond-exit rule, which is
+	// Vulkan's Bresenham mode; it also provides line stipple (debug lines)
+	Com_Memset( &lineFeatures, 0, sizeof( lineFeatures ) );
+	lineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT;
+	vk.bresenhamLines = qfalse;
+	vk.lineStipple = qfalse;
+	lineExtension = NULL;
+	if ( VK_HasExtension( available, numAvailable, "VK_KHR_line_rasterization" ) ) {
+		lineExtension = "VK_KHR_line_rasterization";
+	} else if ( VK_HasExtension( available, numAvailable, VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME ) ) {
+		lineExtension = VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME;
+	}
+	if ( qvkGetPhysicalDeviceFeatures2 && lineExtension ) {
+		VkPhysicalDeviceLineRasterizationFeaturesEXT supportedLines;
+		VkPhysicalDeviceFeatures2 features2;
+
+		Com_Memset( &supportedLines, 0, sizeof( supportedLines ) );
+		supportedLines.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT;
+		Com_Memset( &features2, 0, sizeof( features2 ) );
+		features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		features2.pNext = &supportedLines;
+		qvkGetPhysicalDeviceFeatures2( vk.physicalDevice, &features2 );
+		if ( supportedLines.bresenhamLines ) {
+			VK_AddExtension( extensions, &numExtensions, lineExtension );
+			lineFeatures.bresenhamLines = VK_TRUE;
+			lineFeatures.stippledBresenhamLines = supportedLines.stippledBresenhamLines;
+			vk.bresenhamLines = qtrue;
+			vk.lineStipple = supportedLines.stippledBresenhamLines ? qtrue : qfalse;
+		}
+	}
 	ri.Hunk_FreeTempMemory( available );
 
 	Com_Memset( &queueInfo, 0, sizeof( queueInfo ) );
@@ -499,7 +533,12 @@ static void VK_CreateLogicalDevice( void ) {
 	createInfo.enabledExtensionCount = numExtensions;
 	createInfo.ppEnabledExtensionNames = extensions;
 	createInfo.pEnabledFeatures = &vk.enabledFeatures;
+	if ( vk.bresenhamLines ) {
+		lineFeatures.pNext = (void *)createInfo.pNext;
+		createInfo.pNext = &lineFeatures;
+	}
 	if ( vk.depthClipControl ) {
+		clipControl.pNext = (void *)createInfo.pNext;
 		createInfo.pNext = &clipControl;
 	}
 
@@ -510,6 +549,15 @@ static void VK_CreateLogicalDevice( void ) {
 	if ( !q##name ) ri.Error( ERR_FATAL, "Vulkan: can't load %s", #name );
 	VK_DEVICE_FUNCTIONS( VK_LOAD_DEVICE )
 #undef VK_LOAD_DEVICE
+
+	qvkCmdSetLineStippleEXT = NULL;
+	if ( vk.lineStipple ) {
+		qvkCmdSetLineStippleEXT = (PFN_vkCmdSetLineStippleEXT)qvkGetDeviceProcAddr( vk.device,
+			!strcmp( lineExtension, "VK_KHR_line_rasterization" ) ? "vkCmdSetLineStippleKHR" : "vkCmdSetLineStippleEXT" );
+		if ( !qvkCmdSetLineStippleEXT ) {
+			vk.lineStipple = qfalse;
+		}
+	}
 
 	qvkGetDeviceQueue( vk.device, vk.queueFamily, 0, &vk.queue );
 

@@ -55,6 +55,16 @@ up to five or more times in a frame with 3D status bar icons).
 */
 
 
+// the depth under a flare is read without waiting for the GPU
+// (vk_queue_depth_reads), so each flare keeps the reads still in flight
+#define FLARE_DEPTH_READS	4
+
+typedef struct {
+	unsigned int	id;				// vk_queue_depth_reads id
+	float			eyeZ;			// eye depth of the flare when the read was queued
+	float			proj10, proj11, proj14;	// projection terms of that view
+} flareDepthRead_t;
+
 // flare states maintain visibility over multiple frames for fading
 // layers: view, mirror, menu
 typedef struct flare_s {
@@ -76,6 +86,9 @@ typedef struct flare_s {
 	float		eyeZ;
 
 	vec3_t		color;
+
+	int					numDepthReads;	// oldest first
+	flareDepthRead_t	depthReads[FLARE_DEPTH_READS];
 } flare_t;
 
 #define		MAX_FLARES		128
@@ -166,6 +179,7 @@ void RB_AddFlare( void *surface, int fogNum, vec3_t point, vec3_t color, vec3_t 
 	if ( f->addedFrame != backEnd.viewParms.frameCount - 1 ) {
 		f->visible = qfalse;
 		f->fadeTime = backEnd.refdef.time - 2000;
+		f->numDepthReads = 0;
 	}
 
 	f->addedFrame = backEnd.viewParms.frameCount;
@@ -219,6 +233,13 @@ FLARE BACK END
 /*
 ==================
 RB_TestFlare
+
+GL1 read the depth under the flare with glReadPixels, which waits for the
+GPU. The read is now queued without waiting (RB_RenderFlares) and its
+result arrives a fixed number of frames later (2 with the Vulkan backend):
+the test uses the newest completed read, with the eye depth and projection
+of the frame that queued it. Until a read completes the flare keeps its
+visibility, so it fades in and out like in GL1, a couple of frames later.
 ==================
 */
 void RB_TestFlare( flare_t *f ) {
@@ -226,20 +247,25 @@ void RB_TestFlare( flare_t *f ) {
 	qboolean		visible;
 	float			fade;
 	float			screenZ;
+	depthReadStatus_t	status;
 
 	backEnd.pc.c_flareTests++;
 
-	// doing a readpixels is as good as doing a gpu sync, so
-	// don't bother with another sync
-	glState.finishCalled = qfalse;
+	visible = f->visible;
+	while ( f->numDepthReads ) {
+		const flareDepthRead_t *r = &f->depthReads[0];
 
-	// read back the z buffer contents
-	vk_read_pixels( f->windowX, f->windowY, 1, 1, READ_DEPTH_FLOAT, &depth );
-
-	screenZ = backEnd.viewParms.projectionMatrix[14] / 
-		( ( 2*depth - 1 ) * backEnd.viewParms.projectionMatrix[11] - backEnd.viewParms.projectionMatrix[10] );
-
-	visible = ( -f->eyeZ - -screenZ ) < 24;
+		status = vk_get_depth_read( r->id, &depth );
+		if ( status == DEPTHREAD_PENDING ) {
+			break;
+		}
+		if ( status == DEPTHREAD_DONE ) {
+			screenZ = r->proj14 / ( ( 2*depth - 1 ) * r->proj11 - r->proj10 );
+			visible = ( -r->eyeZ - -screenZ ) < 24;
+		}
+		f->numDepthReads--;
+		memmove( f->depthReads, f->depthReads + 1, f->numDepthReads * sizeof( f->depthReads[0] ) );
+	}
 
 	if ( visible ) {
 		if ( !f->visible ) {
@@ -361,6 +387,10 @@ void RB_RenderFlares (void) {
 	float		savedModelview[16];
 	float		savedProjection[16];
 	float		matrix[16];
+	flare_t		*tested[MAX_FLARES];
+	int			xy[MAX_FLARES * 2];
+	unsigned int ids[MAX_FLARES];
+	int			i, numTested;
 
 	if ( !r_flares->integer ) {
 		return;
@@ -368,8 +398,9 @@ void RB_RenderFlares (void) {
 
 //	RB_AddDlightFlares();
 
-	// perform z buffer readback on each flare in this view
+	// test each flare in this view against the depth read earlier
 	draw = qfalse;
+	numTested = 0;
 	prev = &r_activeFlares;
 	while ( ( f = *prev ) != NULL ) {
 		// throw out any flares that weren't added last frame
@@ -387,16 +418,36 @@ void RB_RenderFlares (void) {
 			RB_TestFlare( f );
 			if ( f->drawIntensity ) {
 				draw = qtrue;
-			} else {
-				// this flare has completely faded out, so remove it from the chain
-				*prev = f->next;
-				f->next = r_inactiveFlares;
-				r_inactiveFlares = f;
-				continue;
 			}
+			// GL1 removed a flare that had faded out from the chain here;
+			// it now stays while it is added, since its next depth read is
+			// queued below (a new flare is invisible until a read completes)
+			tested[numTested++] = f;
 		}
 
 		prev = &f->next;
+	}
+
+	// read the depth under each tested flare, for the tests of later frames
+	for ( i = 0; i < numTested; i++ ) {
+		xy[i * 2 + 0] = tested[i]->windowX;
+		xy[i * 2 + 1] = tested[i]->windowY;
+	}
+	vk_queue_depth_reads( numTested, xy, ids );
+	for ( i = 0; i < numTested; i++ ) {
+		flareDepthRead_t *r;
+
+		f = tested[i];
+		if ( f->numDepthReads == FLARE_DEPTH_READS ) {
+			f->numDepthReads--;
+			memmove( f->depthReads, f->depthReads + 1, f->numDepthReads * sizeof( f->depthReads[0] ) );
+		}
+		r = &f->depthReads[f->numDepthReads++];
+		r->id = ids[i];
+		r->eyeZ = f->eyeZ;
+		r->proj10 = backEnd.viewParms.projectionMatrix[10];
+		r->proj11 = backEnd.viewParms.projectionMatrix[11];
+		r->proj14 = backEnd.viewParms.projectionMatrix[14];
 	}
 
 	if ( !draw ) {

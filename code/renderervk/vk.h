@@ -277,8 +277,25 @@ typedef enum {
 } readFormat_t;
 
 // read back what has been drawn so far in the current frame; rows are
-// tightly packed and stored bottom row first
+// tightly packed and stored bottom row first. This waits for the GPU.
 void		vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer );
+
+typedef enum {
+	DEPTHREAD_PENDING,	// the GPU has not executed the read yet
+	DEPTHREAD_DONE,		// the depth is available
+	DEPTHREAD_LOST		// unknown or expired id
+} depthReadStatus_t;
+
+// record reads of the window-space depth at count window positions (x, y
+// pairs), of what has been drawn so far in the current frame, without
+// waiting for the GPU; fills ids (0 when the frame has no room left).
+// Positions outside the framebuffer read as 0.
+void		vk_queue_depth_reads( int count, const int *xy, unsigned int *ids );
+// result of a queued read: DEPTHREAD_DONE once the frame that recorded it
+// has completed, which the backend checks when a later frame starts (a fixed
+// number of frames later: 2, the frames in flight). Results stay available
+// for that many frames; after that, and after vid_restart, the id is lost.
+depthReadStatus_t vk_get_depth_read( unsigned int id, float *depth );
 
 #ifdef __cplusplus
 }
