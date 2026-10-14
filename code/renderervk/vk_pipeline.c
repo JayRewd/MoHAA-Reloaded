@@ -27,8 +27,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // kept in a hash table for the lifetime of the device. Viewport, scissor,
 // depth bias, line width and the stencil reference and masks are dynamic.
 //
-// Every pipeline uses the same two shaders (shaders/generic.*); the fragment
-// stage is specialized for the texture envs and the alpha test.
+// Every pipeline uses the same shaders (shaders/generic.*); the fragment
+// stage is specialized for the texture envs, the alpha test, fog and, when
+// the device can't clip with gl_ClipDistance, the clip plane. Pipelines with
+// a clip plane use the vertex shader variant that writes gl_ClipDistance.
 
 #include "vk_local.h"
 
@@ -97,8 +99,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		VkBool32	tex1Rgb;
 		int32_t		alphaFunc;
 		float		alphaRef;
+		VkBool32	fog;
+		VkBool32	clipDiscard;
 	} specData;
-	VkSpecializationMapEntry specEntries[6];
+	VkSpecializationMapEntry specEntries[8];
 	VkSpecializationInfo specInfo;
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkVertexInputBindingDescription bindings[4];
@@ -106,6 +110,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly;
 	VkPipelineViewportStateCreateInfo viewportState;
+	VkPipelineViewportDepthClipControlCreateInfoEXT depthClipControl;
 	VkPipelineRasterizationStateCreateInfo rasterization;
 	VkPipelineMultisampleStateCreateInfo multisample;
 	VkPipelineDepthStencilStateCreateInfo depthStencil;
@@ -129,8 +134,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	specData.tex1Rgb = ( bits & VK_PIPE_TEX1_RGB ) ? VK_TRUE : VK_FALSE;
 	specData.alphaFunc = VK_FIELD( bits, VK_PIPE_ATEST_SHIFT, 3 );
 	Com_Memcpy( &specData.alphaRef, &key->alphaRef, sizeof( float ) );
+	specData.fog = ( bits & VK_PIPE_FOG ) ? VK_TRUE : VK_FALSE;
+	specData.clipDiscard = ( ( bits & VK_PIPE_CLIPPLANE ) && !vk.enabledFeatures.shaderClipDistance ) ? VK_TRUE : VK_FALSE;
 
-	for ( i = 0; i < 6; i++ ) {
+	for ( i = 0; i < 8; i++ ) {
 		specEntries[i].constantID = i;
 		specEntries[i].offset = i * 4;
 		specEntries[i].size = 4;
@@ -143,7 +150,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	Com_Memset( stages, 0, sizeof( stages ) );
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = vk.vertexShader;
+	stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.vertexShaderClip ) ? vk.vertexShaderClip : vk.vertexShader;
 	stages[0].pName = "main";
 	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -189,6 +196,12 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewportState.viewportCount = 1;
 	viewportState.scissorCount = 1;
+	if ( vk.depthClipControl ) {
+		Com_Memset( &depthClipControl, 0, sizeof( depthClipControl ) );
+		depthClipControl.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT;
+		depthClipControl.negativeOneToOne = VK_TRUE;
+		viewportState.pNext = &depthClipControl;
+	}
 
 	Com_Memset( &rasterization, 0, sizeof( rasterization ) );
 	rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -392,7 +405,7 @@ void VK_InitPipelines( void ) {
 	VkDescriptorSetLayoutBinding binding;
 	VkDescriptorSetLayoutCreateInfo setLayoutInfo;
 	VkDescriptorSetLayout setLayouts[2];
-	VkPushConstantRange pushRange;
+	VkPushConstantRange pushRanges[2];
 	VkPipelineLayoutCreateInfo layoutInfo;
 	VkPipelineCacheCreateInfo cacheInfo;
 
@@ -409,21 +422,27 @@ void VK_InitPipelines( void ) {
 	setLayoutInfo.pBindings = &binding;
 	VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.textureSetLayout ) );
 
-	// generic.vert push constants
-	pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	pushRange.offset = 0;
-	pushRange.size = sizeof( float ) * 16;
+	// push constants, see vkPushConstants_t
+	pushRanges[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	pushRanges[0].offset = 0;
+	pushRanges[0].size = VK_PUSH_VERTEX_SIZE;
+	pushRanges[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	pushRanges[1].offset = VK_PUSH_VERTEX_SIZE;
+	pushRanges[1].size = VK_PUSH_FRAGMENT_SIZE;
 
 	setLayouts[0] = setLayouts[1] = vk.textureSetLayout;
 	Com_Memset( &layoutInfo, 0, sizeof( layoutInfo ) );
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layoutInfo.setLayoutCount = ARRAY_LEN( setLayouts );
 	layoutInfo.pSetLayouts = setLayouts;
-	layoutInfo.pushConstantRangeCount = 1;
-	layoutInfo.pPushConstantRanges = &pushRange;
+	layoutInfo.pushConstantRangeCount = ARRAY_LEN( pushRanges );
+	layoutInfo.pPushConstantRanges = pushRanges;
 	VK_CHECK( qvkCreatePipelineLayout( vk.device, &layoutInfo, NULL, &vk.pipelineLayout ) );
 
 	vk.vertexShader = VK_CreateShaderModule( vk_spirv_generic_vert, vk_spirv_generic_vert_size );
+	if ( vk.enabledFeatures.shaderClipDistance ) {
+		vk.vertexShaderClip = VK_CreateShaderModule( vk_spirv_generic_clip_vert, vk_spirv_generic_clip_vert_size );
+	}
 	vk.fragmentShader = VK_CreateShaderModule( vk_spirv_generic_frag, vk_spirv_generic_frag_size );
 
 	Com_Memset( &cacheInfo, 0, sizeof( cacheInfo ) );
@@ -457,6 +476,9 @@ void VK_ShutdownPipelines( void ) {
 	if ( vk.vertexShader ) {
 		qvkDestroyShaderModule( vk.device, vk.vertexShader, NULL );
 	}
+	if ( vk.vertexShaderClip ) {
+		qvkDestroyShaderModule( vk.device, vk.vertexShaderClip, NULL );
+	}
 	if ( vk.fragmentShader ) {
 		qvkDestroyShaderModule( vk.device, vk.fragmentShader, NULL );
 	}
@@ -467,7 +489,7 @@ void VK_ShutdownPipelines( void ) {
 		qvkDestroyDescriptorSetLayout( vk.device, vk.textureSetLayout, NULL );
 	}
 	vk.pipelineCache = VK_NULL_HANDLE;
-	vk.vertexShader = vk.fragmentShader = VK_NULL_HANDLE;
+	vk.vertexShader = vk.vertexShaderClip = vk.fragmentShader = VK_NULL_HANDLE;
 	vk.pipelineLayout = VK_NULL_HANDLE;
 	vk.textureSetLayout = VK_NULL_HANDLE;
 }

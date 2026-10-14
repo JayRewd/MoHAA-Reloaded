@@ -37,6 +37,19 @@ layout(constant_id = 3) const bool TEX1_RGB = false;
 // alpha test: 0 off, 1 keep alpha > ref, 2 keep alpha < ref, 3 keep alpha >= ref
 layout(constant_id = 4) const int ALPHA_FUNC = 0;
 layout(constant_id = 5) const float ALPHA_REF = 0.0;
+// linear fog with the parameters of the push constants
+layout(constant_id = 6) const bool FOG = false;
+// discard on the clip plane side (when the vertex shader can't use
+// gl_ClipDistance)
+layout(constant_id = 7) const bool CLIP_DISCARD = false;
+
+// the fragment stage range of the push constants (vkPushConstants_t in vk.c)
+layout(push_constant) uniform PushConstants {
+	layout(offset = 96) vec4	fogColor;
+	// -1 / (end - start), end / (end - start), as Mesa's
+	// gl_MesaFogParamsOptimized
+	vec2	fogParams;
+} pc;
 
 // texEnv_t
 const int TEXENV_MODULATE = 1;
@@ -51,6 +64,7 @@ layout(set = 1, binding = 0) uniform sampler2D u_texture1;
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_st0;
 layout(location = 2) in vec2 v_st1;
+layout(location = 3) in vec2 v_fogClip;
 
 layout(location = 0) out vec4 out_color;
 
@@ -74,6 +88,10 @@ vec4 TexEnv( int env, bool rgbTexture, vec4 previous, vec4 texel ) {
 void main() {
 	vec4 color = v_color;
 
+	if ( CLIP_DISCARD && v_fogClip.y < 0.0 ) {
+		discard;
+	}
+
 	if ( TEX_ENV0 != 0 ) {
 		color = TexEnv( TEX_ENV0, TEX0_RGB, color, texture( u_texture0, v_st0 ) );
 	}
@@ -93,6 +111,14 @@ void main() {
 		if ( !( color.a >= ALPHA_REF ) ) {
 			discard;
 		}
+	}
+
+	// Mesa's fixed-function fog (st_nir_lower_fog): a single multiply-add
+	// for the factor, then fogColor * ( 1 - f ) + color * f; alpha unchanged
+	if ( FOG ) {
+		float f = clamp( fma( v_fogClip.x, pc.fogParams.x, pc.fogParams.y ), 0.0, 1.0 );
+
+		color.rgb = fma( color.rgb, vec3( f ), pc.fogColor.rgb * ( 1.0 - f ) );
 	}
 
 	out_color = color;

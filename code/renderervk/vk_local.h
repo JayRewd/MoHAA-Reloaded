@@ -80,6 +80,7 @@ FUNCTION POINTERS
 #define VK_INSTANCE_FUNCTIONS_OPTIONAL( X ) \
 	X( vkCreateDebugUtilsMessengerEXT ) \
 	X( vkDestroyDebugUtilsMessengerEXT ) \
+	X( vkGetPhysicalDeviceFeatures2 ) \
 	X( vkGetPhysicalDeviceProperties2 )
 
 // loaded with vkGetDeviceProcAddr
@@ -254,6 +255,7 @@ typedef struct {
 	VkPhysicalDevice	physicalDevice;
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceFeatures enabledFeatures;
+	qboolean			depthClipControl;	// VK_EXT_depth_clip_control: GL clip space depth (z in [-w, w])
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 	VkDevice			device;
 	uint32_t			queueFamily;
@@ -290,6 +292,7 @@ typedef struct {
 	VkDescriptorSetLayout textureSetLayout;
 	VkPipelineLayout	pipelineLayout;
 	VkShaderModule		vertexShader;
+	VkShaderModule		vertexShaderClip;	// writes gl_ClipDistance (shaderClipDistance only)
 	VkShaderModule		fragmentShader;
 	VkPipelineCache		pipelineCache;
 
@@ -379,6 +382,8 @@ VkPipeline	VK_GetPipeline( const vkPipelineKey_t *key );
 #define VK_PIPE_STENCIL				( 1ull << 31 )
 #define VK_PIPE_STENCILFUNC_SHIFT	32		// stencilFunc_t, 1 bit
 #define VK_PIPE_STENCILOP_SHIFT		33		// 3 x stencilOp_t, 2 bits each
+#define VK_PIPE_FOG					( 1ull << 39 )	// linear fog
+#define VK_PIPE_CLIPPLANE			( 1ull << 40 )	// user clip plane
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
@@ -386,9 +391,24 @@ typedef enum {
 	VK_DEPTHFUNC_ALWAYS
 } vkDepthFunc_t;
 
+// push constants of shaders/generic.*: the vertex stage reads the first
+// VK_PUSH_VERTEX_SIZE bytes, the fragment stage the rest
+typedef struct {
+	float	mvp[16];			// projection * modelview
+	float	eyeZ[4];			// row 2 of the modelview (eye space z)
+	float	clipPlane[4];		// user clip plane in object space, 0 when off
+	float	fogColor[4];
+	float	fogParams[2];		// -1 / (end - start), end / (end - start)
+} vkPushConstants_t;
+
+#define VK_PUSH_VERTEX_SIZE		( (uint32_t)offsetof( vkPushConstants_t, fogColor ) )
+#define VK_PUSH_FRAGMENT_SIZE	( (uint32_t)( sizeof( vkPushConstants_t ) - VK_PUSH_VERTEX_SIZE ) )
+
 // vk_shaders.c
 extern const uint32_t	vk_spirv_generic_vert[];
 extern const size_t		vk_spirv_generic_vert_size;
+extern const uint32_t	vk_spirv_generic_clip_vert[];
+extern const size_t		vk_spirv_generic_clip_vert_size;
 extern const uint32_t	vk_spirv_generic_frag[];
 extern const size_t		vk_spirv_generic_frag_size;
 

@@ -5,20 +5,28 @@ OpenGL call removed. All GPU work goes through the interface in [`vk.h`](vk.h),
 which the `vk*.c` files implement with Vulkan. Select it with
 `cl_renderer vulkan`.
 
-Status (2026-10-13, branch `vulkan-renderer`): milestones 1 and 2 of the plan
-below are done, with parts of 3 and 5.
+Status (2026-10-13, branch `vulkan-renderer`): milestones 1 to 4 of the plan
+below are done, with parts of 5.
 
 - the main menu matches GL1 pixel for pixel, except the animated ceiling fan
   (its frame depends on the wall clock)
-- `dm/mohdm1` renders like GL1 (world, lightmaps through the second texture
-  unit, models, alpha-tested foliage, HUD). What differs is
-  timing-dependent (swaying foliage, HUD flashes, sub-pixel camera
-  differences) plus a few pixels along polygon edges. There is no fog and no
-  portal clipping yet
+- with the deterministic setup described in [Testing](#testing), 3D views
+  match GL1: world surfaces and lightmaps, static and animated models,
+  alpha-tested and blended surfaces, decals, the view weapon, the sky, the
+  sky portal and farplane fog, on `dm/mohdm1`, `dm/mohdm2`, `dm/mohdm4`,
+  `dm/mohdm5`, `m2l1`, `m2l3` and `m4l1`. When both drivers rasterize with
+  the same subpixel precision (a window wider than 4096 pixels) they match to
+  the bit except for at most about 0.3 % of the pixels, nearly all off by 1
+  (large triangles clipped against different guard bands, transient HUD
+  text), a few isolated alpha-tested pixels, and what the game randomizes
+  (snow particles, AI poses). At 640x480, radeonsi uses a finer subpixel
+  precision than RADV and 1 to 8 % of the pixels differ by 1
+- fog and the user clip plane (portals and mirrors) are implemented
 - no validation or synchronization-validation message (`r_vkValidation 2`)
   during startup, the menu, a map load, `vid_restart` (also with a mode
   change and inside a map), window resizes (`r_allowResize 1`), `r_shadows 2`,
-  `r_measureOverdraw 1`, `r_showImages 1`, texture mode changes and shutdown
+  `r_measureOverdraw 1`, `r_showImages 1`, texture mode changes, fogged maps,
+  single-player maps, the sky portal and shutdown
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -34,9 +42,10 @@ below are done, with parts of 3 and 5.
 | `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
 | `vk_image.c` | texture handles and storage, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation |
-| `shaders/generic.vert`, `shaders/generic.frag` | the one shader pair; the fragment stage is specialized per pipeline |
+| `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
+| `tools/` | GL1/Vulkan screenshot comparison scripts and view lists (see Testing) |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
 | `tr_backend.c` | renderer-side state tracking (`GL_State`, `GL_Bind`, `GL_Cull`, `GL_TexEnv`, matrices, vertex arrays, current color) |
 | `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged |
@@ -85,39 +94,163 @@ and commit the regenerated `vk_shaders.c`.
 ## Testing
 
 Automated runs: put a cfg in `<fs_homepath>/main/` and pass `+exec name.cfg`.
-`wait` counts frames, so cap the frame rate with `+set com_maxfps 60` or the
-client is still connecting when the script ends. Use `devmap` so cheat cvars
-(`r_showtris`, ...) work.
-
-```
-devmap dm/mohdm1
-wait 900
-screenshot vktest_base
-wait 5
-quit
-```
+Don't give it the name of a cfg the game runs itself: `default.cfg` runs
+`menu.cfg` at startup, so a test script called `menu.cfg` runs then. Use
+`devmap` so cheats work.
 
 Do not use `s_initsound 0`: the game then crashes in
 `ClientGameCommandManager::PlaySound` on the first footstep, with either
 renderer (upstream bug). Mute with `s_volume 0`, `s_musicvolume 0`,
-`s_ambientvolume 0` instead. `+set in_nograb 1` keeps the mouse free.
+`s_ambientvolume 0` instead. `+set in_nograb 1` keeps the mouse free and
+`+set in_mouse 0` keeps it from turning the view.
 
 Screenshots land in `<fs_homepath>/main/screenshots/` as uncompressed 24-bit
-TGA. Taking the same screenshot with both renderers and diffing the files is
-the quickest parity check. Things learned while doing that:
+TGA (18-byte header, BGR pixels, bottom row first).
 
-- `com_maxfps` does not cap the menus: there `wait 1000` lasts about a second.
+### Deterministic 3D views
+
+Two runs of the same map normally give different frames: the game time at the
+screenshot depends on how long the loading and every frame took (swaying
+foliage, animated and scrolling shaders, HUD), the player spawns at a random
+point and the camera drifts. This script gives the same frame in every run
+and with both renderers:
+
+```
+set thereisnomonkey 1
+set fixedtime 16
+devmap dm/mohdm5
+wait 3000
+finishloadingscreen
+wait 1000
+god
+notarget
+noclip
+ui_hud 0
+cg_drawviewmodel 0
+tele 4896 -4640 172
+face 0 180 0
+wait 2000
+pause
+wait 300
+screenshot f5_a
+wait 100
+centerprint " "
+pause
+wait 100
+quit
+```
+
+Repeat the block from `tele` to the second `pause` for more views of the same
+map; `tools/shots.py` writes such a script from a view list (see Comparing).
+What each part is for:
+
+- In OpenMoHAA `wait` counts milliseconds of game time
+  (`Cbuf_Execute( msec )` in `Com_Frame`), not frames. `fixedtime 16` (a
+  cheat cvar, settable before `devmap`) makes every frame advance the game by
+  exactly 16 ms whatever the real frame time, so the script reaches each
+  command after the same number of frames and at the same game time. `+set
+  com_maxfps 60` keeps the real speed close to the game speed.
+- `thereisnomonkey 1`: without it the game turns `cheats` off at the first
+  cheat command (`Listener::ProcessEvent`), and `tele`, `noclip`, ... fail
+  with "You must run the server with '+set cheats 1'".
+- `tele x y z` and `face pitch yaw roll` (`fgame/player_util.cpp`) put the
+  eye at an exact position; `noclip` keeps the player from falling or
+  colliding, `god` and `notarget` keep the AI out of it. `coord` prints the
+  current position and angles. Spawn points are in the entity lump of the
+  BSP (`info_player_*`).
+- `pause` before the screenshot: the `screenshot` command reads the frame
+  before anything of the next frame is drawn. The Vulkan backend then
+  returns the last presented frame, but GL1 reads a back buffer that Mesa
+  hands out from two or three swaps earlier, so without the pause everything
+  that moves (trees and bushes sway) differs. While paused every frame is the
+  same. `finishloadingscreen` unpauses too.
+- The `screenshot` command centerprints "Wrote ..." in the view; the blank
+  `centerprint` replaces it before the next screenshot.
+- `ui_hud 0` and `cg_drawviewmodel 0` hide the HUD and the view weapon (set
+  `cg_drawviewmodel 2` to test the weapon's depth range). Messages such as
+  "Game Saved" and "An objective has been added!" still show for a few
+  seconds after the map starts.
+
+Still random between runs: what the game seeds with the wall clock
+(`G_InitGame` seeds `rand()` with `Com_Milliseconds()`), such as the snow
+particles of `dm/mohdm5` and AI movement in single-player maps.
+
+### Comparing
+
+The scripts in `tools/` (Python 3 standard library and POSIX sh) automate it.
+They read `MOH_BASEPATH` (game data, default `~/Documents/moh`),
+`MOH_HOMEPATH` (throwaway homepath, default `/tmp/moh-vktest`), `MOH_BINDIR`
+(default `build-vk/RelWithDebInfo`) and `MOH_OUT` (results, default
+`$MOH_HOMEPATH/compare`).
+
+```sh
+code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.txt
+WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.txt
+```
+
+- `views/*.txt`: view lists (`map`, `set <command>`, `shot <name> x y z
+  pitch yaw roll`), one per map tested so far.
+- `compare.sh`: writes the cfg (`shots.py`), runs it with GL1 and Vulkan
+  (`run.sh`), then prints per channel the max and mean absolute difference
+  and the number of differing pixels for every view (`tgadiff.py`), and
+  writes PNG copies and an amplified difference image (|a - b| x 8, equal
+  pixels as a dark copy) to `$MOH_OUT`. `WIDE=1` compares at 4160x240.
+  `VAL=2` runs with synchronization validation; validation messages are
+  printed.
+- `hotspots.py`: zoomed side-by-side crops of the areas that differ most.
+- `montage.py`: a grid of images, for example `gl | vk | diff` rows.
+- `bspinfo.py`: worldspawn keys (fog), spawn points and the surfaces of the
+  shaders that contain a keyword (`polygonoffset`, `alphafunc`, ...), to
+  pick views.
+
+With RADV and GL1 on radeonsi (same GPU) expect:
+
+- At 640x480 (`r_mode 3`) 1 to 8 % of the pixels differ by 1 and a few
+  hundred alpha-tested pixels (foliage edges) flip. radeonsi rasterizes
+  viewports of up to 1024 pixels with 1/4096 pixel vertex precision, up to
+  4096 with 1/1024, and 1/256 beyond (`si_state_viewport.c`); RADV always
+  uses 1/256. Whole triangles then interpolate their texture coordinates very
+  slightly differently, which bilinear filtering turns into ±1.
+- With a window wider than 4096 pixels both drivers use 1/256:
+  `+set r_mode -1 +set r_customwidth 4160 +set r_customheight 240`. The
+  frames are then the same to the bit except at most a few thousand pixels
+  off by 1 on large triangles next to the camera (the drivers clip against
+  different guard bands) and on transient HUD text, a few isolated
+  alpha-tested pixels, plus random particles and AI poses. That is the
+  setting to check a change for exactness.
+- `r_farplane_nofog 1` turns farplane fog off in both renderers.
+
+Test content:
+
+- `dm/mohdm1`: world, lightmaps, alpha-tested railings, trees and bushes
+  (alpha-tested static models with vertex deforms), furniture, sky.
+- Decals: a map's `.dcl` file only loads when its map time matches the
+  BSP's. In the shipped data that is the case for `dm/mohdm4` (3 posters),
+  `m2l3` (39 decals) and `obj/obj_team4`; the other maps print "BSP file is
+  newer than DCL file" and have no decals with either renderer.
+- Fog: `dm/mohdm2` (farplane 5000), `dm/mohdm4` (5500), `dm/mohdm5` (1800,
+  dense), `m4l1` (3100), `m2l3` (set by its script). Sky portal: `m2l1`.
+- No shipped map has a portal or mirror surface (`portal` shader keyword), so
+  the user clip plane has no GL1 reference in game content. It was checked
+  with a temporary plane forced on the main view: x_eye >= 0 cut every
+  frame exactly at the middle column, the kept half was identical to the
+  unclipped frame with the fragment shader fallback and identical except ±1
+  on the triangles crossing the plane with `gl_ClipDistance`, and a plane at
+  400 units removed the near geometry.
+
+Other things learned:
+
+- `com_maxfps` does not cap the menus.
 - Commands appended while a script waits run after the whole script. The
   `vid_restart` that a window resize schedules is one of them, so a script
   with a long `wait` never sees it. The client also reads console commands
   from stdin (a FIFO works), which is a way to drive resize tests with
-  `xdotool windowsize`.
+  `xdotool windowsize`; a `devmap` sent that way stops at the loading screen.
 - Depending on timing, a map can stop at its loading screen with a CONTINUE
   button (with both renderers); `finishloadingscreen` dismisses it.
-- Time-dependent elements differ between any two runs: the menu fan, swaying
-  foliage, HUD flashes (the compass), and the camera can be off by a
-  sub-pixel amount, which shows up as ±1 differences on mipmapped surfaces.
-  Compare the menu, or mask those areas.
+- The menu fan and 2D shader animations use the wall clock
+  (`backEnd.refdef.time = ri.Milliseconds()` in `Set2DWindow`), so they
+  differ between any two runs.
 - The game archives cvars and autosaves into `fs_homepath`; delete
   `main/configs` and `main/save` between test runs to start from the same
   state.
@@ -125,7 +258,12 @@ the quickest parity check. Things learned while doing that:
   (`RE_BeginFrame: Stereo is enabled, but stereoFrame was 0`).
 - `PRINT_WARNING` and `PRINT_DEVELOPER` messages only show with
   `developer 1` in OpenMoHAA (`CL_RefPrintf`), so the backend prints
-  validation messages and its own warnings with `PRINT_ALL`.
+  validation messages and its own warnings with `PRINT_ALL`. `+set logfile 2`
+  writes the console to `<fs_homepath>/main/qconsole.log`.
+- `AMD_DEBUG=vs,ps,nir` (with `MESA_SHADER_CACHE_DISABLE=true`) dumps what
+  radeonsi compiles for GL1's fixed-function pipeline and `RADV_DEBUG=shaders`
+  what RADV compiles for ours, which is how the arithmetic of the vertex
+  transform and of fog were matched.
 
 ## Backend contract
 
@@ -135,9 +273,17 @@ implicitly and the Vulkan implementation reproduces.
 ### Coordinate conventions
 
 - Projection matrices are OpenGL ones (column-major, clip z in [-w, w], y up).
-  The backend remaps depth with `z' = (z + w) / 2` (pre-multiplied into the
-  projection, then multiplied with the modelview on the CPU and pushed as one
-  matrix) and flips y with a negative viewport height (core since Vulkan 1.1).
+  With `VK_EXT_depth_clip_control` (enabled when the device has it) the
+  pipelines use GL's clip space depth (`negativeOneToOne`) and the projection
+  is used as is, so clip space z, near/far clipping and depth values are the
+  same as GL's; otherwise the backend remaps depth with `z' = (z + w) / 2`,
+  pre-multiplied into the projection. Projection × modelview is computed on
+  the CPU in the order of Mesa's `_ModelProjectMatrix` and pushed as one
+  matrix, and the vertex shader transforms with the operations of Mesa's
+  fixed-function vertex program (a multiply, then fused multiply-adds), so
+  clip coordinates come from the same operations on the same values as GL1's
+  on Mesa. y is flipped with
+  a negative viewport height (core since Vulkan 1.1).
 - Viewport, scissor and `vk_read_pixels` use window coordinates with the
   origin at the bottom-left: Vulkan `y = windowHeight - (y + height)`.
 - `vk_set_depth_range(n, f)` maps to `VkViewport::minDepth/maxDepth`. The
@@ -193,12 +339,22 @@ blend factors read 1 and `SRC_ALPHA_SATURATE` gives 0, as in GL1.
    produces it).
 3. Alpha test.
 4. Fog, if enabled: `f = clamp((end - d) / (end - start), 0, 1)` with
-   `d = |z_eye|`, `rgb = mix(fogColor.rgb, rgb, f)`; alpha unchanged.
-5. User clip plane: discard where `dot(plane, eyePos) < 0` (use
-   `gl_ClipDistance`; eye position = modelview * vertex).
+   `d = |z_eye|`, `rgb = mix(fogColor.rgb, rgb, f)`; alpha unchanged. The
+   backend computes it like Mesa's fixed-function fog, which makes it match
+   GL1 to the bit on Mesa: the vertex shader writes `|z_eye|` (row 2 of the
+   modelview, same operations as the position) as the fog coordinate, the
+   fragment shader computes `f = sat(fma(d, -1 / (end - start), end / (end -
+   start)))` with both constants computed on the CPU in float, then
+   `rgb = fma(rgb, f, fogColor * (1 - f))`. The fog color is clamped to
+   [0, 1]. Fog on/off is part of the pipeline key; color and range are push
+   constants.
+5. User clip plane: discard where `dot(plane, eyePos) < 0`, eye position =
+   modelview * vertex. The backend transforms the plane to object space
+   (`plane * modelview`) and clips with `gl_ClipDistance`; on devices without
+   `shaderClipDistance` the fragment shader discards on the interpolated
+   distance instead (same pixels, except that triangles crossing the plane
+   aren't split).
 6. Blending, color mask, depth and stencil per the state.
-
-Steps 4 and 5 are not implemented yet (milestone 4).
 
 Stencil ops are the clamping GL ones (`INCREMENT_AND_CLAMP`,
 `DECREMENT_AND_CLAMP`). Stencil shadows (`r_shadows 2`) and
@@ -219,7 +375,11 @@ color mask, the depth write bit of the current state and the stencil write
 mask. Depth clears to 1.0, stencil to 0. `color` may be NULL when
 `CLEAR_COLOR` is not set. The backend uses `vkCmdClearAttachments`, which
 ignores masks, and draws a quad for a color clear with a partial color mask; a
-partial stencil write mask clears all bits (the renderer never sets one).
+partial stencil write mask clears all bits (the renderer never sets one). The
+clear color is first rounded to the nearest 8-bit value on the CPU: drivers
+convert clear colors with float arithmetic that can round the other way near
+half a step (RADV gives 179 for 0.7, GL1 the correctly rounded 178; it shows
+in the fog-colored background of `m2l3`).
 
 ### Textures
 
@@ -303,9 +463,10 @@ not implemented yet.
   The device is the first discrete, then integrated, then virtual, then CPU
   device with a graphics queue that can present to the window. Enabled
   features, when supported: `fillModeNonSolid`, `wideLines`,
-  `samplerAnisotropy`, `textureCompressionBC`, `shaderClipDistance` (for
-  milestone 4). `VK_KHR_portability_enumeration`/`_subset` are enabled when
-  present (MoltenVK).
+  `samplerAnisotropy`, `textureCompressionBC`, `shaderClipDistance` (user
+  clip plane). Extensions when present: `VK_EXT_depth_clip_control` (GL clip
+  space depth, see Coordinate conventions), `VK_KHR_portability_subset`
+  (MoltenVK, with `VK_KHR_portability_enumeration` on the instance).
 - **Render target.** The frame is drawn into an offscreen `R8G8B8A8_UNORM`
   color image and a depth/stencil image of `glConfig.vidWidth x vidHeight`,
   with one render pass that loads and stores both. `vk_end_frame` blits the
@@ -349,14 +510,23 @@ not implemented yet.
 - **Draws.** Each draw copies positions (repacked to 12 bytes), colors (RGBA8
   per vertex, or one float RGBA color read with a binding stride of 0),
   texture coordinates and 32-bit indexes into the frame's vertex buffer, in
-  separate bindings. Projection × modelview is one push constant.
+  separate bindings.
+- **Push constants** (`vkPushConstants_t`, 120 bytes of the guaranteed 128).
+  Vertex stage: projection × modelview, row 2 of the modelview (fog
+  distance) and the clip plane in object space (zero without a clip plane),
+  pushed again when a matrix or the plane changes. Fragment stage: fog color
+  and the two linear fog constants, pushed when they change. Both ranges are
+  pushed at the start of every command buffer.
 - **Pipelines** (`vk_pipeline.c`). The key packs blend factors, depth
   test/write/func, polygon mode, cull mode, topology, RGB color mask, alpha
   function (and its reference value), polygon offset on/off, color array or
   constant color, texture env per unit (0 for an unused unit), "RGB texture
-  with TEXENV_REPLACE" per unit, and the stencil function and ops. Viewport,
-  scissor, depth bias, line width and stencil reference/masks are dynamic.
-  The fragment shader is specialized for texture envs and the alpha test.
+  with TEXENV_REPLACE" per unit, the stencil function and ops, fog on/off
+  and clip plane on/off. Viewport, scissor, depth bias, line width and
+  stencil reference/masks are dynamic. The fragment shader is specialized for
+  texture envs, the alpha test, fog and the clip plane discard fallback;
+  pipelines with a clip plane use the vertex shader built with
+  `gl_ClipDistance`.
   Pipelines are created on first use and cached for the life of the device,
   with a `VkPipelineCache` that is not saved to disk yet.
 - **Shutdown and `vid_restart`.** `vk_shutdown` waits for the device and
@@ -396,7 +566,12 @@ Differences from GL1 (all in paths that were dead, broken or debug only):
 - A texture unit whose image has no storage samples opaque black, as an
   incomplete GL texture does.
 - The depth buffer is 32-bit float on AMD (no D24 there), so z-fighting
-  surfaces can resolve differently from GL1's 24-bit buffer.
+  surfaces can resolve differently from GL1's 24-bit buffer (not seen in the
+  comparisons: quantizing the depth to 24 bits in the shader changed no
+  pixel of the test views).
+- A screenshot taken before the frame is drawn (the `screenshot` command)
+  shows the last presented frame; GL1 shows the back buffer the driver hands
+  out, an older frame on Mesa.
 
 ## Plan
 
@@ -411,22 +586,26 @@ Done:
    cull, scissor/viewport, the pipeline cache. Check: the main menu matches
    GL1.
 
-Also done ahead of plan, but only checked through the `dm/mohdm1` comparison
-and validation, not on dedicated test views: the second texture unit, the
-alpha test, polygon offset, and the stencil state (`r_shadows 2` and
-`r_measureOverdraw` run without validation messages; a temporary self-test
-read back the expected stencil and depth values).
+3. Deterministic 3D comparisons (see Testing) and the parity check of the
+   second texture unit, `TEXENV_REPLACE` (`r_lightmap 1`), the alpha test,
+   blended surfaces, decals (polygon offset), static and animated models, the
+   view weapon, and the single-player maps `m2l3` and `m4l1`.
+   `TEXENV_DECAL` is never produced (its collapse entry is `#if 0` in
+   `tr_shader.c`). Found and fixed on the way: the vertex transform and depth
+   convention now match GL's arithmetic, and clear colors are rounded like
+   GL's. Not covered by the test views: `TEXENV_ADD` (`r_ext_texture_env_add
+   1`; no shader of the test maps collapses into it, candidates are
+   `snowfield1`, `afrika_ocean`, `deepbluesea`, `subpen_water` and
+   `cliffsky`), and the stencil state (`r_shadows 2`, `r_measureOverdraw`),
+   checked by validation and a readback self-test only.
+4. Fog (Mesa's arithmetic, see Fragment pipeline), the user clip plane
+   (`gl_ClipDistance`, object space plane, fragment shader fallback), depth
+   ranges (sky at 1, view weapon at 0..0.3) and the sky and sky portal in 3D
+   views, checked on `dm/mohdm2`, `dm/mohdm4`, `dm/mohdm5`, `m2l1`, `m2l3`
+   and `m4l1`.
 
 Remaining:
 
-3. Parity check of what is already implemented: decals (polygon offset),
-   alpha-tested and blended surfaces, models with `TEXENV_REPLACE`/`DECAL`,
-   a single-player map. Needs a deterministic camera: the runs above differ
-   by timing.
-4. Fog (`vk_set_fog*`: eye-space distance per vertex, which needs the
-   modelview's z row in the push constants), user clip planes for portals
-   and mirrors (`gl_ClipDistance`, plane in object space), depth ranges
-   and the sky in 3D views.
 5. Flares (depth readback per flare, see above), lines and debug modes
    (`r_showtris` shows nothing in screenshots with either renderer; check
    it on screen), line stipple, cinematics, dynamic lightmaps, ghost

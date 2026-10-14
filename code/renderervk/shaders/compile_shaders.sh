@@ -11,7 +11,10 @@ set -eu
 cd "$(dirname "$0")"
 
 GLSLC=${GLSLC:-glslc}
-SHADERS="generic.vert generic.frag"
+# name of the array, source file, extra glslc options
+SHADERS="generic_vert:generic.vert:
+generic_clip_vert:generic.vert:-DCLIP_DISTANCE
+generic_frag:generic.frag:"
 OUT=../vk_shaders.c
 TMP=$OUT.tmp
 
@@ -47,11 +50,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <stdint.h>
 
 EOF
-	for src in $SHADERS; do
-		name=vk_spirv_$(echo "$src" | tr . _)
-		echo "// $src"
+	for entry in $SHADERS; do
+		name=vk_spirv_$(echo "$entry" | cut -d: -f1)
+		src=$(echo "$entry" | cut -d: -f2)
+		opts=$(echo "$entry" | cut -d: -f3)
+		echo "// $src${opts:+ $opts}"
 		echo "const uint32_t ${name}[] ="
-		"$GLSLC" --target-env=vulkan1.1 -O -mfmt=c "$src" -o -
+		"$GLSLC" --target-env=vulkan1.1 -O $opts -mfmt=c "$src" -o -
 		echo ";"
 		echo "const size_t ${name}_size = sizeof( ${name} );"
 		echo

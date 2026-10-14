@@ -436,6 +436,7 @@ static void VK_SelectPhysicalDevice( void ) {
 
 static void VK_CreateLogicalDevice( void ) {
 	VkPhysicalDeviceFeatures supported;
+	VkPhysicalDeviceDepthClipControlFeaturesEXT clipControl;
 	VkDeviceQueueCreateInfo queueInfo;
 	VkDeviceCreateInfo createInfo;
 	VkExtensionProperties *available;
@@ -465,6 +466,24 @@ static void VK_CreateLogicalDevice( void ) {
 	if ( VK_HasExtension( available, numAvailable, "VK_KHR_portability_subset" ) ) {
 		VK_AddExtension( extensions, &numExtensions, "VK_KHR_portability_subset" );
 	}
+
+	// GL clip space depth: the projection is used as is, so clip space z,
+	// and with it near/far clipping and the depth values, are the same as GL's
+	Com_Memset( &clipControl, 0, sizeof( clipControl ) );
+	clipControl.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT;
+	vk.depthClipControl = qfalse;
+	if ( qvkGetPhysicalDeviceFeatures2 && VK_HasExtension( available, numAvailable, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME ) ) {
+		VkPhysicalDeviceFeatures2 features2;
+
+		Com_Memset( &features2, 0, sizeof( features2 ) );
+		features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		features2.pNext = &clipControl;
+		qvkGetPhysicalDeviceFeatures2( vk.physicalDevice, &features2 );
+		if ( clipControl.depthClipControl ) {
+			VK_AddExtension( extensions, &numExtensions, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME );
+			vk.depthClipControl = qtrue;
+		}
+	}
 	ri.Hunk_FreeTempMemory( available );
 
 	Com_Memset( &queueInfo, 0, sizeof( queueInfo ) );
@@ -480,6 +499,9 @@ static void VK_CreateLogicalDevice( void ) {
 	createInfo.enabledExtensionCount = numExtensions;
 	createInfo.ppEnabledExtensionNames = extensions;
 	createInfo.pEnabledFeatures = &vk.enabledFeatures;
+	if ( vk.depthClipControl ) {
+		createInfo.pNext = &clipControl;
+	}
 
 	VK_CHECK( qvkCreateDevice( vk.physicalDevice, &createInfo, NULL, &vk.device ) );
 

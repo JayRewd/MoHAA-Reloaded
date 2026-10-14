@@ -49,8 +49,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define VK_DIRTY_DEPTHBIAS		4
 #define VK_DIRTY_LINEWIDTH		8
 #define VK_DIRTY_STENCIL		16
-#define VK_DIRTY_MVP			32
-#define VK_DIRTY_ALL			63
+#define VK_DIRTY_MVP			32		// vertex stage push constants
+#define VK_DIRTY_FOG			64		// fragment stage push constants
+#define VK_DIRTY_ALL			127
 
 vkInstance_t	vk;
 cvar_t			*r_vkValidation;
@@ -76,13 +77,13 @@ typedef struct {
 	unsigned int	stencilMask;
 	unsigned int	stencilWriteMask;
 	stencilOp_t		stencilOp[3];		// stencil fail, depth fail, depth pass
-
-	// recorded but not applied yet (later milestones, see README.md)
 	qboolean		fog;
 	vec4_t			fogColor;
 	float			fogStart, fogEnd;
 	qboolean		clipPlaneEnabled;
-	float			clipPlane[4];
+	float			clipPlane[4];		// eye space
+
+	// recorded but not applied yet (later milestones, see README.md)
 	int				lineStippleFactor;
 	unsigned short	lineStipplePattern;
 } vkState_t;
@@ -1131,11 +1132,13 @@ void vk_set_fog( qboolean enable ) {
 
 void vk_set_fog_color( const vec4_t color ) {
 	Vector4Copy( color, vks.fogColor );
+	vk_dirty |= VK_DIRTY_FOG;
 }
 
 void vk_set_fog_range( float start, float end ) {
 	vks.fogStart = start;
 	vks.fogEnd = end;
+	vk_dirty |= VK_DIRTY_FOG;
 }
 
 void vk_set_clip_plane( const float *eyePlane ) {
@@ -1143,6 +1146,8 @@ void vk_set_clip_plane( const float *eyePlane ) {
 	if ( eyePlane ) {
 		Vector4Copy( eyePlane, vks.clipPlane );
 	}
+	// the shaders get the plane in object space
+	vk_dirty |= VK_DIRTY_MVP;
 }
 
 void vk_set_stencil_test( qboolean enable ) {
@@ -1255,7 +1260,7 @@ static void VK_ComputeMVP( float *mvp ) {
 	for ( c = 0; c < 4; c++ ) {
 		p[c * 4 + 0] = vks.projection[c * 4 + 0];
 		p[c * 4 + 1] = vks.projection[c * 4 + 1];
-		p[c * 4 + 2] = 0.5f * ( vks.projection[c * 4 + 2] + vks.projection[c * 4 + 3] );
+		p[c * 4 + 2] = vk.depthClipControl ? vks.projection[c * 4 + 2] : 0.5f * ( vks.projection[c * 4 + 2] + vks.projection[c * 4 + 3] );
 		p[c * 4 + 3] = vks.projection[c * 4 + 3];
 	}
 
@@ -1310,10 +1315,43 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd ) {
 	}
 
 	if ( vk_dirty & VK_DIRTY_MVP ) {
-		float mvp[16];
+		const float *mv = vks.modelview;
+		vkPushConstants_t pc;
+		int i;
 
-		VK_ComputeMVP( mvp );
-		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof( mvp ), mvp );
+		VK_ComputeMVP( pc.mvp );
+
+		pc.eyeZ[0] = mv[2];
+		pc.eyeZ[1] = mv[6];
+		pc.eyeZ[2] = mv[10];
+		pc.eyeZ[3] = mv[14];
+
+		// the eye space plane P keeps eye positions with P . ( MV v ) >= 0,
+		// so the object space plane is P * MV
+		for ( i = 0; i < 4; i++ ) {
+			pc.clipPlane[i] = vks.clipPlaneEnabled ? vks.clipPlane[0] * mv[i * 4 + 0] + vks.clipPlane[1] * mv[i * 4 + 1]
+				+ vks.clipPlane[2] * mv[i * 4 + 2] + vks.clipPlane[3] * mv[i * 4 + 3] : 0.0f;
+		}
+
+		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VK_PUSH_VERTEX_SIZE, &pc );
+	}
+
+	if ( vk_dirty & VK_DIRTY_FOG ) {
+		vkPushConstants_t pc;
+		float scale;
+		int i;
+
+		for ( i = 0; i < 4; i++ ) {
+			pc.fogColor[i] = Com_Clamp( 0.0f, 1.0f, vks.fogColor[i] );
+		}
+		// computed like Mesa's gl_MesaFogParamsOptimized, so the factor
+		// matches GL1 on Mesa drivers to the bit
+		scale = ( vks.fogEnd == vks.fogStart ) ? 1.0f : -1.0f / ( vks.fogEnd - vks.fogStart );
+		pc.fogParams[0] = scale;
+		pc.fogParams[1] = vks.fogEnd * -scale;
+
+		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, VK_PUSH_VERTEX_SIZE, VK_PUSH_FRAGMENT_SIZE,
+			(const byte *)&pc + VK_PUSH_VERTEX_SIZE );
 	}
 
 	vk_dirty = 0;
@@ -1403,6 +1441,13 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 				bits |= i ? VK_PIPE_TEX1_RGB : VK_PIPE_TEX0_RGB;
 			}
 		}
+	}
+
+	if ( vks.fog ) {
+		bits |= VK_PIPE_FOG;
+	}
+	if ( vks.clipPlaneEnabled ) {
+		bits |= VK_PIPE_CLIPPLANE;
 	}
 
 	if ( vks.stencilTest ) {
@@ -1588,6 +1633,21 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 
 /*
 ===============
+VK_ClearComponent
+
+A clear color component rounded to the nearest 8-bit value of the color
+target. Drivers convert clear colors with float arithmetic that can round
+the other way near a half step (RADV packs 0.7f as 179, GL gives 178, the
+correctly rounded value); a color that is exactly representable converts
+the same everywhere.
+===============
+*/
+static float VK_ClearComponent( float c ) {
+	return (float)( floor( Com_Clamp( 0.0f, 1.0f, c ) * 255.0 + 0.5 ) / 255.0 );
+}
+
+/*
+===============
 VK_ClearColorMasked
 
 glClear of the color buffer with a partial color mask: a quad over the
@@ -1625,7 +1685,7 @@ static void VK_ClearColorMasked( const vec4_t color ) {
 	geometry.xyz = xyz[0];
 	geometry.xyzStride = sizeof( xyz[0] );
 	for ( i = 0; i < 4; i++ ) {
-		geometry.color[i] = Com_Clamp( 0.0f, 1.0f, color[i] );
+		geometry.color[i] = VK_ClearComponent( color[i] );
 	}
 	vk_draw( PRIM_TRIANGLES, &geometry, 6, indexes );
 
@@ -1658,9 +1718,9 @@ void vk_clear( int buffers, const vec4_t color ) {
 		if ( vks.colorMask[0] && vks.colorMask[1] && vks.colorMask[2] ) {
 			attachments[numAttachments].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			attachments[numAttachments].colorAttachment = 0;
-			attachments[numAttachments].clearValue.color.float32[0] = Com_Clamp( 0.0f, 1.0f, color[0] );
-			attachments[numAttachments].clearValue.color.float32[1] = Com_Clamp( 0.0f, 1.0f, color[1] );
-			attachments[numAttachments].clearValue.color.float32[2] = Com_Clamp( 0.0f, 1.0f, color[2] );
+			attachments[numAttachments].clearValue.color.float32[0] = VK_ClearComponent( color[0] );
+			attachments[numAttachments].clearValue.color.float32[1] = VK_ClearComponent( color[1] );
+			attachments[numAttachments].clearValue.color.float32[2] = VK_ClearComponent( color[2] );
 			attachments[numAttachments].clearValue.color.float32[3] = 1.0f;
 			numAttachments++;
 		} else {
