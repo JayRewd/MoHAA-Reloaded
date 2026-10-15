@@ -56,17 +56,22 @@ below are done.
   later; overdraw counts equal to GL1's from the first frame), with 1 and 4
   samples
 - performance (milestone 6, see [Performance](#performance)): on an idle
-  machine Vulkan spends less main-thread time in the renderer than GL1 in
-  every measured view, and where the GPU limits (the `m6l1a` forest) its
-  frames take less time than GL1's: 7 % less at 3840x2160, 3 % at
-  1920x1080. Frames are drawn straight into the swapchain image (no copy
+  machine Vulkan spends 13 to 28 % less main-thread time in the renderer
+  than GL1 in the measured views at 1920x1080 (fence waits left out; after
+  the second round, which took 6 to 24 % off: hidden symbol visibility,
+  cheaper static model culling, cached sun traces, a faster draw surface
+  sort), and in the `m6l1a` forest, where the GPU limits, its frames take 7
+  % less time than GL1's at 3840x2160 and 5 % less at 1920x1080 (`m3l3`:
+  13 % less at 1080p, CPU-bound; but 3 to 4 % more at 3840x2160 in
+  `dm/mohdm3` and `m3l3`). Frames are drawn straight into the swapchain image (no copy
   at present, 8 to 9 % more frames per second where the GPU limits), the
   depth image is only readable while depth or stencil readbacks are wanted
   (a readable one has TC-compatible HTILE on RADV, which keeps fewer depth
   tiles compressed: 12 to 13 % more GPU time in that forest), textures
   share memory blocks, the pipeline cache is saved to disk, and with vsync
   the wait for the display happens after the present, like GL's swap.
-  `r_ext_multisample` works (2 to 16 samples)
+  `r_ext_multisample` works (2 to 16 samples), 3 % slower than GL1's with 4
+  samples (9 % before alpha was written with it)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -90,7 +95,7 @@ below are done.
 | `tr_backend.c` | renderer-side state tracking (`GL_State`, `GL_Bind`, `GL_Cull`, `GL_TexEnv`, matrices, vertex arrays, current color) |
 | `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged |
 | `../sdl/sdl_vkimp.c` | SDL window, video modes and fullscreen without a GL context (`VKimp_*`) |
-| `../../cmake/renderer_vulkan.cmake` | build target `renderer_vulkan` |
+| `../../cmake/renderer_vulkan.cmake` | build target `renderer_vulkan` (only `GetRefAPI` is exported: hidden symbol visibility) |
 
 The `GL_` prefix of the state helpers and `glConfig`/`glState` are historical
 names kept to make it easy to port fixes from `renderergl1`; they do not touch
@@ -530,6 +535,26 @@ by more than 3 at 640x480 and 125/125/125, 5.39 %, 272 at 4160x240;
 pixels off by more than 3 beyond the table's are the `d7_window` crack
 (black in Vulkan, an older frame in GL1; at 4160x240 all 56 on one row).
 
+The second round of the performance work (see Performance) was checked
+against the build before it in the same way, on the 31 view lists at
+640x480 plus `mohdm1_dlight` with `r_fastdlights 1` and `mohdm1_texenv`
+with `r_ext_texture_env_add 1` (145 views): 118 views give the same frames
+to the bit; the others are the random content (AI in `m1l2a` and `m1l3a`,
+where AI fire put the red damage flash into one run's `m13_c`, the
+shutters of `m5l1a`, the tank of `m5l2a`, snow in `m6l1a` and
+`mohdm5_fog`) and the near-camera noise of `m2l1_skyportal`, `m4l1_fog`,
+`m61_slope` and `mohdm7`, plus one pixel off by 1 in `m33_grass`
+(`m3l3`), which two runs of the same old build also gave. With 4 samples
+the `mohdm1` views are the same to the bit too. Against GL1
+(`compare.sh`): `dm/mohdm3`, `m3l3` and `obj_team2` give the table's
+numbers at 640x480, `m6l1a` 120/120/126, 8.28 %, 469 (snow); at 4160x240
+`m6l1a`'s `m61_slope` differed in 5.8 % of the pixels, but two runs of the
+same old build differ by 5.2 % there. No validation message with
+synchronization validation (`r_vkValidation 2`) on `dm/mohdm1` (also with
+`r_ext_multisample 4`, and with `r_stencilbits 8` and `r_measureOverdraw
+1`), `m6l1a`, `mohdm1_dlight` and `m2l1_skyportal`; the main menu matches
+GL1 (fan masked).
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -590,7 +615,7 @@ code/renderervk/tools/rtimer/build.sh      # renderer_timed.so and libstacks.so 
 code/renderervk/tools/perf.py --list code/renderervk/tools/views/perf.txt \
     --sizes 640x480,1920x1080 --renderers opengl1,vulkan --runs 3 --json out.json
 code/renderervk/tools/perf.py m6l1a 6152 -6528 5500 0 135 0 --runs 1 --stacks out
-code/renderervk/tools/stacks.py out_m6l1a_640x480_vulkan_1.txt --focus vk_draw
+code/renderervk/tools/stacks.py out_m6l1a_640x480_vulkan_1.txt --tree RB_RenderDrawSurfList --callers CM_BoxTrace
 ```
 
 Each measurement starts a game, loads the map with `fixedtime 16`, puts the
@@ -625,9 +650,15 @@ batch, which is how every change below was measured. What it reports:
   owner agreed.
 
 `--stacks` preloads `libstacks.so` (`tools/rtimer/stacks.c`), which
-interrupts the main thread every millisecond of wall clock time and
-records its backtrace; `stacks.py` symbolizes them (addr2line) and prints
-self and inclusive time per function and the call paths below one. It needs
+interrupts the main thread every millisecond of wall clock time on average
+and records its backtrace (the intervals are random between 0.5 and 1.5 ms:
+at a fixed 1 ms the samples locked to the phase of frames capped at 1000
+per second and always landed in the same part of the frame, which made
+640x480 profiles show only the world traversal); `stacks.py` symbolizes
+them (addr2line, with the library paths recorded in the file: keep a copy
+of a `.so` that is rebuilt to read its old profiles) and prints self and
+inclusive time per function, the call paths below one (`--focus`), its
+callers (`--callers`) and the tree of what it calls (`--tree`). It needs
 no privileges (perf is refused with the default
 `kernel.perf_event_paranoid` of Ubuntu) and shows time spent waiting
 (fences, the swap) where perf's CPU samples show nothing.
@@ -790,6 +821,78 @@ A depth format without the unused stencil plane (D32 instead of D32S8,
 GL1 has no stencil either) saves 0.5 % more at 3840x2160 and nothing at
 1080p after that; not done.
 
+Second round (2026-10-14 night): the renderer's CPU time. With the
+depth image change the `m6l1a` forest is GPU-bound at 1080p, so CPU gains
+there only turn into fence waits; the numbers below are the renderer time
+minus `vkinfo`'s fence waits (`waitUs` per frame), at 1080p for the first
+four changes and at 640x480 (no waits) for the last two, medians of 3
+interleaved runs on the idle machine, each against the build before it, ms
+of main-thread CPU time per frame in the `m6l1a` forest / `obj_team2` yard
+/ `dm/mohdm3` overview / `m3l3` path. The stack samples put most of the
+CPU time in code shared with GL1; every change keeps the frames
+bit-identical (see Testing):
+
+| change | why (stack samples) | ms per frame |
+| --- | --- | --- |
+| hidden symbol visibility: the library exports only `GetRefAPI` (`cmake/renderer_vulkan.cmake`) | with default visibility, calls between the renderer's own functions (1621 exported symbols) went through the PLT and could not be inlined, LTO or not (4034 PLT call sites in the library, 868 after; code 960 KB, 715 KB after, `size`) | -0.092 / -0.024 / -0.039 / -0.037 |
+| static model culling without the model matrix: `R_AddStaticModelSurfaces` computed `R_RotateForStaticModel` (a 4x4 matrix product) for each of the 2763 static models of `m6l1a` every frame, though culling only needs the origin and axes; the matrix of the last one is still computed so `tr.ori` ends up the same | 9 % of the `m6l1a` frame | -0.060 / -0.016 / +0.006 / -0.004 |
+| sun visibility traces kept by origin (`RB_Sphere_TraceSun`): the trace from an entity's lighting origin towards the sun only depends on the world, so its result is kept (1024 entries, keyed on the exact origin and sun direction, cleared at map load) for the entities that don't move | `CM_BoxTrace` for every lit entity and frame: 20 % of the `m3l3` frame, 6.5 % in `m6l1a`; most entities there move, the attached weapons share their owner's origin | -0.028 / -0.012 / -0.018 / -0.025 |
+| radix sort of the draw surfaces: the four byte histograms counted in one pass, bytes that are the same in every key skipped (the same stable order) | `R_Radix` 9.7 % of the `obj_team2` frame | -0.030 / -0.012 / -0.007 / -0.014 |
+| static model distance fade (`AGEN_DIST_FADE` in `ComputeColors`): the eye position in the model's axes computed once per batch instead of per vertex (the same operations) | 4.5 % of the `m6l1a` frame | -0.030 / -0.005 / -0.013 / -0.006 |
+| static models culled from a compact array: their world-space sphere is computed at load with the same arithmetic, and the per-frame loop reads 24 bytes per model instead of the 1.3 KB `cStaticModelUnpacked_t` entries (one cache miss each) | `R_AddStaticModelSurfaces` 5.5 % of the `m6l1a` frame after the second change | -0.024 / -0.025 / -0.005 / -0.012 |
+
+The result, against GL1 and the build before the second round (medians
+of 3 interleaved runs, idle machine: load 1.0 to 1.4 with the game, other
+processes 1.6 CPUs at most; frame time with the fps of the median, the
+renderer's main-thread time without the fence waits, its front end, and
+the main pass's GPU time; ms per frame):
+
+| view | size | frame GL1 | frame before | frame after | renderer GL1 | before | after | front end GL1 / before / after | GPU before / after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `m6l1a` forest | 1920x1080 | 1.323 (756 fps) | 1.301 (769) | 1.259 (794) | 1.129 | 1.071 | 0.811 | 0.320 / 0.340 / 0.189 | 1.235 / 1.235 |
+| | 3840x2160 | 4.386 (228) | 4.081 (245) | 4.089 (245) | 3.990 | 1.374 | 1.079 | 0.429 / 0.466 / 0.283 | 4.037 / 4.045 |
+| `obj_team2` yard | 1920x1080 | 0.999 | 0.999 | 0.999 | 0.618 | 0.546 | 0.482 | 0.143 / 0.137 / 0.109 | 0.622 / 0.622 |
+| | 3840x2160 | 1.765 (567) | 1.763 (567) | 1.762 (568) | 1.608 | 0.704 | 0.652 | 0.172 / 0.163 / 0.137 | 1.742 / 1.740 |
+| `dm/mohdm3` overview | 1920x1080 | 0.999 | 0.999 | 0.999 | 0.744 | 0.682 | 0.644 | 0.162 / 0.151 / 0.142 | 0.728 / 0.726 |
+| | 3840x2160 | 2.460 (407) | 2.558 (391) | 2.563 (390) | 2.324 | 0.888 | 0.876 | 0.222 / 0.201 / 0.196 | 2.527 / 2.532 |
+| `m3l3` path | 1920x1080 | 1.294 (773) | 1.246 (803) | 1.122 (891) | 0.995 | 0.935 | 0.849 | 0.128 / 0.129 / 0.105 | 0.933 / 0.936 |
+| | 3840x2160 | 2.992 (334) | 3.099 (323) | 3.090 (324) | 2.495 | 1.183 | 1.068 | 0.166 / 0.167 / 0.143 | 3.060 / 3.051 |
+
+(GL1's renderer time includes its waits for the GPU, in its swap; 0.999
+is the 1000 frames per second limit. Where the GPU limits, at 3840x2160
+and in the `m6l1a` forest at 1080p, the CPU savings become fence waits.)
+
+Tried and not kept (no gain beyond the ±0.01 ms noise, or a cost): a
+prefetch of the next draw surfaces in `RB_RenderDrawSurfList` (the world
+surface data is mostly cache misses in `obj_team2`), the per-frame vertex
+buffer in host-cached memory instead of write-combined device-local memory,
+the depth format without the stencil plane (0.5 % less GPU time at
+3840x2160, nothing at 1080p or with multisampling) and writing alpha
+without multisampling (1.2 % less GPU time at 3840x2160 in `dm/mohdm3` and
+`m3l3`, but 1 pixel in about 10^5 rounds one step lower, see State).
+
+What the profile shows after it (640x480, `m6l1a`, % of the 1 ms frame):
+`vk_draw` 10 % for 340 draws (vertex and index copies about 4, RADV's
+command recording 2, the backend's own bookkeeping 3), the renderer's
+tessellation (static and skeletal models, terrain, `ComputeColors`) about
+20, the sun traces of moving entities 3, `vk_end_frame` 7.5 (RADV's
+submission ioctl and the sync objects of the X11 present and acquire), the
+front end 14. Keeping static geometry in GPU buffers would save part of
+the copies (about 0.03 ms), not worth its complexity.
+
+Multisampling: the gap to GL1 was the color write mask. The pipelines
+wrote RGB only (no destination alpha), and on the multisampled
+DCC-compressed color image such a partial write costs: with 4 samples the
+`m6l1a` forest took 2.887 ms of GPU time per frame, 2.729 ms when the
+pipelines that write all of RGB write alpha too (1 without blending,
+unchanged with it, see State), and 2.651 ms without the resolve at all
+(the resolve into the swapchain image costs 0.26 ms; `vkCmdResolveImage`
+or resolving into the offscreen image cost the same). Frame times, medians
+of 3: GL1 2.699 ms, before 2.934, after 2.774 ms (3 % slower than GL1
+instead of 9 %), the same frames as before with multisampling (the
+`mohdm1` views). The depth
+format without stencil changed nothing there (2.889 against 2.884 ms).
+
 The plan items, each measured before and after with interleaved builds:
 
 | item | measured |
@@ -801,7 +904,7 @@ The plan items, each measured before and after with interleaved builds:
 | pipeline cache on disk | 15 pipelines from startup to the first `m6l1a` view: 17.5 to 19.4 ms with no file and `MESA_SHADER_CACHE_DISABLE=true`, 0.2 ms with the file; with RADV's own cache 0.5 ms without the file. No pipeline was created during the measured frames |
 | vertex copies of multi-pass shaders | vertex bytes per frame 588/826/716/509 KB become 584/819/690/503 KB; no measurable time |
 | fewer render pass breaks | nothing to remove: 1.00 render pass and 1 submission per frame in the 4 views, in `mohdm1_dlight` (94 KB of dynamic lightmaps uploaded per frame, all before the first draw that uses them) and in the `m2l1` sky portal |
-| `r_ext_multisample` | 4 samples, `m6l1a` at 1080p: 2.94 ms per frame against GL1's 2.71 ms (4.23 ms while the depth/stencil buffer was resolved with every render pass; 2.94 against 2.70 again after the depth image change) |
+| `r_ext_multisample` | 4 samples, `m6l1a` at 1080p: 2.94 ms per frame against GL1's 2.71 ms (4.23 ms while the depth/stencil buffer was resolved with every render pass; 2.94 against 2.70 again after the depth image change; 2.77 against 2.70 with alpha written, second round) |
 
 Multisampling matches GL1's (`r_ext_multisample 4` with both): in the
 `mohdm1` views 9.1 % of the pixels differ, nearly all by 1, against 7.3 %
@@ -867,8 +970,17 @@ by the current shader parser. `GLS_COLOR_NOMASK` (shader keyword
 through `vk_set_fog*`.
 
 The framebuffer has no destination alpha, like the GL1 visual on Linux (SDL
-asks for no alpha bits): alpha is never written and stays 1, so `DST_ALPHA`
-blend factors read 1 and `SRC_ALPHA_SATURATE` gives 0, as in GL1.
+asks for no alpha bits): `DST_ALPHA` and `ONE_MINUS_DST_ALPHA` blend
+factors are the constants 1 and 0 and `SRC_ALPHA_SATURATE` gives 0, as in
+GL1, whatever the color target's alpha holds (a swapchain image's is
+undefined until written; only a test shader, `textures/mohtest/brick`,
+uses `GL_DST_ALPHA`). Alpha is not written, except with multisampling:
+there pipelines that write all of RGB write alpha too (1 without blending,
+the stored value with it), because a write mask without alpha is a
+partial write, which made a multisampled frame of the `m6l1a` forest 6 %
+slower on the GPU (Radeon 780M, see Performance). Without multisampling it
+saves nothing, and RADV then rounds 1 pixel in about 10^5 one step lower
+than with the RGB mask (and GL1), so the RGB mask stays.
 
 ### Fragment pipeline
 
@@ -1223,7 +1335,8 @@ selects the sample count (see Implementation notes).
   and pattern for stippled pipelines (set when such a pipeline is bound and
   they changed). Line pipelines and polygon-line pipelines chain a
   `VkPipelineRasterizationLineStateCreateInfo` with the Bresenham mode. The fragment shader is specialized for
-  texture envs, the alpha test, fog and the clip plane discard fallback;
+  texture envs, the alpha test, fog, the clip plane discard fallback and
+  the alpha written without blending (see State);
   pipelines with a clip plane use the vertex shader built with
   `gl_ClipDistance`.
   Pipelines are created on first use and cached for the life of the device,
@@ -1399,12 +1512,39 @@ Done:
      frame saved at 1920x1080), matching GL1's multisampling about as
      closely as without it.
 
+6. (second round) The renderer's CPU time and multisampling (see
+   Performance, Second round), each change measured against the build
+   before it and checked bit-identical on the 31 view lists: hidden symbol
+   visibility (code 960 to 715 KB, the largest single CPU gain), static
+   model culling without the model matrix and from a compact array, sun
+   visibility traces kept by origin, a one-pass radix sort, the distance
+   fade loop; alpha written with multisampling (the multisampled frame 6 %
+   faster on the GPU, 3 % behind GL1 instead of 9 %). The stack sampler
+   now samples at random intervals (it locked onto the 1000 frames per
+   second cap), `stacks.py` has `--tree` and `--callers`, and the
+   backend's duplicated framebuffer, present and readback barrier code is
+   shared.
+
 Remaining:
 
+- At 3840x2160 the GPU-bound `dm/mohdm3` overview and `m3l3` path take
+  3 to 4 % more GPU time than GL1's frames (2.53 against 2.46-2.48 ms,
+  3.05 against 3.00 ms), a fixed ~0.08 ms per frame that doesn't come from
+  any one kind of content (the same with `r_drawterrain 0`, `r_fastsky 1`,
+  `r_drawstaticmodels 0` or `r_drawentities 0` in both renderers), is not
+  the depth clear (a fast clear: `RADV_DEBUG=nofastclears` adds 0.38 ms)
+  nor the swapchain image's transition for presentation (0.006 ms), and
+  doubles with primitive binning off in both drivers, so it is memory
+  traffic again. Writing alpha (1.2 %, but a rounding difference, see
+  State), the depth format without stencil (0.5 %) and DCC on textures
+  (`RADV_DEBUG=forcecompress`: -2.3 % in one view, +0.8 % in the other)
+  account for part of it. At 1080p these views are CPU-bound, where the
+  Vulkan renderer is faster.
 - Leads left from the main pass investigation (see Performance), none
   worth more than a few percent as far as measured: a depth format
   without the unused stencil plane when `r_stencilbits` is 0 (D32 instead
-  of D32S8: 0.5 % less GPU time at 3840x2160, nothing at 1080p); RADV's
+  of D32S8: 0.5 % less GPU time at 3840x2160, nothing at 1080p or with
+  multisampling); RADV's
   primitive binning uses 128x128 bins where radeonsi uses 128x64 for
   depth-tested draws on this GPU (in `radv_gfx10_compute_bin_size`, Mesa
   26.0.8, the final `extent.height = MAX2(extent.width, ...)` and the depth
@@ -1412,15 +1552,21 @@ Remaining:
   needs more depth tag space than the 78 KB the formula allows). Neither
   can be changed from the application; testing the bin size needs a
   patched RADV (not done), and if it matters the fix belongs in Mesa.
-- `r_ext_multisample 4` is still slower than GL1's (2.94 against 2.70 ms
-  per frame in the `m6l1a` forest at 1080p, the same before and after the
-  depth image change: the multisampled depth image never had
-  `TRANSFER_SRC`); not investigated.
-- The front end (the same code) takes 8 % longer with Vulkan in the
-  `m6l1a` forest (0.30 against 0.28 ms per frame at 640x480) and 7 to 8 %
-  less in one other view at 1080p (`dm/mohdm3` in one batch, `obj_team2` in
-  another), equal within 3 % in the others, with the same CPU clock; not
-  explained (code layout, cache effects of the back end), 2 % of the frame.
+- `r_ext_multisample 4` is 3 % slower than GL1's (2.77 against 2.70 ms per
+  frame in the `m6l1a` forest at 1080p); the resolve into the swapchain
+  image costs 0.26 ms of GPU time (RADV resolves into a DCC-compressed
+  image with a shader; `vkCmdResolveImage` costs the same, and no image
+  without DCC could be had to try the hardware resolve).
+- The renderer's own CPU cost per draw (`vk_draw`, about 0.3 µs, 10 % of
+  a 640x480 frame in the `m6l1a` forest) is mostly the vertex copies and
+  RADV's command recording; static geometry kept in GPU buffers would save
+  part of the copies, about 0.03 ms per frame, at the cost of a second
+  geometry path. The end of the frame (0.07 ms) is RADV's submission and
+  the sync objects of the X11 present and acquire.
+- The front end used to take up to 8 % longer than GL1's in the `m6l1a`
+  forest: explained, the calls through the PLT and the static model loop
+  (see Performance, Second round); it now takes 0.19 against GL1's 0.32
+  ms per frame there at 1080p.
 
 Known risks, not seen on RADV but worth handling before shipping:
 

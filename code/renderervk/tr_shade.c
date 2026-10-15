@@ -890,17 +890,24 @@ static void ComputeColors( shaderStage_t *pStage )
 		if (backEnd.currentStaticModel)
 		{
 			unsigned char alpha;
+			const float distNear = tess.shader->fDistNear, distRange = tess.shader->fDistRange;
+			vec3_t v, eye;
+
+			// the same for every vertex
+			VectorSubtract(backEnd.viewParms.ori.origin, backEnd.currentStaticModel->origin, v);
+			eye[0] = DotProduct(v, backEnd.currentStaticModel->axis[0]);
+			eye[1] = DotProduct(v, backEnd.currentStaticModel->axis[1]);
+			eye[2] = DotProduct(v, backEnd.currentStaticModel->axis[2]);
 
 			for (i = 0; i < tess.numVertexes; i++) {
 				float len;
-				vec3_t org, v;
+				vec3_t org;
 
-				VectorSubtract(backEnd.viewParms.ori.origin, backEnd.currentStaticModel->origin, v);
-				org[0] = tess.xyz[i][0] - DotProduct(v, backEnd.currentStaticModel->axis[0]);
-				org[1] = tess.xyz[i][1] - DotProduct(v, backEnd.currentStaticModel->axis[1]);
-				org[2] = tess.xyz[i][2] - DotProduct(v, backEnd.currentStaticModel->axis[2]);
+				org[0] = tess.xyz[i][0] - eye[0];
+				org[1] = tess.xyz[i][1] - eye[1];
+				org[2] = tess.xyz[i][2] - eye[2];
 			
-				len = (VectorLength(org) - tess.shader->fDistNear) / tess.shader->fDistRange;
+				len = (VectorLength(org) - distNear) / distRange;
 				if (len < 0) {
 					alpha = 0xff;
 				} else if (len > 1) {
@@ -945,17 +952,24 @@ static void ComputeColors( shaderStage_t *pStage )
 		if (backEnd.currentStaticModel)
 		{
 			unsigned char alpha;
+			const float distNear = tess.shader->fDistNear, distRange = tess.shader->fDistRange;
+			vec3_t v, eye;
+
+			// the same for every vertex
+			VectorSubtract(backEnd.viewParms.ori.origin, backEnd.currentStaticModel->origin, v);
+			eye[0] = DotProduct(v, backEnd.currentStaticModel->axis[0]);
+			eye[1] = DotProduct(v, backEnd.currentStaticModel->axis[1]);
+			eye[2] = DotProduct(v, backEnd.currentStaticModel->axis[2]);
 
 			for (i = 0; i < tess.numVertexes; i++) {
 				float len;
-				vec3_t org, v;
+				vec3_t org;
 
-                VectorSubtract(backEnd.viewParms.ori.origin, backEnd.currentStaticModel->origin, v);
-                org[0] = tess.xyz[i][0] - DotProduct(v, backEnd.currentStaticModel->axis[0]);
-                org[1] = tess.xyz[i][1] - DotProduct(v, backEnd.currentStaticModel->axis[1]);
-                org[2] = tess.xyz[i][2] - DotProduct(v, backEnd.currentStaticModel->axis[2]);
+				org[0] = tess.xyz[i][0] - eye[0];
+				org[1] = tess.xyz[i][1] - eye[1];
+				org[2] = tess.xyz[i][2] - eye[2];
 			
-				len = (VectorLength(org) - tess.shader->fDistNear) / tess.shader->fDistRange;
+				len = (VectorLength(org) - distNear) / distRange;
 				if (len < 0) {
 					alpha = 0;
 				} else if (len > 1) {

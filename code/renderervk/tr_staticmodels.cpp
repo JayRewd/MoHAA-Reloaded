@@ -32,6 +32,18 @@ int             g_nStaticSurfaces;
 staticSurface_t g_staticSurfaces[MAX_STATIC_MODELS_SURFS];
 qboolean        g_bInfostaticmodels = qfalse;
 
+// The sphere each static model is first culled with, computed once per map
+// with the arithmetic of R_AddStaticModelSurfaces: the per-frame loop reads
+// this compact array instead of the large cStaticModelUnpacked_t entries
+// (the m6l1a forest has 2763 static models, most of them out of view)
+typedef struct {
+    dtiki_t *tiki; // NULL: not drawn
+    vec3_t   origin;
+    float    radius;
+} staticModelCull_t;
+
+static staticModelCull_t *s_staticModelCull;
+
 /*
 ==============
 R_InitStaticModels
@@ -46,6 +58,13 @@ void R_InitStaticModels(void)
     int                     i, j, k, l;
 
     g_bInfostaticmodels = qfalse;
+
+    s_staticModelCull = NULL;
+    if (tr.world->numStaticModels) {
+        s_staticModelCull =
+            (staticModelCull_t *)ri.Hunk_Alloc(tr.world->numStaticModels * sizeof(staticModelCull_t), h_dontcare);
+        Com_Memset(s_staticModelCull, 0, tr.world->numStaticModels * sizeof(staticModelCull_t));
+    }
 
     if (tr.overbrightShift) {
         for (i = 0; i < tr.world->numStaticModelData; i++) {
@@ -117,6 +136,22 @@ void R_InitStaticModels(void)
         // prepare the skeleton frame for the static model
         ri.TIKI_GetSkelAnimFrame(pSM->tiki, bones, &radius, &mins, &maxs);
         pSM->cull_radius = radius * pSM->tiki->load_scale * pSM->scale;
+
+        {
+            staticModelCull_t *cull = &s_staticModelCull[i];
+            float              tiki_scale;
+            vec3_t             local;
+
+            // R_LocalPointToWorld with the model's orientation
+            tiki_scale = pSM->tiki->load_scale * pSM->scale;
+            VectorScale(pSM->tiki->load_origin, tiki_scale, local);
+            for (k = 0; k < 3; k++) {
+                cull->origin[k] = local[0] * pSM->axis[0][k] + local[1] * pSM->axis[1][k] + local[2] * pSM->axis[2][k]
+                                + pSM->origin[k];
+            }
+            cull->radius = pSM->cull_radius;
+            cull->tiki   = pSM->tiki;
+        }
 
         // Suggestion:
         // It would be cool to have animated static model in the future
@@ -294,7 +329,7 @@ R_AddStaticModelSurfaces
 */
 void R_AddStaticModelSurfaces(void)
 {
-    cStaticModelUnpacked_t *SM;
+    cStaticModelUnpacked_t *SM, *lastSM;
     int                     i, j, k;
     int                     ofsStaticData;
     int                     iRadiusCull;
@@ -308,33 +343,44 @@ void R_AddStaticModelSurfaces(void)
     }
 
     tr.shiftedIsStatic = (1 << QSORT_STATICMODEL_SHIFT);
+    lastSM             = NULL;
 
     for (i = 0; i < tr.world->numStaticModels; i++) {
-        SM = &tr.world->staticModels[i];
+        staticModelCull_t *cull = &s_staticModelCull[i];
 
         //if( SM->visCount != tr.visCounts[ tr.visIndex ] ) {
         //	continue;
         //}
 
-        tiki = SM->tiki;
-
-        if (!tiki) {
+        if (!cull->tiki) {
             continue;
         }
+
+        SM     = &tr.world->staticModels[i];
+        lastSM = SM;
+
+        iRadiusCull = R_CullPointAndRadius(cull->origin, cull->radius);
+        if (iRadiusCull == CULL_OUT && !(r_showcull->integer & 8)) {
+            continue;
+        }
+
+        tiki = SM->tiki;
 
         tr.currentEntityNum = i;
         tr.shiftedEntityNum = i << QSORT_ENTITYNUM_SHIFT;
 
-        R_RotateForStaticModel(SM, &tr.viewParms, &tr.ori);
+        // the culling below only uses the origin and axes; the model matrix
+        // of R_RotateForStaticModel is only computed for the last model
+        // after the loop (the back end computes its own)
+        VectorCopy(SM->origin, tr.ori.origin);
+        AxisCopy(SM->axis, tr.ori.axis);
 
         ofsStaticData = 0;
 
-        // get the world position
+        // the world position, computed by R_InitStaticModels
         tiki_scale = tiki->load_scale * SM->scale;
         VectorScale(tiki->load_origin, tiki_scale, tiki_localorigin);
-        R_LocalPointToWorld(tiki_localorigin, tiki_worldorigin);
-
-        iRadiusCull = R_CullPointAndRadius(tiki_worldorigin, SM->cull_radius);
+        VectorCopy(cull->origin, tiki_worldorigin);
 
         if (r_showcull->integer & 8) {
             switch (iRadiusCull) {
@@ -458,6 +504,13 @@ void R_AddStaticModelSurfaces(void)
                 }
             }
         }
+    }
+
+    // the state the last model with a TIKI left, culled or not
+    if (lastSM) {
+        tr.currentEntityNum = lastSM - tr.world->staticModels;
+        tr.shiftedEntityNum = tr.currentEntityNum << QSORT_ENTITYNUM_SHIFT;
+        R_RotateForStaticModel(lastSM, &tr.viewParms, &tr.ori);
     }
 
     tr.shiftedIsStatic = 0;

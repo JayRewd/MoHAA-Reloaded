@@ -79,6 +79,11 @@ target_compile_definitions( ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_DEFINIT
 target_compile_options(     ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_COMPILE_OPTIONS})
 target_link_options(        ${RENDERER_VULKAN_BINARY} PRIVATE ${RENDERER_LINK_OPTIONS})
 
+# Only GetRefAPI (Q_EXPORT) is exported: calls between the renderer's own
+# functions are then direct instead of going through the PLT
+set_target_properties(${RENDERER_VULKAN_BINARY} PROPERTIES
+    C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 set_output_dirs(${RENDERER_VULKAN_BINARY})
 
 INSTALL(TARGETS ${RENDERER_VULKAN_BINARY} DESTINATION ${INSTALL_LIBDIR_FULL})

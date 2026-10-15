@@ -236,6 +236,21 @@ void VK_ImageBarrier( VkCommandBuffer cmd, VkImage image, VkImageAspectFlags asp
 	qvkCmdPipelineBarrier( cmd, srcStage, dstStage, 0, 0, NULL, 0, NULL, 1, &barrier );
 }
 
+// copies into buffer are done before the host reads it (after a fence)
+static void VK_HostReadBarrier( VkCommandBuffer cmd, VkBuffer buffer ) {
+	VkBufferMemoryBarrier barrier;
+
+	Com_Memset( &barrier, 0, sizeof( barrier ) );
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = buffer;
+	barrier.size = VK_WHOLE_SIZE;
+	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &barrier, 0, NULL );
+}
+
 /*
 ====================================================================
 
@@ -795,6 +810,38 @@ void VK_FlushAndWait( void ) {
 
 /*
 ===============
+VK_QueuePresent
+
+Presents the held swapchain image once its present semaphore is signaled
+===============
+*/
+static void VK_QueuePresent( uint32_t imageIndex ) {
+	VkPresentInfoKHR presentInfo;
+	VkResult result;
+	uint64_t start;
+
+	Com_Memset( &presentInfo, 0, sizeof( presentInfo ) );
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = &vk.presentSemaphores[imageIndex];
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = &vk.swapchain;
+	presentInfo.pImageIndices = &imageIndex;
+
+	start = VK_Microseconds();
+	vk.stats.frameToPresentUs += start - vk.frameStartUs;
+	result = qvkQueuePresentKHR( vk.queue, &presentInfo );
+	vk.stats.presentUs += VK_Microseconds() - start;
+	vk.heldImage = qfalse;
+	if ( result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ) {
+		vk.swapchainOutOfDate = qtrue;
+	} else {
+		VK_CHECK( result );
+	}
+}
+
+/*
+===============
 VK_Present
 
 Frames drawn offscreen: copies the frame to a swapchain image and presents
@@ -806,7 +853,6 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	VkCommandBufferBeginInfo beginInfo;
 	VkPipelineStageFlags waitStage;
 	VkSubmitInfo submit;
-	VkPresentInfoKHR presentInfo;
 	VkImageBlit blit;
 	VkCommandBuffer cmd;
 	VkImage image;
@@ -900,25 +946,7 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	vk.stats.submits++;
 	vk.lastSubmitFence = frame->fence;
 
-	Com_Memset( &presentInfo, 0, sizeof( presentInfo ) );
-	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = &vk.presentSemaphores[imageIndex];
-	presentInfo.swapchainCount = 1;
-	presentInfo.pSwapchains = &vk.swapchain;
-	presentInfo.pImageIndices = &imageIndex;
-
-	start = VK_Microseconds();
-	vk.stats.frameToPresentUs += start - vk.frameStartUs;
-	result = qvkQueuePresentKHR( vk.queue, &presentInfo );
-	vk.stats.presentUs += VK_Microseconds() - start;
-	vk.heldImage = qfalse;
-	if ( result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ) {
-		vk.swapchainOutOfDate = qtrue;
-	} else {
-		VK_CHECK( result );
-	}
-
+	VK_QueuePresent( imageIndex );
 	return qtrue;
 }
 
@@ -1393,9 +1421,11 @@ static void VK_CreateDepthTarget( qboolean readable ) {
 	vk.depthReadable = readable;
 }
 
-// the framebuffer of the offscreen color image
-static void VK_CreateFramebuffer( void ) {
+// a framebuffer of vk.renderPass for a color target: the offscreen color
+// image or a swapchain image, the resolve target with multisampling
+static VkFramebuffer VK_CreateFramebuffer( VkImageView colorView ) {
 	VkFramebufferCreateInfo framebufferInfo;
+	VkFramebuffer framebuffer;
 	VkImageView views[3];
 
 	Com_Memset( &framebufferInfo, 0, sizeof( framebufferInfo ) );
@@ -1404,10 +1434,10 @@ static void VK_CreateFramebuffer( void ) {
 	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
 		views[0] = vk.msColorView;
 		views[1] = vk.msDepthView;
-		views[2] = vk.colorView;
+		views[2] = colorView;
 		framebufferInfo.attachmentCount = 3;
 	} else {
-		views[0] = vk.colorView;
+		views[0] = colorView;
 		views[1] = vk.depthView;
 		framebufferInfo.attachmentCount = 2;
 	}
@@ -1415,33 +1445,8 @@ static void VK_CreateFramebuffer( void ) {
 	framebufferInfo.width = vk.width;
 	framebufferInfo.height = vk.height;
 	framebufferInfo.layers = 1;
-	VK_CHECK( qvkCreateFramebuffer( vk.device, &framebufferInfo, NULL, &vk.framebuffer ) );
-}
-
-// the framebuffer of swapchain image i: the attachments of vk.framebuffer
-// with the swapchain image in place of the color image
-static void VK_CreateSwapchainFramebuffer( uint32_t i ) {
-	VkFramebufferCreateInfo framebufferInfo;
-	VkImageView views[3];
-
-	Com_Memset( &framebufferInfo, 0, sizeof( framebufferInfo ) );
-	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-	framebufferInfo.renderPass = vk.renderPass;
-	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
-		views[0] = vk.msColorView;
-		views[1] = vk.msDepthView;
-		views[2] = vk.swapchainViews[i];
-		framebufferInfo.attachmentCount = 3;
-	} else {
-		views[0] = vk.swapchainViews[i];
-		views[1] = vk.depthView;
-		framebufferInfo.attachmentCount = 2;
-	}
-	framebufferInfo.pAttachments = views;
-	framebufferInfo.width = vk.swapchainExtent.width;
-	framebufferInfo.height = vk.swapchainExtent.height;
-	framebufferInfo.layers = 1;
-	VK_CHECK( qvkCreateFramebuffer( vk.device, &framebufferInfo, NULL, &vk.swapchainFramebuffers[i] ) );
+	VK_CHECK( qvkCreateFramebuffer( vk.device, &framebufferInfo, NULL, &framebuffer ) );
+	return framebuffer;
 }
 
 /*
@@ -1480,10 +1485,10 @@ static void VK_UpdateDepthTarget( void ) {
 	VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)vk.depthMemory, 0 );
 
 	VK_CreateDepthTarget( readable );
-	VK_CreateFramebuffer();
+	vk.framebuffer = VK_CreateFramebuffer( vk.colorView );
 	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
 		if ( vk.swapchainFramebuffers[i] ) {
-			VK_CreateSwapchainFramebuffer( i );
+			vk.swapchainFramebuffers[i] = VK_CreateFramebuffer( vk.swapchainViews[i] );
 		}
 	}
 	VK_ClearTargetImage( vk.depthImage, qfalse );
@@ -1554,7 +1559,7 @@ static void VK_CreateRenderTargets( void ) {
 		VK_CreateRenderPass( attachmentStages, attachmentAccess );
 	}
 
-	VK_CreateFramebuffer();
+	vk.framebuffer = VK_CreateFramebuffer( vk.colorView );
 
 	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
 		Com_Memset( &framebufferInfo, 0, sizeof( framebufferInfo ) );
@@ -1614,7 +1619,7 @@ void VK_CreateSwapchainTargets( void ) {
 		viewInfo.subresourceRange.levelCount = 1;
 		viewInfo.subresourceRange.layerCount = 1;
 		VK_CHECK( qvkCreateImageView( vk.device, &viewInfo, NULL, &vk.swapchainViews[i] ) );
-		VK_CreateSwapchainFramebuffer( i );
+		vk.swapchainFramebuffers[i] = VK_CreateFramebuffer( vk.swapchainViews[i] );
 	}
 	vk.swapchainDirect = qtrue;
 }
@@ -1866,30 +1871,8 @@ void vk_end_frame( void ) {
 	frame = vk.frame;
 
 	if ( vk.target == VK_TARGET_SWAPCHAIN ) {
-		VkPresentInfoKHR presentInfo;
-		VkResult result;
-		uint64_t start;
-
 		VK_SubmitFrameCommands( frame->fence, vk.presentSemaphores[vk.targetIndex], qtrue );
-
-		Com_Memset( &presentInfo, 0, sizeof( presentInfo ) );
-		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-		presentInfo.waitSemaphoreCount = 1;
-		presentInfo.pWaitSemaphores = &vk.presentSemaphores[vk.targetIndex];
-		presentInfo.swapchainCount = 1;
-		presentInfo.pSwapchains = &vk.swapchain;
-		presentInfo.pImageIndices = &vk.targetIndex;
-
-		start = VK_Microseconds();
-		vk.stats.frameToPresentUs += start - vk.frameStartUs;
-		result = qvkQueuePresentKHR( vk.queue, &presentInfo );
-		vk.stats.presentUs += VK_Microseconds() - start;
-		vk.heldImage = qfalse;
-		if ( result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ) {
-			vk.swapchainOutOfDate = qtrue;
-		} else {
-			VK_CHECK( result );
-		}
+		VK_QueuePresent( vk.targetIndex );
 
 		// frame pacing: the image of the next frame is acquired now, so with
 		// a vsync present mode the wait for the display happens here, before
@@ -2703,7 +2686,6 @@ static VkAccessFlags VK_DepthImageWriteAccess( void ) {
 
 void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer ) {
 	VkBufferImageCopy region;
-	VkBufferMemoryBarrier bufferBarrier;
 	VkImageAspectFlags aspect, barrierAspect;
 	VkImageLayout layout;
 	VkPipelineStageFlags stages;
@@ -2805,15 +2787,7 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 	VK_ImageBarrier( cmd, image, barrierAspect, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout,
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, stages, access | ( format == READ_RGB8 ? VK_ACCESS_COLOR_ATTACHMENT_READ_BIT : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT ) );
 
-	Com_Memset( &bufferBarrier, 0, sizeof( bufferBarrier ) );
-	bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	bufferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	bufferBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-	bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	bufferBarrier.buffer = vk.readbackBuffer.buffer;
-	bufferBarrier.size = VK_WHOLE_SIZE;
-	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &bufferBarrier, 0, NULL );
+	VK_HostReadBarrier( cmd, vk.readbackBuffer.buffer );
 
 	VK_FlushAndWait();
 
@@ -2860,7 +2834,6 @@ frame serial (low 24 bits) and the index of the read in the frame.
 */
 void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
 	VkBufferImageCopy regions[VK_MAX_DEPTH_READS];
-	VkBufferMemoryBarrier bufferBarrier;
 	VkCommandBuffer cmd;
 	vkFrame_t *frame;
 	int i, numRegions;
@@ -2934,15 +2907,7 @@ void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
 		VK_DepthImageStages(), VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_DepthImageWriteAccess() );
 
 	// the host reads the buffer after waiting for the frame fence
-	Com_Memset( &bufferBarrier, 0, sizeof( bufferBarrier ) );
-	bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	bufferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	bufferBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-	bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	bufferBarrier.buffer = frame->depthReadBuffer.buffer;
-	bufferBarrier.size = VK_WHOLE_SIZE;
-	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &bufferBarrier, 0, NULL );
+	VK_HostReadBarrier( cmd, frame->depthReadBuffer.buffer );
 }
 
 depthReadStatus_t vk_get_depth_read( unsigned int id, float *depth ) {

@@ -4,9 +4,11 @@
  *   STACKS_OUT=file LD_PRELOAD=libstacks.so ./openmohaa ...
  *
  * Interrupts the thread that loaded it (the main thread) every
- * STACKS_INTERVAL_US microseconds (default 1000) of wall-clock time, whether
- * it runs or waits, and records the time (CLOCK_MONOTONIC) and its
- * backtrace. A helper thread copies new lines of /proc/self/maps every
+ * STACKS_INTERVAL_US microseconds (default 1000) of wall-clock time on
+ * average, whether it runs or waits, and records the time (CLOCK_MONOTONIC)
+ * and its backtrace. The intervals are random between half and one and a
+ * half of that: at a fixed 1 ms the samples lock to the phase of frames
+ * capped at 1000 per second and always land in the same part of the frame. A helper thread copies new lines of /proc/self/maps every
  * 200 ms (the game unloads the renderer and the Vulkan driver before it
  * exits). At exit it writes the mappings and the samples to STACKS_OUT;
  * tools/stacks.py symbolizes and sums them. Needs no
@@ -39,6 +41,8 @@ static sample_t		*samples;
 static int			numSamples, maxSamples;
 static timer_t		timer;
 static const char	*outPath;
+static long			interval;		// microseconds
+static uint32_t		rng = 2463534242u;
 
 // every line seen in /proc/self/maps
 static char			**mapLines;
@@ -88,6 +92,18 @@ static void *MapThread( void *arg ) {
 	return NULL;
 }
 
+// arms the timer for the next sample, interval / 2 to interval * 3 / 2 away
+static void Arm( void ) {
+	struct itimerspec its;
+
+	rng ^= rng << 13;
+	rng ^= rng >> 17;
+	rng ^= rng << 5;
+	memset( &its, 0, sizeof( its ) );
+	its.it_value.tv_nsec = ( interval / 2 + rng % ( interval + 1 ) ) * 1000;
+	timer_settime( timer, 0, &its, NULL );
+}
+
 static void Handler( int sig, siginfo_t *info, void *context ) {
 	struct timespec ts;
 	sample_t *s;
@@ -95,6 +111,7 @@ static void Handler( int sig, siginfo_t *info, void *context ) {
 	if ( numSamples >= maxSamples ) {
 		return;
 	}
+	Arm();
 	s = &samples[numSamples++];
 	clock_gettime( CLOCK_MONOTONIC, &ts );
 	s->ns = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
@@ -129,10 +146,8 @@ static void Write( void ) {
 __attribute__(( constructor )) static void Start( void ) {
 	struct sigaction sa;
 	struct sigevent sev;
-	struct itimerspec its;
 	const char *s;
 	void *dummy[4];
-	long interval;
 
 	outPath = getenv( "STACKS_OUT" );
 	if ( !outPath || !*outPath ) {
@@ -140,8 +155,8 @@ __attribute__(( constructor )) static void Start( void ) {
 	}
 	s = getenv( "STACKS_INTERVAL_US" );
 	interval = s ? atol( s ) : 1000;
-	if ( interval < 100 ) {
-		interval = 100;
+	if ( interval < 100 || interval > 500000 ) {
+		interval = 1000;
 	}
 
 	// at most 200000 samples (200 s at the default interval); the pages
@@ -167,10 +182,7 @@ __attribute__(( constructor )) static void Start( void ) {
 	if ( timer_create( CLOCK_MONOTONIC, &sev, &timer ) ) {
 		return;
 	}
-	its.it_interval.tv_sec = 0;
-	its.it_interval.tv_nsec = interval * 1000;
-	its.it_value = its.it_interval;
-	timer_settime( timer, 0, &its, NULL );
+	Arm();
 
 	{
 		pthread_t thread;

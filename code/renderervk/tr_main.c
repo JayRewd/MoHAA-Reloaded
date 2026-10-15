@@ -1142,53 +1142,61 @@ DRAWSURF SORTING
 
 /*
 ===============
-R_Radix
-===============
-*/
-static ID_INLINE void R_Radix( int offset, int size, drawSurf_t *source, drawSurf_t *dest )
-{
-  int           count[ 256 ] = { 0 };
-  int           index[ 256 ];
-  int           i;
-  unsigned char *sortKey = NULL;
-  unsigned char *end = NULL;
-
-  sortKey = ( (unsigned char *)&source[ 0 ].sort ) + offset;
-  end = sortKey + ( size * sizeof( drawSurf_t ) );
-  for( ; sortKey < end; sortKey += sizeof( drawSurf_t ) )
-    ++count[ *sortKey ];
-
-  index[ 0 ] = 0;
-
-  for( i = 1; i < 256; ++i )
-    index[ i ] = index[ i - 1 ] + count[ i - 1 ];
-
-  sortKey = ( (unsigned char *)&source[ 0 ].sort ) + offset;
-  for( i = 0; i < size; ++i, sortKey += sizeof( drawSurf_t ) )
-    dest[ index[ *sortKey ]++ ] = source[ i ];
-}
-
-/*
-===============
 R_RadixSort
 
-Radix sort with 4 byte size buckets
+Least significant byte first radix sort of the 32-bit sort keys (stable).
+The four histograms are counted in one pass, and a byte that is the same in
+every key is skipped (its pass wouldn't move anything).
 ===============
 */
 static void R_RadixSort( drawSurf_t *source, int size )
 {
-  static drawSurf_t scratch[ MAX_DRAWSURFS ];
-#ifdef Q3_LITTLE_ENDIAN
-  R_Radix( 0, size, source, scratch );
-  R_Radix( 1, size, scratch, source );
-  R_Radix( 2, size, source, scratch );
-  R_Radix( 3, size, scratch, source );
-#else
-  R_Radix( 3, size, source, scratch );
-  R_Radix( 2, size, scratch, source );
-  R_Radix( 1, size, source, scratch );
-  R_Radix( 0, size, scratch, source );
-#endif //Q3_LITTLE_ENDIAN
+	static drawSurf_t scratch[ MAX_DRAWSURFS ];
+	int			count[ 4 ][ 256 ];
+	drawSurf_t	*src, *dst, *tmp;
+	int			i, b, shift, sum, n;
+
+	if ( size < 2 ) {
+		return;
+	}
+
+	Com_Memset( count, 0, sizeof( count ) );
+	for ( i = 0; i < size; i++ ) {
+		unsigned sort = source[ i ].sort;
+
+		count[ 0 ][ sort & 0xFF ]++;
+		count[ 1 ][ ( sort >> 8 ) & 0xFF ]++;
+		count[ 2 ][ ( sort >> 16 ) & 0xFF ]++;
+		count[ 3 ][ sort >> 24 ]++;
+	}
+
+	src = source;
+	dst = scratch;
+	for ( b = 0; b < 4; b++ ) {
+		shift = b * 8;
+		if ( count[ b ][ ( source[ 0 ].sort >> shift ) & 0xFF ] == size ) {
+			continue;
+		}
+
+		// the counts become the first index of each bucket
+		for ( i = 0, sum = 0; i < 256; i++ ) {
+			n = count[ b ][ i ];
+			count[ b ][ i ] = sum;
+			sum += n;
+		}
+
+		for ( i = 0; i < size; i++ ) {
+			dst[ count[ b ][ ( src[ i ].sort >> shift ) & 0xFF ]++ ] = src[ i ];
+		}
+
+		tmp = src;
+		src = dst;
+		dst = tmp;
+	}
+
+	if ( src != source ) {
+		Com_Memcpy( source, src, size * sizeof( drawSurf_t ) );
+	}
 }
 
 //==========================================================================================

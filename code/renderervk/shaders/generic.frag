@@ -42,6 +42,9 @@ layout(constant_id = 6) const bool FOG = false;
 // discard on the clip plane side (when the vertex shader can't use
 // gl_ClipDistance)
 layout(constant_id = 7) const bool CLIP_DISCARD = false;
+// no blending: the alpha written is 1 (the framebuffer has no destination
+// alpha, see vk_pipeline.c)
+layout(constant_id = 8) const bool ALPHA_ONE = false;
 
 // the fragment stage range of the push constants (vkPushConstants_t in vk.c)
 layout(push_constant) uniform PushConstants {
@@ -121,5 +124,5 @@ void main() {
 		color.rgb = fma( color.rgb, vec3( f ), pc.fogColor.rgb * ( 1.0 - f ) );
 	}
 
-	out_color = color;
+	out_color = ALPHA_ONE ? vec4( color.rgb, 1.0 ) : color;
 }

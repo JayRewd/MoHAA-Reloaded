@@ -67,9 +67,10 @@ static VkBlendFactor VK_SrcBlendFactor( int bits ) {
 	case GLS_SRCBLEND_ONE_MINUS_DST_COLOR: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
 	case GLS_SRCBLEND_SRC_ALPHA: return VK_BLEND_FACTOR_SRC_ALPHA;
 	case GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-	case GLS_SRCBLEND_DST_ALPHA: return VK_BLEND_FACTOR_DST_ALPHA;
-	case GLS_SRCBLEND_ONE_MINUS_DST_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-	case GLS_SRCBLEND_ALPHA_SATURATE: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+	// no destination alpha (see VK_CreatePipeline): it reads as 1
+	case GLS_SRCBLEND_DST_ALPHA: return VK_BLEND_FACTOR_ONE;
+	case GLS_SRCBLEND_ONE_MINUS_DST_ALPHA: return VK_BLEND_FACTOR_ZERO;
+	case GLS_SRCBLEND_ALPHA_SATURATE: return VK_BLEND_FACTOR_ZERO;	// min( As, 1 - Ad )
 	default: return VK_BLEND_FACTOR_ONE;
 	}
 }
@@ -82,8 +83,8 @@ static VkBlendFactor VK_DstBlendFactor( int bits ) {
 	case GLS_DSTBLEND_ONE_MINUS_SRC_COLOR: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
 	case GLS_DSTBLEND_SRC_ALPHA: return VK_BLEND_FACTOR_SRC_ALPHA;
 	case GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-	case GLS_DSTBLEND_DST_ALPHA: return VK_BLEND_FACTOR_DST_ALPHA;
-	case GLS_DSTBLEND_ONE_MINUS_DST_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+	case GLS_DSTBLEND_DST_ALPHA: return VK_BLEND_FACTOR_ONE;
+	case GLS_DSTBLEND_ONE_MINUS_DST_ALPHA: return VK_BLEND_FACTOR_ZERO;
 	default: return VK_BLEND_FACTOR_ONE;
 	}
 }
@@ -109,8 +110,9 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		float		alphaRef;
 		VkBool32	fog;
 		VkBool32	clipDiscard;
+		VkBool32	alphaOne;
 	} specData;
-	VkSpecializationMapEntry specEntries[8];
+	VkSpecializationMapEntry specEntries[9];
 	VkSpecializationInfo specInfo;
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkVertexInputBindingDescription bindings[4];
@@ -145,8 +147,11 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	Com_Memcpy( &specData.alphaRef, &key->alphaRef, sizeof( float ) );
 	specData.fog = ( bits & VK_PIPE_FOG ) ? VK_TRUE : VK_FALSE;
 	specData.clipDiscard = ( ( bits & VK_PIPE_CLIPPLANE ) && !vk.enabledFeatures.shaderClipDistance ) ? VK_TRUE : VK_FALSE;
+	srcBlend = VK_FIELD( bits, VK_PIPE_SRCBLEND_SHIFT, 15 );
+	dstBlend = VK_FIELD( bits, VK_PIPE_DSTBLEND_SHIFT, 15 ) << 4;
+	specData.alphaOne = ( srcBlend || dstBlend ) ? VK_FALSE : VK_TRUE;
 
-	for ( i = 0; i < 8; i++ ) {
+	for ( i = 0; i < (int)ARRAY_LEN( specEntries ); i++ ) {
 		specEntries[i].constantID = i;
 		specEntries[i].offset = i * 4;
 		specEntries[i].size = 4;
@@ -272,11 +277,15 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	depthStencil.minDepthBounds = 0.0f;
 	depthStencil.maxDepthBounds = 1.0f;
 
-	// the framebuffer has no destination alpha, like the GL1 visual: alpha
-	// is never written and stays 1
+	// the framebuffer has no destination alpha, like the GL1 visual: blend
+	// factors read it as 1 and nothing else reads it. With multisampling,
+	// pipelines that write all of RGB write alpha too, as 1 without
+	// blending (alphaOne) and unchanged with it: a write mask without alpha
+	// is a partial write, which costs multisampled DCC-compressed targets
+	// (6 % more GPU time with 4 samples in the m6l1a forest on a Radeon
+	// 780M). Without multisampling it makes no difference in speed, and on
+	// RADV 1 in about 10^5 pixels then rounds one step lower, unlike GL1.
 	colorMask = VK_FIELD( bits, VK_PIPE_COLORMASK_SHIFT, 7 );
-	srcBlend = VK_FIELD( bits, VK_PIPE_SRCBLEND_SHIFT, 15 );
-	dstBlend = VK_FIELD( bits, VK_PIPE_DSTBLEND_SHIFT, 15 ) << 4;
 
 	Com_Memset( &blendAttachment, 0, sizeof( blendAttachment ) );
 	if ( srcBlend || dstBlend ) {
@@ -284,13 +293,14 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		blendAttachment.srcColorBlendFactor = VK_SrcBlendFactor( srcBlend );
 		blendAttachment.dstColorBlendFactor = VK_DstBlendFactor( dstBlend );
 		blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-		blendAttachment.srcAlphaBlendFactor = blendAttachment.srcColorBlendFactor;
-		blendAttachment.dstAlphaBlendFactor = blendAttachment.dstColorBlendFactor;
+		blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
 		blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 	}
 	blendAttachment.colorWriteMask = ( ( colorMask & 1 ) ? VK_COLOR_COMPONENT_R_BIT : 0 )
 		| ( ( colorMask & 2 ) ? VK_COLOR_COMPONENT_G_BIT : 0 )
-		| ( ( colorMask & 4 ) ? VK_COLOR_COMPONENT_B_BIT : 0 );
+		| ( ( colorMask & 4 ) ? VK_COLOR_COMPONENT_B_BIT : 0 )
+		| ( colorMask == 7 && vk.samples != VK_SAMPLE_COUNT_1_BIT ? VK_COLOR_COMPONENT_A_BIT : 0 );
 
 	Com_Memset( &blend, 0, sizeof( blend ) );
 	blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

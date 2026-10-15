@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Sums up the stack samples of libstacks.so (rtimer/stacks.c, perf.py --stacks).
 
-  stacks.py FILE [--top N] [--focus FUNCTION] [--all]
+  stacks.py FILE [--top N] [--focus FUNCTION] [--callers FUNCTION]
+            [--tree FUNCTION [--depth N]] [--all]
 
 Prints, for the samples taken in the measured window (the `window` line
 perf.py appends; every sample with --all), the share of wall-clock time
 per function: self (the function was running or waiting itself) and
 inclusive (anywhere on the stack), then the most frequent call paths
-below FUNCTION (--focus, a substring), each frame as function [library].
+below FUNCTION (--focus, a substring), each frame as function [library],
+the most frequent callers of FUNCTION (--callers), and the tree of the
+functions FUNCTION calls with their inclusive shares down to N levels
+(--tree, default 3; branches under 0.3 % are left out).
 Addresses are symbolized with addr2line (binutils).
 """
 
@@ -79,6 +83,9 @@ def main():
     ap.add_argument("file")
     ap.add_argument("--top", type=int, default=30)
     ap.add_argument("--focus")
+    ap.add_argument("--callers")
+    ap.add_argument("--tree")
+    ap.add_argument("--depth", type=int, default=3)
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()
 
@@ -130,6 +137,42 @@ def main():
         print(f"\ncall paths below {args.focus} ({100 * total / n:.1f} % of the samples), innermost first:")
         for p, c in paths.most_common(args.top):
             print(f"{100 * c / n:7.1f}  {p}")
+
+    short = lambda fn: fn.split(" [")[0]
+    if args.callers:
+        callers = collections.Counter()
+        for st in stacks:
+            for i, fn in enumerate(st):
+                if args.callers in fn:
+                    callers[" < ".join(short(f) for f in st[i:i + 7])] += 1
+                    break
+        print(f"\ncallers of {args.callers}, innermost first:")
+        for p, c in callers.most_common(args.top):
+            print(f"{100 * c / n:7.1f}  {p}")
+
+    if args.tree:
+        # inclusive samples of each call path below the outermost frame
+        # matching the function
+        tree = collections.Counter()
+        for st in stacks:
+            outer = list(reversed(st))
+            for i, fn in enumerate(outer):
+                if args.tree in fn:
+                    path = tuple(short(f) for f in outer[i:i + args.depth + 1])
+                    for k in range(1, len(path) + 1):
+                        tree[path[:k]] += 1
+                    break
+
+        def show(prefix):
+            kids = sorted((k for k in tree if len(k) == len(prefix) + 1 and k[:len(prefix)] == prefix),
+                          key=lambda k: -tree[k])
+            for k in kids:
+                if 100 * tree[k] / n >= 0.3:
+                    print(f"{100 * tree[k] / n:7.1f}  {'  ' * (len(k) - 1)}{k[-1]}")
+                    show(k)
+
+        print(f"\ninclusive time below {args.tree}:")
+        show(())
 
 
 if __name__ == "__main__":

@@ -584,13 +584,60 @@ void RB_Light_Real(unsigned char *colors)
     }
 }
 
+/*
+=============
+RB_Sphere_TraceSun
+
+Whether the sun is visible from a lighting origin: a trace through the
+world model, which doesn't change while a map is loaded. Most entities
+don't move from one frame to the next, so the results are kept by origin
+and sun direction (cleared by R_Sphere_InitLights at each map load).
+=============
+*/
+#define SUN_TRACES 1024 // power of 2
+
+typedef struct {
+    vec3_t   origin;
+    vec3_t   direction;
+    vec3_t   endpos;
+    qboolean hitSun;
+    qboolean valid;
+} sunTrace_t;
+
+static sunTrace_t s_sunTraces[SUN_TRACES];
+
+static const sunTrace_t *RB_Sphere_TraceSun(const vec3_t origin)
+{
+    unsigned int bits[3];
+    sunTrace_t  *st;
+    trace_t      trace;
+    vec3_t       end;
+
+    Com_Memcpy(bits, origin, sizeof(bits));
+    st = &s_sunTraces[(bits[0] * 73856093u ^ bits[1] * 19349663u ^ bits[2] * 83492791u) & (SUN_TRACES - 1)];
+    if (st->valid && !memcmp(st->origin, origin, sizeof(vec3_t))
+        && !memcmp(st->direction, s_sun.direction, sizeof(vec3_t))) {
+        return st;
+    }
+
+    VectorMA(origin, 16384.0, s_sun.direction, end);
+    ri.CM_BoxTrace(&trace, origin, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_FENCE, 0);
+
+    VectorCopy(origin, st->origin);
+    VectorCopy(s_sun.direction, st->direction);
+    VectorCopy(trace.endpos, st->endpos);
+    st->hitSun = (trace.surfaceFlags >> 2) & 1;
+    st->valid  = qtrue;
+    return st;
+}
+
 static void RB_Sphere_Light_Sun()
 {
-    int      curleaf;
-    qboolean hitSun;
-    vec3_t   end;
-    mnode_t *leaf;
-    trace_t  trace;
+    int               curleaf;
+    qboolean          hitSun;
+    vec3_t            end;
+    mnode_t          *leaf;
+    const sunTrace_t *trace;
 
     if (!s_sun.exists) {
         return;
@@ -649,17 +696,13 @@ static void RB_Sphere_Light_Sun()
         }
     }
 
-    VectorMA(backEnd.currentSphere->traceOrigin, 16384.0, s_sun.direction, end);
-    ri.CM_BoxTrace(
-        &trace, backEnd.currentSphere->traceOrigin, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_FENCE, 0
-    );
-
-    hitSun = (trace.surfaceFlags >> 2) & 1;
+    trace  = RB_Sphere_TraceSun(backEnd.currentSphere->traceOrigin);
+    hitSun = trace->hitSun;
     if (r_light_sun_line->integer) {
         vec3_t transpos;
         vec3_t temppos;
 
-        VectorSubtract(trace.endpos, backEnd.currentEntity->e.origin, temppos);
+        VectorSubtract(trace->endpos, backEnd.currentEntity->e.origin, temppos);
         MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
 
         GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
@@ -1189,6 +1232,7 @@ void R_Sphere_InitLights()
 
     s_sun.szFlareName[0] = 0;
     s_sun.exists         = qfalse;
+    Com_Memset(s_sunTraces, 0, sizeof(s_sunTraces));
 
     for (int i = 0; i < MAX_SPHERE_LIGHTS; i++) {
         backEnd.spheres[i].TessFunction = &RB_Light_Real;
