@@ -392,6 +392,26 @@ void RB_SetColor4ubv( const byte *rgba ) {
 void RB_SetVertexArray( const float *xyz, int stride ) {
 	glState.arrays.xyz = xyz;
 	glState.arrays.xyzStride = stride ? stride : sizeof( float ) * 3;
+	glState.arrays.xyzVersion = 0;
+}
+
+/*
+** RB_SetTessVertexArray
+**
+** Sets tess.xyz as the vertex array for the draws of a stage iterator. The
+** positions and indexes don't change until the iterator returns, so the
+** draws of its passes get the same version and the backend copies the
+** positions (and the indexes, when they are the same array) only once.
+*/
+void RB_SetTessVertexArray( void ) {
+	static unsigned int version;
+
+	glState.arrays.xyz = tess.xyz[0];
+	glState.arrays.xyzStride = 16;	// padded for SIMD
+	if ( !++version ) {
+		version = 1;
+	}
+	glState.arrays.xyzVersion = version;
 }
 
 /*
@@ -440,6 +460,7 @@ void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes 
 	geometry.numVertexes = numVertexes;
 	geometry.xyz = glState.arrays.xyz;
 	geometry.xyzStride = glState.arrays.xyzStride;
+	geometry.version = glState.arrays.xyzVersion;
 	geometry.colors = glState.arrays.colorsEnabled ? glState.arrays.colors : NULL;
 	Vector4Copy( glState.color, geometry.color );
 
@@ -1290,6 +1311,9 @@ const void	*RB_SwapBuffers( const void *data ) {
 	if ( r_showImages->integer ) {
 		RB_ShowImages(qfalse);
 	}
+
+	// screenshot commands of this frame, now that everything is drawn
+	RB_TakePendingScreenshots();
 
 	cmd = (const swapBuffersCommand_t *)data;
 

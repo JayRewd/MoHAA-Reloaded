@@ -40,12 +40,31 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // storage stays in TRANSFER_DST_OPTIMAL while uploads are recorded for it and
 // goes back to SHADER_READ_ONLY_OPTIMAL before the next render pass of the
 // main command buffer, or at the end of the upload command buffer.
+//
+// Memory: the images are placed in blocks of device memory (see MEMORY
+// below) rather than getting one allocation each.
 
 #include "vk_local.h"
 
 #define VK_SETS_PER_POOL		1024
 #define VK_MAX_DESCRIPTOR_POOLS	64
 #define VK_SAMPLER_NOMIP		6		// sampler index of textures with one mip level
+
+#define VK_MEMORY_BLOCK_SIZE	( 64 * 1024 * 1024 )
+#define VK_MAX_MEMORY_BLOCKS	256
+
+typedef struct {
+	VkDeviceSize	offset, size;
+} vkMemoryRange_t;
+
+// a block of device memory that texture images are placed in
+typedef struct {
+	VkDeviceMemory	memory;			// VK_NULL_HANDLE: unused entry
+	uint32_t		memoryType;
+	VkDeviceSize	size, used;
+	vkMemoryRange_t	*free;			// free ranges, sorted by offset, never adjacent
+	int				numFree, maxFree;
+} vkMemoryBlock_t;
 
 typedef struct {
 	vkTexture_t	**textures;
@@ -68,6 +87,8 @@ static texFilter_t		vk_textureFilter = TEXFILTER_LINEAR_MIPMAP_NEAREST;
 // storages in TRANSFER_DST_OPTIMAL in the upload and main command buffers
 static vkTextureList_t	vk_pendingUpload;
 static vkTextureList_t	vk_pendingMain;
+
+static vkMemoryBlock_t	vk_memoryBlocks[VK_MAX_MEMORY_BLOCKS];
 
 /*
 ====================================================================
@@ -152,6 +173,217 @@ static int VK_BlockSize( VkFormat format ) {
 	default:
 		return 4;
 	}
+}
+
+/*
+====================================================================
+
+MEMORY
+
+Texture images are sub-allocated from blocks of VK_MEMORY_BLOCK_SIZE bytes
+of device memory, first fit, instead of one vkAllocateMemory each: every
+allocation is a kernel object that takes time to create and that the driver
+may have to reference in each submission, and some drivers allow only 4096
+of them (maxMemoryAllocationCount). An image larger than a quarter of a
+block gets memory of its own. Only images with optimal tiling go into the
+blocks, so bufferImageGranularity doesn't apply. Ranges are released through
+the deferred destruction lists like the images, once no frame in flight can
+use them; a block that becomes empty is freed unless it is the last one of
+its memory type.
+
+====================================================================
+*/
+
+static void VK_InsertFreeRange( vkMemoryBlock_t *block, int index, VkDeviceSize offset, VkDeviceSize size ) {
+	if ( block->numFree == block->maxFree ) {
+		vkMemoryRange_t *ranges;
+
+		block->maxFree = block->maxFree ? block->maxFree * 2 : 64;
+		ranges = ri.Malloc( sizeof( *ranges ) * block->maxFree );
+		if ( block->numFree ) {
+			Com_Memcpy( ranges, block->free, sizeof( *ranges ) * block->numFree );
+		}
+		if ( block->free ) {
+			ri.Free( block->free );
+		}
+		block->free = ranges;
+	}
+
+	memmove( &block->free[index + 1], &block->free[index], sizeof( *block->free ) * ( block->numFree - index ) );
+	block->free[index].offset = offset;
+	block->free[index].size = size;
+	block->numFree++;
+}
+
+static void VK_RemoveFreeRange( vkMemoryBlock_t *block, int index ) {
+	memmove( &block->free[index], &block->free[index + 1], sizeof( *block->free ) * ( block->numFree - index - 1 ) );
+	block->numFree--;
+}
+
+static qboolean VK_BlockAlloc( vkMemoryBlock_t *block, VkDeviceSize size, VkDeviceSize alignment, VkDeviceSize *offset ) {
+	int i;
+
+	for ( i = 0; i < block->numFree; i++ ) {
+		vkMemoryRange_t *range = &block->free[i];
+		VkDeviceSize start = PAD( range->offset, alignment );
+		VkDeviceSize end = range->offset + range->size;
+
+		if ( start + size > end ) {
+			continue;
+		}
+
+		// what is left before the start (alignment) and after the end stays free
+		if ( start > range->offset ) {
+			range->size = start - range->offset;
+			if ( start + size < end ) {
+				VK_InsertFreeRange( block, i + 1, start + size, end - ( start + size ) );
+			}
+		} else if ( start + size < end ) {
+			range->offset = start + size;
+			range->size = end - range->offset;
+		} else {
+			VK_RemoveFreeRange( block, i );
+		}
+
+		block->used += size;
+		*offset = start;
+		return qtrue;
+	}
+
+	return qfalse;
+}
+
+static void VK_AllocateImageMemory( vkTexture_t *texture ) {
+	VkMemoryRequirements memReqs;
+	vkMemoryBlock_t *block;
+	uint32_t memoryType;
+	int i;
+
+	qvkGetImageMemoryRequirements( vk.device, texture->image, &memReqs );
+	memoryType = VK_FindMemoryType( memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 );
+	texture->memorySize = memReqs.size;
+
+	if ( memReqs.size <= VK_MEMORY_BLOCK_SIZE / 4 ) {
+		for ( i = 0; i < VK_MAX_MEMORY_BLOCKS; i++ ) {
+			block = &vk_memoryBlocks[i];
+			if ( block->memory && block->memoryType == memoryType
+				&& VK_BlockAlloc( block, memReqs.size, memReqs.alignment, &texture->memoryOffset ) ) {
+				break;
+			}
+		}
+
+		if ( i == VK_MAX_MEMORY_BLOCKS ) {
+			// a new block
+			for ( i = 0; i < VK_MAX_MEMORY_BLOCKS && vk_memoryBlocks[i].memory; i++ ) {
+			}
+			if ( i < VK_MAX_MEMORY_BLOCKS ) {
+				block = &vk_memoryBlocks[i];
+				block->memory = VK_AllocateMemory( VK_MEMORY_BLOCK_SIZE, memoryType );
+				block->memoryType = memoryType;
+				block->size = VK_MEMORY_BLOCK_SIZE;
+				block->used = 0;
+				block->numFree = 0;
+				VK_InsertFreeRange( block, 0, 0, VK_MEMORY_BLOCK_SIZE );
+				VK_BlockAlloc( block, memReqs.size, memReqs.alignment, &texture->memoryOffset );
+			}
+		}
+
+		if ( i < VK_MAX_MEMORY_BLOCKS ) {
+			texture->memoryBlock = i;
+			texture->memory = vk_memoryBlocks[i].memory;
+			VK_CHECK( qvkBindImageMemory( vk.device, texture->image, texture->memory, texture->memoryOffset ) );
+			return;
+		}
+	}
+
+	// too large for a block, or no block left
+	texture->memoryBlock = -1;
+	texture->memoryOffset = 0;
+	texture->memory = VK_AllocateMemory( memReqs.size, memoryType );
+	VK_CHECK( qvkBindImageMemory( vk.device, texture->image, texture->memory, 0 ) );
+}
+
+/*
+===============
+VK_FreeMemoryRange
+
+Called from the deferred destruction lists
+===============
+*/
+void VK_FreeMemoryRange( int index, VkDeviceSize offset, VkDeviceSize size ) {
+	vkMemoryBlock_t *block;
+	qboolean mergePrev, mergeNext;
+	int i;
+
+	if ( index < 0 || index >= VK_MAX_MEMORY_BLOCKS || !vk_memoryBlocks[index].memory ) {
+		return;
+	}
+	block = &vk_memoryBlocks[index];
+
+	// the first free range after the one released
+	for ( i = 0; i < block->numFree && block->free[i].offset < offset; i++ ) {
+	}
+	mergePrev = i > 0 && block->free[i - 1].offset + block->free[i - 1].size == offset;
+	mergeNext = i < block->numFree && offset + size == block->free[i].offset;
+
+	if ( mergePrev && mergeNext ) {
+		block->free[i - 1].size += size + block->free[i].size;
+		VK_RemoveFreeRange( block, i );
+	} else if ( mergePrev ) {
+		block->free[i - 1].size += size;
+	} else if ( mergeNext ) {
+		block->free[i].offset = offset;
+		block->free[i].size += size;
+	} else {
+		VK_InsertFreeRange( block, i, offset, size );
+	}
+	block->used -= size;
+
+	if ( block->used ) {
+		return;
+	}
+
+	// keep one empty block per memory type for the next textures
+	for ( i = 0; i < VK_MAX_MEMORY_BLOCKS; i++ ) {
+		if ( i != index && vk_memoryBlocks[i].memory && vk_memoryBlocks[i].memoryType == block->memoryType ) {
+			break;
+		}
+	}
+	if ( i < VK_MAX_MEMORY_BLOCKS ) {
+		VK_FreeMemory( block->memory );
+		block->memory = VK_NULL_HANDLE;
+		block->numFree = 0;
+	}
+}
+
+void VK_MemoryBlockInfo( int *numBlocks, VkDeviceSize *size, VkDeviceSize *used ) {
+	int i;
+
+	*numBlocks = 0;
+	*size = *used = 0;
+	for ( i = 0; i < VK_MAX_MEMORY_BLOCKS; i++ ) {
+		if ( vk_memoryBlocks[i].memory ) {
+			( *numBlocks )++;
+			*size += vk_memoryBlocks[i].size;
+			*used += vk_memoryBlocks[i].used;
+		}
+	}
+}
+
+static void VK_ShutdownMemory( void ) {
+	int i;
+
+	for ( i = 0; i < VK_MAX_MEMORY_BLOCKS; i++ ) {
+		vkMemoryBlock_t *block = &vk_memoryBlocks[i];
+
+		if ( block->memory ) {
+			VK_FreeMemory( block->memory );
+		}
+		if ( block->free ) {
+			ri.Free( block->free );
+		}
+	}
+	Com_Memset( vk_memoryBlocks, 0, sizeof( vk_memoryBlocks ) );
 }
 
 /*
@@ -311,10 +543,11 @@ static void VK_TransitionToTransfer( VkCommandBuffer cmd, vkTexture_t *texture, 
 static vkTexture_t *VK_CreateTextureStorage( int width, int height, int mipLevels, texFormat_t texFormat, int wrapX, int wrapY ) {
 	VkImageCreateInfo imageInfo;
 	VkImageViewCreateInfo viewInfo;
-	VkMemoryRequirements memReqs;
-	VkMemoryAllocateInfo allocInfo;
 	vkTexture_t *texture;
+	uint64_t start;
 	int maxLevels;
+
+	start = VK_Microseconds();
 
 	texture = ri.Malloc( sizeof( *texture ) );
 	Com_Memset( texture, 0, sizeof( *texture ) );
@@ -346,14 +579,7 @@ static vkTexture_t *VK_CreateTextureStorage( int width, int height, int mipLevel
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	VK_CHECK( qvkCreateImage( vk.device, &imageInfo, NULL, &texture->image ) );
-
-	qvkGetImageMemoryRequirements( vk.device, texture->image, &memReqs );
-	Com_Memset( &allocInfo, 0, sizeof( allocInfo ) );
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memReqs.size;
-	allocInfo.memoryTypeIndex = VK_FindMemoryType( memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 );
-	VK_CHECK( qvkAllocateMemory( vk.device, &allocInfo, NULL, &texture->memory ) );
-	VK_CHECK( qvkBindImageMemory( vk.device, texture->image, texture->memory, 0 ) );
+	VK_AllocateImageMemory( texture );
 
 	Com_Memset( &viewInfo, 0, sizeof( viewInfo ) );
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -378,6 +604,9 @@ static vkTexture_t *VK_CreateTextureStorage( int width, int height, int mipLevel
 	texture->uploadPending = qtrue;
 	VK_ListAdd( &vk_pendingUpload, texture );
 
+	vk.stats.textures++;
+	vk.stats.textureUs += VK_Microseconds() - start;
+
 	return texture;
 }
 
@@ -399,7 +628,11 @@ static void VK_DestroyTextureStorage( vkTexture_t *texture ) {
 	VK_DeferDestroy( VK_DESTROY_DESCRIPTOR_SET, (uint64_t)texture->descriptorSet, (uint64_t)texture->descriptorPool );
 	VK_DeferDestroy( VK_DESTROY_IMAGE_VIEW, (uint64_t)texture->view, 0 );
 	VK_DeferDestroy( VK_DESTROY_IMAGE, (uint64_t)texture->image, 0 );
-	VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)texture->memory, 0 );
+	if ( texture->memoryBlock >= 0 ) {
+		VK_DeferDestroyRange( texture->memoryBlock, texture->memoryOffset, texture->memorySize );
+	} else {
+		VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)texture->memory, 0 );
+	}
 
 	ri.Free( texture );
 }
@@ -422,6 +655,7 @@ static void VK_RecordUpload( vkTexture_t *texture, int mipLevel, int x, int y, i
 		// draws recorded since the last submission use the old contents
 		VK_EndRenderPass();
 		cmd = vk.frame->mainCmd;
+		vk.stats.mainUploads++;
 
 		if ( !texture->mainPending ) {
 			VK_TransitionToTransfer( cmd, texture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
@@ -537,6 +771,7 @@ void *VK_StagingAlloc( VkDeviceSize size, VkDeviceSize alignment, VkBuffer *buff
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0 );
 		VK_DeferDestroy( VK_DESTROY_BUFFER, (uint64_t)temp.buffer, 0 );
 		VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)temp.memory, 0 );
+		vk.stats.stagingBytes += size;
 		*buffer = temp.buffer;
 		*offset = 0;
 		return temp.mapped;
@@ -550,6 +785,7 @@ void *VK_StagingAlloc( VkDeviceSize size, VkDeviceSize alignment, VkBuffer *buff
 	}
 
 	frame->stagingOffset = start + size;
+	vk.stats.stagingBytes += size;
 	*buffer = frame->stagingBuffer.buffer;
 	*offset = start;
 	return frame->stagingBuffer.mapped + start;
@@ -828,6 +1064,8 @@ void VK_ShutdownTextures( void ) {
 
 void VK_ShutdownTextureObjects( void ) {
 	int i, j, k;
+
+	VK_ShutdownMemory();
 
 	for ( i = 0; i < vk_numDescriptorPools; i++ ) {
 		qvkDestroyDescriptorPool( vk.device, vk_descriptorPools[i], NULL );

@@ -10,6 +10,10 @@
 # WIDE=1 runs at 4160x240: wider than 4096 pixels both radeonsi and RADV
 # rasterize with 1/256 pixel precision, so the frames can be compared to the
 # bit (see README.md, Testing). DIFFARGS is passed to tgadiff.py.
+# Shots taken from outside the world (view cluster -1, see shots.py) are
+# reported: parts of their frame are undefined. So are all-black GL1 frames
+# (Mesa now and then hands out a back buffer that was never drawn): run the
+# list again.
 # A <list>.shader file next to the view list is installed as
 # main/scripts/aaa_<list>.shader for the runs (the first shader file in
 # alphabetical order overrides the others), to test shaders no game data has.
@@ -48,6 +52,18 @@ for R in opengl1 vulkan; do
 done
 
 [ -n "$INSTALLED" ] && rm -f "$INSTALLED"
+
+awk '/^cluster:/ { c = $1 } $1 == "shot" && c == "cluster:-1" { print "warning: " $2 ": the camera is outside the world (cluster -1)" }' \
+	"$MOH_OUT/${CFG}_vulkan.log"
+
+for v in $VIEWS; do
+	f=$SS/$v${TAG}_gl.tga
+	[ -f "$f" ] || continue
+	# pixels after the 18-byte header, all zero
+	if [ "$(tail -c +19 "$f" | tr -d '\000' | head -c 1 | wc -c)" -eq 0 ]; then
+		echo "warning: $v: the GL1 frame is all black, run the list again"
+	fi
+done
 
 SUMMARY=$MOH_OUT/$CFG$TAG.txt
 : > "$SUMMARY"

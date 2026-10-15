@@ -27,6 +27,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // kept in a hash table for the lifetime of the device. Viewport, scissor,
 // depth bias, line width and the stencil reference and masks are dynamic.
 //
+// The VkPipelineCache is saved to VK_PIPELINE_CACHE_FILE in fs_homepath at
+// shutdown and given back to the driver at startup when it was made by the
+// same device and driver, so pipelines don't have to be compiled again.
+//
 // Every pipeline uses the same shaders (shaders/generic.*); the fragment
 // stage is specialized for the texture envs, the alpha test, fog and, when
 // the device can't clip with gl_ClipDistance, the clip plane. Pipelines with
@@ -38,6 +42,10 @@ typedef struct {
 	vkPipelineKey_t	key;
 	VkPipeline		pipeline;
 } vkPipelineEntry_t;
+
+#define VK_PIPELINE_CACHE_FILE	"vkpipelines.cache"
+
+static size_t				vk_pipelineCacheLoaded;	// size of the data read at startup
 
 static vkPipelineEntry_t	*vk_pipelines;
 static int					vk_pipelineTableSize;	// power of two
@@ -121,7 +129,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	VkPipelineDynamicStateCreateInfo dynamicState;
 	VkGraphicsPipelineCreateInfo createInfo;
 	VkPipeline pipeline;
-	uint64_t bits;
+	uint64_t bits, start;
 	int colorMask, srcBlend, dstBlend, i;
 	qboolean lines;
 
@@ -235,7 +243,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 
 	Com_Memset( &multisample, 0, sizeof( multisample ) );
 	multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	multisample.rasterizationSamples = vk.samples;
 
 	Com_Memset( &depthStencil, 0, sizeof( depthStencil ) );
 	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -321,7 +329,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	createInfo.renderPass = vk.renderPass;
 	createInfo.subpass = 0;
 
+	start = VK_Microseconds();
 	VK_CHECK( qvkCreateGraphicsPipelines( vk.device, vk.pipelineCache, 1, &createInfo, NULL, &pipeline ) );
+	vk.stats.pipelineUs += VK_Microseconds() - start;
+	vk.stats.pipelines++;
 
 	return pipeline;
 }
@@ -415,6 +426,57 @@ static VkShaderModule VK_CreateShaderModule( const uint32_t *code, size_t size )
 	return module;
 }
 
+/*
+===============
+VK_ReadPipelineCache
+
+The data of a pipeline cache saved by the same device and driver, or NULL;
+free it with ri.FS_FreeFile
+===============
+*/
+static void *VK_ReadPipelineCache( size_t *size ) {
+	const VkPhysicalDeviceProperties *props = &vk.deviceProperties;
+	uint32_t header[4];
+	void *data;
+	int len;
+
+	*size = 0;
+	len = ri.FS_ReadFileEx( VK_PIPELINE_CACHE_FILE, &data, qtrue );
+	if ( len <= 0 || !data ) {
+		return NULL;
+	}
+
+	// VkPipelineCacheHeaderVersionOne: length, version, vendor, device, UUID
+	if ( len >= 32 ) {
+		Com_Memcpy( header, data, sizeof( header ) );
+		if ( header[0] >= 32 && header[0] <= (uint32_t)len && header[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE
+			&& header[2] == props->vendorID && header[3] == props->deviceID
+			&& !memcmp( (const byte *)data + 16, props->pipelineCacheUUID, VK_UUID_SIZE ) ) {
+			*size = len;
+			return data;
+		}
+	}
+
+	ri.Printf( PRINT_ALL, "Vulkan: %s is from another device or driver, ignored\n", VK_PIPELINE_CACHE_FILE );
+	ri.FS_FreeFile( data );
+	return NULL;
+}
+
+static void VK_WritePipelineCache( void ) {
+	size_t size;
+	void *data;
+
+	// the same size as the data read at startup: nothing new to save
+	if ( qvkGetPipelineCacheData( vk.device, vk.pipelineCache, &size, NULL ) != VK_SUCCESS || !size || size == vk_pipelineCacheLoaded ) {
+		return;
+	}
+	data = ri.Malloc( size );
+	if ( qvkGetPipelineCacheData( vk.device, vk.pipelineCache, &size, data ) == VK_SUCCESS ) {
+		ri.FS_WriteFile( VK_PIPELINE_CACHE_FILE, data, size );
+	}
+	ri.Free( data );
+}
+
 void VK_InitPipelines( void ) {
 	VkDescriptorSetLayoutBinding binding;
 	VkDescriptorSetLayoutCreateInfo setLayoutInfo;
@@ -422,6 +484,8 @@ void VK_InitPipelines( void ) {
 	VkPushConstantRange pushRanges[2];
 	VkPipelineLayoutCreateInfo layoutInfo;
 	VkPipelineCacheCreateInfo cacheInfo;
+	void *cacheData;
+	size_t cacheSize;
 
 	// one combined image sampler per texture unit, sets 0 and 1
 	Com_Memset( &binding, 0, sizeof( binding ) );
@@ -459,9 +523,21 @@ void VK_InitPipelines( void ) {
 	}
 	vk.fragmentShader = VK_CreateShaderModule( vk_spirv_generic_frag, vk_spirv_generic_frag_size );
 
+	cacheData = VK_ReadPipelineCache( &cacheSize );
 	Com_Memset( &cacheInfo, 0, sizeof( cacheInfo ) );
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	VK_CHECK( qvkCreatePipelineCache( vk.device, &cacheInfo, NULL, &vk.pipelineCache ) );
+	cacheInfo.initialDataSize = cacheSize;
+	cacheInfo.pInitialData = cacheData;
+	if ( qvkCreatePipelineCache( vk.device, &cacheInfo, NULL, &vk.pipelineCache ) != VK_SUCCESS && cacheData ) {
+		// a driver may refuse data it can't use: start empty
+		cacheInfo.initialDataSize = 0;
+		cacheInfo.pInitialData = NULL;
+		VK_CHECK( qvkCreatePipelineCache( vk.device, &cacheInfo, NULL, &vk.pipelineCache ) );
+	}
+	vk_pipelineCacheLoaded = cacheInfo.initialDataSize;
+	if ( cacheData ) {
+		ri.FS_FreeFile( cacheData );
+	}
 
 	vk_pipelineTableSize = 256;
 	vk_pipelines = ri.Malloc( sizeof( *vk_pipelines ) * vk_pipelineTableSize );
@@ -485,6 +561,7 @@ void VK_ShutdownPipelines( void ) {
 	vk_numPipelines = 0;
 
 	if ( vk.pipelineCache ) {
+		VK_WritePipelineCache();
 		qvkDestroyPipelineCache( vk.device, vk.pipelineCache, NULL );
 	}
 	if ( vk.vertexShader ) {

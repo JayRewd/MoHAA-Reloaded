@@ -1356,7 +1356,7 @@ void RB_StageIteratorGeneric( void )
 	//
 	// set XYZ
 	//
-	RB_SetVertexArray (input->xyz[0], 16);	// padded for SIMD
+	RB_SetTessVertexArray();
 
 	//
 	// enable color and texcoord arrays if necessary
@@ -1437,7 +1437,7 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 
 	RB_SetColorArray( tess.svars.colors[0] );
 	RB_SetTexCoordArray( tess.texCoords[0][0], 16 );
-	RB_SetVertexArray (input->xyz[0], 16);
+	RB_SetTessVertexArray();
 
 	//
 	// call special shade routine
@@ -1470,7 +1470,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	// set color and pointers
 	//
 	GL_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
-	RB_SetVertexArray( input->xyz[0], 16 );
+	RB_SetTessVertexArray();
 
 #ifdef REPLACE_MODE
 	RB_EnableColorArray( qfalse );

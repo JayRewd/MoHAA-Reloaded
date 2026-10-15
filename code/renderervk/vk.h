@@ -255,6 +255,12 @@ typedef struct {
 	float			color[4];			// constant color (0 to 1) when colors is NULL
 	const float		*st[NUM_TEXTURE_BUNDLES];	// 2 floats per vertex; NULL disables the unit
 	int				stStride[NUM_TEXTURE_BUNDLES];	// in bytes
+	// 0, or a value that promises the same xyz contents as the previous
+	// draw with the same version, xyz pointer, stride and vertex count
+	// (and the same indexes when indexes and numIndexes are the same too):
+	// the passes of a multi-pass shader draw the same vertexes, and the
+	// backend may reuse what it copied for the previous pass
+	unsigned int	version;
 } drawGeometry_t;
 
 // draw indexed primitives with the current state; the arrays are only read
@@ -277,8 +283,24 @@ typedef enum {
 } readFormat_t;
 
 // read back what has been drawn so far in the current frame; rows are
-// tightly packed and stored bottom row first. This waits for the GPU.
+// tightly packed and stored bottom row first. This waits for the GPU. Like
+// a GL back buffer, the color contents are undefined before the frame has
+// drawn or cleared anything (the renderer takes screenshots at the end of
+// the frame, RB_TakePendingScreenshots). Depth and stencil read as 0 until
+// the depth buffer is readable, see vk_want_depth_reads.
 void		vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer );
+
+// Depth and stencil reads (vk_read_pixels with READ_DEPTH_FLOAT or
+// READ_STENCIL8, vk_queue_depth_reads) need a depth buffer that some
+// drivers draw into more slowly (RADV keeps fewer depth tiles compressed in
+// a depth image that can be copied from). Without multisampling the
+// backend draws into such a depth buffer only from the start of the frame
+// after a read or a call to vk_want_depth_reads, until a few hundred frames
+// (VK_DEPTH_READ_FRAMES) after the last one; until then depth and stencil
+// read as 0 and vk_queue_depth_reads gives ids 0. Called between frames,
+// vk_want_depth_reads makes the reads of the next frame work
+// (r_measureOverdraw calls it in RE_BeginFrame).
+void		vk_want_depth_reads( void );
 
 typedef enum {
 	DEPTHREAD_PENDING,	// the GPU has not executed the read yet
@@ -288,8 +310,9 @@ typedef enum {
 
 // record reads of the window-space depth at count window positions (x, y
 // pairs), of what has been drawn so far in the current frame, without
-// waiting for the GPU; fills ids (0 when the frame has no room left).
-// Positions outside the framebuffer read as 0.
+// waiting for the GPU; fills ids (0 when the frame has no room left, or the
+// depth buffer isn't readable yet: see vk_want_depth_reads). Positions
+// outside the framebuffer read as 0.
 void		vk_queue_depth_reads( int count, const int *xy, unsigned int *ids );
 // result of a queued read: DEPTHREAD_DONE once the frame that recorded it
 // has completed, which the backend checks when a later frame starts (a fixed

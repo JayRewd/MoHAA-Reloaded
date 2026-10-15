@@ -5,7 +5,7 @@ OpenGL call removed. All GPU work goes through the interface in [`vk.h`](vk.h),
 which the `vk*.c` files implement with Vulkan. Select it with
 `cl_renderer vulkan`.
 
-Status (2026-10-13, branch `vulkan-renderer`): milestones 1 to 5 of the plan
+Status (2026-10-14, branch `vulkan-renderer`): milestones 1 to 6 of the plan
 below are done.
 
 - the main menu matches GL1 pixel for pixel, except the animated ceiling fan
@@ -14,13 +14,20 @@ below are done.
   match GL1: world surfaces and lightmaps, static and animated models,
   alpha-tested and blended surfaces, decals, the view weapon, the sky, the
   sky portal and farplane fog, on `dm/mohdm1`, `dm/mohdm2`, `dm/mohdm4`,
-  `dm/mohdm5`, `m2l1`, `m2l3` and `m4l1`. When both drivers rasterize with
-  the same subpixel precision (a window wider than 4096 pixels) they match to
-  the bit except for at most about 0.3 % of the pixels, nearly all off by 1
-  (large triangles clipped against different guard bands, transient HUD
-  text), a few isolated alpha-tested pixels, and what the game randomizes
-  (snow particles, AI poses). At 640x480, radeonsi uses a finer subpixel
-  precision than RADV and 1 to 8 % of the pixels differ by 1
+  `dm/mohdm5`, `m2l1`, `m2l3` and `m4l1`, and in the milestone 6 parity
+  pass on `dm/mohdm3`, `dm/mohdm6`, `dm/mohdm7`, `m1l1`, `m1l2a`, `m1l3a`,
+  `m3l2`, `m3l3`, `m5l1a`, `m5l2a`, `m5l3`, `m6l1a`, `m6l2a`, `m6l3a` and
+  `obj/obj_team1` to `obj/obj_team4`: LOD terrain, the ocean and other
+  water shaders, snow, night and fog maps, six more sky boxes (one with a
+  cloud layer), sun flares, environment mapping, decals (91 views; the
+  parity pass needed no renderer change). When both drivers rasterize with
+  the same subpixel precision (a window wider than 4096 pixels) they match
+  to the bit except for pixels off by 1 (usually under 0.3 % of the frame,
+  up to 5 % when large polygons pass right next to the camera: the drivers
+  clip against different guard bands; transient HUD text), a few isolated
+  alpha-tested pixels, and what the game randomizes (snow and smoke
+  particles, AI poses, swinging shutters). At 640x480, radeonsi uses a finer
+  subpixel precision than RADV and 1 to 8 % of the pixels differ by 1
 - fog and the user clip plane (portals and mirrors) are implemented
 - the sun lens flare and its full-screen fade, dynamic lights (dynamic
   lightmaps and `r_fastdlights 1`), cinematics, `TEXENV_ADD` (with a test
@@ -35,7 +42,31 @@ below are done.
   change and inside a map), window resizes (`r_allowResize 1`), `r_shadows 2`,
   `r_measureOverdraw 1`, `r_showImages 1`, texture mode changes, fogged maps,
   single-player maps, the sky portal, sun flares, dynamic lights, cinematics,
-  debug drawing (with and without stipple) and shutdown
+  debug drawing (with and without stipple) and shutdown; no validation
+  message in any milestone 6 comparison run (`r_vkValidation 1`) and none
+  with synchronization validation on `m3l2`, `m5l3`, `m6l2a`, `dm/mohdm7`,
+  `obj_team3_deepbluesea` and `obj/obj_team4`; after the performance work,
+  none either with synchronization validation for `mohdm1_dlight`, the
+  main menu, `dm/mohdm1` with `r_ext_multisample 4` and `r_measureOverdraw
+  1` (stencil readbacks every frame), live window resizes followed by
+  their `vid_restart`, mode changes and a multisampling `vid_restart`;
+  after the depth image change, none with synchronization validation for
+  `mohdm1_dlight`, `m6l1a` and `r_measureOverdraw` turned on and off on
+  `dm/mohdm1` (the depth image becomes readable, then not 300 frames
+  later; overdraw counts equal to GL1's from the first frame), with 1 and 4
+  samples
+- performance (milestone 6, see [Performance](#performance)): on an idle
+  machine Vulkan spends less main-thread time in the renderer than GL1 in
+  every measured view, and where the GPU limits (the `m6l1a` forest) its
+  frames take less time than GL1's: 7 % less at 3840x2160, 3 % at
+  1920x1080. Frames are drawn straight into the swapchain image (no copy
+  at present, 8 to 9 % more frames per second where the GPU limits), the
+  depth image is only readable while depth or stencil readbacks are wanted
+  (a readable one has TC-compatible HTILE on RADV, which keeps fewer depth
+  tiles compressed: 12 to 13 % more GPU time in that forest), textures
+  share memory blocks, the pipeline cache is saved to disk, and with vsync
+  the wait for the display happens after the present, like GL's swap.
+  `r_ext_multisample` works (2 to 16 samples)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -49,12 +80,12 @@ below are done.
 | `vk_local.h` | definitions shared by the backend files: `qvk*` function pointers, frame, texture and pipeline-key types |
 | `vk_instance.c` | Vulkan loading through SDL, instance, validation messenger, device selection, swapchain |
 | `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
-| `vk_image.c` | texture handles and storage, samplers, descriptor sets, staging and ordering of uploads |
-| `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation |
+| `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
+| `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
-| `tools/` | GL1/Vulkan screenshot comparison scripts and view lists (see Testing) |
+| `tools/` | GL1/Vulkan screenshot comparison and performance scripts, view lists (see Testing) |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
 | `tr_backend.c` | renderer-side state tracking (`GL_State`, `GL_Bind`, `GL_Cull`, `GL_TexEnv`, matrices, vertex arrays, current color) |
 | `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged |
@@ -96,6 +127,24 @@ Cvars of the backend:
 | --- | --- |
 | `r_vkValidation` (latched, default 0) | 1 enables `VK_LAYER_KHRONOS_validation` and prints its warnings and errors to the console; 2 also enables synchronization validation (slow) |
 | `r_swapInterval` (latched) | 0: immediate present mode (mailbox if unavailable), < 0: FIFO relaxed, > 0: FIFO; FIFO when the wanted mode is missing |
+| `r_ext_multisample` (latched, shared with GL1) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
+
+The console command `vkinfo` prints the backend's counters since its last
+call: frames, render passes, submissions, mid-frame flushes, draws,
+pipeline and descriptor set binds, bytes copied into vertex and staging
+buffers, uploads ordered with draws, textures, pipelines and device memory
+allocations created (with the microseconds spent creating them), depth
+images replaced to become readable or not (see Implementation notes,
+Render target), time spent waiting for frame fences, in `vkQueueSubmit`, `vkAcquireNextImageKHR`
+(before a present and right after one) and `vkQueuePresentKHR`, from the
+start of a frame's recording to its present, and the GPU time of the frames
+from timestamps (main command buffer, copy to the swapchain image, whole
+frame); then the device memory objects, memory blocks and pipelines that
+exist and whether the depth image is readable. `tools/perf.py` reads it.
+
+The pipeline cache is saved as `vkpipelines.cache` in `fs_homepath/main` at
+shutdown and `vid_restart` (when it grew) and given to the driver at
+startup when the device and driver match.
 
 Shaders: edit `shaders/*.vert|frag`, run `code/renderervk/shaders/compile_shaders.sh`
 and commit the regenerated `vk_shaders.c`.
@@ -167,22 +216,52 @@ What each part is for:
   colliding, `god` and `notarget` keep the AI out of it. `coord` prints the
   current position and angles. Spawn points are in the entity lump of the
   BSP (`info_player_*`).
-- `pause` before the screenshot: the `screenshot` command reads the frame
-  before anything of the next frame is drawn. The Vulkan backend then
-  returns the last presented frame, but GL1 reads a back buffer that Mesa
-  hands out from two or three swaps earlier, so without the pause everything
-  that moves (trees and bushes sway) differs. While paused every frame is the
-  same. `finishloadingscreen` unpauses too.
+- `pause` before the screenshot: GL1's `screenshot` command reads the back
+  buffer before anything of the frame is drawn, a buffer that Mesa hands out
+  from two or three swaps earlier, while the Vulkan renderer takes it at the
+  end of the frame in which the command runs (see Frames and
+  synchronisation), so without the pause everything that moves (trees and
+  bushes sway) differs. While paused every frame is the same.
+  `finishloadingscreen` unpauses too.
 - The `screenshot` command centerprints "Wrote ..." in the view; the blank
   `centerprint` replaces it before the next screenshot.
 - `ui_hud 0` and `cg_drawviewmodel 0` hide the HUD and the view weapon (set
   `cg_drawviewmodel 2` to test the weapon's depth range). Messages such as
-  "Game Saved" and "An objective has been added!" still show for a few
-  seconds after the map starts.
+  "Game Saved" and "An objective has been added!" go to the game message
+  box, which `+set ui_gmbox 0` (on the command line: the box is created at
+  startup) removes; `run.sh` sets it.
 
 Still random between runs: what the game seeds with the wall clock
 (`G_InitGame` seeds `rand()` with `Com_Milliseconds()`), such as the snow
-particles of `dm/mohdm5` and AI movement in single-player maps.
+particles of `dm/mohdm5` and `m6l1a`, AI movement in single-player maps and
+the vehicles AI drives (the truck convoy of `m1l1`).
+
+Single-player maps that start in a vehicle ignore `tele` while the player
+is attached to it: `m1l1` (a truck of the convoy for about 90 s of game
+time; `views/m1l1.txt` waits, run it with `TIMEOUT=300`), `m1l3a`
+(halftrack gun, it starts driving about 15 s in), `m5l2a` (tank, the whole
+level), `m3l1a` (landing craft for about two minutes; `views/m3l1a.txt`
+waits, run it with `TIMEOUT=400`). `face` still turns the view.
+
+Views must be taken from inside the world. From outside it (the void
+around the map, above the sky brushes, inside a solid; the view cluster is
+-1) part of the frame can be covered by no surface at all: it keeps what an
+earlier frame drew into that buffer, an older swapchain image with Vulkan
+(the offscreen render target before milestone 6's performance work) and an
+older back buffer with GL1, so the two differ there without meaning
+anything. Two such views of this parity pass
+looked like bugs: `obj_team2` from 1177 289 -120 and `dm/mohdm7` from
+-1000 1000 800 above the sky, where the sky box (drawn from the sky polygons
+seen from the view point) covers less than the frame. `shots.py` turns on
+`r_showcluster` and `compare.sh` warns about shots whose cluster is -1.
+
+GL1 now and then saves an all-black frame (about one shot in 40 in the
+milestone 6 runs, a different one every run): the back buffer Mesa hands
+out was never drawn, it seems. Once it saved the frame of the previous shot
+instead. Run the list again; `compare.sh` warns about all-black GL1
+frames. With several games running at once it happened more often and
+also gave frames with black areas, so run one game at a time. The Vulkan
+frames are the same either way.
 
 ### Comparing
 
@@ -210,12 +289,33 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   printed. A `views/<list>.shader` next to the list is installed as
   `main/scripts/aaa_<list>.shader` during the runs: the shader file listed
   first wins, so it replaces shaders of the game data (see
-  `mohdm1_texenv`).
+  `mohdm1_texenv`, `obj_team3_deepbluesea`). It warns about shots taken
+  from outside the world and about all-black GL1 frames (see
+  Deterministic 3D views); `TIMEOUT` (seconds, default 180) is passed to
+  `run.sh` for the lists that wait long (`m1l1`, `m3l1a`).
 - `hotspots.py`: zoomed side-by-side crops of the areas that differ most.
 - `montage.py`: a grid of images, for example `gl | vk | diff` rows.
-- `bspinfo.py`: worldspawn keys (fog), spawn points and the surfaces of the
-  shaders that contain a keyword (`polygonoffset`, `alphafunc`, ...), to
-  pick views.
+- `bspinfo.py`: worldspawn keys (fog, sun), spawn points, the number of LOD
+  terrain patches and static models (the models whose path contains a
+  keyword are listed with their origins), whether the `.dcl` decals load
+  (keyword `decal` lists them) and the surfaces of the shaders whose name or
+  script contains a keyword (`polygonoffset`, `alphafunc`, `nextbundle`,
+  ...; terrain patches included), to pick views.
+- `perf.py`: frame time and renderer time of views with both renderers,
+  uncapped, in interleaved runs (see Performance); `rtimer/` builds the
+  `renderer_timed.so` wrapper it uses and `libstacks.so`, a stack sampler
+  whose output `stacks.py` sums up.
+- `summary.py`: the worst view's numbers of several lists after
+  `compare.sh` (`--wide` for the `WIDE=1` runs), in the form of the
+  milestone 6 table below, with that table's row next to them
+  (`--readme README.md`).
+
+Changes that should not change the picture (the performance work of
+milestone 6) are best checked against the previous Vulkan build rather
+than GL1: copy the old `renderer_vulkan.so` to `renderer_<name>.so` in the
+binary directory, run the list with `run.sh <name> <list>` and compare
+its shots with `tgadiff.py`; the frames of a deterministic view are then
+identical to the bit, run after run.
 
 With RADV and GL1 on radeonsi (same GPU) expect:
 
@@ -227,11 +327,19 @@ With RADV and GL1 on radeonsi (same GPU) expect:
   slightly differently, which bilinear filtering turns into ±1.
 - With a window wider than 4096 pixels both drivers use 1/256:
   `+set r_mode -1 +set r_customwidth 4160 +set r_customheight 240`. The
-  frames are then the same to the bit except at most a few thousand pixels
-  off by 1 on large triangles next to the camera (the drivers clip against
-  different guard bands) and on transient HUD text, a few isolated
-  alpha-tested pixels, plus random particles and AI poses. That is the
-  setting to check a change for exactness.
+  frames are then the same to the bit except pixels off by 1 on large
+  polygons right next to the camera (the drivers clip against different
+  guard bands; usually a few thousand pixels, up to 5 % of the frame when
+  tree trunks, terrain or roofs pass the camera, as in `m61_slope` and
+  `d6_roofs`) and on transient HUD text, a few isolated alpha-tested
+  pixels, plus random particles and AI poses. One view differs much more:
+  in `o1_sky` (`obj_team1`, looking up between hedges) the hedge polygons
+  that pass nearly edge-on within a few units of the eye fill both ends of
+  the 4160-pixel frame, and there their textures come out visibly shifted
+  between the renderers (55 % of the pixels differ). The same view matches
+  like the others at 640x480 and the middle of the wide frame matches, so
+  this is attributed to the drivers clipping those polygons differently;
+  it was not proven. That is the setting to check a change for exactness.
 - `r_farplane_nofog 1` turns farplane fog off in both renderers.
 
 Test content:
@@ -285,6 +393,33 @@ Test content:
   invisible with both renderers. That is also the only user of line
   stipple (`DrawLineLoop` has no caller), so stipple was checked by forcing
   a pattern on `r_showtris` temporarily.
+- Milestone 6 parity pass (one list per map, the comment at the top of each
+  says what it covers):
+  - sky boxes: `mohday1` (`mohdm3`, `mohdm6`, `obj_team2` at dusk),
+    `africanight` with its scrolling additive cloud layer (`mohdm7`,
+    `m1l1`, `m1l2a`), `mohnightfog` (`m1l3a`), `d-day2` (`m3l2`, `m3l3`,
+    `obj_team3`), `m5l2` (`m5l1a`, `m5l2a`, `obj_team1`, `obj_team4`),
+    `mohday2` (`m5l3`); the `m6` maps use `caulksky` under fog;
+  - sun lens flares: `d3_sun`, `m32_sun`, `m53_sun`, `o2_sun` (and
+    `m53_sunedge` with the sun just outside the view);
+  - water: `deepbluesea_runup` and `deepbluesea_shoreline` (`obj_team3`),
+    `deepbluesea` itself through `obj_team3_deepbluesea.shader` (its only
+    map, `m3l1a`, shakes the camera), `subpen_water4` under `canal_sludge`
+    (`m3l2`), `frozenriver` (`m6l2a`), `riverbed` (`obj_team4`);
+  - snow and night: `snowfield1` with `tcMod parallax` (`m6l2a`), the
+    snowy forest of `m6l1a` (2763 static models, fog 1500, random snow),
+    the script fog of `m6l3a`, night maps `mohdm7`, `m1l1`, `m1l2a`,
+    `m1l3a`, `m6l*`;
+  - LOD terrain: `mohdm3`, `m1l1`, `m1l3a`, `m3l3`, `m5l1a`, `m6l1a`,
+    `m6l2a`, `obj_team1`, `obj_team3`, `obj_team4`;
+  - farplane fog: 1500 to 15000 (`m6l1a`, `m5l1a`, `obj_team1`, `m1l3a`,
+    `obj_team4`, `m5l2a`, `m3l2`, `m5l3`);
+  - environment mapping (`tcGen environment`): the windows of `mohdm3`,
+    the wet pipes of `obj_team2`;
+  - decals: the posters of `obj_team4`;
+  - map-script effects: the burning debris of `m1l1`, the fog of `m6l3a`,
+    the convoy, landing craft and halftrack rides (see Deterministic 3D
+    views for what they mean for the views).
 - No shipped map has a portal or mirror surface (`portal` shader keyword), so
   the user clip plane has no GL1 reference in game content. It was checked
   with a temporary plane forced on the main view: x_eye >= 0 cut every
@@ -310,6 +445,99 @@ At 640x480 the same lists show the usual 1 to 10 % of pixels off by 1 and a
 few dozen to a few hundred isolated pixels off by more (alpha-tested foliage,
 and broken `r_showtris` edges where the line and its polygon tie in depth),
 all gone or nearly gone at 4160x240.
+
+Results of the milestone 6 parity pass (sequential runs, worst view of each
+list; per channel max and mean, share of differing pixels, and the number
+of pixels off by more than 3 in the worst view for that count):
+
+| list (views) | 640x480 max R/G/B | differing | > 3 | 4160x240 max R/G/B | differing | > 3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `mohdm3` (6) | 235/211/187 | 4.38 % | 199 | 63/58/25 | 0.245 % | 21 |
+| `mohdm6` (6) | 116/141/185 | 1.62 % | 121 | 2/2/1 | 1.87 % | 0 |
+| `mohdm7` (5) | 247/213/125 | 1.28 % | 112 | 28/25/23 | 0.114 % | 5 |
+| `m1l1` (3) | 161/134/121 | 4.49 % | 6132 | 156/129/115 | 7.61 % | 41818 |
+| `m1l2a` (5) | 66/57/70 | 1.24 % | 34 | 12/16/18 | 0.260 % | 1 |
+| `m1l3a` (4) | 70/57/69 | 1.90 % | 39 | 138/94/92 | 0.243 % | 292 |
+| `m3l2` (6) | 136/132/133 | 4.29 % | 144 | 161/157/155 | 1.08 % | 363 |
+| `m3l3` (4) | 150/146/143 | 5.50 % | 125 | 157/153/152 | 0.303 % | 16 |
+| `m5l1a` (6) | 136/126/116 | 4.53 % | 527 | 127/118/107 | 0.745 % | 3088 |
+| `m5l2a` (2) | 112/107/110 | 3.05 % | 195 | 47/38/26 | 0.007 % | 19 |
+| `m5l3` (6) | 165/155/128 | 3.34 % | 21 | 50/50/44 | 1.02 % | 32 |
+| `m6l1a` (4) | 122/122/126 | 8.26 % | 625 | 126/126/126 | 4.92 % | 1030 |
+| `m6l2a` (6) | 90/87/103 | 5.90 % | 281 | 30/27/28 | 3.09 % | 2 |
+| `m6l3a` (3) | 53/58/91 | 1.48 % | 91 | 37/37/65 | 0.281 % | 885 |
+| `obj_team1` (4) | 110/108/119 | 4.41 % | 171 | 118/118/119 | 54.7 % | 442501 |
+| `obj_team2` (6) | 60/59/50 | 2.10 % | 48 | 214/189/204 | 2.56 % | 103 |
+| `obj_team3` (6) | 50/56/63 | 3.79 % | 8 | 12/12/12 | 0.355 % | 48 |
+| `obj_team3_deepbluesea` (3) | 49/56/63 | 3.55 % | 8 | 12/12/12 | 0.289 % | 48 |
+| `obj_team4` (6) | 215/216/179 | 4.08 % | 310 | 83/83/88 | 0.782 % | 21 |
+
+The mean differences stay below 0.15 per channel everywhere except `m1l1`
+(up to 0.38: smoke) and the `obj_team1` WIDE row. Nearly every differing
+pixel is off by 1 at both sizes; what is off by more was traced, view by
+view, to:
+
+- random game content: AI soldiers (`m3l2`, `m1l3a`, `m12_yard`), window
+  shutters that swing (`m5l1a`: they are open in one run and closed in the
+  other), snow particles (`m6l1a`, `m6l3a`), the smoke and fire light of
+  `m1l1`;
+- the WIDE clipping cases above (the larger off-by-1 areas of `m6l1a`,
+  `m6l2a`, `obj_team2`, `mohdm6`, `m5l3`, and `o1_sky`, attributed to the
+  drivers' clipping);
+- at 640x480, alpha-tested foliage and one-pixel shifts of polygon edges
+  (`o4_poster1`: a vertical edge one column over).
+
+After the performance work (drawing into the swapchain image, screenshots
+at the end of the frame, the memory sub-allocator, vertex reuse) every list
+was run again at both sizes (`tools/summary.py` gives the rows): 13 lists
+at 640x480 and 7 at 4160x240 give exactly the numbers of the table, and the
+others differ where the game randomizes (the AI fire of `m1l3a`, which put
+the red damage flash into one GL1 shot, its halftrack; the shutters of
+`m5l1a`, the tank of `m5l2a`, the snow of `m6l1a` and `m6l3a`; the smoke of
+`m1l1`, now 3.7 % and 1.1 % differing), or are better (`obj_team1` at
+4160x240: 0.15 % instead of 54.7 %, the `o1_sky` clipping case did not
+recur). The milestone 5 lists give their table's numbers too. The sharper
+check is the previous Vulkan build: run on all 19 lists at 640x480 (and
+`mohdm1_debug` at 4160x240), it gives the same frames to the bit in every
+view without random content, with one exception: `d7_window` (`dm/mohdm7`)
+has a two-pixel-high crack between world surfaces at the bottom of the
+frame (`r_fastsky 1` shows the clear color there), which shows whatever
+the buffer held: an earlier frame with GL1 and the old offscreen target,
+black in a freshly acquired swapchain image (196 of the 202 pixels off by
+more than 3 in that list). With `r_fastsky 1` the old and new frames are
+identical there too. No validation message in any of these runs
+(`r_vkValidation 1`).
+
+The depth image that is only readable while readbacks are wanted (see
+Implementation notes, Render target) was checked against the build before
+it in the same way, on 29 lists at 640x480 (131 views: every list but
+`m1l1` and `m3l1a`): 20 lists give the same frames to the bit in every
+view (among them `mohdm1`, `mohdm3`, `obj_team1` to `obj_team4`, `m3l2`,
+`m3l3`, `m5l3`, `m6l2a`, `m6l3a`, the decal, texture env, dynamic light,
+sun flare and fog lists). The others differ in 2 to 3970 pixels of some
+views: snowflakes (`m6l1a`, `mohdm5_fog`), the random content named above
+(`m1l2a`, `m1l3a`, `m5l1a`, `m5l2a`), and off-by-1 noise on surfaces near
+the camera in `m6l1a`, `mohdm7`, `m2l1_skyportal` and `m4l1_fog`. Running
+the build before the change twice (two copies of the same `.so`) gives the
+same kind of differences in the same views (`m61_slope` 2341 pixels,
+`d7_arch` 798, `fm4_a`/`fm4_b` 4/2, `m5l1a` 7 to 297), so they vary from
+run to run and are not the change (the comparison above found `mohdm7`
+identical but for `d7_window`: these near-camera differences don't occur
+in every run). No validation message (`r_vkValidation 1`). Against GL1
+(`compare.sh`, `summary.py`): `m6l1a` 116/116/126, 8.26 %, 379 pixels off
+by more than 3 at 640x480 and 125/125/125, 5.39 %, 272 at 4160x240;
+`mohdm7` 247/213/125, 1.27 %, 202 and 48/36/35, 0.091 %, 56, where the
+pixels off by more than 3 beyond the table's are the `d7_window` crack
+(black in Vulkan, an older frame in GL1; at 4160x240 all 56 on one row).
+
+`m3l1a` is not in the table: the beach artillery shakes and rolls the
+camera at random, so the two renderers see slightly different views of the
+open sea after the two minutes in the landing craft (GL1's horizon was
+tilted in the run made, 97 % of the pixels differ); `obj_team3_deepbluesea`
+covers its sea shader. No difference needed a change to the renderer:
+besides the causes above, the two views that looked like bugs were taken
+from outside the world, and GL1 sometimes saved a black or stale frame
+(see Deterministic 3D views).
 
 Other things learned:
 
@@ -338,10 +566,247 @@ Other things learned:
   `RB_TakeVideoFrameCmd` never runs.
 - No `.gst` file (ghost texture) exists in the game data, so
   `R_UpdateGhostTextures` never has a texture to update.
+- `r_clear 1` clears only the scissor rectangle the last 2D draw left (in
+  both renderers: `glClear` honours the scissor), a strip of the screen, so
+  it doesn't show which pixels a frame leaves undrawn. `r_fastsky 1` does:
+  it clears every view to (0.5, 0.5, 1) and skips the sky.
+  `bspinfo.py <map> --view x y z` tells whether a view is inside the world
+  before running it.
 - `AMD_DEBUG=vs,ps,nir` (with `MESA_SHADER_CACHE_DISABLE=true`) dumps what
   radeonsi compiles for GL1's fixed-function pipeline and `RADV_DEBUG=shaders`
   what RADV compiles for ours, which is how the arithmetic of the vertex
-  transform and of fog were matched.
+  transform and of fog were matched. With Mesa 26 radeonsi prints the ISA
+  only with `asm` added (`AMD_DEBUG=vs,ps,asm`). `RADV_DEBUG=img` and
+  `AMD_DEBUG=tex` print the layout of every image (swizzle mode, DCC,
+  HTILE, TC-compatible HTILE), which is how the depth buffer's compression
+  mode was found (see Performance).
+
+### Performance
+
+`tools/perf.py` measures views with both renderers (see its docstring):
+
+```sh
+code/renderervk/tools/rtimer/build.sh      # renderer_timed.so and libstacks.so into build-vk
+code/renderervk/tools/perf.py --list code/renderervk/tools/views/perf.txt \
+    --sizes 640x480,1920x1080 --renderers opengl1,vulkan --runs 3 --json out.json
+code/renderervk/tools/perf.py m6l1a 6152 -6528 5500 0 135 0 --runs 1 --stacks out
+code/renderervk/tools/stacks.py out_m6l1a_640x480_vulkan_1.txt --focus vk_draw
+```
+
+Each measurement starts a game, loads the map with `fixedtime 16`, puts the
+camera at the view, waits 2 s of game time and times 1000 frames with the
+frame rate uncapped (`com_maxfps 0`, `r_swapInterval 0`, no validation).
+The runs interleave the renderers (run i starts with renderer i), and the
+summary gives medians with the lowest and highest. `--renderers` takes any
+`renderer_<name>.so` of the binary directory: a copy of an older
+`renderer_vulkan.so` under another name compares two builds in the same
+batch, which is how every change below was measured. What it reports:
+
+- frame time: wall clock time of the 1000 frames;
+- renderer time, with `renderer_timed.so` (`tools/rtimer/rtimer.c`, built
+  by `tools/rtimer/build.sh`; perf.py runs `cl_renderer timed` with
+  `MOH_TIMED_RENDERER=<renderer>`): the main thread's time in the
+  renderer's exports per frame, with a microsecond clock, for GL1 and
+  Vulkan alike: `scene` (`RenderScene`, the front end), `2d` (`Set2DWindow`,
+  `DrawStretchPic`, `DrawString`, ...: in OpenMoHAA they run the queued
+  render commands, so this is where the 3D view's back end runs), `end`
+  (`EndFrame`: the rest of the back end, swap or present), and `load`
+  (time in the registration exports since startup);
+- GPU busy (amdgpu's `gpu_busy_percent`) and the clock of the core running
+  the main thread, sampled every 5 ms;
+- for Vulkan, `vkinfo` after loading and around the measured frames: GPU
+  time per frame from timestamps (and the copy to the swapchain image,
+  when there is one), draws, render passes, vertex bytes, waits; pipelines,
+  textures and allocations created while loading;
+- how many CPUs other processes kept busy (from `/proc/stat` minus the
+  game's CPU time); about one is the compositor showing a thousand frames
+  a second, more is flagged. `--pause PID,...` stops other processes
+  (SIGSTOP/SIGCONT) during each measurement, only for processes whose
+  owner agreed.
+
+`--stacks` preloads `libstacks.so` (`tools/rtimer/stacks.c`), which
+interrupts the main thread every millisecond of wall clock time and
+records its backtrace; `stacks.py` symbolizes them (addr2line) and prints
+self and inclusive time per function and the call paths below one. It needs
+no privileges (perf is refused with the default
+`kernel.perf_event_paranoid` of Ubuntu) and shows time spent waiting
+(fences, the swap) where perf's CPU samples show nothing.
+
+What makes simpler measurements misleading:
+
+- `com_maxfps 0` still means at most 1000 frames per second: `Com_Frame`
+  waits until a whole millisecond has passed since the last frame. On an
+  idle machine most views reach that at 640x480 with both renderers, so the
+  frame time no longer shows differences; the renderer time does.
+- `com_speeds`' `rf` and `bk` are whole milliseconds, read right after the
+  frame limiter's millisecond tick, and `bk` only counts the last batch of
+  render commands of a frame; most of the back end runs before it, inside
+  the UI's `Set2DWindow`. Both renderers were affected alike.
+- The first numbers of this section (2026-10-14 morning) were taken while
+  15 unrelated CPU-bound processes ran on the 16-core machine; they are
+  replaced by the ones below. That run read a Vulkan front end of 1.15 ms
+  against GL1's 0.84 ms in the `m6l1a` forest at 1080p: it was
+  preemption and the `com_speeds` artifacts above; on the idle machine the
+  front ends take 0.34 and 0.32 ms.
+
+Results (2026-10-14 evening, idle machine: load average 0.4 to 1.8 with
+the game itself, other processes 0.4 to 1.8 CPUs; AMD Radeon 780M, radeonsi
+for GL1 and RADV, Mesa 26.0.8, windowed under Xwayland; medians of 3
+interleaved runs, ms per frame). "before" is the renderer at the start of
+the performance work (commit 41274ef3), "after" the current one; the GPU
+columns are the main pass before and after the last change (the depth
+image only readable while readbacks are wanted, see below):
+
+| view | size | frame GL1 | frame before | frame after | renderer GL1 | renderer before | renderer after | GPU before last change | GPU after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `m6l1a` forest `6152 -6528 5500 0 135 0` | 640x480 | 1.043 | 1.048 | 1.024 | 0.874 | 0.881 | 0.865 | 0.45 | 0.44 |
+| | 1920x1080 | 1.333 | 1.578 | 1.298 | 1.139 | 1.359 | 1.097 | 1.41 | 1.23 |
+| | 3840x2160 | 4.398 | | 4.084 | 3.969 | | 3.760 | 4.64 | 4.05 |
+| `obj/obj_team2` yard `1744 2832 68 0 315 0` | 640x480 | 0.999 | 0.999 | 0.999 | 0.543 | 0.549 | 0.533 | 0.22 | 0.22 |
+| | 1920x1080 | 0.999 | 1.000 | 0.999 | 0.638 | 0.623 | 0.556 | 0.62 | 0.62 |
+| `dm/mohdm3` overview `3000 -2400 1500 50 0 0` | 640x480 | 0.999 | 0.999 | 0.999 | 0.635 | 0.610 | 0.566 | 0.29 | 0.27 |
+| | 1920x1080 | 0.999 | 0.999 | 0.999 | 0.748 | 0.729 | 0.699 | 0.78 | 0.73 |
+| `m3l3` forest path `-6800 3248 76 0 270 0` | 640x480 | 1.119 | 1.080 | 1.077 | 0.901 | 0.858 | 0.860 | 0.36 | 0.35 |
+| | 1920x1080 | 1.306 | 1.273 | 1.213 | 1.006 | 0.987 | 0.936 | 1.02 | 0.93 |
+
+(0.999 is the 1000 frames per second limit; GPU: from the start of the
+frame's main command buffer to its end, timestamps; the 3840x2160 row is a
+separate batch of 3 runs with GL1, the build before the last change and
+the current one.)
+
+The renderer time splits, at 1920x1080 after: `m6l1a` 0.343 front end,
+0.674 2D calls with the 3D back end, 0.081 end of frame (GL1 0.319, 0.653,
+0.162); `m3l3` 0.126, 0.737, 0.075 (GL1 0.129, 0.710, 0.165). The end of
+frame is cheaper with Vulkan everywhere (no driver flush and swap), the
+front end is the same code (equal within 3 %, except 7 to 8 % more in the
+`m6l1a` forest and 7 % less in the `obj_team2` yard at 1080p, with the
+same CPU clock: not explained; in the afternoon runs it was 8 % less in
+the `dm/mohdm3` overview instead) and the back end is mostly the
+renderer's own tessellation shared with GL1.
+
+Profile of the `m6l1a` forest at 1920x1080, where Vulkan tied GL1 in the
+first numbers and was 18 % slower on the idle machine (1.575 against 1.335
+ms): Vulkan was GPU-bound. The GPU timestamps gave 1.545 ms of GPU work
+per frame (1.41 main pass, 0.13 copy of the offscreen image to the
+swapchain image), more than the frame's CPU work, and the CPU waited 0.22
+ms per frame for the frame fence (inside `Set2DWindow`, where the back end
+starts the frame). GL1 was CPU-bound. The stack samples (1 kHz, main
+thread) put 0.33 to 0.35 ms per frame in the front end with both, 0.65 to
+0.66 ms in the 3D back end (`RB_RenderDrawSurfList`) with both, of which
+GL1's driver takes 0.27 ms on the main thread and Vulkan's `vk_draw` with
+RADV 0.07 ms for 430 draws; the rest is the renderer's tessellation
+(skeletal and static models, `ComputeColors`, terrain). The CPU clock was
+the same (3.6 GHz). So the backend's own CPU cost was small and the plan
+items that reduce it (vertex copies, render pass breaks) could not pay off
+much; the GPU time could:
+
+- the copy at present: `vkCmdCopyImage` costs the same as the blit; drawing
+  into the swapchain image removed it (0.13 ms of GPU at 1080p, 0.47 ms at
+  3840x2160): 1.575 to 1.451 ms per frame (635 to 689 fps), 5.15 to 4.69 ms
+  at 3840x2160;
+- the main pass: it took 6 to 7 % more GPU time than GL1's whole frame
+  where both were GPU-bound (3840x2160: 4.63 ms against GL1's 4.39 ms
+  frame; at 1080p with HiZ off, `RADV_DEBUG=nohiz`/`AMD_DEBUG=nohyperz`:
+  2.08 against 1.94 ms), growing with the pixel count (0.23 ms at 320x240,
+  0.41 at 640x480, 0.74 at 1280x720, 1.41 at 1080p, 4.63 at 3840x2160:
+  about 0.25 ms plus 0.52 ms per megapixel). The cause was the depth
+  buffer's compression mode; see below.
+
+How the main pass was explained (2026-10-14 evening, same machine, idle;
+`m6l1a` forest, medians of 2 or 3 runs):
+
+- The shaders are not it. RADV's fragment shaders of the dominant
+  pipelines (`MESA_SHADER_CACHE_DISABLE=true RADV_DEBUG=shaders`) are as
+  short as radeonsi's fixed-function ones (`AMD_DEBUG=ps,vs,asm`: with Mesa
+  26 nothing is printed without `asm`) or shorter. Both are ACO, wave64, in
+  whole-quad mode for the derivatives and export FP16 color. The
+  lightmapped fogged two-texture shader is 69 instructions; radeonsi's
+  is a 19-instruction prolog (color interpolation), 80 in the main part
+  (it divides the texture coordinates by q) and an 8-instruction epilog
+  (its alpha test). The alpha-tested foliage shader demotes and leaves
+  early like radeonsi's kill.
+- Turning hardware features off in both drivers shows where the difference
+  is (3840x2160, ms per frame, GL1 / Vulkan):
+
+  | | GL1 | Vulkan |
+  | --- | --- | --- |
+  | as is | 4.40 | 4.69 |
+  | primitive binning off (`AMD_DEBUG=nodpbb`, `RADV_DEBUG=nobinning`) | 4.86 | 5.85 |
+  | DCC off (`nodcc`) | 4.80 | 5.85 |
+  | binning and DCC off | 5.13 | 6.82 |
+  | binning and HiZ off (`nohyperz`, `nohiz`) | 9.57 | 10.94 |
+
+  Every feature that saves memory traffic hides part of the gap: Vulkan
+  moved more data per pixel. (RADV's binning differs from radeonsi's too,
+  128x128 bins where radeonsi uses 128x64 for depth-tested draws, see
+  Plan, Remaining; with binning off in both the gap is larger, not
+  smaller.)
+- Not the color writes: writing alpha too (alpha 1, so the RGB write mask
+  no longer makes partial writes) changed nothing, with binning off too
+  (5.84 against 5.86 ms). Not the textures: RADV gives DCC only to color
+  attachments larger than 512x512, radeonsi to textures too, but forcing
+  it (`RADV_DEBUG=forcecompress`) saved only 0.02 to 0.03 ms. Not the
+  memory: everything is in the 2 GB carve-out (`DEVICE_LOCAL`).
+- By content (`r_drawstaticmodels 0`, `r_drawterrain 0`,
+  `r_farplane_nofog 1`): the 2763 alpha-tested static models are about 80 %
+  of the GPU time (0.81 ms left without them), the terrain 0.32 (GL1) and
+  0.39 ms (Vulkan); without the farplane fog GL1 saves 0.44 ms and Vulkan
+  0.09 ms (that includes the clear of the color buffer to the fog color,
+  which RADV does as a comp-to-single DCC fast clear and which seems to
+  cost GL1 more), so without it the gap was 15 %.
+- The surfaces (`RADV_DEBUG=img`, `AMD_DEBUG=tex`): the color buffers are
+  alike (64KB_R_X with DCC, BGRA8 against BGRX8), but GL1's depth buffer is
+  Z24X8 with HTILE that isn't TC-compatible and ours was D32S8 with
+  TC-compatible HTILE. RADV makes HTILE TC-compatible (the texture unit can
+  read it, so copies and sampling need no decompression) for depth images
+  with `SAMPLED`, `INPUT_ATTACHMENT` or `TRANSFER_SRC` usage, and ours had
+  `TRANSFER_SRC` for depth and stencil readbacks. With TC-compatible HTILE,
+  GFX9 and later keep an 8x8 depth tile compressed only while it holds at
+  most 4 planes (`DECOMPRESS_ON_N_ZPLANES` 5 instead of 15,
+  `ac_get_decompress_on_z_planes` in Mesa); the forest's small alpha-tested
+  triangles put more planes than that in most tiles, which are then
+  written and read uncompressed.
+
+Without `TRANSFER_SRC` (the depth image is now only readable while
+readbacks are wanted, see Implementation notes, Render target) the main
+pass takes 12 to 13 % less GPU time and Vulkan is faster than GL1 where the
+GPU limits:
+
+Medians of 3 interleaved runs (`perf.py`, idle machine: load average 1.1
+to 1.6 with the game, other processes 1.0 to 1.4 CPUs), ms per frame:
+
+| `m6l1a` forest | GL1 | Vulkan before this change | after | GPU main pass before, after |
+| --- | --- | --- | --- | --- |
+| 1920x1080 | 1.370 (730 fps) | 1.455 (687 fps) | 1.328 (753 fps) | 1.412, 1.239 (-12 %) |
+| 3840x2160 | 4.398 (227 fps) | 4.686 (213 fps) | 4.084 (245 fps) | 4.643, 4.046 (-13 %) |
+
+At 1080p Vulkan is CPU-bound again (renderer time 1.115 ms against GL1's
+1.152 and 1.236 before). In the other views of the results table the main
+pass at 1080p went from 1.02 to 0.93 ms (`m3l3` path, -9 %), 0.78 to 0.73
+(`dm/mohdm3` overview, -7 %) and stayed at 0.62 (`obj_team2` yard); their
+frames are CPU-limited.
+
+A depth format without the unused stencil plane (D32 instead of D32S8,
+GL1 has no stencil either) saves 0.5 % more at 3840x2160 and nothing at
+1080p after that; not done.
+
+The plan items, each measured before and after with interleaved builds:
+
+| item | measured |
+| --- | --- |
+| depth image readable only while depth or stencil reads are wanted (new) | main pass -12/-13 % in the `m6l1a` forest at 1080p/3840x2160 (7 % less frame time than GL1 at 3840x2160, 3 % less at 1080p), -9 % `m3l3`, -7 % `dm/mohdm3`, unchanged in `obj_team2`; the same frames as the build before it (see Testing); multisampling unchanged |
+| drawing into the swapchain image (new) | no copy: 8 to 9 % more fps where the GPU limits (above), 0.02 ms less CPU at the end of each frame; screenshots unchanged |
+| frame pacing (acquire right after present) | with vsync (60 Hz, `m6l1a`): start of a frame's recording to its present 16.3 ms with the image acquired at the frame's first render pass (the earlier code waited in the acquire before its copy, the same), 1.7 ms after; frame interval p99/sd 18.4/0.60 ms at 1080p, GL1 18.3/0.61, the copy-based code 18.6/0.69 |
+| texture memory sub-allocator | per map load, `m6l1a`/`obj_team2`/`dm/mohdm3`/`m3l3`: 317/524/557/526 device allocations become 10/11/11/11, time in `vkAllocateMemory` 7.3/12.2/13.5/11.9 ms becomes 0.3 ms, creating texture storages 8.6/14.5/16.3/14.6 ms becomes 1.5/2.5/3.0/2.7 ms, renderer load time 339/688/616/667 becomes 327/673/595/666 ms; per frame: no change (submissions 41 to 51 µs per frame either way) |
+| pipeline cache on disk | 15 pipelines from startup to the first `m6l1a` view: 17.5 to 19.4 ms with no file and `MESA_SHADER_CACHE_DISABLE=true`, 0.2 ms with the file; with RADV's own cache 0.5 ms without the file. No pipeline was created during the measured frames |
+| vertex copies of multi-pass shaders | vertex bytes per frame 588/826/716/509 KB become 584/819/690/503 KB; no measurable time |
+| fewer render pass breaks | nothing to remove: 1.00 render pass and 1 submission per frame in the 4 views, in `mohdm1_dlight` (94 KB of dynamic lightmaps uploaded per frame, all before the first draw that uses them) and in the `m2l1` sky portal |
+| `r_ext_multisample` | 4 samples, `m6l1a` at 1080p: 2.94 ms per frame against GL1's 2.71 ms (4.23 ms while the depth/stencil buffer was resolved with every render pass; 2.94 against 2.70 again after the depth image change) |
+
+Multisampling matches GL1's (`r_ext_multisample 4` with both): in the
+`mohdm1` views 9.1 % of the pixels differ, nearly all by 1, against 7.3 %
+without multisampling; each renderer changes the same ~4 % of the pixels
+(edges, max 112) when it is turned on.
 
 ## Backend contract
 
@@ -494,11 +959,20 @@ in the fog-colored background of `m2l3`).
 - `vk_begin_frame` is called from `RB_DrawBuffer` at the start of each frame,
   but `RE_StretchRaw`, texture uploads and other front-end paths can run
   before the first command of a frame: the frame starts lazily on the first
-  operation.
-- Screenshot commands are queued when the console command runs, before the
-  frame's `RC_DRAW_BUFFER`, so `vk_read_pixels` usually runs before anything
-  is drawn: it must then return the last presented frame, like a GL back
-  buffer that kept its contents.
+  operation. In OpenMoHAA the back end mostly runs inside the 2D exports:
+  `Set2DWindow`, `DrawStretchPic`, `DrawString`, ... call
+  `R_IssuePendingRenderCommands` and draw at once, and the UI calls
+  `Set2DWindow` before and after the 3D view, so the 3D view's draw
+  surfaces are executed there, not in `RE_EndFrame`.
+- The color contents of the frame are undefined until it draws or clears
+  them, like a GL back buffer (frames are drawn into the swapchain image,
+  see Implementation notes). Screenshots, levelshots and resampled
+  screenshots are therefore taken at the end of the frame, in
+  `RB_SwapBuffers` (`RB_TakePendingScreenshots`), where GL1 read the back
+  buffer when the command ran, before the frame was drawn (an older frame on
+  Mesa); the "Wrote" centerprint of the `screenshot` command is run once
+  the file is written, so it isn't in the picture. With `pause` (see
+  Deterministic 3D views) both show the same frame.
 - `vk_finish` is called at swap for frames with no 3D view (menus) and around
   cinematics, as `glFinish` was. It waits for the fence of the last
   submission; what the current frame recorded is submitted at
@@ -506,13 +980,20 @@ in the fog-colored background of `m2l3`).
 - `vk_read_pixels` must see everything recorded so far in the frame and the
   frame must continue afterwards (screenshots, AVI capture,
   `r_measureOverdraw`). It waits for the GPU, which is acceptable for these
-  occasional reads.
+  occasional reads. Depth and stencil read as 0 until the depth image is
+  readable: without multisampling it only is from the start of the frame
+  after a depth or stencil read, or after `vk_want_depth_reads` (called
+  before the frame starts, it makes that frame's reads work;
+  `RE_BeginFrame` calls it for `r_measureOverdraw`), until 300 frames
+  after the last one (see Implementation notes, Render target).
 - `vk_queue_depth_reads` records reads of single depth values in order with
   the draws without waiting; `vk_get_depth_read` returns a result once the
   frame that recorded it has completed. The backend collects the results
   when it reuses the frame slot, so a read made in frame N is available
   from frame N + 2 on (2 frames in flight), whatever the GPU timing, and
-  stays available for 2 frames. Ids from before a `vid_restart` are lost.
+  stays available for 2 frames. Ids from before a `vid_restart` are lost,
+  and the reads of a frame in which the depth image isn't readable get id
+  0 (lost); they make it readable from the next frame.
 
 ### Flares
 
@@ -548,7 +1029,9 @@ same result. This was checked with a temporary hack that adds a flare for
 every dlight (`RB_AddDlightFlares`) in the old (synchronous) and new code:
 frames are identical once the flares have faded in, and the logged
 intensities of the new code follow the old ones exactly 2 frames later.
-Like GL1, `RB_RenderFlare` doesn't set `tess.vertexColorValid`, so
+The first reads (and the first after 300 frames without any) are lost
+while the depth image becomes readable (see Frames and synchronisation),
+which delays the first test by one more frame. Like GL1, `RB_RenderFlare` doesn't set `tess.vertexColorValid`, so
 `rgbGen vertex` skips the flare color and the quad draws with stale colors;
 the test set it to see the fade.
 
@@ -578,8 +1061,8 @@ D24), and 8 stencil bits only when `r_stencilbits` asked for a stencil buffer
 (0 by default on Linux, like GL1, which disables `r_shadows 2` and
 `r_measureOverdraw`); the depth format always has a stencil aspect.
 `deviceSupportsGamma`, `vidWidth`, `vidHeight` and `isFullscreen` come from
-`sdl_vkimp.c`. `r_stereoEnabled` is not supported; `r_ext_multisample` is
-not implemented yet.
+`sdl_vkimp.c`. `r_stereoEnabled` is not supported. `r_ext_multisample`
+selects the sample count (see Implementation notes).
 
 ## Implementation notes
 
@@ -596,27 +1079,84 @@ not implemented yet.
   else `VK_EXT_line_rasterization` (with `bresenhamLines`, and
   `stippledBresenhamLines` for line stipple; `vkCmdSetLineStipple*` is
   loaded under the enabled extension's name), `VK_KHR_portability_subset`
-  (MoltenVK, with `VK_KHR_portability_enumeration` on the instance).
-- **Render target.** The frame is drawn into an offscreen `R8G8B8A8_UNORM`
-  color image and a depth/stencil image of `glConfig.vidWidth x vidHeight`,
-  with one render pass that loads and stores both. `vk_end_frame` blits the
-  color image to the swapchain image (scaled when the window size differs,
-  e.g. during a resize before the `vid_restart`). The target keeps its
-  contents between frames, readbacks don't depend on the swapchain format,
-  and the swapchain only needs `TRANSFER_DST` usage. The render pass ends for
-  every readback and every upload that must be ordered with draws, and
-  restarts on the next draw or clear.
+  (MoltenVK, with `VK_KHR_portability_enumeration` on the instance),
+  `VK_KHR_create_renderpass2` with `VK_KHR_depth_stencil_resolve`
+  (multisampling).
+- **Render target.** The color target of a frame is the swapchain image it
+  presents (`VK_SelectTarget`, at the frame's first render pass, readback or
+  present), when the swapchain has the size of the render target
+  (`glConfig.vidWidth x vidHeight`) and images that can be color
+  attachments and transfer sources: the color format is the swapchain's
+  (`B8G8R8A8_UNORM` on RADV, `R8G8B8A8_UNORM` when the swapchain has neither
+  of the two), each swapchain image has a view and a framebuffer, and
+  readbacks swap red and blue for BGRA. The image comes from
+  `UNDEFINED`, so its contents are undefined until the frame draws, like a
+  GL back buffer (see Frames and synchronisation). Otherwise (a window
+  resized before its `vid_restart`, no usable swapchain) the frame is drawn
+  into an offscreen color image of that format, blitted (scaled) to the
+  swapchain image at present; frames that drew nothing present nothing. The
+  depth/stencil image is always offscreen. Without multisampling it can
+  only be copied from (`TRANSFER_SRC` usage) while depth or stencil reads
+  are wanted (`VK_UpdateDepthTarget`, at the start of a frame, replaces it
+  with a readable image after a read or `vk_want_depth_reads`, and with a
+  non-readable one 300 frames after the last; the new image starts cleared
+  and the old one and its framebuffers go through the deferred destruction
+  lists): RADV gives depth images that can be copied from or sampled
+  TC-compatible HTILE, which keeps an 8x8 depth tile compressed only while
+  it holds at most 4 planes (15 otherwise), and that cost 12 to 13 % of the
+  GPU time in the `m6l1a` forest (see Performance). A frame's depth and
+  stencil contents at its start are never needed (every 3D view clears
+  depth first, 2D drawing doesn't test it), so the switch loses nothing.
+  With multisampling the draws use the multisampled depth image, which is
+  never copied from, and the single-sampled one is always readable. One
+  render pass loads and stores
+  both attachments; it ends for every readback and every upload that must
+  be ordered with draws, and restarts on the next draw or clear. Drawing
+  into the swapchain image saves the copy of every frame: 0.13 ms of GPU
+  time at 1920x1080 on a Radeon 780M, 0.47 ms at 3840x2160 (see
+  Performance).
+- **Multisampling** (`r_ext_multisample` 2 to 16, latched). The draws go to
+  multisampled color and depth/stencil images of the sample count asked for
+  (the largest the device supports up to it, for color, depth and stencil
+  attachments); every render pass resolves the color (average of the
+  samples) into the frame's color target, so presenting and color readbacks
+  work as without it, and the pipelines rasterize with that many samples
+  (no sample shading, no alpha to coverage, like GL1's multisampled visual).
+  The depth/stencil buffer is resolved (sample 0, `VK_KHR_depth_stencil_
+  resolve`, render pass 2) into the single-sampled depth image only before
+  a depth or stencil readback (`VK_ResolveDepth`, an empty render pass of
+  its own): resolving it with every render pass cost 1.3 ms per frame at
+  1920x1080 with 4 samples. Without the extensions multisampling is off
+  (with a warning). Barriers on the depth image include the resolve's color
+  attachment stage and access.
 - **Frames.** Two frames in flight. Each frame slot has a command pool with
-  three command buffers (upload, main, present), a fence, an acquire
-  semaphore, a vertex/index buffer (4 MB, doubled when full), a 32 MB
-  staging buffer and a buffer for 256 depth reads. The rendering is
-  submitted first; then the swapchain image is acquired and the present
-  command buffer (blit and layout transitions) is submitted with the frame
-  fence, which covers every earlier submission. The semaphores signaled for
-  presentation are per swapchain image (presents have no fence). The
-  swapchain is recreated when the drawable size changes or on
-  `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR`; with no area (minimized)
-  the frame is submitted without presenting.
+  three command buffers (upload, main, and present for frames drawn
+  offscreen), a fence, a vertex/index buffer (4 MB, doubled when full), a
+  32 MB staging buffer, a buffer for 256 depth reads and a query pool of 4
+  GPU timestamps (`vkinfo`). A frame drawn into the swapchain image is
+  submitted once, waiting for the image's acquire semaphore at the color
+  attachment stage, signaling the image's present semaphore and the frame
+  fence; the image goes to `PRESENT_SRC` at the end of the main command
+  buffer. A frame drawn offscreen submits the rendering, then the present
+  command buffer (blit and layout transitions) with the frame fence. The
+  semaphores signaled for presentation are per swapchain image (presents
+  have no fence). The swapchain is recreated when the drawable size changes
+  or on `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR`; with no area
+  (minimized) the frame is submitted without presenting.
+- **Frame pacing.** Right after presenting a frame drawn into the swapchain
+  image, `vk_end_frame` acquires the image of the next frame
+  (`VK_AcquireNextImage`, the image is "held" until a frame uses it). With
+  a vsync present mode (`r_swapInterval` non-zero) `vkAcquireNextImageKHR`
+  is where the CPU waits for the display, so the wait now happens before
+  the game runs the next frame, as GL's swap waits after queuing the
+  present, instead of between the next frame's game logic and its present:
+  the time from the start of a frame's recording to its present went from
+  16.3 to 1.7 ms at 60 Hz (one refresh less of input latency). Acquire
+  semaphores come from a ring of 3 (frames in flight + 1), not from the
+  frame slot, since an image is acquired before its frame starts; a
+  semaphore is reused once the submission that waited for it has
+  completed. A held image's semaphore is waited for by an empty submission
+  before the swapchain is recreated or destroyed.
 - **Mid-frame flush.** `vk_read_pixels`, and uploads that don't fit in the
   staging buffer, submit what the frame recorded so far, wait for it and
   continue in the same command buffers (a new main-buffer "segment").
@@ -635,9 +1175,17 @@ not implemented yet.
   waited for (or after a mid-frame flush, when the GPU is idle).
 - **Textures** (`vk_image.c`). `texnum` encodes a slot of a 4096-entry table
   plus a per-slot generation, so a handle is only reused after 2^20 images
-  went through the same slot. Each storage is a `VkImage` with its own
-  memory (no sub-allocator yet), a view (with the `A = ONE` swizzle for RGB
-  formats) and a descriptor set holding view and sampler. Samplers are
+  went through the same slot. Each storage is a `VkImage`, a view (with the
+  `A = ONE` swizzle for RGB formats) and a descriptor set holding view and
+  sampler. Images are placed in 64 MB blocks of device memory, first fit
+  in a sorted list of free ranges per block with merging on release (one
+  block per memory type to start; an image larger than 16 MB gets memory of
+  its own); a released range goes through the deferred destruction lists
+  like the image, and an empty block is freed unless it is the last one of
+  its memory type. A map load now makes 10 or 11 device memory allocations
+  instead of 300 to 560 (one per texture), 7 to 13 ms less in
+  `vkAllocateMemory`, and no driver limit on the number of allocations
+  (`maxMemoryAllocationCount`, 4096 on some) is in sight. Samplers are
   cached by filter and wrap mode. When `r_textureMode` changes, mipmapped
   textures get new descriptor sets (sets used by recorded commands can't be
   updated). Uploads go to the upload command buffer, submitted before the
@@ -650,7 +1198,15 @@ not implemented yet.
 - **Draws.** Each draw copies positions (repacked to 12 bytes), colors (RGBA8
   per vertex, or one float RGBA color read with a binding stride of 0),
   texture coordinates and 32-bit indexes into the frame's vertex buffer, in
-  separate bindings.
+  separate bindings. The passes of a multi-pass shader draw the same
+  positions: the stage iterators set them with `RB_SetTessVertexArray`,
+  which gives the draws a version (`drawGeometry_t::version`), and a draw
+  with the same version, positions pointer, stride and vertex count as the
+  previous one binds the copy made for it (the indexes too when they are
+  the same array and count; the dlight pass has its own). The copy is valid
+  until the frame's vertex buffer is reused from its start (new frame,
+  mid-frame flush). In the measured views this saves 1 to 4 % of the
+  vertex bytes (most surfaces are one multitextured pass).
 - **Push constants** (`vkPushConstants_t`, 120 bytes of the guaranteed 128).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -671,7 +1227,20 @@ not implemented yet.
   pipelines with a clip plane use the vertex shader built with
   `gl_ClipDistance`.
   Pipelines are created on first use and cached for the life of the device,
-  with a `VkPipelineCache` that is not saved to disk yet.
+  with a `VkPipelineCache` saved to `vkpipelines.cache` (fs_homepath) when
+  the device is destroyed, if it grew, and loaded at startup when its
+  header (vendor, device, pipeline cache UUID) matches; a driver that
+  refuses the data gets an empty cache. With a cold driver shader cache
+  (`MESA_SHADER_CACHE_DISABLE=true`) a pipeline takes about 1.2 ms to
+  create, 18 ms for the 15 pipelines up to the first view of `m6l1a`, and
+  0.2 ms with the file; RADV's own disk cache brings it to 0.5 ms without
+  the file.
+- **Counters** (`vkinfo`, `vkStats_t`). Every `vkAllocateMemory` goes
+  through `VK_AllocateMemory`, which counts it; GPU times come from
+  timestamps at the start and end of the main command buffer and around the
+  copy to the swapchain image (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`), read without
+  waiting when the frame slot is reused; times on the CPU use
+  `SDL_GetPerformanceCounter`.
 - **Shutdown and `vid_restart`.** `vk_shutdown` waits for the device and
   destroys everything, including the instance; `vid_restart` recreates the
   window, so the backend starts from scratch.
@@ -723,13 +1292,21 @@ Differences from GL1 (all in paths that were dead, broken or debug only):
   surfaces can resolve differently from GL1's 24-bit buffer (not seen in the
   comparisons: quantizing the depth to 24 bits in the shader changed no
   pixel of the test views).
-- A screenshot taken before the frame is drawn (the `screenshot` command)
-  shows the last presented frame; GL1 shows the back buffer the driver hands
-  out, an older frame on Mesa.
+- Screenshots, levelshots and resampled screenshots are taken at the end of
+  the frame in which the command runs, once it is drawn; GL1 read the back
+  buffer the driver handed out when the command ran, an older frame on
+  Mesa. The "Wrote" centerprint comes after the file is written, so it is
+  not in the picture (GL1's never was either).
 - Light flares (`RB_TestFlare`, unreachable) see depth changes 2 frames
   later than GL1 and don't force a `glFinish`-like wait (see Flares).
 - `GLS_CLAMP_EDGE` is ignored. Nothing sets it; GL1 handled it by changing
   the wrap mode of the textures bound at that moment, permanently.
+- Depth and stencil reads return 0 (`vk_queue_depth_reads`: lost) in a
+  frame whose depth buffer isn't readable yet: the first frame with reads,
+  unless `vk_want_depth_reads` announced them (`r_measureOverdraw` does, so
+  its counts match GL1 from the first frame), and again after 300 frames
+  without reads. The depth and stencil contents don't carry over into a
+  frame where the depth buffer switches (no code needs them to).
 
 ## Plan
 
@@ -774,14 +1351,76 @@ Done:
    (covered by the view, see GL1 quirks), `GLS_CLAMP_EDGE` (never set;
    ignored) and `RE_UploadCinematic` (the shader parser has no videoMap).
 
+6. (first half) Parity pass against GL1 on the maps not covered before:
+   `dm/mohdm3`, `dm/mohdm6`, `dm/mohdm7`, `m1l1`, `m1l2a`, `m1l3a`, `m3l1a`,
+   `m3l2`, `m3l3`, `m5l1a`, `m5l2a`, `m5l3`, `m6l1a`, `m6l2a`, `m6l3a`,
+   `obj/obj_team1` to `obj/obj_team4` (see Testing for the content and the
+   numbers). Every difference beyond the driver ones was traced to random
+   game content, views from outside the world or GL1 saving a black or
+   stale frame; no renderer change was needed. The tools gained the
+   outside-world and black-frame warnings, `bspinfo.py` terrain, static
+   model, decal and `--view` queries, `ui_gmbox 0` in `run.sh`, and
+   `perf.py` with first frame times.
+
+6. (second half) Performance, on an idle machine (see Performance for the
+   method and numbers). The tools now measure the renderer's own time with
+   a microsecond clock on both renderers (`renderer_timed.so`), GPU time
+   from timestamps and backend counters (`vkinfo`), and sample the main
+   thread's stack (`libstacks.so`, `stacks.py`). In order of measured
+   benefit:
+   - the depth image is only readable (`TRANSFER_SRC`) while depth or
+     stencil readbacks are wanted (not in the original plan; it explains
+     the main pass that took 6 to 7 % more GPU time than GL1's whole
+     frame): RADV gives readable depth images TC-compatible HTILE, which
+     keeps a depth tile compressed only up to 4 planes; 12 to 13 % less GPU
+     time in the `m6l1a` forest, whose frames now take 7 % less time than
+     GL1's at 3840x2160 and 3 % less at 1920x1080;
+   - frames are drawn into the swapchain image instead of an offscreen
+     image copied at present (not in the original plan; the profile of the
+     `m6l1a` forest showed Vulkan was GPU-bound there and the copy took 8 %
+     of its GPU time): 8 to 9 % more frames per second where the GPU
+     limits;
+   - frame pacing: the next swapchain image is acquired right after the
+     present, so with vsync the wait for the display comes before the game
+     runs the next frame (one refresh less of latency, jitter like GL1's);
+   - the texture memory sub-allocator: 10 or 11 device allocations per map
+     instead of 300 to 560, 10 to 25 ms less per map load, no per-frame
+     change;
+   - the pipeline cache saved to disk: 18 ms of pipeline compilation up to
+     the first view of `m6l1a` when the driver's shader cache is cold, 0.4
+     ms on RADV with its own cache;
+   - reusing the vertex copies of multi-pass shaders: 1 to 4 % fewer vertex
+     bytes, no measurable time;
+   - fewer render pass breaks: not done, there are none to remove (one
+     render pass per frame in every measured view, with dynamic lights and
+     the sky portal too);
+   - `r_ext_multisample`: multisampled images resolved into the frame's
+     color target, the depth/stencil buffer only for readbacks (1.3 ms per
+     frame saved at 1920x1080), matching GL1's multisampling about as
+     closely as without it.
+
 Remaining:
 
-6. Parity pass against GL1 screenshots on several maps, then performance:
-   a memory sub-allocator for textures (one allocation per image now),
-   saving the pipeline cache to disk, fewer render pass breaks, avoiding
-   repeated copies of the same vertexes for multi-stage shaders, frame
-   pacing, `r_ext_multisample` (a multisampled target resolved into the
-   current one).
+- Leads left from the main pass investigation (see Performance), none
+  worth more than a few percent as far as measured: a depth format
+  without the unused stencil plane when `r_stencilbits` is 0 (D32 instead
+  of D32S8: 0.5 % less GPU time at 3840x2160, nothing at 1080p); RADV's
+  primitive binning uses 128x128 bins where radeonsi uses 128x64 for
+  depth-tested draws on this GPU (in `radv_gfx10_compute_bin_size`, Mesa
+  26.0.8, the final `extent.height = MAX2(extent.width, ...)` and the depth
+  bin's height taken from the color bins look like typos; a 128x128 bin
+  needs more depth tag space than the 78 KB the formula allows). Neither
+  can be changed from the application; testing the bin size needs a
+  patched RADV (not done), and if it matters the fix belongs in Mesa.
+- `r_ext_multisample 4` is still slower than GL1's (2.94 against 2.70 ms
+  per frame in the `m6l1a` forest at 1080p, the same before and after the
+  depth image change: the multisampled depth image never had
+  `TRANSFER_SRC`); not investigated.
+- The front end (the same code) takes 8 % longer with Vulkan in the
+  `m6l1a` forest (0.30 against 0.28 ms per frame at 640x480) and 7 to 8 %
+  less in one other view at 1080p (`dm/mohdm3` in one batch, `obj_team2` in
+  another), equal within 3 % in the others, with the same CPU clock; not
+  explained (code layout, cache effects of the back end), 2 % of the frame.
 
 Known risks, not seen on RADV but worth handling before shipping:
 
@@ -789,15 +1428,14 @@ Known risks, not seen on RADV but worth handling before shipping:
   swapchain recreation and destroyed at shutdown after `vkDeviceWaitIdle`,
   which formally doesn't cover a queued present's semaphore wait. Drivers
   that defer presentation (NVIDIA, MoltenVK) are the likeliest to object.
-  `VK_EXT_swapchain_maintenance1` present fences would make it exact.
+  `VK_EXT_swapchain_maintenance1` present fences would make it exact. The
+  same holds for the swapchain image acquired ahead (Frame pacing), released
+  with an empty submission before the swapchain goes.
 - MoltenVK (portability subset): the `A = ONE` view swizzle needs
   `imageViewFormatSwizzle` and the stride-0 vertex bindings need
   `vertexAttributeAccessBeyondStride`; neither is queried. The fallbacks
   are forcing alpha to 1 in the shader for RGB textures and pushing the
   constant color as a push constant.
-- One `vkAllocateMemory` per texture storage: Windows drivers report
-  `maxMemoryAllocationCount` 4096, which `MAX_DRAWIMAGES` (2048) plus
-  replaced storages stays under, but not by much.
 - Without `VK_KHR/EXT_line_rasterization` (or without `bresenhamLines`)
   lines use the driver's default rule, which may differ from GL's by a pixel
   here and there; only debug drawing has lines.

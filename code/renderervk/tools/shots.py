@@ -24,6 +24,13 @@ before it is drawn, which is the last presented frame with Vulkan but an
 older one with GL (Mesa hands out a back buffer from 2 or 3 swaps ago);
 while paused all frames are the same.
 
+r_showcluster 1 prints the view cluster whenever it changes and every shot
+is announced with `echo shot <name>`, so compare.sh can warn about shots
+taken from outside the world (cluster -1): there, parts of the frame are
+covered by no surface and keep whatever the buffer held before (the
+previous frame with Vulkan, an older back buffer with GL1), so they differ
+between the renderers without meaning anything.
+
 The script goes to $MOH_HOMEPATH/main/<cfg name>.cfg (default homepath
 /tmp/moh-vktest, default cfg name: the list file name without extension).
 Don't use the name of a cfg the game runs itself, like menu.cfg.
@@ -50,7 +57,7 @@ def main():
         cmd, _, rest = line.partition(" ")
         if cmd in ("map", "spmap"):
             out += [f"{'devmap' if cmd == 'map' else 'spdevmap'} {rest}", "wait 3000", "finishloadingscreen", "wait 1000",
-                    "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0"]
+                    "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0", "r_showcluster 1"]
             started = True
         elif cmd == "set":
             out.append(rest)
@@ -61,7 +68,7 @@ def main():
             shot, pos, ang = parts[0], parts[1:4], parts[4:7]
             wait = parts[7] if len(parts) > 7 else "2000"
             out += [f"tele {' '.join(pos)}", f"face {' '.join(ang)}", f"wait {wait}",
-                    "pause", "wait 300", f"screenshot {shot}", "wait 100", 'centerprint " "',
+                    "pause", "wait 300", f"echo shot {shot}", f"screenshot {shot}", "wait 100", 'centerprint " "',
                     "pause", "wait 100"]
         else:
             sys.exit(f"unknown directive: {line}")

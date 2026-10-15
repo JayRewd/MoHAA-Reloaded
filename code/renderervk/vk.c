@@ -22,11 +22,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 // vk.c -- Vulkan implementation of the backend interface in vk.h
 //
-// Frames: the renderer draws into an offscreen color and depth/stencil
-// target of glConfig.vidWidth x vidHeight. At the end of the frame the color
-// target is blitted to the swapchain image and presented. The target keeps
-// its contents between frames, like a GL back buffer, so reading pixels
-// before anything is drawn returns the last presented frame.
+// Frames: the renderer draws into a color target and an offscreen
+// depth/stencil image of glConfig.vidWidth x vidHeight. The color target is
+// the swapchain image the frame presents, acquired at the first render pass
+// of the frame (VK_SelectTarget), or, when the swapchain doesn't have the
+// size of the render target (a window resize before the vid_restart) or
+// can't be drawn to, an offscreen image blitted to the swapchain image at
+// present. Like a GL back buffer, the color target's contents are undefined
+// until the frame draws or clears it.
 //
 // Each frame records into a main command buffer (draws, clears, readbacks
 // and uploads that must be ordered with draws) and an upload command buffer
@@ -99,6 +102,23 @@ static struct {
 static vkPipelineKey_t	vk_lastKey;
 static VkPipeline		vk_lastPipeline;
 
+// where the positions and indexes of the last draw with a version were
+// copied (see drawGeometry_t::version); valid while vk_vertexEpoch is the
+// same: the vertex buffer of the frame is reused from the start after a
+// new frame starts or a mid-frame flush
+static struct {
+	uint64_t		epoch;
+	unsigned int	version;
+	const float		*xyz;
+	int				xyzStride, numVertexes;
+	VkBuffer		buffer;
+	VkDeviceSize	xyzOffset;
+	const glIndex_t	*indexes;
+	int				numIndexes;
+	VkDeviceSize	indexOffset;
+} vk_lastGeometry;
+static uint64_t			vk_vertexEpoch = 1;
+
 /*
 ====================================================================
 
@@ -126,10 +146,43 @@ uint32_t VK_FindMemoryType( uint32_t typeBits, VkMemoryPropertyFlags required, V
 	return 0;
 }
 
+/*
+===============
+VK_AllocateMemory
+
+Every device memory object of the backend comes from here (counted by
+vkinfo)
+===============
+*/
+VkDeviceMemory VK_AllocateMemory( VkDeviceSize size, uint32_t memoryType ) {
+	VkMemoryAllocateInfo allocInfo;
+	VkDeviceMemory memory;
+	uint64_t start;
+
+	Com_Memset( &allocInfo, 0, sizeof( allocInfo ) );
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = size;
+	allocInfo.memoryTypeIndex = memoryType;
+
+	start = VK_Microseconds();
+	VK_CHECK( qvkAllocateMemory( vk.device, &allocInfo, NULL, &memory ) );
+	vk.stats.allocationUs += VK_Microseconds() - start;
+	vk.stats.allocations++;
+	vk.liveAllocations++;
+
+	return memory;
+}
+
+void VK_FreeMemory( VkDeviceMemory memory ) {
+	if ( memory ) {
+		qvkFreeMemory( vk.device, memory, NULL );
+		vk.liveAllocations--;
+	}
+}
+
 void VK_CreateBuffer( vkBuffer_t *buffer, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred ) {
 	VkBufferCreateInfo info;
 	VkMemoryRequirements memReqs;
-	VkMemoryAllocateInfo allocInfo;
 	void *mapped;
 
 	Com_Memset( buffer, 0, sizeof( *buffer ) );
@@ -142,11 +195,7 @@ void VK_CreateBuffer( vkBuffer_t *buffer, VkDeviceSize size, VkBufferUsageFlags 
 	VK_CHECK( qvkCreateBuffer( vk.device, &info, NULL, &buffer->buffer ) );
 
 	qvkGetBufferMemoryRequirements( vk.device, buffer->buffer, &memReqs );
-	Com_Memset( &allocInfo, 0, sizeof( allocInfo ) );
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memReqs.size;
-	allocInfo.memoryTypeIndex = VK_FindMemoryType( memReqs.memoryTypeBits, required, preferred );
-	VK_CHECK( qvkAllocateMemory( vk.device, &allocInfo, NULL, &buffer->memory ) );
+	buffer->memory = VK_AllocateMemory( memReqs.size, VK_FindMemoryType( memReqs.memoryTypeBits, required, preferred ) );
 	VK_CHECK( qvkBindBufferMemory( vk.device, buffer->buffer, buffer->memory, 0 ) );
 
 	if ( required & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ) {
@@ -160,9 +209,7 @@ void VK_DestroyBuffer( vkBuffer_t *buffer ) {
 	if ( buffer->buffer ) {
 		qvkDestroyBuffer( vk.device, buffer->buffer, NULL );
 	}
-	if ( buffer->memory ) {
-		qvkFreeMemory( vk.device, buffer->memory, NULL );
-	}
+	VK_FreeMemory( buffer->memory );
 	Com_Memset( buffer, 0, sizeof( *buffer ) );
 }
 
@@ -204,12 +251,8 @@ VK_DeferDestroy
 Releases a resource once the GPU is done with every command recorded so far
 ===============
 */
-void VK_DeferDestroy( vkDestroyType_t type, uint64_t handle, uint64_t pool ) {
+static void VK_DeferDestroyEntry( vkDestroyType_t type, uint64_t handle, uint64_t pool, uint64_t size ) {
 	vkFrame_t *frame;
-
-	if ( !handle ) {
-		return;
-	}
 
 	// the list of a frame is processed when the frame slot is reused, after
 	// waiting for its fence; between frames, the last submitted frame is
@@ -237,7 +280,19 @@ void VK_DeferDestroy( vkDestroyType_t type, uint64_t handle, uint64_t pool ) {
 	frame->destroyList[frame->numDestroy].type = type;
 	frame->destroyList[frame->numDestroy].handle = handle;
 	frame->destroyList[frame->numDestroy].pool = pool;
+	frame->destroyList[frame->numDestroy].size = size;
 	frame->numDestroy++;
+}
+
+void VK_DeferDestroy( vkDestroyType_t type, uint64_t handle, uint64_t pool ) {
+	if ( handle ) {
+		VK_DeferDestroyEntry( type, handle, pool, 0 );
+	}
+}
+
+// a range of a texture memory block, see vk_image.c
+void VK_DeferDestroyRange( int block, VkDeviceSize offset, VkDeviceSize size ) {
+	VK_DeferDestroyEntry( VK_DESTROY_MEMORY_RANGE, block, offset, size );
 }
 
 static void VK_ProcessDestroyList( vkFrame_t *frame ) {
@@ -257,7 +312,10 @@ static void VK_ProcessDestroyList( vkFrame_t *frame ) {
 			qvkDestroyImageView( vk.device, (VkImageView)d->handle, NULL );
 			break;
 		case VK_DESTROY_MEMORY:
-			qvkFreeMemory( vk.device, (VkDeviceMemory)d->handle, NULL );
+			VK_FreeMemory( (VkDeviceMemory)d->handle );
+			break;
+		case VK_DESTROY_MEMORY_RANGE:
+			VK_FreeMemoryRange( (int)d->handle, d->pool, d->size );
 			break;
 		case VK_DESTROY_DESCRIPTOR_SET:
 			{
@@ -265,6 +323,9 @@ static void VK_ProcessDestroyList( vkFrame_t *frame ) {
 
 				VK_CHECK( qvkFreeDescriptorSets( vk.device, (VkDescriptorPool)d->pool, 1, &set ) );
 			}
+			break;
+		case VK_DESTROY_FRAMEBUFFER:
+			qvkDestroyFramebuffer( vk.device, (VkFramebuffer)d->handle, NULL );
 			break;
 		}
 	}
@@ -323,6 +384,49 @@ static void VK_CollectDepthReads( vkFrame_t *frame ) {
 	frame->numDepthReads = 0;
 }
 
+/*
+===============
+VK_CollectTimestamps
+
+Called once the fence of a frame slot has been waited for: adds the GPU
+times of the slot's last frame to the vkinfo counters
+===============
+*/
+static void VK_CollectTimestamps( vkFrame_t *frame ) {
+	const uint32_t all = ( 1u << VK_NUM_TIMESTAMPS ) - 1;
+	uint64_t ts[VK_NUM_TIMESTAMPS], mask;
+	double scale;
+	int i;
+
+	if ( frame->timestampsWritten != all ) {
+		frame->timestampsWritten = 0;
+		return;
+	}
+	frame->timestampsWritten = 0;
+	if ( qvkGetQueryPoolResults( vk.device, frame->queryPool, 0, VK_NUM_TIMESTAMPS, sizeof( ts ), ts, sizeof( ts[0] ),
+		VK_QUERY_RESULT_64_BIT ) != VK_SUCCESS ) {
+		return;
+	}
+
+	mask = vk.timestampValidBits >= 64 ? ~0ull : ( 1ull << vk.timestampValidBits ) - 1;
+	for ( i = 0; i < VK_NUM_TIMESTAMPS; i++ ) {
+		ts[i] &= mask;
+	}
+	// nanoseconds per tick, to microseconds
+	scale = vk.deviceProperties.limits.timestampPeriod / 1000.0;
+	vk.stats.gpuMainUs += ( ( ts[VK_TS_MAIN_END] - ts[VK_TS_MAIN_START] ) & mask ) * scale;
+	vk.stats.gpuPresentUs += ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_PRESENT_START] ) & mask ) * scale;
+	vk.stats.gpuFrameUs += ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_MAIN_START] ) & mask ) * scale;
+	vk.stats.gpuFrames++;
+}
+
+static void VK_WriteTimestamp( VkCommandBuffer cmd, VkPipelineStageFlagBits stage, int query ) {
+	if ( vk.frame->queryPool ) {
+		qvkCmdWriteTimestamp( cmd, stage, vk.frame->queryPool, query );
+		vk.frame->timestampsWritten |= 1u << query;
+	}
+}
+
 static void VK_BeginMainCommandBuffer( void ) {
 	VkCommandBufferBeginInfo info;
 
@@ -336,8 +440,11 @@ static void VK_BeginMainCommandBuffer( void ) {
 	vk_dirty = VK_DIRTY_ALL;
 }
 
+static void VK_UpdateDepthTarget( void );
+
 void VK_BeginFrameIfNeeded( void ) {
 	vkFrame_t *frame;
+	uint64_t start;
 
 	if ( vk.frame ) {
 		return;
@@ -346,19 +453,31 @@ void VK_BeginFrameIfNeeded( void ) {
 	frame = &vk.frames[vk.frameIndex];
 
 	// the last frame that used this slot must be done
+	start = VK_Microseconds();
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &frame->fence, VK_TRUE, UINT64_MAX ) );
+	vk.stats.waitUs += VK_Microseconds() - start;
 	VK_ProcessDestroyList( frame );
 	VK_CollectDepthReads( frame );
+	VK_CollectTimestamps( frame );
 
 	frame->vertexOffset = 0;
 	frame->stagingOffset = 0;
 	frame->serial = ++vk.frameSerial;
+	vk_vertexEpoch++;
+	vk.frameStartUs = VK_Microseconds();
 
 	vk.frame = frame;
 	vk.uploadCmdRecording = qfalse;
 	vk.renderPassActive = qfalse;
 
 	VK_BeginMainCommandBuffer();
+	if ( frame->queryPool ) {
+		qvkCmdResetQueryPool( frame->mainCmd, frame->queryPool, 0, VK_NUM_TIMESTAMPS );
+		VK_WriteTimestamp( frame->mainCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_TS_MAIN_START );
+	}
+
+	// before anything of the frame uses the depth image
+	VK_UpdateDepthTarget();
 }
 
 VkCommandBuffer VK_GetUploadCommandBuffer( void ) {
@@ -377,6 +496,166 @@ VkCommandBuffer VK_GetUploadCommandBuffer( void ) {
 	return vk.frame->uploadCmd;
 }
 
+/*
+===============
+VK_AcquireNextImage
+
+Acquires the next swapchain image unless one is held already. The
+semaphores come from a ring of VK_ACQUIRE_SEMAPHORES: an image can be
+acquired for the next frame right after a present (vk_end_frame), before
+that frame starts, and a semaphore can only be signaled again once the
+submission that waited for it has completed; with one more semaphore than
+frames in flight that has always happened (the frame slot was waited for).
+===============
+*/
+static VkResult VK_AcquireNextImage( uint64_t *us ) {
+	int s = vk.nextAcquireSemaphore;
+	VkResult result;
+	uint64_t start;
+	int i;
+
+	if ( vk.heldImage ) {
+		return VK_SUCCESS;
+	}
+
+	// normally done: see above
+	for ( i = 0; i < VK_MAX_FRAMES && vk.acquireWaitSerial[s]; i++ ) {
+		if ( vk.frames[i].serial == vk.acquireWaitSerial[s] && &vk.frames[i] != vk.frame ) {
+			VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frames[i].fence, VK_TRUE, UINT64_MAX ) );
+		}
+	}
+
+	start = VK_Microseconds();
+	result = qvkAcquireNextImageKHR( vk.device, vk.swapchain, UINT64_MAX, vk.acquireSemaphores[s], VK_NULL_HANDLE, &vk.heldIndex );
+	*us += VK_Microseconds() - start;
+	if ( result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ) {
+		vk.heldImage = qtrue;
+		vk.heldSemaphore = s;
+		vk.acquireWaitSerial[s] = 0;
+		vk.nextAcquireSemaphore = ( s + 1 ) % VK_ACQUIRE_SEMAPHORES;
+	}
+	if ( result == VK_SUBOPTIMAL_KHR ) {
+		// still presentable, recreate it next frame
+		vk.swapchainOutOfDate = qtrue;
+		result = VK_SUCCESS;
+	}
+	return result;
+}
+
+/*
+===============
+VK_ReleaseHeldImage
+
+Before the swapchain goes away with an image acquired but not presented:
+a submission without commands waits for the image's semaphore, which
+would otherwise stay signaled
+===============
+*/
+void VK_ReleaseHeldImage( void ) {
+	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	VkSubmitInfo submit;
+
+	if ( !vk.heldImage ) {
+		return;
+	}
+
+	Com_Memset( &submit, 0, sizeof( submit ) );
+	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submit.waitSemaphoreCount = 1;
+	submit.pWaitSemaphores = &vk.acquireSemaphores[vk.heldSemaphore];
+	submit.pWaitDstStageMask = &waitStage;
+	VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit, VK_NULL_HANDLE ) );
+	VK_CHECK( qvkQueueWaitIdle( vk.queue ) );
+
+	vk.heldImage = qfalse;
+	vk.acquireWaitPending = qfalse;
+}
+
+/*
+===============
+VK_WaitForHeldImage
+
+The submission that uses the held image waits for its semaphore
+===============
+*/
+static void VK_WaitForHeldImage( VkSubmitInfo *submit, VkPipelineStageFlags *waitStage, VkPipelineStageFlags stage ) {
+	*waitStage = stage;
+	submit->waitSemaphoreCount = 1;
+	submit->pWaitSemaphores = &vk.acquireSemaphores[vk.heldSemaphore];
+	submit->pWaitDstStageMask = waitStage;
+	vk.acquireWaitSerial[vk.heldSemaphore] = vk.frame->serial;
+}
+
+/*
+===============
+VK_SwapchainFitsTarget
+
+The swapchain images can be the color target: they have its size and
+format and can be drawn to and read back
+===============
+*/
+static qboolean VK_SwapchainFitsTarget( void ) {
+	return vk.swapchain && vk.swapchainDirect && !vk.swapchainOutOfDate
+		&& (int)vk.swapchainExtent.width == vk.width && (int)vk.swapchainExtent.height == vk.height;
+}
+
+/*
+===============
+VK_SelectTarget
+
+Chooses the color target of the frame, at its first render pass (or
+readback, or present): the next swapchain image when it fits, acquired now
+with the frame's semaphore, otherwise the offscreen image. Called outside
+of a render pass.
+===============
+*/
+static void VK_SelectTarget( void ) {
+	vkFrame_t *frame = vk.frame;
+	uint32_t index;
+	VkResult result;
+	int width, height;
+
+	if ( vk.target != VK_TARGET_NONE ) {
+		return;
+	}
+
+	vk.target = VK_TARGET_OFFSCREEN;
+	vk.targetImage = vk.colorImage;
+	vk.targetFramebuffer = vk.framebuffer;
+
+	// recreate the swapchain when the window changed; there is none while
+	// the window has no area (minimized)
+	VK_GetDrawableSize( &width, &height );
+	if ( !vk.swapchain || vk.swapchainOutOfDate || width != vk.swapchainDrawableWidth || height != vk.swapchainDrawableHeight ) {
+		VK_CreateSwapchain();
+	}
+	if ( !VK_SwapchainFitsTarget() ) {
+		return;
+	}
+
+	// usually acquired right after the previous present
+	result = VK_AcquireNextImage( &vk.stats.acquireUs );
+	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
+		// drawn offscreen; VK_Present recreates the swapchain
+		vk.swapchainOutOfDate = qtrue;
+		return;
+	}
+	VK_CHECK( result );
+	index = vk.heldIndex;
+
+	vk.target = VK_TARGET_SWAPCHAIN;
+	vk.targetIndex = index;
+	vk.targetImage = vk.swapchainImages[index];
+	vk.targetFramebuffer = vk.swapchainFramebuffers[index];
+	vk.acquireWaitPending = qtrue;
+
+	// the previous contents don't matter, as with a GL back buffer
+	VK_ImageBarrier( frame->mainCmd, vk.targetImage, VK_IMAGE_ASPECT_COLOR_BIT,
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
+}
+
 static void VK_BeginRenderPass( void ) {
 	VkRenderPassBeginInfo info;
 
@@ -385,18 +664,21 @@ static void VK_BeginRenderPass( void ) {
 		return;
 	}
 
+	VK_SelectTarget();
+
 	// textures uploaded in order with the draws go back to the sampled layout
 	VK_FinishUploads( vk.frame->mainCmd, qfalse );
 
 	Com_Memset( &info, 0, sizeof( info ) );
 	info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 	info.renderPass = vk.renderPass;
-	info.framebuffer = vk.framebuffer;
+	info.framebuffer = vk.targetFramebuffer;
 	info.renderArea.extent.width = vk.width;
 	info.renderArea.extent.height = vk.height;
 	qvkCmdBeginRenderPass( vk.frame->mainCmd, &info, VK_SUBPASS_CONTENTS_INLINE );
 
 	vk.renderPassActive = qtrue;
+	vk.stats.renderPasses++;
 }
 
 void VK_EndRenderPass( void ) {
@@ -411,14 +693,19 @@ void VK_EndRenderPass( void ) {
 VK_SubmitFrameCommands
 
 Submits what the current frame has recorded so far: the upload command
-buffer, then the main one
+buffer, then the main one. The first submission after the swapchain image
+was acquired waits for it; at the end of a frame drawn into the swapchain
+image (endOfFrame) the image goes to the presentation layout and signal is
+signaled for the present.
 ===============
 */
-static void VK_SubmitFrameCommands( VkFence fence ) {
+static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean endOfFrame ) {
 	vkFrame_t *frame = vk.frame;
 	VkCommandBuffer cmds[2];
+	VkPipelineStageFlags waitStage;
 	VkSubmitInfo submit;
 	uint32_t numCmds;
+	uint64_t start;
 
 	numCmds = 0;
 	if ( vk.uploadCmdRecording ) {
@@ -430,6 +717,18 @@ static void VK_SubmitFrameCommands( VkFence fence ) {
 
 	VK_EndRenderPass();
 	VK_FinishUploads( frame->mainCmd, qfalse );
+	if ( endOfFrame ) {
+		VK_WriteTimestamp( frame->mainCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_TS_MAIN_END );
+		if ( vk.target == VK_TARGET_SWAPCHAIN ) {
+			VK_ImageBarrier( frame->mainCmd, vk.targetImage, VK_IMAGE_ASPECT_COLOR_BIT,
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0 );
+			// no copy to time
+			VK_WriteTimestamp( frame->mainCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_TS_PRESENT_START );
+			VK_WriteTimestamp( frame->mainCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_TS_PRESENT_END );
+		}
+	}
 	VK_CHECK( qvkEndCommandBuffer( frame->mainCmd ) );
 	cmds[numCmds++] = frame->mainCmd;
 
@@ -437,12 +736,24 @@ static void VK_SubmitFrameCommands( VkFence fence ) {
 	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submit.commandBufferCount = numCmds;
 	submit.pCommandBuffers = cmds;
+	if ( vk.acquireWaitPending ) {
+		// the image layout transition of VK_SelectTarget waits at the same stage
+		VK_WaitForHeldImage( &submit, &waitStage, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT );
+		vk.acquireWaitPending = qfalse;
+	}
+	if ( signal ) {
+		submit.signalSemaphoreCount = 1;
+		submit.pSignalSemaphores = &signal;
+	}
 
 	if ( fence ) {
 		VK_CHECK( qvkResetFences( vk.device, 1, &fence ) );
 		vk.lastSubmitFence = fence;
 	}
+	start = VK_Microseconds();
 	VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit, fence ) );
+	vk.stats.submitUs += VK_Microseconds() - start;
+	vk.stats.submits++;
 
 	// draws recorded from now on are in a new segment (see vk_image.c)
 	vk.segment++;
@@ -457,14 +768,18 @@ new command buffer
 ===============
 */
 void VK_FlushAndWait( void ) {
+	uint64_t start;
 	int i;
 
 	if ( !vk.frame ) {
 		return;
 	}
 
-	VK_SubmitFrameCommands( vk.frame->fence );
+	VK_SubmitFrameCommands( vk.frame->fence, VK_NULL_HANDLE, qfalse );
+	start = VK_Microseconds();
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frame->fence, VK_TRUE, UINT64_MAX ) );
+	vk.stats.waitUs += VK_Microseconds() - start;
+	vk.stats.flushes++;
 
 	// the GPU is idle: everything waiting for destruction can go, and the
 	// buffers of the frame can be reused
@@ -473,6 +788,7 @@ void VK_FlushAndWait( void ) {
 	}
 	vk.frame->vertexOffset = 0;
 	vk.frame->stagingOffset = 0;
+	vk_vertexEpoch++;
 
 	VK_BeginMainCommandBuffer();
 }
@@ -481,9 +797,9 @@ void VK_FlushAndWait( void ) {
 ===============
 VK_Present
 
-Copies the frame to a swapchain image and presents it; returns qfalse when
-there is nothing to present to (minimized window), the frame fence is then
-not submitted
+Frames drawn offscreen: copies the frame to a swapchain image and presents
+it; returns qfalse when there is nothing to present to (minimized window),
+the frame fence is then not submitted
 ===============
 */
 static qboolean VK_Present( vkFrame_t *frame ) {
@@ -496,6 +812,7 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	VkImage image;
 	uint32_t imageIndex;
 	VkResult result;
+	uint64_t start;
 	int width, height;
 
 	// recreate the swapchain when the window changed; there is none while
@@ -508,24 +825,20 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 		return qfalse;
 	}
 
-	result = qvkAcquireNextImageKHR( vk.device, vk.swapchain, UINT64_MAX, frame->imageAcquired, VK_NULL_HANDLE, &imageIndex );
+	result = VK_AcquireNextImage( &vk.stats.acquireUs );
 	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
 		VK_CreateSwapchain();
 		if ( !vk.swapchain ) {
 			return qfalse;
 		}
-		result = qvkAcquireNextImageKHR( vk.device, vk.swapchain, UINT64_MAX, frame->imageAcquired, VK_NULL_HANDLE, &imageIndex );
+		result = VK_AcquireNextImage( &vk.stats.acquireUs );
 	}
 	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
 		vk.swapchainOutOfDate = qtrue;
 		return qfalse;
 	}
-	if ( result == VK_SUBOPTIMAL_KHR ) {
-		// still presentable, recreate it next frame
-		vk.swapchainOutOfDate = qtrue;
-	} else {
-		VK_CHECK( result );
-	}
+	VK_CHECK( result );
+	imageIndex = vk.heldIndex;
 
 	image = vk.swapchainImages[imageIndex];
 	cmd = frame->presentCmd;
@@ -534,6 +847,7 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	VK_CHECK( qvkBeginCommandBuffer( cmd, &beginInfo ) );
+	VK_WriteTimestamp( cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_TS_PRESENT_START );
 
 	VK_ImageBarrier( cmd, vk.colorImage, VK_IMAGE_ASPECT_COLOR_BIT,
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -568,21 +882,22 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
 
+	VK_WriteTimestamp( cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_TS_PRESENT_END );
 	VK_CHECK( qvkEndCommandBuffer( cmd ) );
 
-	waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	Com_Memset( &submit, 0, sizeof( submit ) );
 	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submit.waitSemaphoreCount = 1;
-	submit.pWaitSemaphores = &frame->imageAcquired;
-	submit.pWaitDstStageMask = &waitStage;
+	VK_WaitForHeldImage( &submit, &waitStage, VK_PIPELINE_STAGE_TRANSFER_BIT );
 	submit.commandBufferCount = 1;
 	submit.pCommandBuffers = &cmd;
 	submit.signalSemaphoreCount = 1;
 	submit.pSignalSemaphores = &vk.presentSemaphores[imageIndex];
 
 	VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
+	start = VK_Microseconds();
 	VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit, frame->fence ) );
+	vk.stats.submitUs += VK_Microseconds() - start;
+	vk.stats.submits++;
 	vk.lastSubmitFence = frame->fence;
 
 	Com_Memset( &presentInfo, 0, sizeof( presentInfo ) );
@@ -593,7 +908,11 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	presentInfo.pSwapchains = &vk.swapchain;
 	presentInfo.pImageIndices = &imageIndex;
 
+	start = VK_Microseconds();
+	vk.stats.frameToPresentUs += start - vk.frameStartUs;
 	result = qvkQueuePresentKHR( vk.queue, &presentInfo );
+	vk.stats.presentUs += VK_Microseconds() - start;
+	vk.heldImage = qfalse;
 	if ( result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ) {
 		vk.swapchainOutOfDate = qtrue;
 	} else {
@@ -639,7 +958,16 @@ static void VK_CreateFrames( void ) {
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 		VK_CHECK( qvkCreateFence( vk.device, &fenceInfo, NULL, &frame->fence ) );
 
-		VK_CHECK( qvkCreateSemaphore( vk.device, &semaphoreInfo, NULL, &frame->imageAcquired ) );
+
+		if ( vk.timestampValidBits ) {
+			VkQueryPoolCreateInfo queryInfo;
+
+			Com_Memset( &queryInfo, 0, sizeof( queryInfo ) );
+			queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+			queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+			queryInfo.queryCount = VK_NUM_TIMESTAMPS;
+			VK_CHECK( qvkCreateQueryPool( vk.device, &queryInfo, NULL, &frame->queryPool ) );
+		}
 
 		VK_CreateBuffer( &frame->vertexBuffer, VK_VERTEX_BUFFER_SIZE,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -653,6 +981,12 @@ static void VK_CreateFrames( void ) {
 	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
 		VK_CHECK( qvkCreateSemaphore( vk.device, &semaphoreInfo, NULL, &vk.presentSemaphores[i] ) );
 	}
+	for ( i = 0; i < VK_ACQUIRE_SEMAPHORES; i++ ) {
+		VK_CHECK( qvkCreateSemaphore( vk.device, &semaphoreInfo, NULL, &vk.acquireSemaphores[i] ) );
+		vk.acquireWaitSerial[i] = 0;
+	}
+	vk.nextAcquireSemaphore = 0;
+	vk.heldImage = qfalse;
 
 	vk.frameIndex = 0;
 	vk.frame = NULL;
@@ -671,8 +1005,8 @@ static void VK_DestroyFrames( void ) {
 		VK_DestroyBuffer( &frame->vertexBuffer );
 		VK_DestroyBuffer( &frame->stagingBuffer );
 		VK_DestroyBuffer( &frame->depthReadBuffer );
-		if ( frame->imageAcquired ) {
-			qvkDestroySemaphore( vk.device, frame->imageAcquired, NULL );
+		if ( frame->queryPool ) {
+			qvkDestroyQueryPool( vk.device, frame->queryPool, NULL );
 		}
 		if ( frame->fence ) {
 			qvkDestroyFence( vk.device, frame->fence, NULL );
@@ -687,6 +1021,12 @@ static void VK_DestroyFrames( void ) {
 		if ( vk.presentSemaphores[i] ) {
 			qvkDestroySemaphore( vk.device, vk.presentSemaphores[i], NULL );
 			vk.presentSemaphores[i] = VK_NULL_HANDLE;
+		}
+	}
+	for ( i = 0; i < VK_ACQUIRE_SEMAPHORES; i++ ) {
+		if ( vk.acquireSemaphores[i] ) {
+			qvkDestroySemaphore( vk.device, vk.acquireSemaphores[i], NULL );
+			vk.acquireSemaphores[i] = VK_NULL_HANDLE;
 		}
 	}
 
@@ -708,13 +1048,15 @@ static qboolean VK_FormatHasFeatures( VkFormat format, VkFormatFeatureFlags feat
 	return ( props.optimalTilingFeatures & features ) == features;
 }
 
-static void VK_CreateTargetImage( VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+#define VK_TARGET_FORMAT_FEATURES ( VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT \
+	| VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT )
+
+static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
 	VkImage *image, VkDeviceMemory *memory, VkImageView *view )
 {
 	VkImageCreateInfo imageInfo;
 	VkImageViewCreateInfo viewInfo;
 	VkMemoryRequirements memReqs;
-	VkMemoryAllocateInfo allocInfo;
 
 	Com_Memset( &imageInfo, 0, sizeof( imageInfo ) );
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -725,7 +1067,7 @@ static void VK_CreateTargetImage( VkFormat format, VkImageUsageFlags usage, VkIm
 	imageInfo.extent.depth = 1;
 	imageInfo.mipLevels = 1;
 	imageInfo.arrayLayers = 1;
-	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.samples = samples;
 	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 	imageInfo.usage = usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -733,11 +1075,7 @@ static void VK_CreateTargetImage( VkFormat format, VkImageUsageFlags usage, VkIm
 	VK_CHECK( qvkCreateImage( vk.device, &imageInfo, NULL, image ) );
 
 	qvkGetImageMemoryRequirements( vk.device, *image, &memReqs );
-	Com_Memset( &allocInfo, 0, sizeof( allocInfo ) );
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memReqs.size;
-	allocInfo.memoryTypeIndex = VK_FindMemoryType( memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 );
-	VK_CHECK( qvkAllocateMemory( vk.device, &allocInfo, NULL, memory ) );
+	*memory = VK_AllocateMemory( memReqs.size, VK_FindMemoryType( memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 ) );
 	VK_CHECK( qvkBindImageMemory( vk.device, *image, *memory, 0 ) );
 
 	Com_Memset( &viewInfo, 0, sizeof( viewInfo ) );
@@ -759,57 +1097,22 @@ static int VK_DepthBits( VkFormat format ) {
 	}
 }
 
-static void VK_CreateRenderTargets( void ) {
-	static const VkFormat depthFormats[] = {
-		VK_FORMAT_D24_UNORM_S8_UINT,	// what GL1 asks for
-		VK_FORMAT_D32_SFLOAT_S8_UINT,	// AMD has no D24
-		VK_FORMAT_D16_UNORM_S8_UINT
-	};
+/*
+===============
+VK_CreateRenderPass
+
+The render pass without multisampling: the color and depth/stencil
+attachments keep their contents across render passes (a render pass ends
+for every readback and every upload ordered with draws)
+===============
+*/
+static void VK_CreateRenderPass( VkPipelineStageFlags attachmentStages, VkAccessFlags attachmentAccess ) {
 	VkAttachmentDescription attachments[2];
 	VkAttachmentReference colorRef, depthRef;
 	VkSubpassDescription subpass;
 	VkSubpassDependency dependencies[2];
 	VkRenderPassCreateInfo renderPassInfo;
-	VkFramebufferCreateInfo framebufferInfo;
-	VkImageView views[2];
-	VkClearColorValue clearColor;
-	VkClearDepthStencilValue clearDepth;
-	VkImageSubresourceRange range;
-	VkCommandBuffer cmd;
-	VkPipelineStageFlags attachmentStages;
-	unsigned int i;
 
-	vk.width = glConfig.vidWidth;
-	vk.height = glConfig.vidHeight;
-
-	// rendered to, blitted to the swapchain, read back and cleared at creation
-	vk.colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
-	if ( !VK_FormatHasFeatures( vk.colorFormat, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
-		| VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT ) ) {
-		ri.Error( ERR_FATAL, "Vulkan: VK_FORMAT_R8G8B8A8_UNORM can't be rendered to" );
-	}
-
-	vk.depthFormat = VK_FORMAT_UNDEFINED;
-	for ( i = 0; i < ARRAY_LEN( depthFormats ); i++ ) {
-		if ( VK_FormatHasFeatures( depthFormats[i], VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-			| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT ) ) {
-			vk.depthFormat = depthFormats[i];
-			break;
-		}
-	}
-	if ( vk.depthFormat == VK_FORMAT_UNDEFINED ) {
-		ri.Error( ERR_FATAL, "Vulkan: no depth/stencil format" );
-	}
-
-	VK_CreateTargetImage( vk.colorFormat,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_IMAGE_ASPECT_COLOR_BIT, &vk.colorImage, &vk.colorMemory, &vk.colorView );
-	VK_CreateTargetImage( vk.depthFormat,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &vk.depthImage, &vk.depthMemory, &vk.depthView );
-
-	// the attachments keep their contents across render passes: a render
-	// pass ends for every readback and every upload ordered with draws
 	Com_Memset( attachments, 0, sizeof( attachments ) );
 	attachments[0].format = vk.colorFormat;
 	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -839,24 +1142,19 @@ static void VK_CreateRenderTargets( void ) {
 	subpass.pColorAttachments = &colorRef;
 	subpass.pDepthStencilAttachment = &depthRef;
 
-	// successive render passes read what the previous ones wrote
-	attachmentStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-		| VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 	Com_Memset( dependencies, 0, sizeof( dependencies ) );
 	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
 	dependencies[0].dstSubpass = 0;
 	dependencies[0].srcStageMask = attachmentStages;
 	dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	dependencies[0].dstStageMask = attachmentStages;
-	dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-		| VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	dependencies[0].dstAccessMask = attachmentAccess;
 	dependencies[1].srcSubpass = 0;
 	dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
 	dependencies[1].srcStageMask = attachmentStages;
 	dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	dependencies[1].dstStageMask = attachmentStages;
-	dependencies[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-		| VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	dependencies[1].dstAccessMask = attachmentAccess;
 
 	Com_Memset( &renderPassInfo, 0, sizeof( renderPassInfo ) );
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -867,83 +1165,512 @@ static void VK_CreateRenderTargets( void ) {
 	renderPassInfo.dependencyCount = ARRAY_LEN( dependencies );
 	renderPassInfo.pDependencies = dependencies;
 	VK_CHECK( qvkCreateRenderPass( vk.device, &renderPassInfo, NULL, &vk.renderPass ) );
+}
 
-	views[0] = vk.colorView;
-	views[1] = vk.depthView;
+/*
+===============
+VK_ClearTargetImage
+
+Initial contents of a render target image, in the frame being recorded:
+black with alpha 1, or depth 1 and stencil 0
+===============
+*/
+static void VK_ClearTargetImage( VkImage image, qboolean color ) {
+	VkCommandBuffer cmd = vk.frame->mainCmd;
+	VkImageSubresourceRange range;
+	VkClearColorValue clearColor;
+	VkClearDepthStencilValue clearDepth;
+	VkImageAspectFlags aspect;
+
+	aspect = color ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	Com_Memset( &range, 0, sizeof( range ) );
+	range.aspectMask = aspect;
+	range.levelCount = 1;
+	range.layerCount = 1;
+
+	VK_ImageBarrier( cmd, image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT );
+	if ( color ) {
+		Com_Memset( &clearColor, 0, sizeof( clearColor ) );
+		clearColor.float32[3] = 1.0f;
+		qvkCmdClearColorImage( cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &range );
+		VK_ImageBarrier( cmd, image, aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
+	} else {
+		clearDepth.depth = 1.0f;
+		clearDepth.stencil = 0;
+		qvkCmdClearDepthStencilImage( cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearDepth, 1, &range );
+		// the depth/stencil resolve of multisampling writes as a color attachment
+		VK_ImageBarrier( cmd, image, aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
+	}
+}
+
+/*
+===============
+VK_SampleCount
+
+The sample count for r_ext_multisample: the largest the device supports up
+to the value asked for
+===============
+*/
+static VkSampleCountFlagBits VK_SampleCount( void ) {
+	const VkPhysicalDeviceLimits *limits = &vk.deviceProperties.limits;
+	VkSampleCountFlags supported;
+	int wanted, samples;
+
+	wanted = r_ext_multisample->integer;
+	if ( wanted <= 1 ) {
+		return VK_SAMPLE_COUNT_1_BIT;
+	}
+	if ( !vk.depthStencilResolve ) {
+		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "WARNING: r_ext_multisample: the device has no %s, no multisampling\n",
+			VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME );
+		return VK_SAMPLE_COUNT_1_BIT;
+	}
+
+	supported = limits->framebufferColorSampleCounts & limits->framebufferDepthSampleCounts & limits->framebufferStencilSampleCounts;
+	for ( samples = VK_SAMPLE_COUNT_64_BIT; samples > 1; samples >>= 1 ) {
+		if ( samples <= wanted && ( supported & samples ) ) {
+			break;
+		}
+	}
+	if ( samples != wanted ) {
+		ri.Printf( PRINT_ALL, "r_ext_multisample %d: %d samples\n", wanted, samples );
+	}
+	return (VkSampleCountFlagBits)samples;
+}
+
+/*
+===============
+VK_CreateMultisampleRenderPasses
+
+With multisampling the draws go to the multisampled color and depth/stencil
+attachments, which keep their contents like the single-sampled ones, and
+the end of every render pass instance resolves the color into the color
+target (average of the samples), which the copy to the swapchain and the
+color readbacks use. The depth/stencil buffer is only resolved (sample 0)
+into the depth image when it is read back (VK_ResolveDepth), by a render
+pass of its own: resolving it with every render pass cost 1.3 ms per frame
+at 1920x1080 with 4 samples on a Radeon 780M.
+===============
+*/
+static void VK_MultisampleAttachment( VkAttachmentDescription2 *attachment, VkAttachmentReference2 *ref, int index,
+	qboolean color, qboolean multisampled )
+{
+	Com_Memset( attachment, 0, sizeof( *attachment ) );
+	attachment->sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+	attachment->format = color ? vk.colorFormat : vk.depthFormat;
+	attachment->samples = multisampled ? vk.samples : VK_SAMPLE_COUNT_1_BIT;
+	// the resolve attachments are written over the whole render area
+	attachment->loadOp = multisampled ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachment->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachment->stencilLoadOp = color ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : attachment->loadOp;
+	attachment->stencilStoreOp = color ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+	attachment->initialLayout = color ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachment->finalLayout = attachment->initialLayout;
+
+	Com_Memset( ref, 0, sizeof( *ref ) );
+	ref->sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+	ref->attachment = index;
+	ref->layout = attachment->initialLayout;
+	ref->aspectMask = color ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+}
+
+static void VK_CreateMultisampleRenderPasses( VkPipelineStageFlags attachmentStages, VkAccessFlags attachmentAccess ) {
+	VkAttachmentDescription2 attachments[3];
+	VkAttachmentReference2 refs[3];
+	VkSubpassDescriptionDepthStencilResolve depthResolve;
+	VkSubpassDescription2 subpass;
+	VkSubpassDependency2 dependencies[2];
+	VkRenderPassCreateInfo2 info;
+	int i;
+
+	// as in the single-sampled render pass; resolves are color attachment
+	// writes, for the depth/stencil one too
+	Com_Memset( dependencies, 0, sizeof( dependencies ) );
+	for ( i = 0; i < 2; i++ ) {
+		dependencies[i].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+		dependencies[i].srcSubpass = i ? 0 : VK_SUBPASS_EXTERNAL;
+		dependencies[i].dstSubpass = i ? VK_SUBPASS_EXTERNAL : 0;
+		dependencies[i].srcStageMask = attachmentStages;
+		dependencies[i].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[i].dstStageMask = attachmentStages;
+		dependencies[i].dstAccessMask = attachmentAccess;
+	}
+
+	Com_Memset( &info, 0, sizeof( info ) );
+	info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+	info.pAttachments = attachments;
+	info.subpassCount = 1;
+	info.pSubpasses = &subpass;
+	info.dependencyCount = ARRAY_LEN( dependencies );
+	info.pDependencies = dependencies;
+
+	// drawing: multisampled color (0) and depth/stencil (1), color resolve (2)
+	VK_MultisampleAttachment( &attachments[0], &refs[0], 0, qtrue, qtrue );
+	VK_MultisampleAttachment( &attachments[1], &refs[1], 1, qfalse, qtrue );
+	VK_MultisampleAttachment( &attachments[2], &refs[2], 2, qtrue, qfalse );
+	Com_Memset( &subpass, 0, sizeof( subpass ) );
+	subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &refs[0];
+	subpass.pResolveAttachments = &refs[2];
+	subpass.pDepthStencilAttachment = &refs[1];
+	info.attachmentCount = 3;
+	VK_CHECK( qvkCreateRenderPass2KHR( vk.device, &info, NULL, &vk.renderPass ) );
+
+	// depth/stencil resolve: multisampled depth/stencil (0) into the depth image (1)
+	VK_MultisampleAttachment( &attachments[0], &refs[0], 0, qfalse, qtrue );
+	VK_MultisampleAttachment( &attachments[1], &refs[1], 1, qfalse, qfalse );
+	Com_Memset( &depthResolve, 0, sizeof( depthResolve ) );
+	depthResolve.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+	depthResolve.depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;		// always supported
+	depthResolve.stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+	depthResolve.pDepthStencilResolveAttachment = &refs[1];
+	Com_Memset( &subpass, 0, sizeof( subpass ) );
+	subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+	subpass.pNext = &depthResolve;
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.pDepthStencilAttachment = &refs[0];
+	info.attachmentCount = 2;
+	VK_CHECK( qvkCreateRenderPass2KHR( vk.device, &info, NULL, &vk.depthResolvePass ) );
+}
+
+/*
+===============
+VK_ResolveDepth
+
+With multisampling: resolves the depth/stencil buffer into the depth image
+before it is read back; called outside of a render pass
+===============
+*/
+static void VK_ResolveDepth( void ) {
+	VkRenderPassBeginInfo info;
+
+	if ( vk.samples == VK_SAMPLE_COUNT_1_BIT ) {
+		return;
+	}
+
+	Com_Memset( &info, 0, sizeof( info ) );
+	info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	info.renderPass = vk.depthResolvePass;
+	info.framebuffer = vk.depthResolveFramebuffer;
+	info.renderArea.extent.width = vk.width;
+	info.renderArea.extent.height = vk.height;
+	qvkCmdBeginRenderPass( vk.frame->mainCmd, &info, VK_SUBPASS_CONTENTS_INLINE );
+	qvkCmdEndRenderPass( vk.frame->mainCmd );
+}
+
+/*
+===============
+VK_CreateDepthTarget
+
+The single-sampled depth/stencil image: what the draws use without
+multisampling, the target of the depth/stencil resolve before readbacks
+with it. Readbacks copy from it, which needs TRANSFER_SRC usage, and RADV
+gives such images TC-compatible HTILE, which on GFX9 and later keeps a
+depth tile compressed only while it holds at most 4 planes
+(DECOMPRESS_ON_N_ZPLANES; 15 otherwise): the forest of m6l1a, with many
+small alpha-tested triangles per tile, took 15 % more GPU time to draw
+(Radeon 780M). radeonsi's window depth buffer isn't TC-compatible. Without
+multisampling the depth image is therefore only readable while depth or
+stencil reads are wanted (VK_UpdateDepthTarget).
+===============
+*/
+static void VK_CreateDepthTarget( qboolean readable ) {
+	VkImageUsageFlags usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+	if ( readable ) {
+		usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	}
+	VK_CreateTargetImage( vk.depthFormat, VK_SAMPLE_COUNT_1_BIT, usage,
+		VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &vk.depthImage, &vk.depthMemory, &vk.depthView );
+	vk.depthReadable = readable;
+}
+
+// the framebuffer of the offscreen color image
+static void VK_CreateFramebuffer( void ) {
+	VkFramebufferCreateInfo framebufferInfo;
+	VkImageView views[3];
+
 	Com_Memset( &framebufferInfo, 0, sizeof( framebufferInfo ) );
 	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 	framebufferInfo.renderPass = vk.renderPass;
-	framebufferInfo.attachmentCount = ARRAY_LEN( views );
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		views[0] = vk.msColorView;
+		views[1] = vk.msDepthView;
+		views[2] = vk.colorView;
+		framebufferInfo.attachmentCount = 3;
+	} else {
+		views[0] = vk.colorView;
+		views[1] = vk.depthView;
+		framebufferInfo.attachmentCount = 2;
+	}
 	framebufferInfo.pAttachments = views;
 	framebufferInfo.width = vk.width;
 	framebufferInfo.height = vk.height;
 	framebufferInfo.layers = 1;
 	VK_CHECK( qvkCreateFramebuffer( vk.device, &framebufferInfo, NULL, &vk.framebuffer ) );
+}
+
+// the framebuffer of swapchain image i: the attachments of vk.framebuffer
+// with the swapchain image in place of the color image
+static void VK_CreateSwapchainFramebuffer( uint32_t i ) {
+	VkFramebufferCreateInfo framebufferInfo;
+	VkImageView views[3];
+
+	Com_Memset( &framebufferInfo, 0, sizeof( framebufferInfo ) );
+	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+	framebufferInfo.renderPass = vk.renderPass;
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		views[0] = vk.msColorView;
+		views[1] = vk.msDepthView;
+		views[2] = vk.swapchainViews[i];
+		framebufferInfo.attachmentCount = 3;
+	} else {
+		views[0] = vk.swapchainViews[i];
+		views[1] = vk.depthView;
+		framebufferInfo.attachmentCount = 2;
+	}
+	framebufferInfo.pAttachments = views;
+	framebufferInfo.width = vk.swapchainExtent.width;
+	framebufferInfo.height = vk.swapchainExtent.height;
+	framebufferInfo.layers = 1;
+	VK_CHECK( qvkCreateFramebuffer( vk.device, &framebufferInfo, NULL, &vk.swapchainFramebuffers[i] ) );
+}
+
+/*
+===============
+VK_UpdateDepthTarget
+
+At the start of a frame, before anything is recorded: without
+multisampling, replaces the depth image with a readable one when depth or
+stencil reads were wanted in the last VK_DEPTH_READ_FRAMES frames (see
+vk_want_depth_reads), and with one that draws faster when they no longer
+are (see VK_CreateDepthTarget). The new image starts with depth 1 and
+stencil 0. The previous contents aren't needed at that point: every 3D view
+clears the depth buffer before drawing and 2D drawing doesn't test depth.
+The old image and the framebuffers that use it are released once the
+frames in flight are done with them.
+===============
+*/
+static void VK_UpdateDepthTarget( void ) {
+	qboolean readable;
+	uint32_t i;
+
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT || !vk.depthImage ) {
+		return;
+	}
+	readable = vk.depthReadSerial && vk.frameSerial - vk.depthReadSerial <= VK_DEPTH_READ_FRAMES;
+	if ( readable == vk.depthReadable ) {
+		return;
+	}
+
+	VK_DeferDestroy( VK_DESTROY_FRAMEBUFFER, (uint64_t)vk.framebuffer, 0 );
+	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
+		VK_DeferDestroy( VK_DESTROY_FRAMEBUFFER, (uint64_t)vk.swapchainFramebuffers[i], 0 );
+	}
+	VK_DeferDestroy( VK_DESTROY_IMAGE_VIEW, (uint64_t)vk.depthView, 0 );
+	VK_DeferDestroy( VK_DESTROY_IMAGE, (uint64_t)vk.depthImage, 0 );
+	VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)vk.depthMemory, 0 );
+
+	VK_CreateDepthTarget( readable );
+	VK_CreateFramebuffer();
+	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
+		if ( vk.swapchainFramebuffers[i] ) {
+			VK_CreateSwapchainFramebuffer( i );
+		}
+	}
+	VK_ClearTargetImage( vk.depthImage, qfalse );
+	vk.stats.depthTargets++;
+}
+
+static void VK_CreateRenderTargets( void ) {
+	static const VkFormat depthFormats[] = {
+		VK_FORMAT_D24_UNORM_S8_UINT,	// what GL1 asks for
+		VK_FORMAT_D32_SFLOAT_S8_UINT,	// AMD has no D24
+		VK_FORMAT_D16_UNORM_S8_UINT
+	};
+	VkFramebufferCreateInfo framebufferInfo;
+	VkImageView views[4];
+	VkPipelineStageFlags attachmentStages;
+	VkAccessFlags attachmentAccess;
+	unsigned int i;
+
+	vk.width = glConfig.vidWidth;
+	vk.height = glConfig.vidHeight;
+	vk.samples = VK_SampleCount();
+
+	// rendered to, blitted to the swapchain, read back and cleared at
+	// creation; the format of the swapchain when it is one of the two 8-bit
+	// UNORM ones (B8G8R8A8 for most), so frames can be drawn into it
+	vk.colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	if ( ( vk.swapchainFormat == VK_FORMAT_B8G8R8A8_UNORM || vk.swapchainFormat == VK_FORMAT_R8G8B8A8_UNORM )
+		&& VK_FormatHasFeatures( vk.swapchainFormat, VK_TARGET_FORMAT_FEATURES ) ) {
+		vk.colorFormat = vk.swapchainFormat;
+	}
+	if ( !VK_FormatHasFeatures( vk.colorFormat, VK_TARGET_FORMAT_FEATURES ) ) {
+		ri.Error( ERR_FATAL, "Vulkan: VK_FORMAT_R8G8B8A8_UNORM can't be rendered to" );
+	}
+
+	vk.depthFormat = VK_FORMAT_UNDEFINED;
+	for ( i = 0; i < ARRAY_LEN( depthFormats ); i++ ) {
+		if ( VK_FormatHasFeatures( depthFormats[i], VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+			| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT ) ) {
+			vk.depthFormat = depthFormats[i];
+			break;
+		}
+	}
+	if ( vk.depthFormat == VK_FORMAT_UNDEFINED ) {
+		ri.Error( ERR_FATAL, "Vulkan: no depth/stencil format" );
+	}
+
+	VK_CreateTargetImage( vk.colorFormat, VK_SAMPLE_COUNT_1_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_ASPECT_COLOR_BIT, &vk.colorImage, &vk.colorMemory, &vk.colorView );
+	// readable from the start with multisampling: the draws use the
+	// multisampled depth image, which is never copied from
+	VK_CreateDepthTarget( vk.samples != VK_SAMPLE_COUNT_1_BIT );
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		VK_CreateTargetImage( vk.colorFormat, vk.samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_IMAGE_ASPECT_COLOR_BIT, &vk.msColorImage, &vk.msColorMemory, &vk.msColorView );
+		VK_CreateTargetImage( vk.depthFormat, vk.samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &vk.msDepthImage, &vk.msDepthMemory, &vk.msDepthView );
+	}
+
+	// successive render passes read what the previous ones wrote
+	attachmentStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+		| VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	attachmentAccess = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+		| VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		VK_CreateMultisampleRenderPasses( attachmentStages, attachmentAccess );
+	} else {
+		VK_CreateRenderPass( attachmentStages, attachmentAccess );
+	}
+
+	VK_CreateFramebuffer();
+
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		Com_Memset( &framebufferInfo, 0, sizeof( framebufferInfo ) );
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = vk.depthResolvePass;
+		views[0] = vk.msDepthView;
+		views[1] = vk.depthView;
+		framebufferInfo.attachmentCount = 2;
+		framebufferInfo.pAttachments = views;
+		framebufferInfo.width = vk.width;
+		framebufferInfo.height = vk.height;
+		framebufferInfo.layers = 1;
+		VK_CHECK( qvkCreateFramebuffer( vk.device, &framebufferInfo, NULL, &vk.depthResolveFramebuffer ) );
+	}
 
 	// initial contents: black with alpha 1, depth 1, stencil 0
 	VK_BeginFrameIfNeeded();
-	cmd = vk.frame->mainCmd;
+	VK_ClearTargetImage( vk.colorImage, qtrue );
+	VK_ClearTargetImage( vk.depthImage, qfalse );
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		VK_ClearTargetImage( vk.msColorImage, qtrue );
+		VK_ClearTargetImage( vk.msDepthImage, qfalse );
+	}
 
-	Com_Memset( &range, 0, sizeof( range ) );
-	range.levelCount = 1;
-	range.layerCount = 1;
+	VK_CreateSwapchainTargets();
+}
 
-	VK_ImageBarrier( cmd, vk.colorImage, VK_IMAGE_ASPECT_COLOR_BIT,
-		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT );
-	Com_Memset( &clearColor, 0, sizeof( clearColor ) );
-	clearColor.float32[3] = 1.0f;
-	range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	qvkCmdClearColorImage( cmd, vk.colorImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &range );
-	VK_ImageBarrier( cmd, vk.colorImage, VK_IMAGE_ASPECT_COLOR_BIT,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
+/*
+===============
+VK_CreateSwapchainTargets
 
-	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
-		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT );
-	clearDepth.depth = 1.0f;
-	clearDepth.stencil = 0;
-	range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-	qvkCmdClearDepthStencilImage( cmd, vk.depthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearDepth, 1, &range );
-	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT );
+Views and framebuffers of the swapchain images, when they can be the color
+target (VK_SelectTarget); called when the swapchain or the render targets
+are created
+===============
+*/
+void VK_CreateSwapchainTargets( void ) {
+	VkImageViewCreateInfo viewInfo;
+	uint32_t i;
+
+	VK_DestroySwapchainTargets();
+	// a swapchain of another size than the render target (window resized
+	// before the vid_restart) gets the offscreen image's copy
+	if ( !vk.swapchain || !vk.renderPass || vk.swapchainFormat != vk.colorFormat
+		|| (int)vk.swapchainExtent.width != vk.width || (int)vk.swapchainExtent.height != vk.height
+		|| !( vk.swapchainUsage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ) || !( vk.swapchainUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) ) {
+		return;
+	}
+
+	for ( i = 0; i < vk.swapchainImageCount; i++ ) {
+		Com_Memset( &viewInfo, 0, sizeof( viewInfo ) );
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = vk.swapchainImages[i];
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = vk.swapchainFormat;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+		VK_CHECK( qvkCreateImageView( vk.device, &viewInfo, NULL, &vk.swapchainViews[i] ) );
+		VK_CreateSwapchainFramebuffer( i );
+	}
+	vk.swapchainDirect = qtrue;
+}
+
+// called when nothing uses them anymore
+void VK_DestroySwapchainTargets( void ) {
+	int i;
+
+	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
+		if ( vk.swapchainFramebuffers[i] ) {
+			qvkDestroyFramebuffer( vk.device, vk.swapchainFramebuffers[i], NULL );
+			vk.swapchainFramebuffers[i] = VK_NULL_HANDLE;
+		}
+		if ( vk.swapchainViews[i] ) {
+			qvkDestroyImageView( vk.device, vk.swapchainViews[i], NULL );
+			vk.swapchainViews[i] = VK_NULL_HANDLE;
+		}
+	}
+	vk.swapchainDirect = qfalse;
+}
+
+static void VK_DestroyTargetImage( VkImage *image, VkDeviceMemory *memory, VkImageView *view ) {
+	if ( *view ) {
+		qvkDestroyImageView( vk.device, *view, NULL );
+	}
+	if ( *image ) {
+		qvkDestroyImage( vk.device, *image, NULL );
+	}
+	VK_FreeMemory( *memory );
+	*view = VK_NULL_HANDLE;
+	*image = VK_NULL_HANDLE;
+	*memory = VK_NULL_HANDLE;
 }
 
 static void VK_DestroyRenderTargets( void ) {
+	VK_DestroySwapchainTargets();
 	if ( vk.framebuffer ) {
 		qvkDestroyFramebuffer( vk.device, vk.framebuffer, NULL );
 	}
 	if ( vk.renderPass ) {
 		qvkDestroyRenderPass( vk.device, vk.renderPass, NULL );
 	}
-	if ( vk.colorView ) {
-		qvkDestroyImageView( vk.device, vk.colorView, NULL );
+	if ( vk.depthResolveFramebuffer ) {
+		qvkDestroyFramebuffer( vk.device, vk.depthResolveFramebuffer, NULL );
 	}
-	if ( vk.colorImage ) {
-		qvkDestroyImage( vk.device, vk.colorImage, NULL );
-	}
-	if ( vk.colorMemory ) {
-		qvkFreeMemory( vk.device, vk.colorMemory, NULL );
-	}
-	if ( vk.depthView ) {
-		qvkDestroyImageView( vk.device, vk.depthView, NULL );
-	}
-	if ( vk.depthImage ) {
-		qvkDestroyImage( vk.device, vk.depthImage, NULL );
-	}
-	if ( vk.depthMemory ) {
-		qvkFreeMemory( vk.device, vk.depthMemory, NULL );
+	if ( vk.depthResolvePass ) {
+		qvkDestroyRenderPass( vk.device, vk.depthResolvePass, NULL );
 	}
 	vk.framebuffer = VK_NULL_HANDLE;
 	vk.renderPass = VK_NULL_HANDLE;
-	vk.colorView = vk.depthView = VK_NULL_HANDLE;
-	vk.colorImage = vk.depthImage = VK_NULL_HANDLE;
-	vk.colorMemory = vk.depthMemory = VK_NULL_HANDLE;
+	vk.depthResolveFramebuffer = VK_NULL_HANDLE;
+	vk.depthResolvePass = VK_NULL_HANDLE;
+	VK_DestroyTargetImage( &vk.colorImage, &vk.colorMemory, &vk.colorView );
+	VK_DestroyTargetImage( &vk.depthImage, &vk.depthMemory, &vk.depthView );
+	VK_DestroyTargetImage( &vk.msColorImage, &vk.msColorMemory, &vk.msColorView );
+	VK_DestroyTargetImage( &vk.msDepthImage, &vk.msDepthMemory, &vk.msDepthView );
 }
 
 /*
@@ -1018,6 +1745,38 @@ static void VK_ReportCapabilities( void ) {
 	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d\n", VK_SwapchainPresentModeName(), vk.width, vk.height );
 }
 
+/*
+===============
+VK_Info_f
+
+vkinfo: the counters of vkStats_t since the last vkinfo (tools/perf.py
+reads them), then what exists now
+===============
+*/
+static void VK_Info_f( void ) {
+	const vkStats_t *s = &vk.stats, *r = &vk.statsReported;
+	VkDeviceSize blockSize, blockUsed;
+	int numBlocks;
+
+#define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
+	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu pipelineBinds=%llu"
+		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
+		" waitUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu allocationUs=%llu textureUs=%llu"
+		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu\n",
+		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
+		VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
+		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( waitUs ), VK_DELTA( submitUs ),
+		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
+		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ) );
+#undef VK_DELTA
+	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
+	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines, depth image %sreadable\n",
+		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), VK_NumPipelines(),
+		vk.depthReadable ? "" : "not " );
+
+	vk.statsReported = vk.stats;
+}
+
 static void VK_ResetState( void ) {
 	int i;
 
@@ -1058,13 +1817,19 @@ void vk_initialize( void ) {
 	VK_InitPipelines();
 	VK_InitTextures();
 	VK_ReportCapabilities();
+
+	ri.Cmd_AddCommand( "vkinfo", VK_Info_f );
 }
 
 void vk_shutdown( void ) {
 	int i;
 
+	ri.Cmd_RemoveCommand( "vkinfo" );
+
 	if ( vk.device ) {
 		qvkDeviceWaitIdle( vk.device );
+		// before the semaphores go
+		VK_ReleaseHeldImage();
 
 		VK_ShutdownTextures();
 		for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
@@ -1100,18 +1865,63 @@ void vk_end_frame( void ) {
 	VK_BeginFrameIfNeeded();
 	frame = vk.frame;
 
-	VK_SubmitFrameCommands( VK_NULL_HANDLE );
+	if ( vk.target == VK_TARGET_SWAPCHAIN ) {
+		VkPresentInfoKHR presentInfo;
+		VkResult result;
+		uint64_t start;
 
-	if ( !VK_Present( frame ) ) {
-		// nothing presented: the fence still has to signal for the next
-		// use of this frame slot
-		VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
-		VK_CHECK( qvkQueueSubmit( vk.queue, 0, NULL, frame->fence ) );
-		vk.lastSubmitFence = frame->fence;
+		VK_SubmitFrameCommands( frame->fence, vk.presentSemaphores[vk.targetIndex], qtrue );
+
+		Com_Memset( &presentInfo, 0, sizeof( presentInfo ) );
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+		presentInfo.waitSemaphoreCount = 1;
+		presentInfo.pWaitSemaphores = &vk.presentSemaphores[vk.targetIndex];
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = &vk.swapchain;
+		presentInfo.pImageIndices = &vk.targetIndex;
+
+		start = VK_Microseconds();
+		vk.stats.frameToPresentUs += start - vk.frameStartUs;
+		result = qvkQueuePresentKHR( vk.queue, &presentInfo );
+		vk.stats.presentUs += VK_Microseconds() - start;
+		vk.heldImage = qfalse;
+		if ( result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ) {
+			vk.swapchainOutOfDate = qtrue;
+		} else {
+			VK_CHECK( result );
+		}
+
+		// frame pacing: the image of the next frame is acquired now, so with
+		// a vsync present mode the wait for the display happens here, before
+		// the game runs the next frame, rather than between the next frame's
+		// game logic and its present (one refresh less of input latency,
+		// like GL's swap, which waits after queuing the present)
+		if ( VK_SwapchainFitsTarget() ) {
+			VkResult ahead = VK_AcquireNextImage( &vk.stats.acquireAheadUs );
+
+			if ( ahead == VK_ERROR_OUT_OF_DATE_KHR ) {
+				vk.swapchainOutOfDate = qtrue;
+			} else {
+				VK_CHECK( ahead );
+			}
+		}
+	} else {
+		VK_SubmitFrameCommands( VK_NULL_HANDLE, VK_NULL_HANDLE, qtrue );
+
+		// a frame that drew nothing presents nothing: the window keeps the
+		// last frame
+		if ( vk.target != VK_TARGET_OFFSCREEN || !VK_Present( frame ) ) {
+			// the fence still has to signal for the next use of this frame slot
+			VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
+			VK_CHECK( qvkQueueSubmit( vk.queue, 0, NULL, frame->fence ) );
+			vk.lastSubmitFence = frame->fence;
+		}
 	}
 
+	vk.target = VK_TARGET_NONE;
 	vk.frame = NULL;
 	vk.frameIndex = ( vk.frameIndex + 1 ) % VK_MAX_FRAMES;
+	vk.stats.frames++;
 }
 
 void vk_finish( void ) {
@@ -1589,30 +2399,44 @@ coordinates of units 0 and 1, each in its own binding
 ===============
 */
 static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
-	VkBuffer buffer, buffers[4];
-	VkDeviceSize offset, offsets[4];
+	VkBuffer buffer, buffers[4], indexBuffer;
+	VkDeviceSize offset, offsets[4], indexOffset;
 	VkDeviceSize xyzSize, colorSize, stSize[NUM_TEXTURE_BUNDLES], indexSize, total, pos;
 	int numVertexes = geometry->numVertexes;
+	qboolean sameXyz, sameIndexes;
 	byte *data;
 	int i;
 
-	xyzSize = PAD( sizeof( float ) * 3 * numVertexes, 16 );
+	// the passes of a multi-pass shader: same positions, usually the same
+	// indexes (not for the dlight pass)
+	sameXyz = geometry->version && vk_lastGeometry.epoch == vk_vertexEpoch && vk_lastGeometry.version == geometry->version
+		&& vk_lastGeometry.xyz == geometry->xyz && vk_lastGeometry.xyzStride == geometry->xyzStride
+		&& vk_lastGeometry.numVertexes == numVertexes;
+	sameIndexes = sameXyz && vk_lastGeometry.indexes == indexes && vk_lastGeometry.numIndexes == numIndexes;
+
+	xyzSize = sameXyz ? 0 : PAD( sizeof( float ) * 3 * numVertexes, 16 );
 	colorSize = geometry->colors ? PAD( 4 * numVertexes, 16 ) : sizeof( float ) * 4;
 	total = xyzSize + colorSize;
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		stSize[i] = geometry->st[i] ? PAD( sizeof( float ) * 2 * numVertexes, 16 ) : 0;
 		total += stSize[i];
 	}
-	indexSize = sizeof( glIndex_t ) * numIndexes;
+	indexSize = sameIndexes ? 0 : sizeof( glIndex_t ) * numIndexes;
 	total += indexSize;
 
 	data = VK_VertexAlloc( total, &buffer, &offset );
+	vk.stats.vertexBytes += total;
 	pos = 0;
 
-	VK_CopyStream( (float *)( data + pos ), geometry->xyz, numVertexes, 3, geometry->xyzStride );
-	buffers[0] = buffer;
-	offsets[0] = offset + pos;
-	pos += xyzSize;
+	if ( sameXyz ) {
+		buffers[0] = vk_lastGeometry.buffer;
+		offsets[0] = vk_lastGeometry.xyzOffset;
+	} else {
+		VK_CopyStream( (float *)( data + pos ), geometry->xyz, numVertexes, 3, geometry->xyzStride );
+		buffers[0] = buffer;
+		offsets[0] = offset + pos;
+		pos += xyzSize;
+	}
 
 	if ( geometry->colors ) {
 		Com_Memcpy( data + pos, geometry->colors, 4 * numVertexes );
@@ -1624,21 +2448,46 @@ static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geomet
 	pos += colorSize;
 
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
-		buffers[2 + i] = buffer;
 		if ( geometry->st[i] ) {
 			VK_CopyStream( (float *)( data + pos ), geometry->st[i], numVertexes, 2, geometry->stStride[i] );
+			buffers[2 + i] = buffer;
 			offsets[2 + i] = offset + pos;
 			pos += stSize[i];
 		} else {
 			// the pipeline reads it with a stride of 0 and ignores it
+			buffers[2 + i] = buffers[0];
 			offsets[2 + i] = offsets[0];
 		}
 	}
 
-	Com_Memcpy( data + pos, indexes, indexSize );
+	if ( sameIndexes ) {
+		indexBuffer = vk_lastGeometry.buffer;
+		indexOffset = vk_lastGeometry.indexOffset;
+	} else {
+		Com_Memcpy( data + pos, indexes, indexSize );
+		indexBuffer = buffer;
+		indexOffset = offset + pos;
+	}
+
+	if ( geometry->version ) {
+		vk_lastGeometry.epoch = vk_vertexEpoch;
+		vk_lastGeometry.version = geometry->version;
+		vk_lastGeometry.xyz = geometry->xyz;
+		vk_lastGeometry.xyzStride = geometry->xyzStride;
+		vk_lastGeometry.numVertexes = numVertexes;
+		vk_lastGeometry.buffer = buffers[0];
+		vk_lastGeometry.xyzOffset = offsets[0];
+		if ( !sameIndexes ) {
+			// the indexes of this draw; the dlight pass's hit indexes
+			// replace the batch's, which the following passes don't use
+			vk_lastGeometry.indexes = indexes;
+			vk_lastGeometry.numIndexes = numIndexes;
+			vk_lastGeometry.indexOffset = indexOffset;
+		}
+	}
 
 	qvkCmdBindVertexBuffers( cmd, 0, 4, buffers, offsets );
-	qvkCmdBindIndexBuffer( cmd, buffer, offset + pos, VK_INDEX_TYPE_UINT32 );
+	qvkCmdBindIndexBuffer( cmd, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT32 );
 }
 
 void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
@@ -1678,6 +2527,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	if ( pipeline != vkb.pipeline ) {
 		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
 		vkb.pipeline = pipeline;
+		vk.stats.pipelineBinds++;
 	}
 
 	// every set the shaders declare must be bound, used or not
@@ -1687,6 +2537,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		if ( set != vkb.sets[i] ) {
 			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipelineLayout, i, 1, &set, 0, NULL );
 			vkb.sets[i] = set;
+			vk.stats.descriptorBinds++;
 		}
 	}
 
@@ -1694,6 +2545,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	VK_UploadGeometry( cmd, geometry, numIndexes, indexes );
 
 	qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
+	vk.stats.draws++;
 }
 
 /*
@@ -1822,6 +2674,33 @@ void vk_clear( int buffers, const vec4_t color ) {
 	}
 }
 
+/*
+===============
+VK_DepthImageStages, VK_DepthImageWriteAccess
+
+How the depth/stencil image is written: by draws, or with multisampling by
+the resolve at the end of each render pass, which is a color attachment
+write even for depth/stencil
+===============
+*/
+static VkPipelineStageFlags VK_DepthImageStages( void ) {
+	VkPipelineStageFlags stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		stages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	}
+	return stages;
+}
+
+static VkAccessFlags VK_DepthImageWriteAccess( void ) {
+	VkAccessFlags access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+	if ( vk.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	}
+	return access;
+}
+
 void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer ) {
 	VkBufferImageCopy region;
 	VkBufferMemoryBarrier bufferBarrier;
@@ -1832,7 +2711,7 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 	VkCommandBuffer cmd;
 	VkImage image;
 	VkDeviceSize size;
-	int pixelSize, texelSize;
+	int pixelSize, texelSize, red, blue;
 	int x0, y0, x1, y1, w, h, row, col;
 
 	switch ( format ) {
@@ -1864,20 +2743,35 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 	w = x1 - x0;
 	h = y1 - y0;
 
+	VK_BeginFrameIfNeeded();
+	if ( format != READ_RGB8 ) {
+		// zeros until the depth image is readable (vk_want_depth_reads)
+		vk.depthReadSerial = vk.frameSerial;
+		if ( !vk.depthReadable ) {
+			return;
+		}
+	}
+	VK_EndRenderPass();
+	cmd = vk.frame->mainCmd;
+
 	if ( format == READ_RGB8 ) {
-		image = vk.colorImage;
+		// the color target of the frame; before anything is drawn in the
+		// frame (no target chosen yet) the offscreen image, whose contents
+		// are then stale or undefined, like a GL back buffer's
+		image = vk.target != VK_TARGET_NONE ? vk.targetImage : vk.colorImage;
 		aspect = barrierAspect = VK_IMAGE_ASPECT_COLOR_BIT;
 		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		texelSize = 4;
 	} else {
+		VK_ResolveDepth();
 		image = vk.depthImage;
 		aspect = format == READ_DEPTH_FLOAT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_STENCIL_BIT;
 		barrierAspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 		layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-		stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		stages = VK_DepthImageStages();
+		access = VK_DepthImageWriteAccess();
 		if ( format == READ_STENCIL8 ) {
 			texelSize = 1;
 		} else if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT ) {
@@ -1894,10 +2788,6 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		VK_CreateBuffer( &vk.readbackBuffer, PAD( size, 65536 ), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
 	}
-
-	VK_BeginFrameIfNeeded();
-	VK_EndRenderPass();
-	cmd = vk.frame->mainCmd;
 
 	VK_ImageBarrier( cmd, image, barrierAspect, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		stages, access, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT );
@@ -1927,7 +2817,10 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 
 	VK_FlushAndWait();
 
-	// the copy has the top row first, the caller wants the bottom row first
+	// the copy has the top row first, the caller wants the bottom row first;
+	// B8G8R8A8 targets have red third
+	red = vk.colorFormat == VK_FORMAT_B8G8R8A8_UNORM ? 2 : 0;
+	blue = 2 - red;
 	for ( row = 0; row < h; row++ ) {
 		const byte *src = vk.readbackBuffer.mapped + (size_t)( h - 1 - row ) * w * texelSize;
 		byte *dst = (byte *)buffer + ( (size_t)( y0 - y + row ) * width + ( x0 - x ) ) * pixelSize;
@@ -1935,9 +2828,9 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		switch ( format ) {
 		case READ_RGB8:
 			for ( col = 0; col < w; col++ ) {
-				dst[col * 3 + 0] = src[col * 4 + 0];
+				dst[col * 3 + 0] = src[col * 4 + red];
 				dst[col * 3 + 1] = src[col * 4 + 1];
-				dst[col * 3 + 2] = src[col * 4 + 2];
+				dst[col * 3 + 2] = src[col * 4 + blue];
 			}
 			break;
 		case READ_DEPTH_FLOAT:
@@ -1983,6 +2876,13 @@ void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
 	VK_BeginFrameIfNeeded();
 	frame = vk.frame;
 
+	// lost until the depth image is readable (vk_want_depth_reads)
+	vk.depthReadSerial = vk.frameSerial;
+	if ( !vk.depthReadable ) {
+		Com_Memset( ids, 0, sizeof( *ids ) * count );
+		return;
+	}
+
 	numRegions = 0;
 	for ( i = 0; i < count; i++ ) {
 		int x = xy[i * 2 + 0];
@@ -2018,11 +2918,12 @@ void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
 	}
 
 	VK_EndRenderPass();
+	VK_ResolveDepth();
 	cmd = frame->mainCmd;
 
 	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		VK_DepthImageStages(), VK_DepthImageWriteAccess(),
 		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT );
 
 	qvkCmdCopyImageToBuffer( cmd, vk.depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, frame->depthReadBuffer.buffer, numRegions, regions );
@@ -2030,8 +2931,7 @@ void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
 	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
 		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT );
+		VK_DepthImageStages(), VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_DepthImageWriteAccess() );
 
 	// the host reads the buffer after waiting for the frame fence
 	Com_Memset( &bufferBarrier, 0, sizeof( bufferBarrier ) );
@@ -2068,4 +2968,16 @@ depthReadStatus_t vk_get_depth_read( unsigned int id, float *depth ) {
 	}
 
 	return DEPTHREAD_LOST;
+}
+
+/*
+===============
+vk_want_depth_reads
+
+Makes the depth image readable from the start of the next frame, or of the
+frame about to start when called between frames (see VK_UpdateDepthTarget)
+===============
+*/
+void vk_want_depth_reads( void ) {
+	vk.depthReadSerial = vk.frame ? vk.frameSerial : vk.frameSerial + 1;
 }

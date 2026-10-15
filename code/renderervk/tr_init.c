@@ -573,20 +573,105 @@ void RB_TakeScreenshotJPEG( int x, int y, int width, int height, char *fileName 
 
 /*
 ==================
+Pending screenshots
+
+Screenshots, levelshots and resampled screenshots are taken at the end of
+the frame, when everything is drawn (RB_SwapBuffers calls
+RB_TakePendingScreenshots): the backend draws into the swapchain image,
+whose contents are undefined until the frame draws. GL1 read the back
+buffer when the command ran, before the frame was drawn. The "Wrote"
+centerprint of the screenshot command runs once the file is written, so
+that it isn't in the picture.
+==================
+*/
+typedef enum {
+	SHOT_TGA,
+	SHOT_JPEG,
+	SHOT_LEVELSHOT,
+	SHOT_RESAMPLED
+} shotType_t;
+
+typedef struct {
+	shotType_t	type;
+	int			x, y, width, height;
+	char		fileName[MAX_OSPATH];
+	char		message[MAX_OSPATH + 64];
+} pendingShot_t;
+
+#define MAX_PENDING_SHOTS	8
+
+static pendingShot_t	pendingShots[MAX_PENDING_SHOTS];
+static int				numPendingShots;
+
+static pendingShot_t *R_AddPendingShot( shotType_t type, const char *fileName ) {
+	pendingShot_t *shot;
+
+	if ( numPendingShots == MAX_PENDING_SHOTS ) {
+		ri.Printf( PRINT_ALL, "Too many screenshots in one frame, %s skipped\n", fileName ? fileName : "levelshot" );
+		return NULL;
+	}
+	shot = &pendingShots[numPendingShots++];
+	Com_Memset( shot, 0, sizeof( *shot ) );
+	shot->type = type;
+	if ( fileName ) {
+		Q_strncpyz( shot->fileName, fileName, sizeof( shot->fileName ) );
+	}
+	return shot;
+}
+
+static void R_TakeLevelShot( void );
+static void R_TakeResampledScreenShot( const char *filename, int destwidth, int destheight );
+
+void RB_TakePendingScreenshots( void ) {
+	int i;
+
+	for ( i = 0; i < numPendingShots; i++ ) {
+		pendingShot_t *shot = &pendingShots[i];
+
+		switch ( shot->type ) {
+		case SHOT_TGA:
+			RB_TakeScreenshot( shot->x, shot->y, shot->width, shot->height, shot->fileName );
+			break;
+		case SHOT_JPEG:
+			RB_TakeScreenshotJPEG( shot->x, shot->y, shot->width, shot->height, shot->fileName );
+			break;
+		case SHOT_LEVELSHOT:
+			R_TakeLevelShot();
+			break;
+		case SHOT_RESAMPLED:
+			R_TakeResampledScreenShot( shot->fileName, shot->width, shot->height );
+			break;
+		}
+		if ( shot->message[0] ) {
+			ri.Cmd_ExecuteText( EXEC_APPEND, shot->message );
+		}
+	}
+	numPendingShots = 0;
+}
+
+/*
+==================
 RB_TakeScreenshotCmd
 ==================
 */
 const void *RB_TakeScreenshotCmd( const void *data ) {
 	const screenshotCommand_t	*cmd;
-	
+	pendingShot_t *shot;
+
 	cmd = (const screenshotCommand_t *)data;
-	
-	if (cmd->jpeg)
-		RB_TakeScreenshotJPEG( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
-	else
-		RB_TakeScreenshot( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
-	
-	return (const void *)(cmd + 1);	
+
+	shot = R_AddPendingShot( cmd->jpeg ? SHOT_JPEG : SHOT_TGA, cmd->fileName );
+	if ( shot ) {
+		shot->x = cmd->x;
+		shot->y = cmd->y;
+		shot->width = cmd->width;
+		shot->height = cmd->height;
+		if ( cmd->message ) {
+			Q_strncpyz( shot->message, cmd->message, sizeof( shot->message ) );
+		}
+	}
+
+	return (const void *)(cmd + 1);
 }
 
 /*
@@ -594,8 +679,9 @@ const void *RB_TakeScreenshotCmd( const void *data ) {
 R_TakeScreenshot
 ==================
 */
-void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean jpeg ) {
+void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean jpeg, const char *message ) {
 	static char	fileName[MAX_OSPATH]; // bad things if two screenshots per frame?
+	static char	commandText[MAX_OSPATH + 64];
 	screenshotCommand_t	*cmd;
 
 	cmd = R_GetCommandBuffer( sizeof( *cmd ) );
@@ -611,6 +697,11 @@ void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean
 	Q_strncpyz( fileName, name, sizeof(fileName) );
 	cmd->fileName = fileName;
 	cmd->jpeg = jpeg;
+	cmd->message = NULL;
+	if ( message ) {
+		Q_strncpyz( commandText, message, sizeof( commandText ) );
+		cmd->message = commandText;
+	}
 }
 
 /* 
@@ -669,6 +760,15 @@ R_ResampledScreenShot
 ====================
 */
 void R_ResampledScreenShot(const char* filename, int destwidth, int destheight) {
+	pendingShot_t *shot = R_AddPendingShot( SHOT_RESAMPLED, filename );
+
+	if ( shot ) {
+		shot->width = destwidth;
+		shot->height = destheight;
+	}
+}
+
+static void R_TakeResampledScreenShot(const char* filename, int destwidth, int destheight) {
 	char		checkname[MAX_OSPATH];
 	byte		*buffer;
 	byte		*source, *allsource;
@@ -734,6 +834,10 @@ the menu system, sampled down from full screen distorted images
 ====================
 */
 void R_LevelShot( void ) {
+	R_AddPendingShot( SHOT_LEVELSHOT, NULL );
+}
+
+static void R_TakeLevelShot( void ) {
 	char		checkname[MAX_OSPATH];
 	byte		*buffer;
 	byte		*source, *allsource;
@@ -865,14 +969,13 @@ void R_ScreenShot_f(void) {
 	}
 
 	if (!width || !height) {
-		R_TakeScreenshot(0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse);
+		char message[MAX_OSPATH + 64];
 
+		message[0] = 0;
 		if (!silent) {
-			char message[64];
-
 			Com_sprintf(message, sizeof(message), "centerprint \"%s %s\"\n", ri.LV_ConvertString("Wrote"), checkname);
-			ri.Cmd_ExecuteText(EXEC_NOW, message);
 		}
+		R_TakeScreenshot(0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse, message[0] ? message : NULL);
 	} else {
 		R_ResampledScreenShot(checkname, width, height);
 	}
@@ -929,7 +1032,7 @@ void R_ScreenShotJPEG_f (void) {
 		lastNumber++;
 	}
 
-	R_TakeScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qtrue );
+	R_TakeScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qtrue, NULL );
 
 	if ( !silent ) {
 		ri.Printf (PRINT_ALL, "Wrote %s\n", checkname);

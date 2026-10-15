@@ -41,9 +41,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 
 #define VK_MAX_FRAMES				2		// frames in flight
+#define VK_ACQUIRE_SEMAPHORES		( VK_MAX_FRAMES + 1 )	// see VK_AcquireNextImage in vk.c
 #define VK_MAX_SWAPCHAIN_IMAGES		16
 #define VK_MAX_TEXTURES				4096	// live texture handles
 #define VK_MAX_DEPTH_READS			256		// vk_queue_depth_reads per frame
+#define VK_DEPTH_READ_FRAMES		300		// the depth image stays readable this many frames after the last read
 
 /*
 ====================================================================
@@ -108,6 +110,7 @@ FUNCTION POINTERS
 	X( vkCmdEndRenderPass ) \
 	X( vkCmdPipelineBarrier ) \
 	X( vkCmdPushConstants ) \
+	X( vkCmdResetQueryPool ) \
 	X( vkCmdSetDepthBias ) \
 	X( vkCmdSetLineWidth ) \
 	X( vkCmdSetScissor ) \
@@ -115,6 +118,7 @@ FUNCTION POINTERS
 	X( vkCmdSetStencilReference ) \
 	X( vkCmdSetStencilWriteMask ) \
 	X( vkCmdSetViewport ) \
+	X( vkCmdWriteTimestamp ) \
 	X( vkCreateBuffer ) \
 	X( vkCreateCommandPool ) \
 	X( vkCreateDescriptorPool ) \
@@ -126,6 +130,7 @@ FUNCTION POINTERS
 	X( vkCreateImageView ) \
 	X( vkCreatePipelineCache ) \
 	X( vkCreatePipelineLayout ) \
+	X( vkCreateQueryPool ) \
 	X( vkCreateRenderPass ) \
 	X( vkCreateSampler ) \
 	X( vkCreateSemaphore ) \
@@ -143,6 +148,7 @@ FUNCTION POINTERS
 	X( vkDestroyPipeline ) \
 	X( vkDestroyPipelineCache ) \
 	X( vkDestroyPipelineLayout ) \
+	X( vkDestroyQueryPool ) \
 	X( vkDestroyRenderPass ) \
 	X( vkDestroySampler ) \
 	X( vkDestroySemaphore ) \
@@ -155,10 +161,13 @@ FUNCTION POINTERS
 	X( vkGetBufferMemoryRequirements ) \
 	X( vkGetDeviceQueue ) \
 	X( vkGetImageMemoryRequirements ) \
+	X( vkGetPipelineCacheData ) \
+	X( vkGetQueryPoolResults ) \
 	X( vkGetSwapchainImagesKHR ) \
 	X( vkMapMemory ) \
 	X( vkQueuePresentKHR ) \
 	X( vkQueueSubmit ) \
+	X( vkQueueWaitIdle ) \
 	X( vkResetFences ) \
 	X( vkUnmapMemory ) \
 	X( vkUpdateDescriptorSets ) \
@@ -168,7 +177,8 @@ FUNCTION POINTERS
 // vkCmdSetLineStippleEXT is loaded under the name of the enabled
 // extension (VK_KHR_line_rasterization or VK_EXT_line_rasterization)
 #define VK_DEVICE_FUNCTIONS_OPTIONAL( X ) \
-	X( vkCmdSetLineStippleEXT )
+	X( vkCmdSetLineStippleEXT ) \
+	X( vkCreateRenderPass2KHR )
 
 #define VK_DECLARE_FUNCTION( name ) extern PFN_##name q##name;
 VK_GLOBAL_FUNCTIONS( VK_DECLARE_FUNCTION )
@@ -197,7 +207,9 @@ typedef struct {
 // storage of a texture; replaced when vk_create_texture is called again
 typedef struct {
 	VkImage			image;
-	VkDeviceMemory	memory;
+	VkDeviceMemory	memory;			// a block of vk_image.c or memory of its own
+	int				memoryBlock;	// index of the block, -1 for memory of its own
+	VkDeviceSize	memoryOffset, memorySize;
 	VkImageView		view;
 	VkDescriptorSet	descriptorSet;	// combined image sampler, set 0 or 1
 	VkDescriptorPool descriptorPool;	// the pool descriptorSet came from
@@ -228,15 +240,24 @@ typedef enum {
 	VK_DESTROY_IMAGE,
 	VK_DESTROY_IMAGE_VIEW,
 	VK_DESTROY_MEMORY,
-	VK_DESTROY_DESCRIPTOR_SET
+	VK_DESTROY_MEMORY_RANGE,		// a range of a texture memory block (vk_image.c)
+	VK_DESTROY_DESCRIPTOR_SET,
+	VK_DESTROY_FRAMEBUFFER
 } vkDestroyType_t;
 
 // a resource released once the frame that may still use it has completed
 typedef struct {
 	vkDestroyType_t	type;
-	uint64_t		handle;
-	uint64_t		pool;			// descriptor pool for VK_DESTROY_DESCRIPTOR_SET
+	uint64_t		handle;			// the object; the block index for VK_DESTROY_MEMORY_RANGE
+	uint64_t		pool;			// descriptor pool for VK_DESTROY_DESCRIPTOR_SET, offset for VK_DESTROY_MEMORY_RANGE
+	uint64_t		size;			// VK_DESTROY_MEMORY_RANGE
 } vkDeferredDestroy_t;
+
+typedef enum {
+	VK_TARGET_NONE,				// not chosen yet: nothing drawn or read in the frame
+	VK_TARGET_OFFSCREEN,		// vk.colorImage, blitted to the swapchain at present
+	VK_TARGET_SWAPCHAIN			// the acquired swapchain image
+} vkTarget_t;
 
 typedef struct {
 	VkCommandPool	commandPool;
@@ -244,7 +265,8 @@ typedef struct {
 	VkCommandBuffer	mainCmd;		// everything else, in the order the renderer issued it
 	VkCommandBuffer	presentCmd;		// copy to the swapchain image
 	VkFence			fence;			// signaled when every submission of the frame has completed
-	VkSemaphore		imageAcquired;
+	VkQueryPool		queryPool;		// VK_NUM_TIMESTAMPS timestamps, when the queue has them
+	uint32_t		timestampsWritten;	// bits of the VK_TS_* recorded in this frame
 
 	vkBuffer_t		vertexBuffer;	// vertexes and indexes of this frame
 	VkDeviceSize	vertexOffset;
@@ -266,6 +288,47 @@ typedef struct {
 	float			depthResults[VK_MAX_DEPTH_READS];
 } vkFrame_t;
 
+// counters for the vkinfo command (vk.c), accumulated since the device was
+// created; vkinfo prints what changed since its last call
+typedef struct {
+	uint64_t	frames;				// vk_end_frame calls
+	uint64_t	renderPasses;		// render pass instances begun
+	uint64_t	submits;			// vkQueueSubmit calls
+	uint64_t	flushes;			// mid-frame submissions that waited for the GPU
+	uint64_t	draws;
+	uint64_t	pipelineBinds;
+	uint64_t	descriptorBinds;	// descriptor sets bound
+	uint64_t	vertexBytes;		// copied into the vertex buffers
+	uint64_t	stagingBytes;		// texture data copied into staging buffers
+	uint64_t	mainUploads;		// uploads recorded in order with the draws (they end the render pass)
+	uint64_t	textures;			// texture storages created
+	uint64_t	pipelines;			// pipelines created
+	uint64_t	allocations;		// vkAllocateMemory calls
+	uint64_t	depthTargets;		// depth images replaced to become readable or not (VK_UpdateDepthTarget)
+	// microseconds spent in
+	uint64_t	waitUs;				// waits for frame fences
+	uint64_t	submitUs;			// vkQueueSubmit
+	uint64_t	acquireUs;			// vkAcquireNextImageKHR, in a frame (before presenting it)
+	uint64_t	acquireAheadUs;		// vkAcquireNextImageKHR right after a present, for the next frame
+	uint64_t	frameToPresentUs;	// from the start of a frame's recording to its present
+	uint64_t	presentUs;			// vkQueuePresentKHR
+	uint64_t	pipelineUs;			// vkCreateGraphicsPipelines
+	uint64_t	allocationUs;		// vkAllocateMemory
+	uint64_t	textureUs;			// creating texture storages (image, memory, view, descriptor set)
+	// GPU time from timestamps, of the frames that presented
+	uint64_t	gpuFrames;
+	uint64_t	gpuMainUs;			// the main command buffer (all segments of the frame)
+	uint64_t	gpuPresentUs;		// the copy to the swapchain image
+	uint64_t	gpuFrameUs;			// start of the main command buffer to the end of the copy
+} vkStats_t;
+
+// GPU timestamps of a frame
+#define VK_TS_MAIN_START		0
+#define VK_TS_MAIN_END			1
+#define VK_TS_PRESENT_START		2
+#define VK_TS_PRESENT_END		3
+#define VK_NUM_TIMESTAMPS		4
+
 typedef struct {
 	// instance and device
 	VkInstance			instance;
@@ -277,9 +340,11 @@ typedef struct {
 	qboolean			depthClipControl;	// VK_EXT_depth_clip_control: GL clip space depth (z in [-w, w])
 	qboolean			bresenhamLines;		// VK_KHR/EXT_line_rasterization: GL's diamond-exit line rule
 	qboolean			lineStipple;		// stippledBresenhamLines
+	qboolean			depthStencilResolve;	// VK_KHR_depth_stencil_resolve (and create_renderpass2), for multisampling
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 	VkDevice			device;
 	uint32_t			queueFamily;
+	uint32_t			timestampValidBits;	// 0: the queue has no timestamps
 	VkQueue				queue;
 
 	// swapchain
@@ -290,14 +355,28 @@ typedef struct {
 	uint32_t			swapchainImageCount;
 	VkImage				swapchainImages[VK_MAX_SWAPCHAIN_IMAGES];
 	VkSemaphore			presentSemaphores[VK_MAX_SWAPCHAIN_IMAGES];	// one per image: presentation has no fence
+	VkImageUsageFlags	swapchainUsage;
+	// frames are drawn into the swapchain images directly when they can be
+	// color attachments and readback sources of the render target's format
+	// (see VK_SelectTarget in vk.c)
+	qboolean			swapchainDirect;
+	VkImageView			swapchainViews[VK_MAX_SWAPCHAIN_IMAGES];
+	VkFramebuffer		swapchainFramebuffers[VK_MAX_SWAPCHAIN_IMAGES];
 	qboolean			swapchainOutOfDate;
 	int					swapchainDrawableWidth;		// window size the swapchain was created for
 	int					swapchainDrawableHeight;
 
-	// render target: the frame is drawn offscreen at glConfig.vidWidth x
-	// vidHeight and blitted to the swapchain image when it is presented, so
-	// it keeps its contents between frames and can be read back at any time
+	// render target of glConfig.vidWidth x vidHeight: the color target of a
+	// frame is the swapchain image it will present (vk.target), or, when the
+	// swapchain doesn't have that size (a window resize before the
+	// vid_restart) or can't be drawn to, the offscreen color image, blitted
+	// to the swapchain image at present. The depth/stencil image is always
+	// offscreen. With multisampling (r_ext_multisample) the draws go to the
+	// multisampled images; every render pass resolves the color into the
+	// color target, the depth/stencil buffer is resolved into the depth image
+	// before readbacks
 	int					width, height;
+	VkSampleCountFlagBits samples;
 	VkFormat			colorFormat;
 	VkFormat			depthFormat;
 	VkImage				colorImage;
@@ -306,8 +385,18 @@ typedef struct {
 	VkImage				depthImage;
 	VkDeviceMemory		depthMemory;
 	VkImageView			depthView;
+	// the depth image can be copied from (TRANSFER_SRC): always with
+	// multisampling, otherwise only while depth or stencil reads are wanted
+	// (VK_UpdateDepthTarget in vk.c)
+	qboolean			depthReadable;
+	uint64_t			depthReadSerial;	// frame in which depth or stencil reads were last wanted, 0 for never
+	VkImage				msColorImage, msDepthImage;
+	VkDeviceMemory		msColorMemory, msDepthMemory;
+	VkImageView			msColorView, msDepthView;
 	VkRenderPass		renderPass;
 	VkFramebuffer		framebuffer;
+	VkRenderPass		depthResolvePass;	// multisampling: resolves the depth/stencil buffer for readbacks
+	VkFramebuffer		depthResolveFramebuffer;
 
 	// shared objects
 	VkDescriptorSetLayout textureSetLayout;
@@ -321,6 +410,21 @@ typedef struct {
 	vkFrame_t			frames[VK_MAX_FRAMES];
 	int					frameIndex;
 	vkFrame_t			*frame;			// current frame, NULL between frames
+	vkTarget_t			target;			// color target of the current frame, chosen at its first render pass
+	VkImage				targetImage;
+	VkFramebuffer		targetFramebuffer;
+	uint32_t			targetIndex;	// swapchain image for VK_TARGET_SWAPCHAIN
+	qboolean			acquireWaitPending;	// the next submission waits for the held image's semaphore
+
+	// the swapchain image acquired for the next present (VK_AcquireNextImage),
+	// usually right after the previous present
+	qboolean			heldImage;
+	uint32_t			heldIndex;
+	int					heldSemaphore;	// index in acquireSemaphores
+	VkSemaphore			acquireSemaphores[VK_ACQUIRE_SEMAPHORES];
+	uint64_t			acquireWaitSerial[VK_ACQUIRE_SEMAPHORES];	// frame whose submission waited for it, 0 for none
+	int					nextAcquireSemaphore;
+	uint64_t			frameStartUs;	// when the frame being recorded started
 	uint64_t			frameSerial;	// incremented when a frame starts, the first frame is 1
 	qboolean			uploadCmdRecording;
 	qboolean			renderPassActive;
@@ -328,6 +432,10 @@ typedef struct {
 	VkFence				lastSubmitFence;	// VK_NULL_HANDLE when nothing is pending
 
 	vkBuffer_t			readbackBuffer;
+
+	vkStats_t			stats;
+	vkStats_t			statsReported;	// stats at the last vkinfo
+	int					liveAllocations;	// device memory objects
 } vkInstance_t;
 
 extern vkInstance_t vk;
@@ -348,14 +456,21 @@ void		VK_DestroySwapchain( void );
 const char	*VK_SwapchainPresentModeName( void );
 void		VK_GetDrawableSize( int *width, int *height );
 const char	*VK_ResultString( VkResult result );
+uint64_t	VK_Microseconds( void );
 void		VK_Check( VkResult result, const char *what );
 #define		VK_CHECK( call ) VK_Check( ( call ), #call )
 
 // vk.c
+void		VK_CreateSwapchainTargets( void );
+void		VK_ReleaseHeldImage( void );
+void		VK_DestroySwapchainTargets( void );
 uint32_t	VK_FindMemoryType( uint32_t typeBits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred );
+VkDeviceMemory VK_AllocateMemory( VkDeviceSize size, uint32_t memoryType );
+void		VK_FreeMemory( VkDeviceMemory memory );
 void		VK_CreateBuffer( vkBuffer_t *buffer, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred );
 void		VK_DestroyBuffer( vkBuffer_t *buffer );
 void		VK_DeferDestroy( vkDestroyType_t type, uint64_t handle, uint64_t pool );
+void		VK_DeferDestroyRange( int block, VkDeviceSize offset, VkDeviceSize size );
 void		VK_BeginFrameIfNeeded( void );
 void		VK_EndRenderPass( void );
 void		VK_FlushAndWait( void );
@@ -372,6 +487,8 @@ void		VK_ShutdownTextureObjects( void );
 vkTexture_t	*VK_GetTexture( unsigned int handle );
 vkTexture_t	*VK_DefaultTexture( void );
 void		VK_FinishUploads( VkCommandBuffer cmd, qboolean upload );
+void		VK_FreeMemoryRange( int block, VkDeviceSize offset, VkDeviceSize size );
+void		VK_MemoryBlockInfo( int *numBlocks, VkDeviceSize *size, VkDeviceSize *used );
 void		*VK_StagingAlloc( VkDeviceSize size, VkDeviceSize alignment, VkBuffer *buffer, VkDeviceSize *offset );
 
 // vk_pipeline.c
@@ -383,6 +500,7 @@ typedef struct {
 void		VK_InitPipelines( void );
 void		VK_ShutdownPipelines( void );
 VkPipeline	VK_GetPipeline( const vkPipelineKey_t *key );
+int			VK_NumPipelines( void );
 
 // pipeline key fields
 #define VK_PIPE_SRCBLEND_SHIFT		0		// GLS_SRCBLEND_* value, 4 bits
@@ -437,3 +555,4 @@ extern const size_t		vk_spirv_generic_frag_size;
 
 // cvars
 extern cvar_t	*r_vkValidation;
+extern cvar_t	*r_ext_multisample;

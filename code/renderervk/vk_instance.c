@@ -87,6 +87,16 @@ void VK_Check( VkResult result, const char *what ) {
 	}
 }
 
+// a monotonic clock for the vkinfo counters
+uint64_t VK_Microseconds( void ) {
+	static uint64_t frequency;
+
+	if ( !frequency ) {
+		frequency = SDL_GetPerformanceFrequency();
+	}
+	return SDL_GetPerformanceCounter() * 1000000.0 / frequency;
+}
+
 /*
 ====================================================================
 
@@ -433,6 +443,18 @@ static void VK_SelectPhysicalDevice( void ) {
 
 	qvkGetPhysicalDeviceProperties( vk.physicalDevice, &vk.deviceProperties );
 	qvkGetPhysicalDeviceMemoryProperties( vk.physicalDevice, &vk.memoryProperties );
+
+	// GPU timestamps (vkinfo)
+	{
+		VkQueueFamilyProperties *families;
+		uint32_t numFamilies;
+
+		qvkGetPhysicalDeviceQueueFamilyProperties( vk.physicalDevice, &numFamilies, NULL );
+		families = ri.Hunk_AllocateTempMemory( sizeof( *families ) * ( numFamilies + 1 ) );
+		qvkGetPhysicalDeviceQueueFamilyProperties( vk.physicalDevice, &numFamilies, families );
+		vk.timestampValidBits = vk.deviceProperties.limits.timestampPeriod > 0 ? families[vk.queueFamily].timestampValidBits : 0;
+		ri.Hunk_FreeTempMemory( families );
+	}
 }
 
 static void VK_CreateLogicalDevice( void ) {
@@ -518,6 +540,15 @@ static void VK_CreateLogicalDevice( void ) {
 			vk.lineStipple = supportedLines.stippledBresenhamLines ? qtrue : qfalse;
 		}
 	}
+	// multisampling resolves the depth/stencil buffer too, so readbacks
+	// (screenshots of stencil, flares) keep working
+	vk.depthStencilResolve = qfalse;
+	if ( VK_HasExtension( available, numAvailable, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME )
+		&& VK_HasExtension( available, numAvailable, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME ) ) {
+		VK_AddExtension( extensions, &numExtensions, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME );
+		VK_AddExtension( extensions, &numExtensions, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME );
+		vk.depthStencilResolve = qtrue;
+	}
 	ri.Hunk_FreeTempMemory( available );
 
 	Com_Memset( &queueInfo, 0, sizeof( queueInfo ) );
@@ -556,6 +587,14 @@ static void VK_CreateLogicalDevice( void ) {
 			!strcmp( lineExtension, "VK_KHR_line_rasterization" ) ? "vkCmdSetLineStippleKHR" : "vkCmdSetLineStippleEXT" );
 		if ( !qvkCmdSetLineStippleEXT ) {
 			vk.lineStipple = qfalse;
+		}
+	}
+
+	qvkCreateRenderPass2KHR = NULL;
+	if ( vk.depthStencilResolve ) {
+		qvkCreateRenderPass2KHR = (PFN_vkCreateRenderPass2KHR)qvkGetDeviceProcAddr( vk.device, "vkCreateRenderPass2KHR" );
+		if ( !qvkCreateRenderPass2KHR ) {
+			vk.depthStencilResolve = qfalse;
 		}
 	}
 
@@ -744,6 +783,12 @@ void VK_CreateSwapchain( void ) {
 	if ( !( caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) ) {
 		ri.Error( ERR_FATAL, "Vulkan: swapchain images can't be transfer destinations" );
 	}
+	// drawn to directly and read back when possible, blitted to otherwise
+	vk.swapchainUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if ( ( caps.supportedUsageFlags & ( VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) )
+		== ( VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) ) {
+		vk.swapchainUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	}
 
 	format = VK_ChooseSurfaceFormat();
 	vk.presentMode = VK_ChoosePresentMode();
@@ -766,7 +811,7 @@ void VK_CreateSwapchain( void ) {
 	createInfo.imageColorSpace = format.colorSpace;
 	createInfo.imageExtent = extent;
 	createInfo.imageArrayLayers = 1;
-	createInfo.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	createInfo.imageUsage = vk.swapchainUsage;
 	createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	createInfo.preTransform = caps.currentTransform;
 	if ( caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ) {
@@ -784,7 +829,9 @@ void VK_CreateSwapchain( void ) {
 
 	// nothing may use the old swapchain while it's replaced
 	if ( oldSwapchain ) {
+		VK_ReleaseHeldImage();
 		VK_CHECK( qvkDeviceWaitIdle( vk.device ) );
+		VK_DestroySwapchainTargets();
 	}
 
 	VK_CHECK( qvkCreateSwapchainKHR( vk.device, &createInfo, NULL, &vk.swapchain ) );
@@ -802,15 +849,20 @@ void VK_CreateSwapchain( void ) {
 	}
 	VK_CHECK( qvkGetSwapchainImagesKHR( vk.device, vk.swapchain, &vk.swapchainImageCount, vk.swapchainImages ) );
 
+	// views and framebuffers, once the render pass exists
+	VK_CreateSwapchainTargets();
+
 	ri.Printf( PRINT_DEVELOPER, "Vulkan swapchain: %ux%u, %u images, %s\n", extent.width, extent.height,
 		vk.swapchainImageCount, VK_PresentModeName( vk.presentMode ) );
 }
 
 void VK_DestroySwapchain( void ) {
 	if ( vk.swapchain ) {
+		VK_ReleaseHeldImage();
 		// no VK_CHECK: also called by vk_shutdown, which can follow a lost
 		// device, and a second fatal error would skip the window shutdown
 		qvkDeviceWaitIdle( vk.device );
+		VK_DestroySwapchainTargets();
 		qvkDestroySwapchainKHR( vk.device, vk.swapchain, NULL );
 		vk.swapchain = VK_NULL_HANDLE;
 	}

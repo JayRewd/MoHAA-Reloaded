@@ -362,6 +362,9 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 		}
 		else
 		{
+			// for the stencil readback at the end of the frame
+			// (RB_SwapBuffers), before anything starts the frame
+			vk_want_depth_reads();
 			R_IssuePendingRenderCommands();
 			vk_set_stencil_test( qtrue );
 			vk_set_stencil_write_mask( ~0U );

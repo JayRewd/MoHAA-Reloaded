@@ -1225,6 +1225,7 @@ typedef struct {
 typedef struct {
 	const float	*xyz;
 	int			xyzStride;
+	unsigned int xyzVersion;	// non-zero: set by RB_SetTessVertexArray, see drawGeometry_t
 	const byte	*colors;
 	qboolean	colorsEnabled;
 	const float	*st[NUM_TEXTURE_BUNDLES];
@@ -1717,6 +1718,7 @@ void	RB_SetColor4f( float r, float g, float b, float a );
 void	RB_SetColor3f( float r, float g, float b );
 void	RB_SetColor4ubv( const byte *rgba );
 void	RB_SetVertexArray( const float *xyz, int stride );
+void	RB_SetTessVertexArray( void );
 void	RB_SetColorArray( const byte *colors );
 void	RB_EnableColorArray( qboolean enable );
 void	RB_SetTexCoordArray( const float *st, int stride );
@@ -1859,6 +1861,7 @@ void	R_ImageList_f( void );
 void	R_SkinList_f( void );
 // https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=516
 const void *RB_TakeScreenshotCmd( const void *data );
+void RB_TakePendingScreenshots( void );
 void	R_ScreenShot_f( void );
 
 void	R_InitImages( void );
@@ -2450,6 +2453,7 @@ typedef struct {
 	int height;
 	char *fileName;
 	qboolean jpeg;
+	const char *message;	// console command run once the file is written, or NULL
 } screenshotCommand_t;
 
 typedef struct {
