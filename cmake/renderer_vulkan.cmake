@@ -11,8 +11,13 @@ include(renderer_common)
 
 # Only the headers are used (Vulkan::Headers): Vulkan is loaded at runtime
 # through SDL (SDL_Vulkan_GetVkGetInstanceProcAddr), the renderer doesn't
-# link libvulkan. FindVulkan still needs the loader to consider Vulkan found.
-find_package(Vulkan REQUIRED)
+# link libvulkan. Khronos' Vulkan-Headers package (VulkanHeaders) when it is
+# installed (the CI builds use it), otherwise FindVulkan, which also needs
+# the loader to consider Vulkan found.
+find_package(VulkanHeaders CONFIG QUIET)
+if(NOT TARGET Vulkan::Headers)
+    find_package(Vulkan REQUIRED)
+endif()
 
 set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_backend.c

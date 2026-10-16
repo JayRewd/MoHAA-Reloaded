@@ -41,6 +41,12 @@
                     <Component Id="game.dll">
                         <File Source="files/game.dll" />
                     </Component>
+                    <Component Id="renderer_opengl1.dll">
+                        <File Source="files/renderer_opengl1.dll" />
+                    </Component>
+                    <Component Id="renderer_vulkan.dll">
+                        <File Source="files/renderer_vulkan.dll" />
+                    </Component>
 
                     <!-- Third-party -->
                     <Component Id="SDL2.dll">
@@ -98,6 +104,8 @@
             <ComponentRef Id="omohaaded.exe" />
             <ComponentRef Id="cgame.dll" />
             <ComponentRef Id="game.dll" />
+            <ComponentRef Id="renderer_opengl1.dll" />
+            <ComponentRef Id="renderer_vulkan.dll" />
         </ComponentGroup>
 
         <ComponentGroup Id="ThirdParty">

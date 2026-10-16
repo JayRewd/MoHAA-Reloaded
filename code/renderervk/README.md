@@ -143,15 +143,23 @@ Shared files touched outside this directory: `CMakeLists.txt` (option),
 `cmake/libraries/{freetype,jpeg}.cmake` and `cmake/platforms/macos.cmake`
 (accept the new renderer), `code/renderercommon/tr_common.h` (does not include
 `qgl.h` when `USE_VULKAN` is defined; `texnum` is `unsigned int`, same type as
-before).
+before), and the CI workflows (`.github/workflows`: Linux x64 and Windows x64
+only, with `USE_RENDERER_DLOPEN=ON` and `BUILD_RENDERER_VULKAN=ON`, the
+renderers then shipping as `renderer_opengl1` and `renderer_vulkan` libraries
+next to the executable; artifacts kept 3 days) and the Windows installer
+(`misc/setup/windows/app/Package.wxs` lists both renderer DLLs).
 
 ## Build and run
 
-Requirements: the Vulkan headers (1.4.341 on the dev machine) and, for CMake's
-`FindVulkan` to report Vulkan as found, the loader development library, even
-though the renderer doesn't link it (only `Vulkan::Headers` is used). `glslc`
-is only needed to change shaders. `vulkan-validationlayers` is needed for
-`r_vkValidation`.
+Requirements: the Vulkan headers (1.4.341 on the dev machine; Ubuntu 22.04's
+1.3.204 are too old), either Khronos' Vulkan-Headers installed as a CMake
+package (`VulkanHeaders`, found with `-DVulkanHeaders_DIR=<prefix>/share/cmake/VulkanHeaders`
+or `CMAKE_PREFIX_PATH`; the CI builds fetch and install the `v1.4.341`
+tag) or, through CMake's `FindVulkan`, the system's headers plus the
+loader development library, which `FindVulkan` needs to report Vulkan as
+found even though the renderer doesn't link it (only `Vulkan::Headers` is
+used). `glslc` is only needed to change shaders. `vulkan-validationlayers`
+is needed for `r_vkValidation`.
 
 ```sh
 cmake -S . -B build-vk -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_RENDERER_VULKAN=ON
@@ -2345,6 +2353,7 @@ Known risks, not seen on RADV but worth handling before shipping:
   lines use the driver's default rule, which may differ from GL's by a pixel
   here and there; only debug drawing has lines.
 
-Windows: the same code applies; vendor the Vulkan headers (or require the
-Vulkan SDK) so CI can build without extra installs. `find_package(Vulkan)`
-needs the loader library to be found even though it isn't linked.
+Windows: the same code applies; the CI build fetches Khronos' Vulkan-Headers
+(see Build and run), so no Vulkan SDK is needed. The Vulkan-specific files
+had never been compiled with MSVC before that CI build (they have no
+variable-length array, checked with clang's `-Wvla`).

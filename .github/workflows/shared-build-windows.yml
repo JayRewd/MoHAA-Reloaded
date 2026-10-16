@@ -23,9 +23,7 @@ jobs:
     strategy:
       matrix:
         architecture: [
-          {name: 'x64',   os: 'windows-2025',   config: 'x64',    toolset: 'x64',        arch_option: 'VC-WIN64A'    },
-          {name: 'x86',   os: 'windows-2025',   config: 'Win32',  toolset: 'x64_x86',    arch_option: 'VC-WIN32'     },
-          {name: 'arm64', os: 'windows-11-arm', config: 'ARM64',  toolset: 'x64_arm64',  arch_option: 'VC-WIN64-ARM' }
+          {name: 'x64',   os: 'windows-2025',   config: 'x64',    toolset: 'x64',        arch_option: 'VC-WIN64A'    }
         ]
 
     name: "Building for platform windows-${{matrix.architecture.name}}"
@@ -37,6 +35,7 @@ jobs:
         curl-version: '8_12_1'
         openal-soft-branch: '1.24.3'
         sdl2-branch: 'release-2.32.8'
+        vulkan-headers-version: 'v1.4.341'
 
     steps:
     ###
@@ -136,6 +135,33 @@ jobs:
         cmake --install ./build --config Release
 
     ###
+    # Vulkan headers (renderer_vulkan only uses the headers: Vulkan is
+    # loaded at runtime through SDL)
+    ###
+    - name: Cache Vulkan-Headers
+      id: cache-vulkan-headers
+      uses: actions/cache@v4
+      with:
+        path: 'thirdparties/Vulkan-Headers/install'
+        key: ${{ runner.os }}-vulkan-headers-${{ env.vulkan-headers-version }}-v1
+
+    - name: Checkout Vulkan-Headers
+      if: steps.cache-vulkan-headers.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: 'KhronosGroup/Vulkan-Headers'
+        path: 'thirdparties/Vulkan-Headers'
+        ref: '${{ env.vulkan-headers-version }}'
+
+    - name: Configure and install Vulkan-Headers
+      if: steps.cache-vulkan-headers.outputs.cache-hit != 'true'
+      working-directory: ${{github.workspace}}/thirdparties/Vulkan-Headers
+      run: |
+        cmake -B ./build `
+        -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/thirdparties/Vulkan-Headers/install'
+        cmake --install ./build
+
+    ###
     # OpenAL
     ###
     - name: Cache OpenAL
@@ -232,8 +258,10 @@ jobs:
         -DOPENAL_INCLUDE_DIR='${{github.workspace}}/thirdparties/soft-oal/install/include/AL' `
         -DCURL_ROOT='${{github.workspace}}/thirdparties/curl/install' `
         -DFLEX_EXECUTABLE='${{github.workspace}}/thirdparties/winflexbison-install/win_flex.exe' `
-        -DUSE_RENDERER_DLOPEN=OFF `
+        -DUSE_RENDERER_DLOPEN=ON `
         -DBUILD_RENDERER_GL2=OFF `
+        -DBUILD_RENDERER_VULKAN=ON `
+        -DVulkanHeaders_DIR='${{github.workspace}}/thirdparties/Vulkan-Headers/install/share/cmake/VulkanHeaders' `
         -DPRODUCT_VERSION_STAGE='${{ env.RELEASE_STAGE }}'".Replace("`r", "").Replace("`n", "") >> $env:GITHUB_ENV
 
     - name: Configure CMake
@@ -270,6 +298,7 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
+        retention-days: 3
         name: out-windows-${{matrix.architecture.name}}
         if-no-files-found: error
         compression-level: 9
@@ -279,6 +308,7 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
+        retention-days: 3
         name: out-windows-${{matrix.architecture.name}}-pdb
         if-no-files-found: error
         compression-level: 9
@@ -287,6 +317,7 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
+        retention-days: 3
         name: out-windows-${{matrix.architecture.name}}-installer
         if-no-files-found: error
         path: |
