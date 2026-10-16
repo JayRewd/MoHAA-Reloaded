@@ -2706,8 +2706,6 @@ R_CreateBuiltinImages
 */
 void R_CreateBuiltinImages(void) {
 	int		x, y;
-	int		i;
-	byte	lightmap_buffer[LIGHTMAP_SIZE * LIGHTMAP_SIZE * 4];
 	byte	data[DEFAULT_SIZE][DEFAULT_SIZE][4];
 
 	R_CreateDefaultImage();
@@ -2726,15 +2724,6 @@ void R_CreateBuiltinImages(void) {
 			data[y][x][2] = tr.identityLightByte;
 			data[y][x][3] = 255;			
 		}
-	}
-
-	Com_Memset(lightmap_buffer, 0xFFFFFFFF, sizeof(lightmap_buffer));
-	for (i = 0; i < 15; i++) {
-		char filename[64];
-
-		Com_sprintf(filename, sizeof(filename), "*lightmapD%i", i);
-		tr.dlightImages[i] = R_CreateImageOld(filename, lightmap_buffer, LIGHTMAP_SIZE, LIGHTMAP_SIZE, 0, 1, qfalse, qfalse, qfalse, 0, WRAP_CLAMP, WRAP_CLAMP);
-		tr.dlightImages[i]->r_sequence = -1;
 	}
 
 	tr.identityLightImage = R_CreateImageOld("*identityLight", (byte *)data, 8, 8, 0, 1, qfalse, qfalse, qfalse, qfalse, WRAP_REPEAT, WRAP_REPEAT);

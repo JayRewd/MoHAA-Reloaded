@@ -208,6 +208,8 @@ void RB_BeginSurface( shader_t *shader ) {
 	tess.numVertexes = 0;
 	tess.shader = shader;
 	tess.dlightBits = 0;		// will be OR'd in by surface functions
+	tess.lightmapDlights = 0;
+	tess.lightmapDlightFaces = qfalse;
 	tess.vertexColorValid = r_vertexLight->integer != 0;
 	tess.xstages = shader->unfoggedStages;
 	tess.numPasses = shader->numUnfoggedPasses;
@@ -259,13 +261,13 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 
 	RB_SetTexCoordArray( input->svars.texcoords[1][0], 0 );
 
-	if (!input->dlightMap || !pStage->bundle[1].isLightmap) {
-		R_BindAnimatedImage(&pStage->bundle[1]);
-	} else {
-		GL_Bind(tr.dlightImages[input->dlightMap - 1]);
+	R_BindAnimatedImage(&pStage->bundle[1]);
+	if (pStage->bundle[1].isLightmap) {
+		RB_LightmapDlights(1);
 	}
 
 	R_DrawElements( input->numVertexes, input->numIndexes, input->indexes );
+	RB_LightmapDlights(-1);
 
 	GL_EnableTexture( qfalse );
 	//
@@ -1474,11 +1476,9 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				GL_Bind(tr.whiteImage);
 			}
 			else {
-				if (input->dlightMap && tess.xstages[stage]->bundle[0].isLightmap) {
-					GL_Bind(tr.dlightImages[input->dlightMap - 1]);
-				}
-				else {
-					R_BindAnimatedImage(&pStage->bundle[0]);
+				R_BindAnimatedImage(&pStage->bundle[0]);
+				if (pStage->bundle[0].isLightmap) {
+					RB_LightmapDlights(0);
 				}
 			}
 
@@ -1486,6 +1486,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			// draw
 			//
 			R_DrawElements(input->numVertexes, input->numIndexes, input->indexes);
+			RB_LightmapDlights(-1);
 		}
 		// allow skipping out to show just lightmaps during development
 		if (r_lightmap->integer && (pStage->bundle[0].isLightmap || pStage->bundle[1].isLightmap || pStage->bundle[0].vertexLightmap))
@@ -1696,15 +1697,15 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	} else {
 		GL_TexEnv( TEXENV_MODULATE );
 	}
-	if (tess.dlightMap && tess.xstages[0]->bundle[1].isLightmap) {
-		GL_Bind(tr.dlightImages[tess.dlightMap - 1]);
-	} else {
-		R_BindAnimatedImage(&tess.xstages[0]->bundle[1]);
+	R_BindAnimatedImage(&tess.xstages[0]->bundle[1]);
+	if (tess.xstages[0]->bundle[1].isLightmap) {
+		RB_LightmapDlights(1);
 	}
 	RB_EnableTexCoordArray( qtrue );
 	RB_SetTexCoordArray( tess.texCoords[0][1], 16 );
 
 	R_DrawElements( input->numVertexes, input->numIndexes, input->indexes );
+	RB_LightmapDlights(-1);
 
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0

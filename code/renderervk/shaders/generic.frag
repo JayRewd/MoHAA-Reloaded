@@ -45,6 +45,11 @@ layout(constant_id = 7) const bool CLIP_DISCARD = false;
 // no blending: the alpha written is 1 (the framebuffer has no destination
 // alpha, see vk_pipeline.c)
 layout(constant_id = 8) const bool ALPHA_ONE = false;
+// dynamic lights added to the texels of a lightmap (vk_set_lightmap_dlights):
+// 0 none, 1 the texture of unit 0, 2 that of unit 1
+layout(constant_id = 9) const int DLIGHT_UNIT = 0;
+// no light from behind the plane of the triangle (r_dlightBacks 0)
+layout(constant_id = 10) const bool DLIGHT_BACKS = false;
 
 // the fragment stage range of the push constants (vkPushConstants_t in vk.c)
 layout(push_constant) uniform PushConstants {
@@ -52,7 +57,20 @@ layout(push_constant) uniform PushConstants {
 	// -1 / (end - start), end / (end - start), as Mesa's
 	// gl_MesaFogParamsOptimized
 	vec2	fogParams;
+	// the list of lights in dlights[] and those of it the draw adds
+	uint	dlightBase;
+	uint	dlightMask;
 } pc;
+
+// vkDlightGPU_t
+struct Dlight {
+	vec4	originInvRadius;	// origin in object space, 1 / radius
+	vec4	colorScale;			// added at the origin in lightmap bytes, then times w
+};
+
+layout(std430, set = 2, binding = 0) readonly buffer Dlights {
+	Dlight	dlights[];
+};
 
 // texEnv_t
 const int TEXENV_MODULATE = 1;
@@ -68,8 +86,34 @@ layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_st0;
 layout(location = 2) in vec2 v_st1;
 layout(location = 3) in vec2 v_fogClip;
+layout(location = 4) in vec3 v_position;
 
 layout(location = 0) out vec4 out_color;
+
+// GL1's R_DlightSample, per pixel on the filtered lightmap texel: each light
+// adds color * ( 1 - d / radius )^2 at distance d, truncated to a lightmap
+// byte, then shifted (colorScale.w: tr.overbrightMult / 255), and the sum is
+// divided by its largest component when that is above 1, truncated to a
+// byte again. normal: the side of the triangle a light must be on for
+// DLIGHT_BACKS
+vec3 AddDlights( vec3 lightmap, vec3 normal ) {
+	vec3 sum = lightmap;
+	uint mask = pc.dlightMask;
+
+	while ( mask != 0u ) {
+		Dlight dl = dlights[pc.dlightBase + uint( findLSB( mask ) )];
+		vec3 dir = dl.originInvRadius.xyz - v_position;
+		float d = sqrt( dot( dir, dir ) ) * dl.originInvRadius.w;
+
+		mask &= mask - 1u;
+		if ( d <= 1.0 && ( !DLIGHT_BACKS || dot( dir, normal ) >= 0.0 ) ) {
+			sum += floor( ( 1.0 - d ) * ( 1.0 - d ) * dl.colorScale.rgb ) * dl.colorScale.w;
+		}
+	}
+
+	float m = max( sum.r, max( sum.g, sum.b ) );
+	return m > 1.0 ? floor( sum * ( 255.0 / m ) ) * ( 1.0 / 255.0 ) : sum;
+}
 
 vec4 TexEnv( int env, bool rgbTexture, vec4 previous, vec4 texel ) {
 	if ( env == TEXENV_REPLACE ) {
@@ -90,16 +134,38 @@ vec4 TexEnv( int env, bool rgbTexture, vec4 previous, vec4 texel ) {
 
 void main() {
 	vec4 color = v_color;
+	vec3 normal = vec3( 0.0 );
+
+	// the plane of the triangle, with derivatives in uniform control flow:
+	// dFdx and dFdy of the position span it, and their cross product points
+	// away from the eye (framebuffer y goes down); a back face (clockwise,
+	// as BSP faces are seen from their front) faces the eye
+	if ( DLIGHT_BACKS ) {
+		normal = cross( dFdx( v_position ), dFdy( v_position ) );
+		if ( !gl_FrontFacing ) {
+			normal = -normal;
+		}
+	}
 
 	if ( CLIP_DISCARD && v_fogClip.y < 0.0 ) {
 		discard;
 	}
 
 	if ( TEX_ENV0 != 0 ) {
-		color = TexEnv( TEX_ENV0, TEX0_RGB, color, texture( u_texture0, v_st0 ) );
+		vec4 texel = texture( u_texture0, v_st0 );
+
+		if ( DLIGHT_UNIT == 1 ) {
+			texel.rgb = AddDlights( texel.rgb, normal );
+		}
+		color = TexEnv( TEX_ENV0, TEX0_RGB, color, texel );
 	}
 	if ( TEX_ENV1 != 0 ) {
-		color = TexEnv( TEX_ENV1, TEX1_RGB, color, texture( u_texture1, v_st1 ) );
+		vec4 texel = texture( u_texture1, v_st1 );
+
+		if ( DLIGHT_UNIT == 2 ) {
+			texel.rgb = AddDlights( texel.rgb, normal );
+		}
+		color = TexEnv( TEX_ENV1, TEX1_RGB, color, texel );
 	}
 
 	if ( ALPHA_FUNC == 1 ) {

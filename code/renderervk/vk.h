@@ -224,6 +224,31 @@ void		vk_set_stencil_func( stencilFunc_t func, int ref, unsigned int mask );
 void		vk_set_stencil_op( stencilOp_t stencilFail, stencilOp_t depthFail, stencilOp_t depthPass );
 void		vk_set_stencil_write_mask( unsigned int mask );
 
+// Dynamic lights added per pixel to a lightmap (r_fastdlights 0), the way
+// GL1's R_DlightSample added them to the lightmap's texels: at distance d of
+// a light, color * ( 1 - d / radius )^2, truncated to a multiple of scale, is
+// added to the lightmap texel (RGB, 1 = 255), then the sum is divided by its
+// largest component when that is above 1. Positions are those of the draws'
+// vertexes (object space).
+typedef struct {
+	float		origin[3];
+	float		radius;
+	float		color[3];
+	float		scale;			// a lightmap byte before the overbright shift
+} vkDlight_t;
+
+// stores a list of lights for the draws of the current frame; returns its
+// handle, valid until the frame ends, or -1 when the frame has no room left
+// for them (the draws then get no light)
+int			vk_add_dlights( int count, const vkDlight_t *dlights );
+// the lights of a list (handle from vk_add_dlights) that the following draws
+// add to the texture of unit tmu, a lightmap: mask has a bit for each light
+// of the list; tmu -1 turns it off. backs: no light from behind the plane of
+// the triangle, whose front is the side its vertexes are clockwise from (the
+// side a BSP face's plane normal points to; GL's front faces are the
+// counter-clockwise ones)
+void		vk_set_lightmap_dlights( int tmu, int handle, unsigned int mask, qboolean backs );
+
 void		vk_set_line_width( float width );
 // factor 0 disables stippling
 void		vk_set_line_stipple( int factor, unsigned short pattern );

@@ -789,7 +789,9 @@ typedef struct srfFlare_s {
 typedef struct srfGridMesh_s {
 	surfaceType_t	surfaceType;
 
-	// dynamic lighting information
+	// dynamic lighting information: dlightBits for ProjectDlightTexture,
+	// dlightMap the lights added per pixel to the lightmap (r_fastdlights
+	// 0, R_RealDlightPatch), bits of refdef.dlights
     int				dlightBits[SMP_FRAMES];
     int				dlightMap[SMP_FRAMES];
 
@@ -799,12 +801,10 @@ typedef struct srfGridMesh_s {
 	float			meshRadius;
 
 	// lightmap data
-    float			lightmapOffset[2];
     int				lmX;
     int				lmY;
     int				lmWidth;
     int				lmHeight;
-    unsigned char	*lmData;
 
 	// lod information, which may be different
 	// than the culling information to allow for
@@ -834,18 +834,17 @@ typedef struct {
 	surfaceType_t	surfaceType;
 	cplane_t	plane;
 
-	// dynamic lighting information
+	// dynamic lighting information, as in srfGridMesh_t (R_RealDlightFace)
     int			dlightBits[SMP_FRAMES];
     int			dlightMap[SMP_FRAMES];
-    float		lightmapOffset[2];
     int			lmWidth;
     int			lmHeight;
     int			lmX;
     int			lmY;
-    byte*		lmData;
     vec3_t		lmOrigin;
     vec3_t		lmVecs[2];
     vec3_t		lmInverseVecs[2];
+    vec3_t		lmBounds[2];	// of the lightmap texels' centers (R_RealDlightFace)
 
 	// static geometry (tr_staticgeom.c): first index of the surface's
 	// indexes, -1 for none, and whether every vertex alpha is 255
@@ -947,10 +946,7 @@ typedef struct srfTerrain_s {
     int lmapSize;
     int dlightBits[2];
     float lmapStep;
-    int dlightMap[2];
-    byte* lmData;
-    float lmapX;
-    float lmapY;
+    int dlightMap[2];	// as in srfGridMesh_t (R_RealDlightTerrain)
 } srfTerrain_t;
 
 typedef struct cTerraPatchUnpacked_s {
@@ -1046,6 +1042,9 @@ typedef struct mnode_s {
 	int			visframe;		// node needs to be traversed if current
 	vec3_t		mins, maxs;		// for bounding box culling
 	struct mnode_s	*parent;
+	// what the dynamic lights of r_fastdlights 0 can reach in the subtree
+	// (R_SetupDlightBounds)
+	vec3_t		dlightBounds[2];
 
 	// node specific
 	cplane_t	*plane;
@@ -1141,7 +1140,6 @@ typedef struct {
 	const byte	*vis;			// may be passed in by CM_LoadMap to save space
 
 	byte		*novis;			// clusterBytes of 0xff
-	byte		*lighting;
 } world_t;
 
 //======================================================================
@@ -1311,6 +1309,11 @@ typedef struct {
 	trRefEntity_t entity2D;	// currentEntity will point at this when doing 2D rendering
     int backEndMsec;
     float shaderStartTime;
+	// handles of the lists of dynamic lights for the shaders (vk_add_dlights)
+	// in the space of the current entity and of the world, -1 until stored
+	// (RB_TransformDlights)
+	int			dlightList;
+	int			worldDlightList;
 } backEndState_t;
 
 /*
@@ -1346,7 +1349,6 @@ typedef struct {
 	image_t					*flareImage;
 	image_t					*whiteImage;			// full of 0xff
 	image_t					*identityLightImage;	// full of tr.identityLightByte
-	image_t					*dlightImages[15];
 
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
@@ -1980,7 +1982,14 @@ typedef struct shaderCommands_s
 	int			fogNum;
 
 	int			dlightBits;	// or together of all vertexDlightBits
+	// from the sort key: r_fastdlights 0, the surfaces of a brush model that
+	// get lights per pixel, not from ProjectDlightTexture (R_DlightSortKey)
 	int			dlightMap;
+	// the lights added per pixel to the lightmap (r_fastdlights 0, bits of
+	// refdef.dlights): or together of the surfaces' dlightMap; and whether
+	// a face has some, which r_dlightBacks 0 applies to (RB_LightmapDlights)
+	int			lightmapDlights;
+	qboolean	lightmapDlightFaces;
 
 	int			numIndexes;
 	int			numVertexes;
@@ -2120,6 +2129,11 @@ void RB_SetupStaticModelGridLighting(trRefdef_t* refdef, cStaticModelUnpacked_t*
 int R_RealDlightPatch(srfGridMesh_t* srf, int dlightBit);
 int R_RealDlightFace(srfSurfaceFace_t* srf, int dlightBits);
 int R_RealDlightTerrain(cTerraPatchUnpacked_t* srf, int dlightBits);
+int R_DlightSortKey(int dlightMap);
+void R_SetupDlightBounds(void);
+int R_CullDlightsToNode(const mnode_t *node, int dlightBits);
+void RB_TransformDlights(qboolean world);
+void RB_LightmapDlights(int tmu);
 void R_TransformDlights( int count, dlight_t *dl, orientationr_t *ori );
 void RB_Light_Real(unsigned char* colors);
 void RB_Sphere_BuildDLights();
@@ -2129,8 +2143,6 @@ void RB_Grid_SetupStaticModel();
 void RB_Light_Fullbright(unsigned char* colors);
 void R_Sphere_InitLights();
 int R_GatherLightSources(const vec3_t vPos, vec3_t* pvLightPos, vec3_t* pvLightIntensity, int iMaxLights);
-void R_ClearRealDlights();
-void R_UploadDlights();
 
 int R_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir);
 

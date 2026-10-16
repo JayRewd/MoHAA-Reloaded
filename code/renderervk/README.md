@@ -29,10 +29,13 @@ below are done.
   particles, AI poses, swinging shutters). At 640x480, radeonsi uses a finer
   subpixel precision than RADV and 1 to 8 % of the pixels differ by 1
 - fog and the user clip plane (portals and mirrors) are implemented
-- the sun lens flare and its full-screen fade, dynamic lights (dynamic
-  lightmaps and `r_fastdlights 1`), cinematics, `TEXENV_ADD` (with a test
+- the sun lens flare and its full-screen fade, the projected dynamic
+  lights of `r_fastdlights 1`, cinematics, `TEXENV_ADD` (with a test
   shader: no shipped shader produces it) and `r_showtris`/`r_shownormals`
-  match GL1 the same way (see [Testing](#testing) for the numbers)
+  match GL1 the same way (see [Testing](#testing) for the numbers); the
+  dynamic lights of `r_fastdlights 0` are drawn per pixel, with a smoother
+  falloff than GL1's texel-filtered dynamic lightmaps (an accepted
+  difference, see GL1 quirks)
 - the light flare depth test (`RB_TestFlare`, unreachable in OpenMoHAA, see
   [Flares](#flares)) reads the depth without waiting for the GPU; line
   stipple and GL's line rasterization rule come from
@@ -83,6 +86,14 @@ below are done.
   Performance, Static geometry), with little change in the forests, whose
   static models mostly still need the CPU (steps 2 and 3, see Plan); the
   GPU time is unchanged
+- dynamic lights per pixel (2026-10-16): the fragment shader adds the
+  frame's lights to the lightmap instead of the CPU rebuilding dynamic
+  lightmaps every frame; with 16 random lights the renderer's CPU time
+  goes down 57 to 66 % in the `obj_team2` yard and the `dm/mohdm3`
+  overview (both now at the 1000 fps limit at 1920x1080, from 559 and 487
+  fps; GL1 479 and 447), with no measurable GPU cost at 3840x2160 (see
+  Performance, Dynamic lights); views without dynamic lights are the same
+  to the bit as before
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -384,8 +395,15 @@ Test content:
   of the view. `script` (and `cam`) are refused when the game has more than
   one client slot, which is the case for `devmap` of a dm map: the list uses
   `spmap` (`spdevmap`). Run it again with `+set r_fastdlights 1` (latched)
-  for the projected dlight pass. `cg_acidtrip N` adds random dlights for a
-  quick look.
+  for the projected dlight pass. Its views show world faces, static models
+  (the bushes, lit per vertex) and a small entity (the lamp);
+  `mohdm1_dlight2` adds a brush model lit per pixel by light 0 and by
+  `ProjectDlightTexture` from another light (the door `*15`: GL1 lights
+  brush models' lightmaps with light 0 only, see Implementation notes,
+  Dynamic lights), curved patches and a soldier (`script_model`), and
+  `mohdm3_dlight` LOD terrain. `cg_acidtrip N` adds N random dlights a
+  frame (radius 128 to 639) for a quick look and for timing (`perf.py
+  --exec`), not for comparisons.
 - Cinematics: the game data has no RoQ file. `ffmpeg -loop 1 -i still.png
   -t 2 -r 30 -c:v roqvideo -f roq <homepath>/main/video/test.roq` makes one
   (the encoder is slow, about 10 frames a second); `cinematic test.roq 1`
@@ -601,6 +619,54 @@ crack noted above. No validation message in any of these runs
 `dm/mohdm1`, turns `r_staticGeometry` off and on, runs `vid_restart`,
 then loads `dm/mohdm3` and `m6l1a`; the main menu matches GL1 (fan
 masked).
+
+The per-pixel dynamic lights (2026-10-15, see Implementation notes,
+Dynamic lights), against GL1 (`compare.sh`, `summary.py`: worst view of
+each list; per channel max, highest mean, share of differing pixels and the
+pixels off by more than 3):
+
+| list (views) | `r_fastdlights` | 640x480 max R/G/B | mean | differing | > 3 | 4160x240 max R/G/B | differing | > 3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `mohdm1_dlight` (4) | 0 | 254/228/190 | 0.330 | 49.0 % | 2338 | 61/42/23 | 26.2 % | 1123 |
+| | 1 | 254/228/190 | 0.074 | 8.65 % | 376 | 61/42/23 | 0.025 % | 3 |
+| `mohdm1_dlight2` (4) | 0 | 228/218/165 | 0.518 | 48.2 % | 10316 | 21/15/7 | 44.4 % | 11354 |
+| | 1 | 228/218/165 | 0.071 | 9.32 % | 162 | 2/2/0 | 3 pixels | 0 |
+| `mohdm3_dlight` (2) | 0 | 220/193/140 | 0.147 | 20.3 % | 831 | 87/95/114 | 2.47 % | 210 |
+| | 1 | 221/194/140 | 0.031 | 3.43 % | 84 | 87/95/114 | 0.31 % | 74 |
+
+With `r_fastdlights 1` the frames are the previous build's to the bit (the
+projected pass is unchanged) and GL1's at 4160x240 but for a few pixels;
+the largest values at 640x480 and in `mohdm3` at 4160x240 are foliage
+edges and the soldier's outline, which differ without dynamic lights too.
+With `r_fastdlights 0` the differences are in the light pools (diff images
+in the 2026-10-15 report): nearly all ±1 to ±3 where the falloff has no
+texel steps any more, and bands a few pixels wide next to the lights where
+GL1 normalized a saturated texel before filtering (up to 46 levels at
+640x480 on the wall next to the light in `dl2_vault`, 21 at 4160x240), see
+Differences from GL1. Against the previous Vulkan build (the same dynamic
+lightmaps as GL1) `mohdm1_dlight` differs in 16 to 47 % of the pixels,
+max 22 to 24, all in the light pools; views without dynamic lights are
+the same to the bit (see below).
+
+Against the previous build (`run.sh`, `tgadiff.py`, 640x480) on the 35
+view lists plus `mohdm1_dlight`, `mohdm1_dlight2` and `mohdm3_dlight` with
+`r_fastdlights 1` and `mohdm1_texenv` with `r_ext_texture_env_add 1` (163
+views): 121 views give the same frames to the bit, all three lists with
+`r_fastdlights 1` among them. Of the other 42, 10 are the views with
+dynamic lights in `r_fastdlights 0`; the rest are the random content and
+run-to-run noise named above: the smoke, fire and convoy of `m1l1`, the
+camera shake of `m3l1a`, AI in `m1l2a` and `m1l3a`, the shutters of
+`m5l1a`, the tank of `m5l2a`, snow in `m6l1a` and `mohdm5_fog`, and ±1
+near the camera in `m2l1_skyportal`, `m33_grass`, `fm4_a`, `m61_slope`,
+`d7_alley` and `d7_arch`; `m12_court`, `m12_lamp` and `m12_yard` (`m1l2a`,
+±1 over a few hundred pixels) differ the same way between two runs of the
+previous build. No validation message in any of these runs
+(`r_vkValidation 1`), nor with synchronization validation (`r_vkValidation
+2`) on the three dynamic light lists (both modes for `mohdm1_dlight`),
+`mohdm1_dlight` with `r_ext_multisample 4`, `dm/mohdm1`, and a script that
+loads `dm/mohdm1` with `cg_acidtrip 16`, turns `r_staticGeometry` and
+`r_dlightBacks` off and on, runs `vid_restart` and loads `dm/mohdm3` and
+`m3l3` with the same lights; the main menu matches GL1 (fan masked).
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -996,6 +1062,96 @@ merging 0.643 against 0.657 ms in the `m6l1a` forest and 0.453 against
 0.463 in the `dm/mohdm3` overview; grids 0.767 against 0.782 in the `m3l3`
 path (2 % each; 3 runs of 1000 frames could not tell them from the noise).
 
+Dynamic lights (2026-10-16, see Implementation notes, Dynamic lights):
+`perf.py --exec 'cg_acidtrip N'` adds N random lights of radius 128 to
+639 every frame (for timing only: they differ from run to run), on the
+idle machine (load 0.5 to 2 with the game, other processes 1.7 CPUs at
+most, but for bursts of up to 9.5 CPUs in a few 3840x2160 runs: the
+medians below come from clean runs, and GL1's yard with 16 lights there
+was measured again); medians of 3 interleaved runs, the renderer's
+main-thread time without the fence waits, ms per frame. Each step against
+the one before it, at 640x480 (no waits there):
+
+| view | lights | GL1 | before | part 1: texel culling | part 2: per pixel | + box test of the texels | + lights culled per node (final) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 0 | 0.561 | 0.392 | | 0.398 | | |
+| | 4 | 1.387 | 1.166 | 0.875 | 0.659 | 0.551 | 0.499 |
+| | 16 | 2.209 | 2.008 | 1.952 | 1.234 | 0.833 | 0.684 |
+| `dm/mohdm3` overview | 0 | 0.626 | 0.459 | | 0.441 | | |
+| | 4 | 1.300 | 1.128 | 0.826 | 0.662 | 0.613 | 0.581 |
+| | 16 | 2.072 | 1.927 | 1.559 | 1.031 | 0.836 | 0.796 |
+| `m3l3` path | 0 | 0.912 | 0.763 | | 0.754 | | |
+| | 4 | 1.046 | 0.887 | 0.867 | 0.787 | 0.788 | 0.764 |
+| | 16 | 1.222 | 1.093 | 1.039 | 0.837 | 0.817 | 0.814 |
+
+(GL1, before, part 1 and part 2 in one batch per light count; the box
+test against part 2, the node culling against the box test, each in a
+batch of its own. Without lights the last two do nothing.)
+
+- Part 1 (exact: texels outside every light's reach skipped, faces whose
+  texels no light reaches not allocated, see Testing) took 25 to 27 % off
+  with 4 lights in the yard and the overview, 19 % in the overview with 16, but
+  only 3 % in the yard with 16 lights of up to 639 units, where most
+  texels are in reach; part 2 replaced it (its face test stayed).
+- Part 2 removed the rest of the texel work, the uploads (94 KB per frame
+  in `mohdm1_dlight`) and the lit surfaces' batches of their own: 41 to 43
+  % less than before with 4 lights, 39 to 46 % with 16. The stack samples then put
+  41 % of the yard's frame with 16 lights in `R_DlightReachesFace` and 11 %
+  in the plane tests of `R_RealDlightFace`: every visible face tested every
+  light, as GL1 did.
+- The box of the texel centers, computed at load, rejects the faces far
+  from a light before the exact test (the same masks): -16 % and -32 % in
+  the yard with 4 and 16 lights, -9 and -19 % in the overview.
+- The lights culled per BSP node (the same masks again): -9 % and -18 % in
+  the yard, -5 % in the overview, -3 % in the `m3l3` path with 4.
+- Dropped: letting the static models no light reaches keep their merged
+  batches when lights are in view (`RB_StaticMerge`): no difference beyond
+  the noise in these views (0.661 against 0.659, 0.659 against 0.662 ms...).
+
+Against GL1 and the build before, at 1920x1080 and 3840x2160 (frame time
+with the fps of the median, renderer time without fence waits, the main
+pass's GPU time; ms per frame; final runs at 1080p and 4K with lights in
+a batch with the build before, GL1 from the earlier batches):
+
+| view | size | lights | frame GL1 | before | final | renderer GL1 | before | final | GPU before | final |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 1920x1080 | 0 | 0.999 | 0.999 | 0.999 | 0.625 | 0.391 | 0.401 | 0.617 | 0.620 |
+| | | 4 | 1.454 (688 fps) | 1.191 (840) | 0.999 | 1.319 | 1.078 | 0.495 | 0.702 | 0.625 |
+| | | 16 | 2.088 (479) | 1.788 (559) | 0.999 | 1.951 | 1.676 | 0.685 | 0.798 | 0.630 |
+| | 3840x2160 | 0 | 1.843 (543) | 1.770 (565) | 1.753 (570) | 1.637 | 0.588 | 0.558 | 1.747 | 1.732 |
+| | | 16 | 2.300 (435) | 1.959 (511) | 1.774 (564) | 2.128 | 1.809 | 0.771 | 1.753 | 1.751 |
+| `dm/mohdm3` overview | 1920x1080 | 0 | 0.999 | 0.999 | 0.999 | 0.750 | 0.537 | 0.533 | 0.718 | 0.719 |
+| | | 4 | 1.514 (661) | 1.291 (774) | 0.999 | 1.405 | 1.205 | 0.678 | 0.810 | 0.722 |
+| | | 16 | 2.239 (447) | 2.054 (487) | 1.000 | 2.121 | 1.952 | 0.840 | 1.050 | 0.725 |
+| | 3840x2160 | 0 | 2.469 (405) | 2.558 (391) | 2.569 (389) | 2.327 | 0.757 | 0.834 | 2.528 | 2.538 |
+| | | 16 | 2.713 (369) | 2.645 (378) | 2.555 (391) | 2.552 | 2.192 | 1.028 | 2.568 | 2.524 |
+| `m3l3` path | 1920x1080 | 0 | 1.367 (732) | 1.137 (879) | 1.169 (855) | 1.019 | 0.847 | 0.840 | 0.936 | 0.933 |
+| | | 4 | 1.506 (664) | 1.220 (820) | 1.121 (892) | 1.162 | 0.941 | 0.859 | 0.935 | 0.931 |
+| | | 16 | 1.616 (619) | 1.487 (672) | 1.198 (835) | 1.292 | 1.139 | 0.896 | 0.966 | 0.932 |
+
+(0.999 is the 1000 frames per second limit. The CPU times of the
+3840x2160 rows without lights come from the runs with bursts of load:
+only their GPU times count. The no-light frame times of the `m3l3` path
+include the game's own time, which varies more than the renderer's.)
+
+The per-pixel lights cost no measurable GPU time: with 16 lights the main
+pass takes 0.630 and 0.725 ms at 1080p against 0.620 and 0.719 without,
+1.751 and 2.524 ms at 3840x2160 against 1.732 and 2.538. The dynamic
+lightmaps cost 0.18 and 0.33 ms more at 1080p than no lights (the lit
+surfaces in batches of their own, drawn from the CPU path, and the
+uploads); the GPU time with lights now equals the GPU time without. Where
+the CPU limited the frame, 16 lights now leave the yard and the overview at
+the 1000 fps limit at 1080p (559 and 487 fps before, GL1 479 and 447), and
+at 3840x2160 the yard runs at 564 fps against 511 (GL1 435).
+
+What is left with 16 lights (stack samples, 640x480): the per-face tests
+(`R_RealDlightFace`, its box and exact tests: about 19 % of the yard's
+0.74 ms frame, the lights there being large and many faces in their
+reach), and in the overview the per-vertex lighting of the static models
+within twice a light's radius (`ComputeColors` and `RB_StaticMesh`, 13 %:
+those models leave the static geometry), see Plan, Remaining. The
+entities' lighting (`RB_Light_Real`) takes 0.3 %.
+
 The plan items, each measured before and after with interleaved builds:
 
 | item | measured |
@@ -1156,9 +1312,10 @@ in the fog-colored background of `m2l3`).
   `vk_destroy_texture`.
 - `vk_bind_texture` binds the image, not a particular storage: a draw uses the
   storage the image has when the draw is recorded.
-- Uploads happen mid-frame (cinematics every frame, dynamic lightmaps in
-  `R_UploadDlights`, ghost textures): draws recorded before an upload must see
-  the old contents.
+- Uploads happen mid-frame (cinematics every frame, ghost textures; the
+  dynamic lightmaps of `R_UploadDlights` before the dynamic lights were
+  drawn per pixel): draws recorded before an upload must see the old
+  contents.
 - Sampler: wrap from `image->wrapClampModeX/Y` (`WRAP_REPEAT` repeats,
   `WRAP_CLAMP` clamps to the edge); textures with one mip level use linear
   min/mag filtering; mipmapped ones use the filter from
@@ -1406,8 +1563,8 @@ selects the sample count (see Implementation notes).
   updated). Uploads go to the upload command buffer, submitted before the
   main one, unless a draw recorded in the current segment of the main
   command buffer uses the texture. Then they are recorded in the main
-  command buffer in order with the draws. New textures, level loading,
-  cinematics and dynamic lightmaps take the first path, so they don't break
+  command buffer in order with the draws. New textures, level loading and
+  cinematics take the first path, so they don't break
   the render pass. Between command buffers every texture is in
   `SHADER_READ_ONLY_OPTIMAL`.
 - **Draws.** Each draw copies positions (repacked to 12 bytes), colors (RGBA8
@@ -1440,8 +1597,8 @@ selects the sample count (see Implementation notes).
   subsequence), then those of the TIKI surfaces. The back end decides at
   the first surface of a batch whether it draws it from there
   (`RB_StaticBatch`): faces, triangle surfaces, grids and static models
-  whose shader has no deform, isn't the sky, with no dynamic lightmap and no
-  debug drawing, every stage's texture coordinates from `tcGen texture` or
+  whose shader has no deform, isn't the sky, with no dynamic light pass of
+  `r_fastdlights 1` (`ProjectDlightTexture`) and no debug drawing, every stage's texture coordinates from `tcGen texture` or
   `lightmap` without `tcMod`, and colors that `ComputeColors` would make a
   constant (evaluated on the CPU for one vertex, `RB_StaticStage`), the
   vertex colors as they are, with alpha 255, or white with the vertex alpha
@@ -1462,24 +1619,91 @@ selects the sample count (see Implementation notes).
   (`RB_StaticMerge`): one draw per model with its modelview, colors and
   indexes, one stage setup for all, the same triangles in the same order.
   `r_staticGeometry 0` draws everything through `tess` again.
-- **Push constants** (`vkPushConstants_t`, 120 bytes of the guaranteed 128).
+- **Dynamic lights** (`r_fastdlights 0`, the default; `tr_light.c`,
+  `vk_add_dlights`, `vk_set_lightmap_dlights`). GL1 relit the lightmap of
+  every surface a light reached, texel by texel (`R_RealDlightFace`,
+  `R_RealDlightPatch`, `R_RealDlightTerrain`, `R_DlightSample`), into 15
+  atlas textures uploaded every frame (`R_UploadDlights`), and drew the lit
+  surfaces with them, in batches of their own (the atlas number was in the
+  sort key) and with offset lightmap coordinates, so they left the static
+  geometry. The fragment shader now adds the lights to the lightmap texel
+  per pixel, with the light model of `R_DlightSample`: for each light,
+  `color * 375 * (1 - d / radius)^2` truncated to a lightmap byte, times
+  the overbright scale (`tr.overbrightMult / 255`), added to the filtered
+  lightmap texel, the sum divided by its largest component when that is
+  above 1 and truncated to a byte (GL1 did that per texel; see Differences
+  from GL1). The front end only decides which lights a surface gets, with
+  GL1's tests (the face's plane and `r_dlightBacks`, the bounds of patches
+  and terrain) and a test that the light reaches a sample point of its
+  lightmap texels (`R_DlightReachesFace`: the parallelogram `lmOrigin + s *
+  lmVecs[0] + t * lmVecs[1]` of the texel centers, after a test of its
+  bounding box computed at load, `lmBounds`; the bounds of patches and
+  terrain), and keeps them as a mask in the surface's `dlightMap`. GL1 gave
+  every visible surface every light to test (`R_RecursiveWorldNode` passes
+  them all down), which with 16 lights cost most of the frame once the
+  texels were gone (in the `obj_team2` yard 41 % in the parallelogram test
+  and 11 % in the plane tests); now each node of the BSP tree has the
+  bounds of what its subtree can light (`dlightBounds`: the texel boxes of
+  its lightmapped faces and the bounds of its lightmapped patches, from
+  `R_SetupDlightBounds` at load) and the recursion drops the lights whose
+  reach misses them (`R_CullDlightsToNode`, `r_fastdlights 0` only: the
+  projected pass reaches farther), which changes no surface's mask. The
+  back end ORs the masks of a batch's surfaces (`tess.lightmapDlights`);
+  where GL1 bound the dynamic lightmap (a stage's lightmap bundle), the
+  stage iterators call `RB_LightmapDlights`, which stores the lights in the
+  space of the current entity once per view for the world, once per run of
+  batches for a brush model (`vk_add_dlights`), and sets the unit, the list
+  and the mask for the draw. The backend keeps a 128 KB host-visible
+  storage buffer per frame slot for the lists (4096 lights,
+  `vkDlightGPU_t`: origin, 1 / radius, color in lightmap bytes, scale; set
+  2 of the shaders, bound once per command buffer); the list's first light
+  and the mask are push constants, the unit and the `r_dlightBacks 0` test
+  pipeline key fields (specialization constants `DLIGHT_UNIT`,
+  `DLIGHT_BACKS`). The vertex shader passes the object space position on;
+  pipelines without lights don't read it (RADV removes the unused varying
+  when it links the stages). With `r_dlightBacks 0` the shader takes the
+  plane of the triangle from the derivatives of the position (their cross
+  product, oriented with `gl_FrontFacing`: a BSP face's front is the
+  clockwise side) and leaves out the lights behind it, in batches with a
+  lit face (GL1 tested each face's plane against the light's center;
+  patches and terrain have no such test, and a batch that mixes faces and
+  patches tests both). Lit world surfaces keep their batches (their sort
+  keys have no dlight bits any more) and their static geometry. Brush
+  models keep GL1's behaviour, odd as it is: `R_AddBrushModelSurfaces`
+  passes `needDlights` (1) as the lights to test, so only light 0 lights
+  their lightmaps, and the surfaces it doesn't reach get
+  `ProjectDlightTexture` from every light that reaches the model
+  (`R_DlightBmodel`); the surfaces lit per pixel still sort apart from the
+  others (`R_DlightSortKey`) so the projected pass leaves them out, and
+  their batches stay on the static geometry (`RB_StaticDlights`). GL1
+  also gave dynamic lightmaps to lightmapped faces with `SURF_NODLIGHT`,
+  which only stops the projected pass; so do the per-pixel lights.
+  `r_fastdlights 1` (`ProjectDlightTexture`, a pass per light with
+  per-vertex texture coordinates and colors) is unchanged, and so is the
+  per-vertex lighting of entities (`RB_Light_Real`) and static models
+  (`useSpecialLighting`), see Performance.
+- **Push constants** (`vkPushConstants_t`, the guaranteed 128 bytes).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
   pushed again when a matrix or the plane changes. Fragment stage: fog color
-  and the two linear fog constants, pushed when they change. Both ranges are
-  pushed at the start of every command buffer.
+  and the two linear fog constants, pushed when they change, and the
+  dynamic lights of the draw (first light of its list in the frame's
+  dlight buffer and the mask of those it adds, see Dynamic lights), pushed
+  when they change. Both ranges are pushed at the start of every command
+  buffer.
 - **Pipelines** (`vk_pipeline.c`). The key packs blend factors, depth
   test/write/func, polygon mode, cull mode, topology, RGB color mask, alpha
   function (and its reference value), polygon offset on/off, color array or
   constant color, texture env per unit (0 for an unused unit), "RGB texture
   with TEXENV_REPLACE" per unit, the stencil function and ops, fog on/off
-  clip plane on/off and line stipple on/off. Viewport, scissor, depth bias,
+  clip plane on/off, line stipple on/off, the unit whose texture gets the
+  dynamic lights (0 for none) and `r_dlightBacks 0`'s test. Viewport, scissor, depth bias,
   line width and stencil reference/masks are dynamic, and the stipple factor
   and pattern for stippled pipelines (set when such a pipeline is bound and
   they changed). Line pipelines and polygon-line pipelines chain a
   `VkPipelineRasterizationLineStateCreateInfo` with the Bresenham mode. The fragment shader is specialized for
-  texture envs, the alpha test, fog, the clip plane discard fallback and
-  the alpha written without blending (see State);
+  texture envs, the alpha test, fog, the clip plane discard fallback, the
+  alpha written without blending (see State) and the dynamic lights;
   pipelines with a clip plane use the vertex shader built with
   `gl_ClipDistance`.
   Pipelines are created on first use and cached for the life of the device,
@@ -1520,6 +1744,41 @@ selects the sample count (see Implementation notes).
 - `GL_State` enables fog on any transition of the external `GLS_FOG` bit,
   whatever the stage's `GLS_FOG_ENABLED` bit.
 - The `nofog` shader keyword sets `GLS_FOG` in the stage bits.
+
+Accepted difference from GL1 (decided on 2026-10-15 for the speed): the
+dynamic lights of `r_fastdlights 0` are added to the lightmap per pixel
+(see Implementation notes, Dynamic lights) instead of being sampled at the
+lightmap texels' centers (16 units apart on most maps) and filtered with
+the lightmap, so:
+
+- the falloff is smooth: no texel steps (GL1's contour lines in the light
+  pools of `r_lightmap 1` frames); away from saturation the two agree on
+  average (`mohdm1_dlight` lightmaps, lit pixels below 200: within ±0.3 of
+  GL1 on average, 89 to 97 % of them within ±2);
+- the division by the largest component happens per pixel: GL1 divided
+  each texel, then filtered, so where a saturated texel neighbours one
+  that isn't, its filtered result is darker. Pixels between 200 and 245
+  are 1 to 3 levels brighter on average (all lit unsaturated pixels: +1.4
+  to +2.5, never more than 4 levels darker), and next to a light, where
+  the lightmap drops sharply (the foot of walls, steps), up to about 20
+  levels brighter in a band a few pixels wide (the largest differences of
+  the lit views);
+- GL1 added the light to the raw lightmap data, before its overbright
+  shift and normalization; the shader adds it to the lightmap texture,
+  normalized already, which only differs where the lightmap itself
+  saturates (its hue then shifts a little less towards the light's);
+- in the unlit texels of a lit surface GL1's dynamic lightmap normalized
+  the lightmap with float arithmetic, the static one with integers (±1);
+  the shader keeps the static lightmap's value there.
+
+Everything else is GL1's: the light model and colors (the 375 scale and
+the truncation to lightmap bytes per light), which surfaces get which
+lights (lightmapped world faces, patches and terrain; brush models with
+light 0 only and `ProjectDlightTexture` for the rest; `r_dlightBacks 0`;
+`SURF_NODLIGHT`, which doesn't stop them; nothing on the sky), the
+overbright shift and normalization, and additive lights, which GL1's
+dynamic lightmaps treated like the others (only `ProjectDlightTexture`
+adds them with a different blend).
 
 Differences from GL1 (all in paths that were dead, broken or debug only):
 
@@ -1680,6 +1939,23 @@ Done:
    and draw order. The frames are the same to the bit as the build before
    it in every view without random content (see Testing).
 
+8. Dynamic lights per pixel (2026-10-15/16, see Implementation notes,
+   Dynamic lights, Performance, Dynamic lights, and the accepted
+   difference in GL1 quirks). First the exact CPU fix (each light tested
+   against the face's lightmap texels, patch quads and terrain bounds
+   before the texel loops; the same lightmaps, proven texel for texel
+   against GL1's code over 2.1 million surface evaluations with random
+   lights), then the lights evaluated in the fragment shader on the
+   lightmap, which replaces the dynamic lightmaps (no atlas, no uploads,
+   no batches of their own, lit surfaces stay on the static geometry); the
+   per-surface masks are then made cheap with a box test of the texel
+   centers and lights culled per BSP node. With 16 random lights the
+   renderer's CPU time drops by 66 % in the `obj_team2` yard, 59 % in the
+   `dm/mohdm3` overview and 26 % in the `m3l3` path (640x480), with no
+   measurable GPU cost even at 3840x2160 (less GPU time than the dynamic
+   lightmaps took). `r_fastdlights 1`, entities and static
+   models are unchanged (see Remaining).
+
 Remaining:
 
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
@@ -1698,26 +1974,20 @@ Remaining:
   backend (`vk_draw` per model: pipeline key, push constants, binds); with
   step 1's eligible models (8 to 118 per frame) it isn't worth a second
   vertex shader yet.
-- Dynamic lights are the most expensive CPU path measured so far
-  (`perf.py --exec 'cg_acidtrip N'`: N random lights of radius 128 to 639
-  per frame, 640x480, renderer time without fence waits, ms per frame,
-  Vulkan / GL1): no light 0.395 / 0.565 in the `obj_team2` yard, 0.456 /
-  0.619 in the `dm/mohdm3` overview; 4 lights 1.143 / 1.385 and 1.210 /
-  1.389 (803 / 665 and 762 / 665 fps instead of the 1000 fps cap); 16
-  lights 2.006 / 2.245 and 1.925 / 2.137. The time is in the front end,
-  rebuilding the dynamic lightmaps texel by texel (`R_DlightSample`,
-  `R_AllocLMBlock`, `R_RealDlightFace`: 55 to 64 % of the frame with 16
-  lights). A face is only tested against the light's plane
-  (`R_RealDlightFace`, with `r_dlightBacks 1`), so every visible face whose
-  plane passes within the radius has all its lightmap texels sampled;
-  testing the face's lightmap rectangle against the light sphere first
-  would give the same texels for less work. Beyond that, the lightmap
-  could be relit by a compute shader from the static lightmap data (GL1's
-  texels within rounding) or the lights evaluated per pixel (no rebuild,
-  no uploads, and lit surfaces would stay on the static geometry, but the
-  falloff is smoother than GL1's texel-filtered one). Decided (2026-10-15):
-  per pixel, the smoother falloff is accepted as a parity exception for
-  the speed.
+- Dynamic lights, what is left on the CPU (see Performance, Dynamic
+  lights): the per-vertex lighting of static models within twice a light's
+  radius (`useSpecialLighting` in `ComputeColors`, which also takes them
+  off the static geometry: about 0.05 ms with 4 random lights and 0.14 ms
+  with 16 in the `dm/mohdm3` overview, nothing measurable in the
+  `obj_team2` yard) belongs with step 2: it needs normals in the static
+  geometry and the light loop in the vertex stage (GL1 lights per vertex,
+  with N·L and an inverse square falloff). The entities' lighting
+  (`RB_Light_Real`) took 0.3 % of the frame with 16 lights and goes with
+  step 3 (skinning). `r_fastdlights 1` (`ProjectDlightTexture`: a pass per
+  light with per-vertex colors and texture coordinates) is GL1's look of
+  that mode and is still needed in `r_fastdlights 0` for the surfaces of
+  brush models that light 0 doesn't reach (and their triangle surfaces),
+  so it stays.
 - Step 3: skinning of skeletal models on the GPU (`RB_SkelMesh` is 6 to 8 %
   of the forest frames, more with many characters). The data suits it (95 %
   of the vertexes have one weight, at most 6, per-weight offsets instead of

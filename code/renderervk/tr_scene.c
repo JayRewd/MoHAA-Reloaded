@@ -631,7 +631,6 @@ void RE_RenderScene( const refdef_t *fd ) {
 		parms.farplane_bias = parms.farplane_distance * 0.18f;
 	}
 
-	R_ClearRealDlights();
 	R_RenderView( &parms );
 
 	// the next scene rendered in this frame will tack on after this one

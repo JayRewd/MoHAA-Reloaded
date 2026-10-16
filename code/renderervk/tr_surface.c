@@ -408,6 +408,10 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	RB_CHECKOVERFLOW( surf->numPoints, surf->numIndices );
 
 	dlightBits = surf->dlightBits[backEnd.smpFrame];
+	if ( surf->dlightMap[backEnd.smpFrame] ) {
+		tess.lightmapDlights |= surf->dlightMap[backEnd.smpFrame];
+		tess.lightmapDlightFaces = qtrue;
+	}
 
 	if ( RB_StaticBatch() ) {
 		if ( surf->staticIndex >= 0 && RB_StaticAddSurface( (surfaceType_t *)surf,
@@ -453,29 +457,14 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 		}
 	}
 
-	if (tess.dlightMap)
-	{
-		for (i = 0, v = surf->points[0], ndx = tess.numVertexes; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
-			VectorCopy(v, tess.xyz[ndx]);
-			tess.texCoords[ndx][0][0] = v[3];
-			tess.texCoords[ndx][0][1] = v[4];
-			tess.texCoords[ndx][1][0] = v[5] + surf->lightmapOffset[0];
-			tess.texCoords[ndx][1][1] = v[6] + surf->lightmapOffset[1];
-			*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
-			tess.vertexDlightBits[ndx] = dlightBits;
-		}
-	}
-	else
-	{
-		for (i = 0, v = surf->points[0], ndx = tess.numVertexes; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
-			VectorCopy(v, tess.xyz[ndx]);
-			tess.texCoords[ndx][0][0] = v[3];
-			tess.texCoords[ndx][0][1] = v[4];
-			tess.texCoords[ndx][1][0] = v[5];
-			tess.texCoords[ndx][1][1] = v[6];
-			*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
-			tess.vertexDlightBits[ndx] = dlightBits;
-		}
+	for (i = 0, v = surf->points[0], ndx = tess.numVertexes; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
+		VectorCopy(v, tess.xyz[ndx]);
+		tess.texCoords[ndx][0][0] = v[3];
+		tess.texCoords[ndx][0][1] = v[4];
+		tess.texCoords[ndx][1][0] = v[5];
+		tess.texCoords[ndx][1][1] = v[6];
+		*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
+		tess.vertexDlightBits[ndx] = dlightBits;
 	}
 
 
@@ -580,57 +569,29 @@ static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *he
 	vDlightBits = &tess.vertexDlightBits[numVertexes];
 	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights;
 
-	if ( tess.dlightMap ) {
-		for ( i = 0 ; i < rows ; i++ ) {
-			for ( j = 0 ; j < lodWidth ; j++ ) {
-				dv = cv->verts + heightTable[ used + i ] * cv->width
-					+ widthTable[ j ];
+	for ( i = 0 ; i < rows ; i++ ) {
+		for ( j = 0 ; j < lodWidth ; j++ ) {
+			dv = cv->verts + heightTable[ used + i ] * cv->width
+				+ widthTable[ j ];
 
-				xyz[0] = dv->xyz[0];
-				xyz[1] = dv->xyz[1];
-				xyz[2] = dv->xyz[2];
-				texCoords[0] = dv->st[0];
-				texCoords[1] = dv->st[1];
-				texCoords[2] = dv->lightmap[0] + cv->lightmapOffset[0];
-				texCoords[3] = dv->lightmap[1] + cv->lightmapOffset[1];
-				if ( needsNormal ) {
-					normal[0] = dv->normal[0];
-					normal[1] = dv->normal[1];
-					normal[2] = dv->normal[2];
-				}
-				* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
-				*vDlightBits++ = dlightBits;
-				xyz += 4;
-				normal += 4;
-				texCoords += 4;
-				color += 4;
+			xyz[0] = dv->xyz[0];
+			xyz[1] = dv->xyz[1];
+			xyz[2] = dv->xyz[2];
+			texCoords[0] = dv->st[0];
+			texCoords[1] = dv->st[1];
+			texCoords[2] = dv->lightmap[0];
+			texCoords[3] = dv->lightmap[1];
+			if ( needsNormal ) {
+				normal[0] = dv->normal[0];
+				normal[1] = dv->normal[1];
+				normal[2] = dv->normal[2];
 			}
-		}
-	} else {
-		for ( i = 0 ; i < rows ; i++ ) {
-			for ( j = 0 ; j < lodWidth ; j++ ) {
-				dv = cv->verts + heightTable[ used + i ] * cv->width
-					+ widthTable[ j ];
-
-				xyz[0] = dv->xyz[0];
-				xyz[1] = dv->xyz[1];
-				xyz[2] = dv->xyz[2];
-				texCoords[0] = dv->st[0];
-				texCoords[1] = dv->st[1];
-				texCoords[2] = dv->lightmap[0];
-				texCoords[3] = dv->lightmap[1];
-				if ( needsNormal ) {
-					normal[0] = dv->normal[0];
-					normal[1] = dv->normal[1];
-					normal[2] = dv->normal[2];
-				}
-				* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
-				*vDlightBits++ = dlightBits;
-				xyz += 4;
-				normal += 4;
-				texCoords += 4;
-				color += 4;
-			}
+			* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
+			*vDlightBits++ = dlightBits;
+			xyz += 4;
+			normal += 4;
+			texCoords += 4;
+			color += 4;
 		}
 	}
 
@@ -774,6 +735,9 @@ void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 		if ( used + rows > lodHeight ) {
 			rows = lodHeight - used;
 		}
+
+		// in each batch the grid goes into
+		tess.lightmapDlights |= cv->dlightMap[backEnd.smpFrame];
 
 		// the dynamic lights don't count here: they did where the grid
 		// started (above), not in the batches that the overflow starts
@@ -935,52 +899,27 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 
 	dlightBits = p->dlightBits[backEnd.smpFrame];
 	tess.dlightBits |= dlightBits;
-	if (p->dlightMap[backEnd.smpFrame])
-	{
-		float lmScale = (1.0 / LIGHTMAP_SIZE) / p->lmapStep;
+	tess.lightmapDlights |= p->dlightMap[backEnd.smpFrame];
 
-		for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
-			assert(tess.numVertexes < SHADER_MAX_VERTEXES);
+	for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
+		assert(tess.numVertexes < SHADER_MAX_VERTEXES);
 
-			VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);
-			tess.texCoords[tess.numVertexes][0][0] = g_pVert[i].texCoords[0][0];
-			tess.texCoords[tess.numVertexes][0][1] = g_pVert[i].texCoords[0][1];
-			tess.texCoords[tess.numVertexes][1][0] = g_pVert[i].xyz[0] * lmScale + p->lmapX;
-			tess.texCoords[tess.numVertexes][1][1] = g_pVert[i].xyz[1] * lmScale + p->lmapY;
-			tess.normal[tess.numVertexes][0] = 0;
-			tess.normal[tess.numVertexes][1] = 0;
-			tess.normal[tess.numVertexes][2] = 1.0;
-			tess.vertexColors[tess.numVertexes][0] = -1;
-			tess.vertexColors[tess.numVertexes][1] = -1;
-			tess.vertexColors[tess.numVertexes][2] = -1;
-			tess.vertexColors[tess.numVertexes][3] = -1;
+		VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);
+		tess.texCoords[tess.numVertexes][0][0] = g_pVert[i].texCoords[0][0];
+		tess.texCoords[tess.numVertexes][0][1] = g_pVert[i].texCoords[0][1];
+		tess.texCoords[tess.numVertexes][1][0] = g_pVert[i].texCoords[1][0];
+		tess.texCoords[tess.numVertexes][1][1] = g_pVert[i].texCoords[1][1];
+		tess.vertexDlightBits[tess.numVertexes] = dlightBits;
+		tess.normal[tess.numVertexes][0] = 0;
+		tess.normal[tess.numVertexes][1] = 0;
+		tess.normal[tess.numVertexes][2] = 1.0;
+		tess.vertexColors[tess.numVertexes][0] = -1;
+		tess.vertexColors[tess.numVertexes][1] = -1;
+		tess.vertexColors[tess.numVertexes][2] = -1;
+		tess.vertexColors[tess.numVertexes][3] = -1;
 
-			g_pVert[i].iVertArray = tess.numVertexes;
-			tess.numVertexes++;
-		}
-	}
-	else
-	{
-		for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
-			assert(tess.numVertexes < SHADER_MAX_VERTEXES);
-
-			VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);
-			tess.texCoords[tess.numVertexes][0][0] = g_pVert[i].texCoords[0][0];
-			tess.texCoords[tess.numVertexes][0][1] = g_pVert[i].texCoords[0][1];
-			tess.texCoords[tess.numVertexes][1][0] = g_pVert[i].texCoords[1][0];
-			tess.texCoords[tess.numVertexes][1][1] = g_pVert[i].texCoords[1][1];
-			tess.vertexDlightBits[tess.numVertexes] = dlightBits;
-			tess.normal[tess.numVertexes][0] = 0;
-			tess.normal[tess.numVertexes][1] = 0;
-			tess.normal[tess.numVertexes][2] = 1.0;
-			tess.vertexColors[tess.numVertexes][0] = -1;
-			tess.vertexColors[tess.numVertexes][1] = -1;
-			tess.vertexColors[tess.numVertexes][2] = -1;
-			tess.vertexColors[tess.numVertexes][3] = -1;
-
-			g_pVert[i].iVertArray = tess.numVertexes;
-			tess.numVertexes++;
-		}
+		g_pVert[i].iVertArray = tess.numVertexes;
+		tess.numVertexes++;
 	}
 
 	for (i = p->iTriHead; i; i = g_pTris[i].iNext)

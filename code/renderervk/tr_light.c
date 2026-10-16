@@ -30,96 +30,138 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 // never calculate a range less than this to prevent huge light numbers
 
-typedef struct {
-    dlight_t *dl;
-    float     power;
-    vec3_t    origin;
-} incidentLight_t;
+/*
+=============================================================================
 
-typedef struct {
-    int             dlightMap;
-    int             allocated[LIGHTMAP_SIZE];
-    byte            lightmap_buffer[LIGHTMAP_SIZE * LIGHTMAP_SIZE * 4];
-    byte           *srcBase;
-    byte           *dstBase;
-    incidentLight_t lights[32];
-    int             numLights;
-} dlightInfo_t;
+DYNAMIC LIGHTS ON LIGHTMAPS (r_fastdlights 0)
 
-typedef struct {
-    vec3_t point;
-    int    s;
-    int    t;
-} patchLightBlock_t;
+GL1 relit the lightmap of each surface a light reached, texel by texel
+(R_DlightSample: color * 375 * ( 1 - d / radius )^2 added to the lightmap
+data at the texel's sample point, the sum shifted by tr.overbrightShift and
+divided by its largest component when above 255), into atlas textures
+uploaded every frame, and drew the lit surfaces with them. The fragment
+shader now does that per pixel on the filtered lightmap (RB_LightmapDlights,
+vk_set_lightmap_dlights), so the lit surfaces need no atlas, no uploads and
+no batch of their own, and stay on the static geometry. The functions below
+give each surface the lights GL1 lit it with: the same tests (the face's
+plane and r_dlightBacks, the bounds of patches and terrain, as the GL1 code
+the bits come from), and the light must reach a sample point of its
+lightmap texels (with a margin of 0.1 % of the radius plus a unit: a light
+too many in a surface's mask adds nothing beyond its radius).
 
-dlightInfo_t dli;
+=============================================================================
+*/
 
-void     R_SetupEntityLightingGrid(trRefEntity_t *ent);
-qboolean R_DlightSample(byte *src, const vec3_t vec, byte *dst);
-qboolean R_AllocLMBlock(int w, int h, int *x, int *y);
+#define DLIGHT_REACH(radius) ((radius) * 1.001f + 1.f)
 
 /*
 ===============
-R_RecursiveDlightPatch
+R_DistanceSquaredToBox
 ===============
 */
-static int R_RecursiveDlightPatch(patchLightBlock_t *plb)
+static float R_DistanceSquaredToBox(const vec3_t p, const vec3_t mins, const vec3_t maxs)
 {
-    patchLightBlock_t cut[4];
-    qboolean          added;
-    int               index;
+    float d, dist;
+    int   i;
 
-    if (plb[0].s < plb[1].s - 1) {
-        cut[0] = plb[0];
-        cut[2] = plb[2];
-
-        VectorAdd(plb[0].point, plb[1].point, cut[1].point);
-        VectorScale(cut[1].point, 0.5f, cut[1].point);
-        VectorAdd(plb[2].point, plb[3].point, cut[3].point);
-        VectorScale(cut[3].point, 0.5f, cut[3].point);
-
-        cut[3].s = (plb[0].s + plb[1].s) >> 1;
-        cut[1].s = cut[3].s;
-        cut[1].t = plb[0].t;
-        cut[3].t = plb[2].t;
-
-        added = R_RecursiveDlightPatch(cut);
-
-        cut[0] = cut[1];
-        cut[2] = cut[3];
-
-        index = 1;
-    } else if (plb[0].t < plb[2].t - 1) {
-        cut[0] = plb[0];
-        cut[1] = plb[1];
-
-        VectorAdd(plb[0].point, plb[2].point, cut[2].point);
-        VectorScale(cut[2].point, 0.5f, cut[2].point);
-        VectorAdd(plb[1].point, plb[3].point, cut[3].point);
-        VectorScale(cut[3].point, 0.5f, cut[3].point);
-
-        cut[3].t = (plb[0].t + plb[2].t) >> 1;
-        cut[2].t = cut[3].t;
-        cut[2].s = plb[0].s;
-        cut[3].s = plb[1].s;
-
-        added  = R_RecursiveDlightPatch(cut);
-        cut[0] = cut[2];
-        cut[1] = cut[3];
-
-        index = 2;
-    } else {
-        return R_DlightSample(
-            &dli.srcBase[plb[0].t * (LIGHTMAP_SIZE * 3) + plb[0].s * 3],
-            plb[0].point,
-            &dli.dstBase[plb[0].t * (LIGHTMAP_SIZE * 4) + plb[0].s * 4]
-        );
+    dist = 0;
+    for (i = 0; i < 3; i++) {
+        if (p[i] < mins[i]) {
+            d = mins[i] - p[i];
+        } else if (p[i] > maxs[i]) {
+            d = p[i] - maxs[i];
+        } else {
+            continue;
+        }
+        dist += d * d;
     }
 
-    cut[index] = plb[index];
-    cut[3]     = plb[3];
+    return dist;
+}
 
-    return R_RecursiveDlightPatch(cut) + added;
+/*
+===============
+R_DistanceSquaredToSegment
+
+From p to o + s * v, s in [0, len]
+===============
+*/
+static double R_DistanceSquaredToSegment(const double *p, const double *o, const double *v, double len)
+{
+    double d[3], s, vv;
+    int    i;
+
+    for (i = 0; i < 3; i++) {
+        d[i] = p[i] - o[i];
+    }
+    vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    s  = vv > 0 ? (d[0] * v[0] + d[1] * v[1] + d[2] * v[2]) / vv : 0;
+    s  = s < 0 ? 0 : (s > len ? len : s);
+    for (i = 0; i < 3; i++) {
+        d[i] -= s * v[i];
+    }
+
+    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+}
+
+/*
+===============
+R_DlightReachesFace
+
+Whether a light reaches a texel of the face's lightmap: GL1 sampled the
+texel (s, t) at lmOrigin + s * lmVecs[0] + t * lmVecs[1], its center (the
+face's vertexes are within the texel centers)
+===============
+*/
+static qboolean R_DlightReachesFace(const srfSurfaceFace_t *srf, const vec3_t origin, float radius)
+{
+    double o[3], v[2][3], p[3], corner[3], d[3];
+    double vv00, vv01, vv11, dv0, dv1, det, s, t, dist, reach;
+    double sMax, tMax;
+    int    i;
+
+    sMax  = srf->lmWidth - 1;
+    tMax  = srf->lmHeight - 1;
+    reach = DLIGHT_REACH(radius);
+
+    for (i = 0; i < 3; i++) {
+        o[i]    = srf->lmOrigin[i];
+        v[0][i] = srf->lmVecs[0][i];
+        v[1][i] = srf->lmVecs[1][i];
+        p[i]    = origin[i];
+        d[i]    = p[i] - o[i];
+    }
+
+    // the nearest point of the parallelogram: inside it, or on an edge
+    vv00 = v[0][0] * v[0][0] + v[0][1] * v[0][1] + v[0][2] * v[0][2];
+    vv01 = v[0][0] * v[1][0] + v[0][1] * v[1][1] + v[0][2] * v[1][2];
+    vv11 = v[1][0] * v[1][0] + v[1][1] * v[1][1] + v[1][2] * v[1][2];
+    dv0  = d[0] * v[0][0] + d[1] * v[0][1] + d[2] * v[0][2];
+    dv1  = d[0] * v[1][0] + d[1] * v[1][1] + d[2] * v[1][2];
+    det  = vv00 * vv11 - vv01 * vv01;
+
+    if (det > 1e-12 * vv00 * vv11) {
+        s = (dv0 * vv11 - dv1 * vv01) / det;
+        t = (dv1 * vv00 - dv0 * vv01) / det;
+        if (s >= 0 && s <= sMax && t >= 0 && t <= tMax) {
+            for (i = 0; i < 3; i++) {
+                d[i] -= s * v[0][i] + t * v[1][i];
+            }
+            return d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= reach * reach;
+        }
+    }
+
+    dist = R_DistanceSquaredToSegment(p, o, v[0], sMax);
+    dist = Q_min(dist, R_DistanceSquaredToSegment(p, o, v[1], tMax));
+    for (i = 0; i < 3; i++) {
+        corner[i] = o[i] + sMax * v[0][i] + tMax * v[1][i];
+        v[0][i]   = -v[0][i];
+        v[1][i]   = -v[1][i];
+    }
+    dist = Q_min(dist, R_DistanceSquaredToSegment(p, corner, v[0], sMax));
+    dist = Q_min(dist, R_DistanceSquaredToSegment(p, corner, v[1], tMax));
+
+    return dist <= reach * reach;
 }
 
 /*
@@ -129,162 +171,40 @@ R_RealDlightPatch
 */
 int R_RealDlightPatch(srfGridMesh_t *srf, int dlightBits)
 {
-    int         x, y;
-    int         i, j;
-    int         i2, j2;
-    int         steps[2][2];
-    dlight_t   *dl;
-    qboolean    added;
-    float      *origin;
-    drawVert_t *dv;
+    dlight_t *dl;
+    int       i, mask;
 
-    if (!srf->lmHeight || !srf->lmWidth) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
+    mask = 0;
 
-    dli.numLights = 0;
+    if (srf->lmHeight && srf->lmWidth) {
+        for (i = 0; i < tr.refdef.num_dlights; i++) {
+            if (!(dlightBits & (1 << i))) {
+                continue;
+            }
 
-    for (i = 0; i < tr.refdef.num_dlights; i++) {
-        if (!(dlightBits & (1 << i))) {
-            continue;
-        }
+            dl = &tr.refdef.dlights[i];
+            if (dl->origin[0] + dl->radius < srf->meshBounds[0][0] || dl->origin[0] - dl->radius > srf->meshBounds[1][0]
+                || dl->origin[1] + dl->radius < srf->meshBounds[0][1] || dl->origin[1] - dl->radius > srf->meshBounds[1][1]
+                || dl->origin[2] + dl->radius < srf->meshBounds[0][2]
+                || dl->origin[2] - dl->radius > srf->meshBounds[1][2]) {
+                continue;
+            }
 
-        dl = &tr.refdef.dlights[i];
-        if (dl->origin[0] + dl->radius < srf->meshBounds[0][0] || dl->origin[0] - dl->radius > srf->meshBounds[1][0]
-            || dl->origin[1] + dl->radius < srf->meshBounds[0][1] || dl->origin[1] - dl->radius > srf->meshBounds[1][1]
-            || dl->origin[2] + dl->radius < srf->meshBounds[0][2]
-            || dl->origin[2] - dl->radius > srf->meshBounds[1][2]) {
-            dlightBits &= ~(1 << i);
-            continue;
-        }
+            // the sample points are within the vertexes' bounds
+            if (R_DistanceSquaredToBox(dl->transformed, srf->meshBounds[0], srf->meshBounds[1])
+                > Square(DLIGHT_REACH(dl->radius))) {
+                continue;
+            }
 
-        VectorCopy(dl->transformed, dli.lights[dli.numLights].origin);
-        dli.lights[dli.numLights].dl    = dl;
-        dli.lights[dli.numLights].power = 1.f / dl->radius;
-        dli.numLights++;
-    }
-
-    if (!dli.numLights) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    if (!R_AllocLMBlock(srf->lmWidth, srf->lmHeight, &x, &y)) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    dli.srcBase = srf->lmData;
-    dli.dstBase = &dli.lightmap_buffer[y * 4 * LIGHTMAP_SIZE + x * 4];
-
-    srf->lightmapOffset[0] = (float)x / LIGHTMAP_SIZE - (float)srf->lmX / LIGHTMAP_SIZE;
-    srf->lightmapOffset[1] = (float)y / LIGHTMAP_SIZE - (float)srf->lmY / LIGHTMAP_SIZE;
-
-    tr.pc.c_dlightSurfaces++;
-    tr.pc.c_dlightTexels += srf->lmWidth * srf->lmHeight;
-
-    added = qfalse;
-
-    if (srf->verts[srf->width - 1].lightmap[0] != srf->verts[0].lightmap[0]) {
-        if (srf->verts[srf->width - 1].lightmap[0] < srf->verts[0].lightmap[0]) {
-            steps[0][0] = 0;
-            steps[0][1] = -1;
-        } else {
-            steps[0][0] = 0;
-            steps[0][1] = 1;
-        }
-
-        if (srf->verts[srf->width * (srf->height - 1)].lightmap[1] < srf->verts[0].lightmap[1]) {
-            steps[1][0] = -1;
-            steps[1][1] = 0;
-        } else {
-            steps[1][0] = 1;
-            steps[1][1] = 0;
-        }
-    } else {
-        if (srf->verts[srf->width * (srf->height - 1)].lightmap[0] < srf->verts[0].lightmap[0]) {
-            steps[0][0] = -1;
-            steps[0][1] = 0;
-        } else {
-            steps[0][0] = 1;
-            steps[0][1] = 0;
-        }
-
-        if (srf->verts[srf->width - 1].lightmap[1] < srf->verts[0].lightmap[1]) {
-            steps[1][0] = 0;
-            steps[1][1] = -1;
-        } else {
-            steps[1][0] = 0;
-            steps[1][1] = 1;
+            mask |= 1 << i;
         }
     }
 
-    for (i = 0; i < srf->height; i++) {
-        for (j = 0; j < srf->width; j++) {
-            patchLightBlock_t plb[4];
-
-            //
-            // Vert 1
-            //
-
-            dv = &srf->verts[i * srf->width + j];
-
-            VectorCopy(dv->xyz, plb[0].point);
-            plb[0].s = (int)(dv->lightmap[0] * LIGHTMAP_SIZE) - srf->lmX;
-            plb[0].t = (int)(dv->lightmap[1] * LIGHTMAP_SIZE) - srf->lmY;
-
-            //
-            // Vert 2
-            //
-
-            i2 = Q_clamp_int(steps[0][0] + i, 0, srf->height - 1);
-            j2 = Q_clamp_int(steps[0][1] + j, 0, srf->width - 1);
-            dv = &srf->verts[i2 * srf->width + j2];
-
-            VectorCopy(dv->xyz, plb[1].point);
-            plb[1].s = (int)(dv->lightmap[0] * LIGHTMAP_SIZE) - srf->lmX;
-            plb[1].t = (int)(dv->lightmap[1] * LIGHTMAP_SIZE) - srf->lmY;
-
-            //
-            // Vert 3
-            //
-
-            i2 = Q_clamp_int(steps[1][0] + i, 0, srf->height - 1);
-            j2 = Q_clamp_int(steps[1][1] + j, 0, srf->width - 1);
-            dv = &srf->verts[i2 * srf->width + j2];
-
-            VectorCopy(dv->xyz, plb[2].point);
-            plb[2].s = (int)(dv->lightmap[0] * LIGHTMAP_SIZE) - srf->lmX;
-            plb[2].t = (int)(dv->lightmap[1] * LIGHTMAP_SIZE) - srf->lmY;
-
-            //
-            // Vert 4
-            //
-
-            i2 = Q_clamp_int(steps[1][0] + steps[0][0] + i, 0, srf->height - 1);
-            j2 = Q_clamp_int(steps[1][1] + steps[0][1] + j, 0, srf->width - 1);
-            dv = &srf->verts[i2 * srf->width + j2];
-
-            VectorCopy(dv->xyz, plb[3].point);
-            plb[3].s = (int)(dv->lightmap[0] * LIGHTMAP_SIZE) - srf->lmX;
-            plb[3].t = (int)(dv->lightmap[1] * LIGHTMAP_SIZE) - srf->lmY;
-
-            added |= R_RecursiveDlightPatch(plb);
-        }
+    if (mask) {
+        tr.pc.c_dlightSurfaces++;
     }
-
-    if (!added) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    for (i = 0; i < srf->lmWidth; i++) {
-        dli.allocated[x + i] = srf->lmHeight + y;
-    }
-
-    srf->dlightMap[tr.smpFrame] = dli.dlightMap + 1;
-    return srf->dlightMap[tr.smpFrame];
+    srf->dlightMap[tr.smpFrame] = mask;
+    return mask;
 }
 
 /*
@@ -294,92 +214,44 @@ R_RealDlightFace
 */
 int R_RealDlightFace(srfSurfaceFace_t *srf, int dlightBits)
 {
-    int       x, y;
-    byte     *src, *dst;
-    int       i, j;
-    vec3_t    vec;
-    vec3_t    vecStepS, vecStepT;
     dlight_t *dl;
     float     d;
-    qboolean  added;
-    float    *origin;
+    int       i, mask;
 
-    if (!srf->lmHeight || !srf->lmWidth) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
+    mask = 0;
 
-    dli.numLights = 0;
+    if (srf->lmHeight && srf->lmWidth) {
+        for (i = 0; i < tr.refdef.num_dlights; i++) {
+            if (!(dlightBits & (1 << i))) {
+                continue;
+            }
 
-    for (i = 0; i < tr.refdef.num_dlights; i++) {
-        if (!(dlightBits & (1 << i))) {
-            continue;
+            dl = &tr.refdef.dlights[i];
+
+            d = DotProduct(dl->transformed, srf->plane.normal) - srf->plane.dist;
+
+            if ((d < 0.f && !r_dlightBacks->integer) || (d > dl->radius || d < -dl->radius)) {
+                // dlight doesn't reach the plane
+                continue;
+            }
+
+            // nor a texel: their bounds first, most faces whose plane a
+            // light reaches are far from it
+            if (R_DistanceSquaredToBox(dl->transformed, srf->lmBounds[0], srf->lmBounds[1])
+                    > Square(DLIGHT_REACH(dl->radius))
+                || !R_DlightReachesFace(srf, dl->transformed, dl->radius)) {
+                continue;
+            }
+
+            mask |= 1 << i;
         }
-
-        dl = &tr.refdef.dlights[i];
-
-        d = DotProduct(dl->transformed, srf->plane.normal) - srf->plane.dist;
-
-        if ((d < 0.f && !r_dlightBacks->integer) || (d > dl->radius || d < -dl->radius)) {
-            // dlight doesn't reach the plane
-            dlightBits &= ~(1 << i);
-        } else {
-            VectorCopy(dl->transformed, dli.lights[dli.numLights].origin);
-            dli.lights[dli.numLights].dl    = dl;
-            dli.lights[dli.numLights].power = 1.0 / dl->radius;
-            dli.numLights++;
-        }
     }
 
-    if (!dli.numLights) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
+    if (mask) {
+        tr.pc.c_dlightSurfaces++;
     }
-
-    if (!R_AllocLMBlock(srf->lmWidth, srf->lmHeight, &x, &y)) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    src = srf->lmData;
-    dst = &dli.lightmap_buffer[y * 4 * LIGHTMAP_SIZE + x * 4];
-
-    srf->lightmapOffset[0] = (float)x / LIGHTMAP_SIZE - (float)srf->lmX / LIGHTMAP_SIZE;
-    srf->lightmapOffset[1] = (float)y / LIGHTMAP_SIZE - (float)srf->lmY / LIGHTMAP_SIZE;
-
-    tr.pc.c_dlightSurfaces++;
-    tr.pc.c_dlightTexels += srf->lmWidth * srf->lmHeight;
-
-    VectorCopy(srf->lmVecs[0], vecStepS);
-    VectorMA(srf->lmVecs[1], -srf->lmWidth, srf->lmVecs[0], vecStepT);
-
-    added = qfalse;
-    VectorCopy(srf->lmOrigin, vec);
-
-    for (i = 0; i < srf->lmHeight; i++) {
-        for (j = 0; j < srf->lmWidth; j++) {
-            added |= R_DlightSample(src, vec, dst);
-            VectorAdd(vec, vecStepS, vec);
-            src += 3;
-            dst += 4;
-        }
-
-        VectorAdd(vec, vecStepT, vec);
-        src += (LIGHTMAP_SIZE - j) * 3;
-        dst += (LIGHTMAP_SIZE - j) * 4;
-    }
-
-    if (!added) {
-        srf->dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    for (i = 0; i < srf->lmWidth; i++) {
-        dli.allocated[x + i] = srf->lmHeight + y;
-    }
-
-    srf->dlightMap[tr.smpFrame] = dli.dlightMap + 1;
-    return srf->dlightMap[tr.smpFrame];
+    srf->dlightMap[tr.smpFrame] = mask;
+    return mask;
 }
 
 /*
@@ -390,21 +262,15 @@ R_RealDlightTerrain
 int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
 {
     dlight_t *dl;
-    int       x, y;
-    byte     *dst, *src;
-    vec3_t    vec;
+    vec3_t    mins, maxs;
     float     delta, dist;
-    float    *origin;
-    int       i, j, k;
-    int       di, dj;
-    qboolean  added;
-    float     lmScale;
-    int       lumelsPerHeight;
-    float     heightPerLumelSquared;
-    float     z00, z01;
-    float     z10, z11;
+    int       i, mask;
 
-    dli.numLights = 0;
+    mask = 0;
+
+    // the sample points of the lightmap (heights 0 to zmax above z0)
+    VectorSet(mins, srf->x0, srf->y0, srf->z0);
+    VectorSet(maxs, srf->x0 + 512.f, srf->y0 + 512.f, srf->z0 + srf->zmax);
 
     for (i = 0; i < tr.refdef.num_dlights; i++) {
         dl = &tr.refdef.dlights[i];
@@ -452,207 +318,189 @@ int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
             }
         }
 
-        VectorCopy(dl->origin, dli.lights[dli.numLights].origin);
-        dli.lights[dli.numLights].dl    = dl;
-        dli.lights[dli.numLights].power = 1.f / dl->radius;
-        dli.numLights++;
-    }
-
-    if (!dli.numLights) {
-        srf->drawinfo.dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    if (!R_AllocLMBlock(srf->drawinfo.lmapSize, srf->drawinfo.lmapSize, &x, &y)) {
-        srf->drawinfo.dlightMap[tr.smpFrame] = 0;
-        return 0;
-    }
-
-    src = srf->drawinfo.lmData;
-    dst = &dli.lightmap_buffer[y * 4 * LIGHTMAP_SIZE + x * 4];
-
-    srf->drawinfo.lmapX = x / (float)LIGHTMAP_SIZE;
-    srf->drawinfo.lmapY = y / (float)LIGHTMAP_SIZE;
-
-    tr.pc.c_dlightSurfaces++;
-    tr.pc.c_dlightTexels += srf->drawinfo.lmapSize * srf->drawinfo.lmapSize;
-
-    added = qfalse;
-
-    lumelsPerHeight = 64.f / srf->drawinfo.lmapStep;
-    if (lumelsPerHeight == 1) {
-        vec[1] = srf->y0;
-
-        for (i = 0; i < 9; i++) {
-            vec[0] = srf->x0;
-
-            for (j = 0; j < 9; j++) {
-                vec[2] = srf->z0 + (int)(srf->heightmap[0] << 1);
-                added |= R_DlightSample(src, vec, dst);
-                src += 3;
-                dst += 4;
-                vec[0] += srf->drawinfo.lmapStep;
-            }
-
-            src += (LIGHTMAP_SIZE - 9) * 3;
-            dst += (LIGHTMAP_SIZE - 9) * 4;
-            vec[1] += srf->drawinfo.lmapStep;
-        }
-    } else if (lumelsPerHeight == 2) {
-        vec[1] = srf->y0;
-
-        k = 0;
-
-        for (j = 0; j < 8; j++) {
-            vec[0] = srf->x0;
-
-            for (i = 0; i < 8; i++) {
-                z00    = (int)srf->heightmap[k];
-                vec[2] = srf->z0 + z00 + z00;
-                added |= R_DlightSample(src, vec, dst);
-                src += 3;
-                dst += 4;
-                // increase lightmap step
-                vec[0] += srf->drawinfo.lmapStep;
-                k++;
-
-                z01    = (int)srf->heightmap[k];
-                vec[2] = srf->z0 + z00 + z01;
-                added |= R_DlightSample(src, vec, dst);
-                src += 3;
-                dst += 4;
-                vec[0] += srf->drawinfo.lmapStep;
-            }
-
-            vec[2] = srf->z0 + z01 + z01;
-            added |= R_DlightSample(src, vec, dst);
-            src += (LIGHTMAP_SIZE - 16) * 3;
-            dst += (LIGHTMAP_SIZE - 16) * 4;
-            k -= 8;
-
-            vec[0] = srf->x0;
-            vec[1] += srf->drawinfo.lmapStep;
-
-            for (i = 0; i < 8; i++) {
-                z00    = (int)srf->heightmap[k] + (int)srf->heightmap[k + 9];
-                vec[2] = srf->z0 + z00;
-                added |= R_DlightSample(src, vec, dst);
-                src += 3;
-                dst += 4;
-                k++;
-                vec[0] += srf->drawinfo.lmapStep;
-
-                z01    = (int)srf->heightmap[k] + (int)srf->heightmap[k + 9];
-                vec[2] = srf->z0 + (z00 + z01) * 0.5f;
-                added |= R_DlightSample(src, vec, dst);
-                src += 3;
-                dst += 4;
-                vec[0] += srf->drawinfo.lmapStep;
-            }
-
-            vec[2] = srf->z0 + z01;
-            added |= R_DlightSample(src, vec, dst);
-            src += (LIGHTMAP_SIZE - 16) * 3;
-            dst += (LIGHTMAP_SIZE - 16) * 4;
-            k++;
-            vec[0] += srf->drawinfo.lmapStep;
-            vec[1] += srf->drawinfo.lmapStep;
+        if (R_DistanceSquaredToBox(dl->origin, mins, maxs) > Square(DLIGHT_REACH(dl->radius))) {
+            continue;
         }
 
-        vec[0] = srf->x0;
+        mask |= 1 << i;
+    }
 
-        for (i = 0; i < 8; i++) {
-            z00    = (int)srf->heightmap[k];
-            vec[2] = srf->z0 + z00 + z00;
-            k++;
-            added |= R_DlightSample(src, vec, dst);
-            src += 3;
-            dst += 4;
-            vec[0] += srf->drawinfo.lmapStep;
+    if (mask) {
+        tr.pc.c_dlightSurfaces++;
+    }
+    srf->drawinfo.dlightMap[tr.smpFrame] = mask;
+    return mask;
+}
 
-            z01    = (int)srf->heightmap[k];
-            vec[2] = srf->z0 + z00 + z01;
-            added |= R_DlightSample(src, vec, dst);
-            src += 3;
-            dst += 4;
-            vec[0] += srf->drawinfo.lmapStep;
+/*
+===============
+R_DlightBoundsForNode
+===============
+*/
+static void R_DlightBoundsForNode(mnode_t *node)
+{
+    int i;
+
+    ClearBounds(node->dlightBounds[0], node->dlightBounds[1]);
+
+    if (node->contents == -1) {
+        for (i = 0; i < 2; i++) {
+            mnode_t *child = node->children[i];
+
+            R_DlightBoundsForNode(child);
+            if (child->dlightBounds[0][0] <= child->dlightBounds[1][0]) {
+                AddPointToBounds(child->dlightBounds[0], node->dlightBounds[0], node->dlightBounds[1]);
+                AddPointToBounds(child->dlightBounds[1], node->dlightBounds[0], node->dlightBounds[1]);
+            }
+        }
+        return;
+    }
+
+    for (i = 0; i < node->nummarksurfaces; i++) {
+        const msurface_t *surf = node->firstmarksurface[i];
+
+        if (!surf->shader || surf->shader->lightmapIndex < 0) {
+            continue;
         }
 
-        vec[2] = srf->z0 + z01 + z01;
-        added |= R_DlightSample(src, vec, dst);
-        vec[0] += srf->drawinfo.lmapStep;
-        vec[1] += srf->drawinfo.lmapStep;
-    } else {
-        vec[1] = srf->y0;
+        if (*surf->data == SF_FACE) {
+            const srfSurfaceFace_t *face = (const srfSurfaceFace_t *)surf->data;
 
-        for (j = 0; j < 8; j++) {
-            dj = 0;
+            if (face->lmWidth && face->lmHeight) {
+                AddPointToBounds(face->lmBounds[0], node->dlightBounds[0], node->dlightBounds[1]);
+                AddPointToBounds(face->lmBounds[1], node->dlightBounds[0], node->dlightBounds[1]);
+            }
+        } else if (*surf->data == SF_GRID) {
+            const srfGridMesh_t *grid = (const srfGridMesh_t *)surf->data;
 
-            for (;;) {
-                if (j == 7) {
-                    if (dj >= lumelsPerHeight + 1) {
-                        break;
-                    }
-                } else if (dj >= lumelsPerHeight) {
-                    break;
-                }
-
-                vec[0] = srf->x0;
-
-                for (i = 0; i < 8; i++) {
-                    for (;;) {
-                        if (i == 7) {
-                            if (di >= lumelsPerHeight + 1) {
-                                break;
-                            }
-                        } else if (dj >= lumelsPerHeight) {
-                            break;
-                        }
-
-                        di  = 0;
-                        z00 = (int)srf->heightmap[9 * j + i];
-                        z01 = (int)srf->heightmap[9 * (j + 1) + i];
-                        z10 = (int)srf->heightmap[9 * j + (i + 1)];
-                        z11 = (int)srf->heightmap[9 * (j + 1) + (i + 1)];
-
-                        heightPerLumelSquared = 2.f / (lumelsPerHeight * lumelsPerHeight);
-
-                        vec[2] =
-                            srf->z0
-                            + (dj * (di * z11) + (lumelsPerHeight - dj) * (z10 * di) + z01 * (lumelsPerHeight - di) * dj
-                               + z00 * (lumelsPerHeight - di) * (lumelsPerHeight - dj))
-                                  * heightPerLumelSquared;
-
-                        added |= R_DlightSample(src, vec, dst);
-                        src += 3;
-                        dst += 4;
-
-                        vec[0] += srf->drawinfo.lmapStep;
-                    }
-                }
-
-                src += (LIGHTMAP_SIZE - 1 - (8 * lumelsPerHeight)) * 3;
-                dst += (LIGHTMAP_SIZE - 1 - (8 * lumelsPerHeight)) * 4;
-                vec[1] += srf->drawinfo.lmapStep;
+            if (grid->lmWidth && grid->lmHeight) {
+                AddPointToBounds(grid->meshBounds[0], node->dlightBounds[0], node->dlightBounds[1]);
+                AddPointToBounds(grid->meshBounds[1], node->dlightBounds[0], node->dlightBounds[1]);
             }
         }
     }
+}
 
-    if (!added) {
-        srf->drawinfo.dlightMap[tr.smpFrame] = 0;
-        return 0;
+/*
+===============
+R_SetupDlightBounds
+
+For each node of the world's BSP tree, the bounds of what the lights can
+reach in its subtree: the lightmap texels of the faces and the vertexes of
+the patches with a lightmap (R_RealDlightFace, R_RealDlightPatch). Called
+once the world is loaded
+===============
+*/
+void R_SetupDlightBounds(void)
+{
+    if (tr.world && tr.world->nodes) {
+        R_DlightBoundsForNode(tr.world->nodes);
+    }
+}
+
+/*
+===============
+R_CullDlightsToNode
+
+The lights of dlightBits that reach something in the node's subtree
+(R_RecursiveWorldNode, r_fastdlights 0): a light that misses its bounds
+reaches none of its surfaces' texels, so the surfaces get the same lights.
+GL1 gave every visible surface every light to test
+===============
+*/
+int R_CullDlightsToNode(const mnode_t *node, int dlightBits)
+{
+    int i;
+
+    for (i = 0; i < tr.refdef.num_dlights; i++) {
+        const dlight_t *dl = &tr.refdef.dlights[i];
+
+        if ((dlightBits & (1 << i))
+            && R_DistanceSquaredToBox(dl->transformed, node->dlightBounds[0], node->dlightBounds[1])
+                   > Square(DLIGHT_REACH(dl->radius))) {
+            dlightBits &= ~(1 << i);
+        }
     }
 
-    for (i = 0; i < srf->drawinfo.lmapSize; i++) {
-        dli.allocated[x + i] = srf->drawinfo.lmapSize + y;
+    return dlightBits;
+}
+
+/*
+===============
+R_DlightSortKey
+
+The dlight bits of a world surface's sort key, from what R_CheckDlightSurface
+or R_CheckDlightTerrain returned. r_fastdlights 1: GL1's, 1 for the surfaces
+ProjectDlightTexture lights. r_fastdlights 0: the lights are per pixel, so
+world surfaces sort as without them; the surfaces of a brush model that get
+them (light 0 only, as in GL1: R_AddBrushModelSurfaces passes needDlights)
+are kept apart from the others, which ProjectDlightTexture lights with all
+the lights R_DlightBmodel gives the model, as GL1's dynamic lightmaps were
+===============
+*/
+int R_DlightSortKey(int dlightMap)
+{
+    if (r_fastdlights->integer) {
+        return dlightMap;
     }
 
-    lmScale = (1.0 / LIGHTMAP_SIZE) / srf->drawinfo.lmapStep;
-    srf->drawinfo.lmapX -= (srf->x0 * lmScale - (0.5 / LIGHTMAP_SIZE));
-    srf->drawinfo.lmapY -= (srf->y0 * lmScale - (0.5 / LIGHTMAP_SIZE));
+    return (dlightMap && tr.currentEntityNum != ENTITYNUM_WORLD) ? 1 : 0;
+}
 
-    srf->drawinfo.dlightMap[tr.smpFrame] = dli.dlightMap + 1;
-    return srf->drawinfo.dlightMap[tr.smpFrame];
+/*
+===============
+RB_TransformDlights
+
+The lights in the space of the current entity (backEnd.ori) for the
+surfaces that follow; their list for the shaders is stored on first use
+(RB_LightmapDlights), the world's once per view
+===============
+*/
+void RB_TransformDlights(qboolean world)
+{
+    R_TransformDlights(backEnd.refdef.num_dlights, backEnd.refdef.dlights, &backEnd.ori);
+    backEnd.dlightList = world ? backEnd.worldDlightList : -1;
+}
+
+/*
+===============
+RB_LightmapDlights
+
+The lights of the batch (tess.lightmapDlights) on the lightmap of texture
+unit tmu for the following draws (vk_set_lightmap_dlights); -1 turns them
+off. The colors are GL1's: color * 375 on lightmap bytes, shifted by
+tr.overbrightShift
+===============
+*/
+void RB_LightmapDlights(int tmu)
+{
+    if (tmu < 0 || !tess.lightmapDlights) {
+        vk_set_lightmap_dlights(-1, -1, 0, qfalse);
+        return;
+    }
+
+    if (backEnd.dlightList < 0) {
+        vkDlight_t lights[MAX_DLIGHTS];
+        int        i;
+
+        for (i = 0; i < backEnd.refdef.num_dlights; i++) {
+            const dlight_t *dl = &backEnd.refdef.dlights[i];
+
+            VectorCopy(dl->transformed, lights[i].origin);
+            lights[i].radius = dl->radius;
+            lights[i].scale  = tr.overbrightMult / 255.f;
+            VectorScale(dl->color, 375.f * lights[i].scale, lights[i].color);
+        }
+
+        backEnd.dlightList = vk_add_dlights(backEnd.refdef.num_dlights, lights);
+        if (backEnd.currentEntity == &tr.worldEntity) {
+            backEnd.worldDlightList = backEnd.dlightList;
+        }
+    }
+
+    vk_set_lightmap_dlights(
+        tmu, backEnd.dlightList, tess.lightmapDlights, !r_dlightBacks->integer && tess.lightmapDlightFaces
+    );
 }
 
 /*
@@ -1460,150 +1308,6 @@ static void LogLight(trRefEntity_t *ent)
     }
 
     ri.Printf(PRINT_ALL, "amb:%i  dir:%i\n", max1, max2);
-}
-
-/*
-===============
-R_ClearRealDlights
-===============
-*/
-void R_ClearRealDlights()
-{
-    memset(dli.allocated, 0, sizeof(dli.allocated));
-    dli.dlightMap = 0;
-}
-
-/*
-===============
-R_UploadDlights
-===============
-*/
-void R_UploadDlights()
-{
-    int i, h;
-
-    if (!tr.pc.c_dlightSurfaces) {
-        return;
-    }
-
-    h = 0;
-    for (i = 0; i < LIGHTMAP_SIZE; i++) {
-        if (h < dli.allocated[i]) {
-            h = dli.allocated[i];
-        }
-    }
-
-    if (h) {
-        if (h > LIGHTMAP_SIZE) {
-            ri.Error(ERR_DROP, "R_UploadDlights: bad allocated height");
-        }
-
-        vk_upload_texture(tr.dlightImages[dli.dlightMap], 0, 0, 0, LIGHTMAP_SIZE, h, dli.lightmap_buffer);
-
-        tr.pc.c_dlightMaps++;
-        memset(dli.allocated, 0, sizeof(dli.allocated));
-    }
-}
-
-/*
-===============
-R_AllocLMBlock
-===============
-*/
-qboolean R_AllocLMBlock(int w, int h, int *x, int *y)
-{
-    int i, j;
-    int best, best2;
-
-    for (;;) {
-        best = LIGHTMAP_SIZE;
-        for (i = 0; i < LIGHTMAP_SIZE - w; i++) {
-            best2 = 0;
-
-            for (j = 0; j < w && dli.allocated[i + j] < best; j++) {
-                if (best2 < dli.allocated[i + j]) {
-                    best2 = dli.allocated[i + j];
-                }
-            }
-
-            if (j == w) {
-                *x   = i;
-                *y   = best2;
-                best = best2;
-            }
-        }
-
-        if (h + best <= LIGHTMAP_SIZE) {
-            break;
-        }
-
-        if (dli.dlightMap == 14) {
-            return qfalse;
-        }
-
-        R_UploadDlights();
-        dli.dlightMap++;
-    }
-
-    return qtrue;
-}
-
-/*
-===============
-R_DlightSample
-===============
-*/
-qboolean R_DlightSample(byte *src, const vec3_t vec, byte *dst)
-{
-    int      r, g, b;
-    int      k;
-    qboolean added;
-    vec3_t   dir;
-    float    add;
-
-    added = qfalse;
-    r     = src[0];
-    g     = src[1];
-    b     = src[2];
-
-    for (k = 0; k < dli.numLights; k++) {
-        incidentLight_t *light = &dli.lights[k];
-
-        VectorSubtract(vec, light->origin, dir);
-        add = VectorLength(dir) * light->power;
-        if (add <= 1.f) {
-            float t = (1.0 - add) * (1.0 - add) * 375.0;
-
-            r = (int)(t * light->dl->color[0] + (float)r);
-            g = (int)(t * light->dl->color[1] + (float)g);
-            b = (int)(t * light->dl->color[2] + (float)b);
-            // light was added
-            added = qtrue;
-        }
-    }
-
-    if (tr.overbrightShift) {
-        r <<= tr.overbrightShift & 0xFF;
-        g <<= tr.overbrightShift & 0xFF;
-        b <<= tr.overbrightShift & 0xFF;
-    }
-
-    if (r > 0xFF || g > 0xFF || b > 0xFF) {
-        float t;
-        // normalize color values
-        t = 255.0 / (float)Q_max(r, Q_max(g, b));
-
-        r = (int)((float)r * t);
-        g = (int)((float)g * t);
-        b = (int)((float)b * t);
-    }
-
-    dst[0] = (byte)r;
-    dst[1] = (byte)g;
-    dst[2] = (byte)b;
-    dst[3] = -1;
-
-    return added;
 }
 
 int R_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir) {

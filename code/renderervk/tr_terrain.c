@@ -1336,7 +1336,7 @@ void R_AddTerrainSurfaces()
                 assert(patch->shader);
 
                 dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
-                R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, dlight);
+                R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, R_DlightSortKey(dlight));
             }
 
             if (ter_count->integer && (g_nSplit || g_nMerge)) {
@@ -1360,7 +1360,7 @@ void R_AddTerrainSurfaces()
             assert(patch->shader);
 
             dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
-            R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, dlight);
+            R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, R_DlightSortKey(dlight));
         }
     }
 }

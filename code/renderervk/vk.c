@@ -55,7 +55,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define VK_DIRTY_MVP			32		// vertex stage push constants
 #define VK_DIRTY_FOG			64		// fragment stage push constants
 #define VK_DIRTY_STIPPLE		128		// line stipple, applied with stippled pipelines only
-#define VK_DIRTY_ALL			255
+#define VK_DIRTY_DLIGHT			256		// fragment stage push constants of the dynamic lights
+#define VK_DIRTY_ALL			511
 
 vkInstance_t	vk;
 cvar_t			*r_vkValidation;
@@ -88,6 +89,10 @@ typedef struct {
 	float			clipPlane[4];		// eye space
 	int				lineStippleFactor;	// 0: no stipple
 	unsigned short	lineStipplePattern;
+	int				dlightTmu;			// -1: no dynamic lights (vk_set_lightmap_dlights)
+	int				dlightBase;			// first light of the list in the frame's dlight buffer
+	unsigned int	dlightMask;
+	qboolean		dlightBacks;
 } vkState_t;
 
 static vkState_t	vks;
@@ -101,6 +106,7 @@ static struct {
 	VkDeviceSize	vertexOffsets[4];
 	VkBuffer		indexBuffer;
 	VkDeviceSize	indexOffset;
+	qboolean		dlightSet;		// set 2, the frame's dlight buffer
 } vkb;
 
 // the static geometry (vk_set_static_geometry): one device local buffer
@@ -505,6 +511,7 @@ void VK_BeginFrameIfNeeded( void ) {
 
 	frame->vertexOffset = 0;
 	frame->stagingOffset = 0;
+	frame->numDlights = 0;
 	frame->serial = ++vk.frameSerial;
 	vk_vertexEpoch++;
 	vk.frameStartUs = VK_Microseconds();
@@ -1032,6 +1039,8 @@ static void VK_CreateFrames( void ) {
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0 );
 		VK_CreateBuffer( &frame->depthReadBuffer, VK_MAX_DEPTH_READS * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
+		VK_CreateBuffer( &frame->dlightBuffer, VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 	}
 
 	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
@@ -1048,6 +1057,44 @@ static void VK_CreateFrames( void ) {
 	vk.frame = NULL;
 }
 
+/*
+===============
+VK_CreateDlightSets
+
+The descriptor sets of the frames' dlight buffers (set 2 of the shaders),
+from vk.dlightPool (VK_InitPipelines), which frees them
+===============
+*/
+static void VK_CreateDlightSets( void ) {
+	VkDescriptorSetAllocateInfo allocInfo;
+	VkDescriptorBufferInfo bufferInfo;
+	VkWriteDescriptorSet write;
+	int i;
+
+	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
+		vkFrame_t *frame = &vk.frames[i];
+
+		Com_Memset( &allocInfo, 0, sizeof( allocInfo ) );
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = vk.dlightPool;
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = &vk.dlightSetLayout;
+		VK_CHECK( qvkAllocateDescriptorSets( vk.device, &allocInfo, &frame->dlightSet ) );
+
+		bufferInfo.buffer = frame->dlightBuffer.buffer;
+		bufferInfo.offset = 0;
+		bufferInfo.range = VK_WHOLE_SIZE;
+		Com_Memset( &write, 0, sizeof( write ) );
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = frame->dlightSet;
+		write.dstBinding = 0;
+		write.descriptorCount = 1;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		write.pBufferInfo = &bufferInfo;
+		qvkUpdateDescriptorSets( vk.device, 1, &write, 0, NULL );
+	}
+}
+
 static void VK_DestroyFrames( void ) {
 	int i;
 
@@ -1061,6 +1108,7 @@ static void VK_DestroyFrames( void ) {
 		VK_DestroyBuffer( &frame->vertexBuffer );
 		VK_DestroyBuffer( &frame->stagingBuffer );
 		VK_DestroyBuffer( &frame->depthReadBuffer );
+		VK_DestroyBuffer( &frame->dlightBuffer );
 		if ( frame->queryPool ) {
 			qvkDestroyQueryPool( vk.device, frame->queryPool, NULL );
 		}
@@ -1829,6 +1877,7 @@ static void VK_ResetState( void ) {
 	vks.fogColor[3] = 1.0f;
 	vks.fogEnd = 1.0f;
 	vks.lineStipplePattern = 0xFFFF;
+	vks.dlightTmu = -1;
 
 	Com_Memset( &vk_lastKey, 0, sizeof( vk_lastKey ) );
 	vk_lastPipeline = VK_NULL_HANDLE;
@@ -1848,6 +1897,7 @@ void vk_initialize( void ) {
 	VK_CreateSwapchain();
 	VK_CreateRenderTargets();
 	VK_InitPipelines();
+	VK_CreateDlightSets();
 	VK_InitTextures();
 	VK_ReportCapabilities();
 
@@ -2055,6 +2105,53 @@ void vk_set_line_stipple( int factor, unsigned short pattern ) {
 	vk_dirty |= VK_DIRTY_STIPPLE;
 }
 
+int vk_add_dlights( int count, const vkDlight_t *dlights ) {
+	vkDlightGPU_t *out;
+	int base, i;
+
+	if ( !vk.device || count <= 0 ) {
+		return -1;
+	}
+	VK_BeginFrameIfNeeded();
+
+	base = vk.frame->numDlights;
+	if ( base + count > VK_MAX_FRAME_DLIGHTS ) {
+		static qboolean warned;
+
+		if ( !warned ) {
+			ri.Printf( PRINT_ALL, "Vulkan: more than %d dynamic lights in a frame, some get no light\n", VK_MAX_FRAME_DLIGHTS );
+			warned = qtrue;
+		}
+		return -1;
+	}
+
+	out = (vkDlightGPU_t *)vk.frame->dlightBuffer.mapped + base;
+	for ( i = 0; i < count; i++ ) {
+		VectorCopy( dlights[i].origin, out[i].origin );
+		out[i].invRadius = 1.0f / dlights[i].radius;
+		VectorScale( dlights[i].color, 1.0f / dlights[i].scale, out[i].color );
+		out[i].scale = dlights[i].scale;
+	}
+	vk.frame->numDlights += count;
+
+	return base;
+}
+
+void vk_set_lightmap_dlights( int tmu, int handle, unsigned int mask, qboolean backs ) {
+	if ( tmu < 0 || tmu >= NUM_TEXTURE_BUNDLES || handle < 0 || !mask ) {
+		vks.dlightTmu = -1;
+		return;
+	}
+
+	vks.dlightTmu = tmu;
+	vks.dlightBacks = backs;
+	if ( vks.dlightBase != handle || vks.dlightMask != mask ) {
+		vks.dlightBase = handle;
+		vks.dlightMask = mask;
+		vk_dirty |= VK_DIRTY_DLIGHT;
+	}
+}
+
 void vk_set_projection( const float *matrix ) {
 	Com_Memcpy( vks.projection, matrix, sizeof( vks.projection ) );
 	vk_dirty |= VK_DIRTY_MVP;
@@ -2223,8 +2320,17 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 		pc.fogParams[0] = scale;
 		pc.fogParams[1] = vks.fogEnd * -scale;
 
-		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, VK_PUSH_VERTEX_SIZE, VK_PUSH_FRAGMENT_SIZE,
-			(const byte *)&pc + VK_PUSH_VERTEX_SIZE );
+		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, VK_PUSH_VERTEX_SIZE,
+			offsetof( vkPushConstants_t, dlightBase ) - VK_PUSH_VERTEX_SIZE, (const byte *)&pc + VK_PUSH_VERTEX_SIZE );
+	}
+
+	if ( vk_dirty & VK_DIRTY_DLIGHT ) {
+		vkPushConstants_t pc;
+
+		pc.dlightBase = vks.dlightBase;
+		pc.dlightMask = vks.dlightMask;
+		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, offsetof( vkPushConstants_t, dlightBase ),
+			sizeof( pc.dlightBase ) + sizeof( pc.dlightMask ), &pc.dlightBase );
 	}
 
 	if ( stippled ) {
@@ -2328,6 +2434,13 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 			if ( textures[i]->rgb && vks.texEnv[i] == TEXENV_REPLACE ) {
 				bits |= i ? VK_PIPE_TEX1_RGB : VK_PIPE_TEX0_RGB;
 			}
+		}
+	}
+
+	if ( vks.dlightTmu >= 0 && textures[vks.dlightTmu] ) {
+		bits |= (uint64_t)( vks.dlightTmu + 1 ) << VK_PIPE_DLIGHT_SHIFT;
+		if ( vks.dlightBacks ) {
+			bits |= VK_PIPE_DLIGHT_BACKS;
 		}
 	}
 
@@ -2651,6 +2764,13 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 			vkb.sets[i] = set;
 			vk.stats.descriptorBinds++;
 		}
+	}
+
+	// declared by every pipeline (the shader is specialized), so bound for all
+	if ( !vkb.dlightSet ) {
+		qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipelineLayout, 2, 1, &vk.frame->dlightSet, 0, NULL );
+		vkb.dlightSet = qtrue;
+		vk.stats.descriptorBinds++;
 	}
 
 	VK_ApplyDynamicState( cmd, ( key.bits & VK_PIPE_STIPPLE ) != 0 );

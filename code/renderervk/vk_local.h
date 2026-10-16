@@ -273,6 +273,9 @@ typedef struct {
 	VkDeviceSize	vertexOffset;
 	vkBuffer_t		stagingBuffer;	// texture upload data of this frame
 	VkDeviceSize	stagingOffset;
+	vkBuffer_t		dlightBuffer;	// lights of vk_add_dlights (vkDlightGPU_t), set 2 of the shaders
+	VkDescriptorSet	dlightSet;
+	int				numDlights;
 
 	vkDeferredDestroy_t	*destroyList;
 	int				numDestroy, maxDestroy;
@@ -402,6 +405,8 @@ typedef struct {
 
 	// shared objects
 	VkDescriptorSetLayout textureSetLayout;
+	VkDescriptorSetLayout dlightSetLayout;	// set 2: the frame's dlight buffer
+	VkDescriptorPool	dlightPool;
 	VkPipelineLayout	pipelineLayout;
 	VkShaderModule		vertexShader;
 	VkShaderModule		vertexShaderClip;	// writes gl_ClipDistance (shaderClipDistance only)
@@ -527,6 +532,8 @@ int			VK_NumPipelines( void );
 #define VK_PIPE_FOG					( 1ull << 39 )	// linear fog
 #define VK_PIPE_CLIPPLANE			( 1ull << 40 )	// user clip plane
 #define VK_PIPE_STIPPLE				( 1ull << 41 )	// line stipple (lines and polygon edges)
+#define VK_PIPE_DLIGHT_SHIFT		42		// unit + 1 whose texture gets the dynamic lights, 0 for none, 2 bits
+#define VK_PIPE_DLIGHT_BACKS		( 1ull << 44 )	// no dynamic light from behind the triangle
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
@@ -542,7 +549,19 @@ typedef struct {
 	float	clipPlane[4];		// user clip plane in object space, 0 when off
 	float	fogColor[4];
 	float	fogParams[2];		// -1 / (end - start), end / (end - start)
+	uint32_t	dlightBase;		// first light of the list in the frame's dlight buffer
+	uint32_t	dlightMask;		// the lights of the list that the draw adds
 } vkPushConstants_t;
+
+// a light of vk_add_dlights in the frame's dlight buffer (shaders/generic.frag)
+typedef struct {
+	float	origin[3];
+	float	invRadius;			// 1 / radius
+	float	color[3];			// vkDlight_t::color / scale
+	float	scale;
+} vkDlightGPU_t;
+
+#define VK_MAX_FRAME_DLIGHTS	4096	// per frame: 128 lists of 32 lights
 
 #define VK_PUSH_VERTEX_SIZE		( (uint32_t)offsetof( vkPushConstants_t, fogColor ) )
 #define VK_PUSH_FRAGMENT_SIZE	( (uint32_t)( sizeof( vkPushConstants_t ) - VK_PUSH_VERTEX_SIZE ) )

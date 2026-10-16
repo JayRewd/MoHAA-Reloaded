@@ -32,8 +32,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // same device and driver, so pipelines don't have to be compiled again.
 //
 // Every pipeline uses the same shaders (shaders/generic.*); the fragment
-// stage is specialized for the texture envs, the alpha test, fog and, when
-// the device can't clip with gl_ClipDistance, the clip plane. Pipelines with
+// stage is specialized for the texture envs, the alpha test, fog, the
+// dynamic lights added to a lightmap and, when the device can't clip with
+// gl_ClipDistance, the clip plane. Pipelines with
 // a clip plane use the vertex shader variant that writes gl_ClipDistance.
 
 #include "vk_local.h"
@@ -111,8 +112,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		VkBool32	fog;
 		VkBool32	clipDiscard;
 		VkBool32	alphaOne;
+		int32_t		dlightUnit;
+		VkBool32	dlightBacks;
 	} specData;
-	VkSpecializationMapEntry specEntries[9];
+	VkSpecializationMapEntry specEntries[11];
 	VkSpecializationInfo specInfo;
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkVertexInputBindingDescription bindings[4];
@@ -150,6 +153,8 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	srcBlend = VK_FIELD( bits, VK_PIPE_SRCBLEND_SHIFT, 15 );
 	dstBlend = VK_FIELD( bits, VK_PIPE_DSTBLEND_SHIFT, 15 ) << 4;
 	specData.alphaOne = ( srcBlend || dstBlend ) ? VK_FALSE : VK_TRUE;
+	specData.dlightUnit = VK_FIELD( bits, VK_PIPE_DLIGHT_SHIFT, 3 );
+	specData.dlightBacks = ( bits & VK_PIPE_DLIGHT_BACKS ) ? VK_TRUE : VK_FALSE;
 
 	for ( i = 0; i < (int)ARRAY_LEN( specEntries ); i++ ) {
 		specEntries[i].constantID = i;
@@ -490,7 +495,9 @@ static void VK_WritePipelineCache( void ) {
 void VK_InitPipelines( void ) {
 	VkDescriptorSetLayoutBinding binding;
 	VkDescriptorSetLayoutCreateInfo setLayoutInfo;
-	VkDescriptorSetLayout setLayouts[2];
+	VkDescriptorSetLayout setLayouts[3];
+	VkDescriptorPoolCreateInfo poolInfo;
+	VkDescriptorPoolSize poolSize;
 	VkPushConstantRange pushRanges[2];
 	VkPipelineLayoutCreateInfo layoutInfo;
 	VkPipelineCacheCreateInfo cacheInfo;
@@ -510,6 +517,20 @@ void VK_InitPipelines( void ) {
 	setLayoutInfo.pBindings = &binding;
 	VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.textureSetLayout ) );
 
+	// set 2: the dynamic lights of the frame (vk_add_dlights), one set per
+	// frame slot
+	binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.dlightSetLayout ) );
+
+	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	poolSize.descriptorCount = VK_MAX_FRAMES;
+	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = VK_MAX_FRAMES;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	VK_CHECK( qvkCreateDescriptorPool( vk.device, &poolInfo, NULL, &vk.dlightPool ) );
+
 	// push constants, see vkPushConstants_t
 	pushRanges[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	pushRanges[0].offset = 0;
@@ -519,6 +540,7 @@ void VK_InitPipelines( void ) {
 	pushRanges[1].size = VK_PUSH_FRAGMENT_SIZE;
 
 	setLayouts[0] = setLayouts[1] = vk.textureSetLayout;
+	setLayouts[2] = vk.dlightSetLayout;
 	Com_Memset( &layoutInfo, 0, sizeof( layoutInfo ) );
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layoutInfo.setLayoutCount = ARRAY_LEN( setLayouts );
@@ -589,8 +611,16 @@ void VK_ShutdownPipelines( void ) {
 	if ( vk.textureSetLayout ) {
 		qvkDestroyDescriptorSetLayout( vk.device, vk.textureSetLayout, NULL );
 	}
+	if ( vk.dlightSetLayout ) {
+		qvkDestroyDescriptorSetLayout( vk.device, vk.dlightSetLayout, NULL );
+	}
+	if ( vk.dlightPool ) {
+		qvkDestroyDescriptorPool( vk.device, vk.dlightPool, NULL );
+	}
 	vk.pipelineCache = VK_NULL_HANDLE;
 	vk.vertexShader = vk.vertexShaderClip = vk.fragmentShader = VK_NULL_HANDLE;
 	vk.pipelineLayout = VK_NULL_HANDLE;
 	vk.textureSetLayout = VK_NULL_HANDLE;
+	vk.dlightSetLayout = VK_NULL_HANDLE;
+	vk.dlightPool = VK_NULL_HANDLE;
 }

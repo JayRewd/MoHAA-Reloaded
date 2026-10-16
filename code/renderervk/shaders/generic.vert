@@ -57,6 +57,9 @@ layout(location = 2) out vec2 v_st1;
 // x: fog distance |z_eye|, y: distance to the clip plane (generic.frag
 // discards with it when gl_ClipDistance isn't available)
 layout(location = 3) out vec2 v_fogClip;
+// object space position, for the dynamic lights (only pipelines with them
+// read it; the others link it away)
+layout(location = 4) out vec3 v_position;
 
 #ifdef CLIP_DISTANCE
 out float gl_ClipDistance[1];
@@ -91,4 +94,5 @@ void main() {
 	v_color = in_color;
 	v_st0 = in_st0;
 	v_st1 = in_st1;
+	v_position = in_position;
 }

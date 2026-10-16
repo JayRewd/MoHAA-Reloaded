@@ -465,7 +465,7 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits ) {
 		return;
 	}
 
-	R_AddDrawSurf( surf->data, surf->shader, dlightBits );
+	R_AddDrawSurf( surf->data, surf->shader, R_DlightSortKey( dlightBits ) );
 }
 
 /*
@@ -593,6 +593,11 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 				}
 			}
 
+		}
+
+		// the dynamic lights that reach something in the subtree
+		if ( dlightBits && !r_fastdlights->integer ) {
+			dlightBits = R_CullDlightsToNode( node, dlightBits );
 		}
 
 		if ( node->contents != -1 ) {

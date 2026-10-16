@@ -550,8 +550,6 @@ void RB_BeginDrawingView (void) {
 	//
 	SetViewportAndScissor();
 
-	R_UploadDlights();
-
 	// ensures that depth writes are enabled for the depth clear
 	GL_State( GLS_DEFAULT );
 	// clear relevant buffers
@@ -675,6 +673,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
 	backEnd.numSpheresUsed = 0;
+	backEnd.dlightList = backEnd.worldDlightList = -1;
 
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
 		if ( drawSurf->sort == (unsigned)oldSort && *drawSurf->surface != SF_SPRITE ) {
@@ -737,7 +736,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 					// set up the dynamic lighting if needed
 					if (backEnd.currentEntity->needDlights) {
-						R_TransformDlights(backEnd.refdef.num_dlights, backEnd.refdef.dlights, &backEnd.ori);
+						RB_TransformDlights(qfalse);
 					}
 
 					if (backEnd.currentEntity->e.renderfx & RF_DEPTHHACK) {
@@ -749,7 +748,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 					backEnd.currentEntity = &tr.worldEntity;
 					backEnd.ori = backEnd.viewParms.world;
 					backEnd.shaderStartTime = 0.0;
-					R_TransformDlights(backEnd.refdef.num_dlights, backEnd.refdef.dlights, &backEnd.ori);
+					RB_TransformDlights(qtrue);
 				}
 			}
 

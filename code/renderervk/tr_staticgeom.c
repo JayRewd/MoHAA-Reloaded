@@ -30,9 +30,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // buffer of the frame, when each stage of its shader takes its colors and
 // texture coordinates from the vertexes as they are or as constants
 // (RB_StaticBatch, RB_StaticStageColor in tr_shade.c). Everything else
-// (deforms, tcGen and tcMod, per-vertex rgbGen and alphaGen, dynamic
-// lights, the sky, debug drawing, the other surface types) still goes
-// through tess. The batches and their order stay the same: a static batch
+// (deforms, tcGen and tcMod, per-vertex rgbGen and alphaGen, the dynamic
+// light pass of r_fastdlights 1, the sky, debug drawing, the other surface
+// types) still goes through tess; the dynamic lights of r_fastdlights 0 are
+// added per pixel (RB_LightmapDlights), static batch or not. The batches
+// and their order stay the same: a static batch
 // counts the vertexes and indexes it would have put in tess, so it is split
 // at the same surfaces, and one that meets a surface it can't draw is
 // filled again from its surfaces the usual way (RB_StaticBatchToCPU).
@@ -525,7 +527,7 @@ static qboolean RB_StaticBatchAllowed( void ) {
 	if ( !tr.staticIndexes || !r_staticGeometry->integer || tess.numVertexes || tess.numIndexes ) {
 		return qfalse;
 	}
-	if ( shader->isSky || shader->numDeforms || tess.dlightMap || RB_StaticDlights( tess.dlightBits ) ) {
+	if ( shader->isSky || shader->numDeforms || RB_StaticDlights( tess.dlightBits ) ) {
 		return qfalse;
 	}
 	// debug drawing reads the vertexes
@@ -624,11 +626,12 @@ qboolean RB_StaticSurface( const surfaceType_t *surface ) {
 RB_StaticDlights
 
 Whether the dynamic lights of a surface need a pass (ProjectDlightTexture)
-in the current batch
+in the current batch: not in a batch of brush model surfaces lit per pixel
+(tess.dlightMap, see R_DlightSortKey)
 ===============
 */
 qboolean RB_StaticDlights( int dlightBits ) {
-	return dlightBits && backEnd.refdef.num_dlights && tess.shader->sort <= SS_OPAQUE;
+	return dlightBits && !tess.dlightMap && backEnd.refdef.num_dlights && tess.shader->sort <= SS_OPAQUE;
 }
 
 /*
