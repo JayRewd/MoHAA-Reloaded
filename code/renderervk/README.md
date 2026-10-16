@@ -2,8 +2,12 @@
 
 `renderer_vulkan` is a copy of the GL1 renderer (`code/renderergl1`) with every
 OpenGL call removed. All GPU work goes through the interface in [`vk.h`](vk.h),
-which the `vk*.c` files implement with Vulkan. Select it with
-`cl_renderer vulkan`.
+which the `vk*.c` files implement with Vulkan. It is the default renderer
+(`cl_renderer vulkan`) of builds that include it (`BUILD_RENDERER_VULKAN`,
+with `USE_RENDERER_DLOPEN`); `cl_renderer opengl1` selects the GL1 renderer.
+On a system without Vulkan (no loader, driver or device) it stops with an
+error that says so and suggests `+set cl_renderer opengl1`. `cl_renderer`
+is archived, so a config written before keeps its renderer.
 
 Status (2026-10-14, branch `vulkan-renderer`): milestones 1 to 6 of the plan
 below are done.
@@ -147,7 +151,9 @@ before), and the CI workflows (`.github/workflows`: Linux x64 and Windows x64
 only, with `USE_RENDERER_DLOPEN=ON` and `BUILD_RENDERER_VULKAN=ON`, the
 renderers then shipping as `renderer_opengl1` and `renderer_vulkan` libraries
 next to the executable; artifacts kept 3 days) and the Windows installer
-(`misc/setup/windows/app/Package.wxs` lists both renderer DLLs).
+(`misc/setup/windows/app/Package.wxs` lists both renderer DLLs), and the
+client's default `cl_renderer` (`vulkan` when `BUILD_RENDERER_VULKAN` is on:
+`cmake/client.cmake`, `code/client/cl_main.cpp`).
 
 ## Build and run
 
@@ -169,7 +175,9 @@ cd build-vk/RelWithDebInfo
     +set fs_homepath /tmp/moh-home +set r_fullscreen 0 +set r_mode 3
 ```
 
-`cl_renderer opengl1` runs the GL1 renderer from the same build for comparison.
+`cl_renderer opengl1` runs the GL1 renderer from the same build for comparison
+(`cl_renderer` defaults to `vulkan` when the Vulkan renderer is built,
+`cmake/client.cmake`, `code/client/cl_main.cpp`).
 
 Cvars of the backend:
 

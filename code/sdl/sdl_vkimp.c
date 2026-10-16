@@ -445,7 +445,7 @@ void VKimp_Init( void )
 	}
 
 	// Nothing worked, give up
-	ri.Error( ERR_FATAL, "VKimp_Init() - could not create the window" );
+	ri.Error( ERR_FATAL, "VKimp_Init() - could not create the window" VK_OPENGL_HINT );
 
 success:
 	// These values force the UI to disable driver selection

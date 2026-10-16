@@ -188,7 +188,7 @@ static void VK_CreateInstance( void ) {
 
 	qvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
 	if ( !qvkGetInstanceProcAddr ) {
-		ri.Error( ERR_FATAL, "Vulkan: no Vulkan loader (SDL_Vulkan_GetVkGetInstanceProcAddr: %s)", SDL_GetError() );
+		ri.Error( ERR_FATAL, "Vulkan: no Vulkan loader (SDL_Vulkan_GetVkGetInstanceProcAddr: %s)" VK_OPENGL_HINT, SDL_GetError() );
 	}
 
 #define VK_LOAD_GLOBAL( name ) \
@@ -310,7 +310,7 @@ static void VK_CreateInstance( void ) {
 
 	result = qvkCreateInstance( &createInfo, NULL, &vk.instance );
 	if ( result == VK_ERROR_INCOMPATIBLE_DRIVER ) {
-		ri.Error( ERR_FATAL, "Vulkan: no compatible Vulkan driver found" );
+		ri.Error( ERR_FATAL, "Vulkan: no compatible Vulkan driver found" VK_OPENGL_HINT );
 	}
 	VK_CHECK( result );
 
@@ -421,7 +421,7 @@ static void VK_SelectPhysicalDevice( void ) {
 
 	VK_CHECK( qvkEnumeratePhysicalDevices( vk.instance, &numDevices, NULL ) );
 	if ( !numDevices ) {
-		ri.Error( ERR_FATAL, "Vulkan: no Vulkan device found" );
+		ri.Error( ERR_FATAL, "Vulkan: no Vulkan device found" VK_OPENGL_HINT );
 	}
 	devices = ri.Hunk_AllocateTempMemory( sizeof( *devices ) * numDevices );
 	VK_CHECK( qvkEnumeratePhysicalDevices( vk.instance, &numDevices, devices ) );
@@ -438,7 +438,7 @@ static void VK_SelectPhysicalDevice( void ) {
 	ri.Hunk_FreeTempMemory( devices );
 
 	if ( !bestScore ) {
-		ri.Error( ERR_FATAL, "Vulkan: no usable Vulkan device found" );
+		ri.Error( ERR_FATAL, "Vulkan: no usable Vulkan device found" VK_OPENGL_HINT );
 	}
 
 	qvkGetPhysicalDeviceProperties( vk.physicalDevice, &vk.deviceProperties );

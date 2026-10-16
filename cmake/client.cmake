@@ -80,6 +80,10 @@ endif()
 
 if(USE_RENDERER_DLOPEN)
     list(APPEND CLIENT_DEFINITIONS USE_RENDERER_DLOPEN)
+    # the default cl_renderer: the Vulkan renderer when it is built
+    if(BUILD_RENDERER_VULKAN)
+        list(APPEND CLIENT_DEFINITIONS DEFAULT_RENDERER_VULKAN)
+    endif()
 endif()
 
 if(USE_HTTP)

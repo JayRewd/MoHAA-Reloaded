@@ -58,6 +58,10 @@ void		VKimp_Init( void );			// create the window and fill glConfig video fields
 void		VKimp_Shutdown( void );		// destroy the window
 void		VKimp_EndFrame( void );		// handle window changes (fullscreen toggle) after presenting
 
+// appended to the errors of a system without Vulkan (no loader, driver or
+// device, no window with a Vulkan surface): the OpenGL renderer may work there
+#define VK_OPENGL_HINT "; start the game with +set cl_renderer opengl1 to use OpenGL instead"
+
 /*
 ====================================================================
 
