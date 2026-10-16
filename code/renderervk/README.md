@@ -1698,8 +1698,38 @@ Remaining:
   backend (`vk_draw` per model: pipeline key, push constants, binds); with
   step 1's eligible models (8 to 118 per frame) it isn't worth a second
   vertex shader yet.
-- Step 3: skinning of skeletal models on the GPU (`RB_SkelMesh` is 5 to 8 %
-  of the forest frames); and the LOD terrain, which is re-split every frame
+- Dynamic lights are the most expensive CPU path measured so far
+  (`perf.py --exec 'cg_acidtrip N'`: N random lights of radius 128 to 639
+  per frame, 640x480, renderer time without fence waits, ms per frame,
+  Vulkan / GL1): no light 0.395 / 0.565 in the `obj_team2` yard, 0.456 /
+  0.619 in the `dm/mohdm3` overview; 4 lights 1.143 / 1.385 and 1.210 /
+  1.389 (803 / 665 and 762 / 665 fps instead of the 1000 fps cap); 16
+  lights 2.006 / 2.245 and 1.925 / 2.137. The time is in the front end,
+  rebuilding the dynamic lightmaps texel by texel (`R_DlightSample`,
+  `R_AllocLMBlock`, `R_RealDlightFace`: 55 to 64 % of the frame with 16
+  lights). A face is only tested against the light's plane
+  (`R_RealDlightFace`, with `r_dlightBacks 1`), so every visible face whose
+  plane passes within the radius has all its lightmap texels sampled;
+  testing the face's lightmap rectangle against the light sphere first
+  would give the same texels for less work. Beyond that, the lightmap
+  could be relit by a compute shader from the static lightmap data (GL1's
+  texels within rounding) or the lights evaluated per pixel (no rebuild,
+  no uploads, and lit surfaces would stay on the static geometry, but the
+  falloff is smoother than GL1's texel-filtered one). Decided (2026-10-15):
+  per pixel, the smoother falloff is accepted as a parity exception for
+  the speed.
+- Step 3: skinning of skeletal models on the GPU (`RB_SkelMesh` is 6 to 8 %
+  of the forest frames, more with many characters). The data suits it (95 %
+  of the vertexes have one weight, at most 6, per-weight offsets instead of
+  bind poses, at most 100 bones; morphs only on the heads), but most
+  character shaders use `rgbGen lightingSpherical`, lit per vertex on the
+  CPU after skinning (`RB_Light_Real`), so that lighting has to move to the
+  GPU first (step 2). Before that: skeletal models entirely outside the
+  view are still skinned and lit, as in GL1 (`R_AddSkelSurfaces` lets
+  `CULL_OUT` through and `R_CullSkelModel` returns `CULL_IN`, "FIXME: not
+  working properly"). The entities' sun visibility traces
+  (`RB_Sphere_SetupEntity`, `CM_BoxTrace`) of the moving entities still take
+  23 % of the `m3l3` path frame. The LOD terrain, re-split every frame
   (`RB_DrawTerrainTris`), still copies its vertexes.
 
 - At 3840x2160 the GPU-bound `dm/mohdm3` overview and `m3l3` path take

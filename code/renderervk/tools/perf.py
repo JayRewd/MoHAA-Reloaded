@@ -21,6 +21,8 @@ options:
                     unless the driver has its own cache: set
                     MESA_SHADER_CACHE_DISABLE=true for that)
   --json FILE       also write every measurement to FILE
+  --exec CMDS       console commands run once the camera is at the view,
+                    ';' separated (e.g. 'cg_acidtrip 4': random dynamic lights)
   --stacks PREFIX   sample the main thread's stack every millisecond with
                     libstacks.so (tools/rtimer/stacks.c) and write each
                     run to PREFIX_<view>_<size>_<renderer>_<run>.txt, with
@@ -110,11 +112,11 @@ def cfg_name(view):
     return "perf_" + re.sub(r"[^A-Za-z0-9_]", "_", view.name) + ".cfg"
 
 
-def write_cfg(view, frames):
+def write_cfg(view, frames, commands=()):
     cfg = ["set thereisnomonkey 1", "set fixedtime 16",
            f"{'spdevmap' if view.sp else 'devmap'} {view.map}", "wait 3000", "finishloadingscreen", "wait 1000",
            "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0",
-           "tele %s %s %s" % view.pos, "face %s %s %s" % view.angles,
+           "tele %s %s %s" % view.pos, "face %s %s %s" % view.angles, *commands,
            "vkinfo", "echo perf_ready", "wait 2000",
            "com_speeds 1", "vkinfo", "echo perf_start", "set rt_record 1", f"wait {16 * frames}", "set rt_record 0",
            "vkinfo", "echo perf_end", "com_speeds 0", "wait 100", "quit"]
@@ -371,6 +373,7 @@ def main():
     ap.add_argument("--cold", action="store_true")
     ap.add_argument("--stacks")
     ap.add_argument("--json")
+    ap.add_argument("--exec", default="", help="console commands run at the view, ';' separated")
     args = ap.parse_args(argv)
 
     views = []
@@ -390,7 +393,7 @@ def main():
     sizes = [parse_size(s) for s in args.sizes.split(",")]
     pauser = Pauser([int(p) for p in args.pause.split(",") if p])
     for v in views:
-        write_cfg(v, args.frames)
+        write_cfg(v, args.frames, [c.strip() for c in args.exec.split(';') if c.strip()])
 
     # SIGTERM runs the finally blocks too, so paused processes are continued
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(1))
