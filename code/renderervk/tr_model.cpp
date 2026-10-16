@@ -1548,6 +1548,49 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
 
     collapse_map = surf->pCollapse;
     triangles    = surf->pTriangles;
+
+    if (RB_StaticBatch()) {
+        int firstIndex = RB_StaticTikiIndex(staticSurf);
+
+        if (firstIndex >= 0 && RB_StaticAddSurface((surfaceType_t *)staticSurf, 0, qtrue)) {
+            // the model's first vertex is the batch's
+            tess.numVertexes += render_count;
+
+            if (render_count == surf->numVerts) {
+                RB_StaticAddRange(firstIndex, indexes);
+                staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += indexes;
+                return;
+            }
+
+            for (i = 0; i < render_count; i++) {
+                collapse[i] = i;
+            }
+            for (i = render_count; i < surf->numVerts; i++) {
+                collapse[i] = collapse[collapse_map[i]];
+            }
+
+            glIndex_t *out = RB_StaticCopyIndexes();
+
+            baseVertex = staticSurf->ofsStaticData;
+            for (j = 0; j < indexes; j += 3) {
+                if (collapse[triangles[j]] == collapse[triangles[j + 1]]
+                    || collapse[triangles[j + 1]] == collapse[triangles[j + 2]]
+                    || collapse[triangles[j + 2]] == collapse[triangles[j]]) {
+                    break;
+                }
+
+                out[j]     = baseVertex + collapse[triangles[j]];
+                out[j + 1] = baseVertex + collapse[triangles[j + 1]];
+                out[j + 2] = baseVertex + collapse[triangles[j + 2]];
+            }
+
+            staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += j;
+            RB_StaticIndexesAdded(j);
+            return;
+        }
+        RB_StaticBatchToCPU();
+    }
+
     baseIndex    = tess.numIndexes;
     baseVertex   = tess.numVertexes;
     tess.numVertexes += render_count;

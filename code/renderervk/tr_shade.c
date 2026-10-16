@@ -212,7 +212,7 @@ void RB_BeginSurface( shader_t *shader ) {
 	tess.xstages = shader->unfoggedStages;
 	tess.numPasses = shader->numUnfoggedPasses;
 	tess.currentStageIteratorFunc = shader->optimalStageIteratorFunc;
-
+	tess.staticBatch = STATIC_BATCH_UNDECIDED;
 }
 
 /*
@@ -1235,6 +1235,181 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 }
 
 /*
+===============
+RB_StaticStageColor
+
+What ComputeColors gives the stage in the current static batch (see
+tr_staticgeom.c): the same color for every vertex (also for static models'
+vertex alpha, always 255), the vertex colors as they are, or with alpha 255
+(when the batch's vertex alphas are 255), white with the vertex alpha, or
+something only the CPU path gives (per-vertex computations, colors left
+from an earlier batch)
+===============
+*/
+staticColor_t RB_StaticStageColor( const shaderStage_t *pStage ) {
+	staticColor_t rgb, alpha;
+
+	// what rgbGen writes, all four channels
+	switch ( pStage->rgbGen ) {
+	case CGEN_ENTITY:
+	case CGEN_ONE_MINUS_ENTITY:
+		if ( !backEnd.currentEntity ) {
+			return STATIC_COLOR_CPU;
+		}
+		rgb = STATIC_COLOR_CONSTANT;
+		break;
+	case CGEN_EXACT_VERTEX:
+		if ( !tess.vertexColorValid ) {
+			return STATIC_COLOR_CPU;
+		}
+		rgb = STATIC_COLOR_VERTEX;
+		break;
+	case CGEN_VERTEX:
+		if ( !tess.vertexColorValid || tr.identityLight != 1 ) {
+			return STATIC_COLOR_CPU;
+		}
+		rgb = STATIC_COLOR_VERTEX;
+		break;
+	case CGEN_LIGHTING_SPHERICAL:
+	case CGEN_STATIC:
+		if ( !r_drawspherelights->integer || !backEnd.currentStaticModel || backEnd.currentStaticModel->useSpecialLighting
+			|| tr.identityLight != 1.0 ) {
+			return STATIC_COLOR_CPU;
+		}
+		rgb = STATIC_COLOR_VERTEX;
+		break;
+	case CGEN_ONE_MINUS_VERTEX:
+	case CGEN_LIGHTING_GRID:
+	case CGEN_SCOORD:
+	case CGEN_TCOORD:
+	case CGEN_DOT:
+	case CGEN_ONE_MINUS_DOT:
+		return STATIC_COLOR_CPU;
+	default:
+		rgb = STATIC_COLOR_CONSTANT;
+		break;
+	}
+
+	switch ( pStage->alphaGen ) {
+	case AGEN_IDENTITY:
+		if ( pStage->rgbGen != CGEN_IDENTITY && pStage->rgbGen != CGEN_LIGHTING_GRID && pStage->rgbGen != CGEN_LIGHTING_SPHERICAL
+			&& ( pStage->rgbGen != CGEN_VERTEX || tr.identityLight != 1 ) ) {
+			alpha = STATIC_COLOR_CONSTANT;
+		} else {
+			alpha = rgb;
+		}
+		break;
+	case AGEN_ENTITY:
+	case AGEN_ONE_MINUS_ENTITY:
+		alpha = backEnd.currentEntity ? STATIC_COLOR_CONSTANT : rgb;
+		break;
+	case AGEN_VERTEX:
+		alpha = pStage->rgbGen != CGEN_VERTEX ? STATIC_COLOR_VERTEX : rgb;
+		break;
+	case AGEN_WAVEFORM:
+	case AGEN_CONSTANT:
+	case AGEN_GLOBAL_ALPHA:
+	case AGEN_SKYALPHA:
+	case AGEN_ONE_MINUS_SKYALPHA:
+		alpha = STATIC_COLOR_CONSTANT;
+		break;
+	case AGEN_TIKI_DIST_FADE:
+	case AGEN_ONE_MINUS_TIKI_DIST_FADE:
+		if ( !backEnd.currentStaticModel && !backEnd.currentEntity ) {
+			return STATIC_COLOR_CPU;
+		}
+		alpha = STATIC_COLOR_CONSTANT;
+		break;
+	case AGEN_ONE_MINUS_VERTEX:
+	case AGEN_LIGHTING_SPECULAR:
+	case AGEN_PORTAL:
+	case AGEN_DOT:
+	case AGEN_ONE_MINUS_DOT:
+	case AGEN_SCOORD:
+	case AGEN_TCOORD:
+	case AGEN_DIST_FADE:
+	case AGEN_ONE_MINUS_DIST_FADE:
+	case AGEN_DOT_VIEW:
+	case AGEN_ONE_MINUS_DOT_VIEW:
+	case AGEN_HEIGHT_FADE:
+		return STATIC_COLOR_CPU;
+	default:
+		// AGEN_SKIP: what rgbGen wrote
+		alpha = rgb;
+		break;
+	}
+
+	if ( alpha == rgb ) {
+		return rgb;
+	}
+	if ( rgb == STATIC_COLOR_CONSTANT ) {
+		// the vertex alpha
+		if ( backEnd.currentStaticModel ) {
+			return STATIC_COLOR_CONSTANT;
+		}
+		if ( pStage->rgbGen == CGEN_IDENTITY || ( pStage->rgbGen == CGEN_IDENTITY_LIGHTING && tr.identityLightByte == 255 ) ) {
+			return STATIC_COLOR_WHITE_ALPHA;
+		}
+		return STATIC_COLOR_CPU;
+	}
+	// the vertex colors with a constant alpha: alpha 255
+	if ( pStage->alphaGen == AGEN_IDENTITY || ( pStage->alphaGen == AGEN_CONSTANT && pStage->colorConst[3] == 255 ) ) {
+		return STATIC_COLOR_VERTEX_OPAQUE;
+	}
+	return STATIC_COLOR_CPU;
+}
+
+/*
+===============
+RB_StaticStageSt
+
+The static stream ComputeTexCoords gives a bundle, STATIC_ST_NONE when it
+computes them
+===============
+*/
+staticSt_t RB_StaticStageSt( const textureBundle_t *bundle ) {
+	if ( bundle->numTexMods && bundle->texMods[0].type != TMOD_NONE ) {
+		return STATIC_ST_NONE;
+	}
+	if ( bundle->tcGen == TCGEN_TEXTURE ) {
+		return STATIC_ST_TEXTURE;
+	}
+	if ( bundle->tcGen == TCGEN_LIGHTMAP ) {
+		return STATIC_ST_LIGHTMAP;
+	}
+	return STATIC_ST_NONE;
+}
+
+/*
+===============
+RB_StaticStage
+
+ComputeTexCoords and ComputeColors for a static batch: the streams of the
+stage (RB_StaticDraw), a constant evaluated by ComputeColors for one
+vertex
+===============
+*/
+void RB_StaticStage( shaderStage_t *pStage ) {
+	int b;
+
+	for ( b = 0; b < NUM_TEXTURE_BUNDLES; b++ ) {
+		tess.staticStageSt[b] = pStage->bundle[b].image[0] ? RB_StaticStageSt( &pStage->bundle[b] ) : STATIC_ST_NONE;
+	}
+
+	tess.staticStageColor = RB_StaticStageColor( pStage );
+	if ( tess.staticStageColor == STATIC_COLOR_CONSTANT ) {
+		int numVertexes = tess.numVertexes;
+
+		// static models' vertex alpha
+		tess.vertexColors[0][3] = 255;
+		tess.numVertexes = 1;
+		ComputeColors( pStage );
+		tess.numVertexes = numVertexes;
+		Com_Memcpy( tess.staticStageConstant, tess.svars.colors[0], sizeof( tess.staticStageConstant ) );
+	}
+}
+
+/*
 ** RB_IterateStagesGeneric
 */
 static void RB_IterateStagesGeneric( shaderCommands_t *input )
@@ -1257,8 +1432,12 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			continue;
 		}
 
-		ComputeTexCoords(pStage);
-		ComputeColors(pStage);
+		if (tess.staticBatch == STATIC_BATCH_ON) {
+			RB_StaticStage(pStage);
+		} else {
+			ComputeTexCoords(pStage);
+			ComputeColors(pStage);
+		}
 
 		if (!setArraysOnce)
 		{
@@ -1427,7 +1606,11 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 		//
 		// compute colors
 		//
-		ComputeColors(input->xstages[0]);
+		if (tess.staticBatch == STATIC_BATCH_ON) {
+			RB_StaticStage(input->xstages[0]);
+		} else {
+			ComputeColors(input->xstages[0]);
+		}
 	}
 	else
 	{
@@ -1551,6 +1734,7 @@ void RB_EndSurface( void ) {
 	input = &tess;
 
 	if (input->numIndexes == 0) {
+		tess.staticBatch = STATIC_BATCH_OFF;
 		return;
 	}
 	if (input->indexes[SHADER_MAX_INDEXES-1] != 0) {
@@ -1602,5 +1786,6 @@ void RB_EndSurface( void ) {
 
 	// clear shader so we can tell we don't have any unclosed surfaces
 	tess.numIndexes = 0;
+	tess.staticBatch = STATIC_BATCH_OFF;
 }
 

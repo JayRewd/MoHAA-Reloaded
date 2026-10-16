@@ -814,6 +814,12 @@ typedef struct srfGridMesh_s {
 	int				lodFixed;
 	int				lodStitched;
 
+	// static geometry (tr_staticgeom.c): first vertex of the grid's
+	// vertexes (all of the subdivision), and whether every vertex alpha
+	// is 255
+	int				staticVertex;
+	qboolean		staticOpaque;
+
 	// vertexes
 	int				width, height;
 	float			*widthLodError;
@@ -840,6 +846,11 @@ typedef struct {
     vec3_t		lmOrigin;
     vec3_t		lmVecs[2];
     vec3_t		lmInverseVecs[2];
+
+	// static geometry (tr_staticgeom.c): first index of the surface's
+	// indexes, -1 for none, and whether every vertex alpha is 255
+	int			staticIndex;
+	qboolean	staticOpaque;
 
 	// triangle definitions (no normals at points)
 	int			numPoints;
@@ -868,6 +879,10 @@ typedef struct {
 
 	int				numVerts;
 	drawVert_t		*verts;
+
+	// static geometry, as in srfSurfaceFace_t
+	int				staticIndex;
+	qboolean		staticOpaque;
 } srfTriangles_t;
 
 typedef union varnodeUnpacked_u {
@@ -988,6 +1003,10 @@ typedef struct cStaticModelUnpacked_s {
     float cull_radius;
     int iGridLighting;
     float lodpercentage[2];
+    // static geometry (tr_staticgeom.c): the model's entry in
+    // tr.staticTikis (-1: drawn from the CPU) and its first vertex color
+    int staticTiki;
+    int staticColor;
 } cStaticModelUnpacked_t;
 
 extern	void (*rb_surfaceTable[SF_NUM_SURFACE_TYPES])(void *);
@@ -1407,6 +1426,13 @@ typedef struct {
     fontheader_t* pFontDebugStrings;
 
 	int farclip;
+
+	// static geometry of the world (tr_staticgeom.c), built at map load;
+	// staticIndexes is a copy of the index stream, NULL when there is none
+	const glIndex_t			*staticIndexes;
+	int						staticWhiteColors;	// first color of the stream of white with the world's vertex alpha
+	int						numStaticTikis;
+	struct staticTiki_s		*staticTikis;
 } trGlobals_t;
 
 extern backEndState_t	backEnd;
@@ -1922,6 +1948,20 @@ typedef struct stageVars
 	vec2_t		texcoords[NUM_TEXTURE_BUNDLES][SHADER_MAX_VERTEXES];
 } stageVars_t;
 
+// what a batch of the static geometry draws for one model (tr_staticgeom.c):
+// the world, or each of the static models of a merged batch
+#define MAX_STATIC_INSTANCES	128
+
+typedef struct {
+	cStaticModelUnpacked_t	*model;		// NULL for world surfaces
+	float		modelview[16];
+	int			vertex;			// first vertex of the positions and texture coordinates
+	int			color;			// first vertex color
+	int			firstIndex;		// the indexes: a range of the static index stream,
+	int			numIndexes;
+	int			copiedIndex;	// or from there in tess.indexes, -1 for none
+} staticInstance_t;
+
 typedef struct shaderCommands_s 
 {
 	glIndex_t	indexes[SHADER_MAX_INDEXES] Q_ALIGN(16);
@@ -1951,12 +1991,67 @@ typedef struct shaderCommands_s
 	shaderStage_t	**xstages;
     qboolean no_global_fog;
     qboolean vertexColorValid;
+
+	// a batch drawn from the static geometry (tr_staticgeom.c,
+	// STATIC_BATCH_ON) doesn't fill the vertex arrays above: numVertexes
+	// and numIndexes count what they would hold, so batches split at the
+	// same surfaces; indexes only holds the indexes of the instances that
+	// are not one range of the static index stream
+	int			staticBatch;		// staticBatch_t
+	qboolean	staticNeedsOpaque;	// a stage takes the vertex colors with alpha 255
+	qboolean	staticMergeable;	// more static models can join the batch (RB_StaticMerge)
+	int			numStaticInstances;
+	staticInstance_t	staticInstances[MAX_STATIC_INSTANCES];
+	int			staticCopiedIndexes;	// in indexes
+	int			numStaticSurfs;		// the surfaces added, for RB_StaticBatchToCPU
+	surfaceType_t	*staticSurfs[SHADER_MAX_VERTEXES];
+	int			staticSurfRows[SHADER_MAX_VERTEXES];	// grids: first row << 16 | rows
+	// the streams of the stage being drawn (RB_StaticStage)
+	int			staticStageColor;	// staticColor_t
+	color4ub_t	staticStageConstant;
+	int			staticStageSt[NUM_TEXTURE_BUNDLES];	// staticSt_t
 } shaderCommands_t;
 
 extern	shaderCommands_t	tess;
 
 void RB_BeginSurface(shader_t *shader );
 void RB_EndSurface(void);
+
+// tr_staticgeom.c
+typedef enum {
+	STATIC_BATCH_UNDECIDED,		// no surface added yet
+	STATIC_BATCH_OFF,			// the vertex arrays of tess are filled
+	STATIC_BATCH_ON				// drawn from the static geometry
+} staticBatch_t;
+
+// what ComputeColors gives a stage of a static batch (tr_shade.c)
+typedef enum {
+	STATIC_COLOR_CPU,			// computed per vertex, or left from an earlier batch
+	STATIC_COLOR_CONSTANT,
+	STATIC_COLOR_VERTEX,		// the vertex colors
+	STATIC_COLOR_VERTEX_OPAQUE,	// the vertex colors with alpha 255
+	STATIC_COLOR_WHITE_ALPHA	// white with the vertex alpha
+} staticColor_t;
+
+extern cvar_t *r_staticGeometry;
+
+void R_BuildStaticGeometry( void );
+void R_FreeStaticGeometry( void );
+qboolean RB_StaticBatch( void );
+qboolean RB_StaticSurface( const surfaceType_t *surface );
+qboolean RB_StaticDlights( int dlightBits );
+qboolean RB_StaticAddSurface( surfaceType_t *surface, int dlightBits, qboolean opaque );
+void RB_SurfaceGridRows( srfGridMesh_t *cv, int used, int rows );
+void RB_StaticBatchToCPU( void );
+qboolean RB_StaticMerge( int staticModel );
+void RB_StaticAddRange( int firstIndex, int numIndexes );
+glIndex_t *RB_StaticCopyIndexes( void );
+void RB_StaticIndexesAdded( int numIndexes );
+int RB_StaticTikiIndex( const staticSurface_t *staticSurf );
+void RB_StaticDraw( drawGeometry_t *geometry );
+staticColor_t RB_StaticStageColor( const shaderStage_t *pStage );
+staticSt_t RB_StaticStageSt( const textureBundle_t *bundle );
+void RB_StaticStage( shaderStage_t *pStage );
 void RB_CheckOverflow( int verts, int indexes );
 #define RB_CHECKOVERFLOW(v,i) if (tess.numVertexes + (v) >= SHADER_MAX_VERTEXES || tess.numIndexes + (i) >= SHADER_MAX_INDEXES ) {RB_CheckOverflow(v,i);}
 

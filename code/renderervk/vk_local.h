@@ -104,6 +104,7 @@ FUNCTION POINTERS
 	X( vkCmdClearAttachments ) \
 	X( vkCmdClearColorImage ) \
 	X( vkCmdClearDepthStencilImage ) \
+	X( vkCmdCopyBuffer ) \
 	X( vkCmdCopyBufferToImage ) \
 	X( vkCmdCopyImageToBuffer ) \
 	X( vkCmdDrawIndexed ) \
@@ -296,6 +297,7 @@ typedef struct {
 	uint64_t	submits;			// vkQueueSubmit calls
 	uint64_t	flushes;			// mid-frame submissions that waited for the GPU
 	uint64_t	draws;
+	uint64_t	staticDraws;		// draws from the static geometry (vk_set_static_geometry)
 	uint64_t	pipelineBinds;
 	uint64_t	descriptorBinds;	// descriptor sets bound
 	uint64_t	vertexBytes;		// copied into the vertex buffers

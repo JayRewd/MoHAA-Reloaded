@@ -247,6 +247,13 @@ typedef enum {
 	PRIM_LINES
 } primType_t;
 
+// texture coordinate streams of the static geometry
+typedef enum {
+	STATIC_ST_NONE,			// the unit is off
+	STATIC_ST_TEXTURE,
+	STATIC_ST_LIGHTMAP
+} staticSt_t;
+
 typedef struct {
 	int				numVertexes;
 	const float		*xyz;				// 3 floats per vertex
@@ -261,11 +268,43 @@ typedef struct {
 	// the passes of a multi-pass shader draw the same vertexes, and the
 	// backend may reuse what it copied for the previous pass
 	unsigned int	version;
+
+	// the vertexes come from the static geometry (vk_set_static_geometry)
+	// instead of xyz, colors and st: vertex i of the indexes is vertex
+	// staticVertex + i of the position and texture coordinate streams and
+	// color staticColor + i of the color stream (the constant color when
+	// staticColor is -1); staticSt selects the stream of each unit. With
+	// staticFirstIndex >= 0 the indexes are numIndexes of the static index
+	// stream from there, otherwise those given to vk_draw (reused like the
+	// positions with version)
+	qboolean		isStatic;
+	int				staticVertex;
+	int				staticColor;
+	staticSt_t		staticSt[NUM_TEXTURE_BUNDLES];
+	int				staticFirstIndex;
 } drawGeometry_t;
 
 // draw indexed primitives with the current state; the arrays are only read
 // during the call
 void		vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes );
+
+// Static geometry: what doesn't change after a map load (world surfaces,
+// static models) is uploaded once into device memory and drawn from there.
+// Positions and texture coordinates share one vertex numbering, colors have
+// their own (instances of a static model share positions, not colors).
+typedef struct {
+	int				numVertexes;
+	const float		*xyz;				// 3 floats per vertex
+	const float		*st[2];				// 2 floats per vertex: STATIC_ST_TEXTURE, STATIC_ST_LIGHTMAP
+	int				numColors;
+	const byte		*colors;			// RGBA8
+	int				numIndexes;
+	const glIndex_t	*indexes;
+} staticGeometry_t;
+
+// replace the static geometry; NULL releases it. Draws recorded before
+// keep the old one
+void		vk_set_static_geometry( const staticGeometry_t *geometry );
 
 #define CLEAR_COLOR		1
 #define CLEAR_DEPTH		2	// to 1.0

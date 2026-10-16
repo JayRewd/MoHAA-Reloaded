@@ -474,6 +474,13 @@ void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes 
 		}
 	}
 
+	// the stage iterators drawing a batch of the static geometry
+	if ( tess.staticBatch == STATIC_BATCH_ON && geometry.xyz == tess.xyz[0] && indexes == tess.indexes ) {
+		RB_StaticDraw( &geometry );
+		return;
+	}
+
+	geometry.isStatic = qfalse;
 	vk_draw( PRIM_TRIANGLES, &geometry, numIndexes, indexes );
 }
 
@@ -622,6 +629,20 @@ void RB_BeginDrawingView (void) {
 
 /*
 ==================
+RB_AddSurface
+
+Only some surface types can be drawn in a batch of the static geometry
+==================
+*/
+static ID_INLINE void RB_AddSurface( surfaceType_t *surface ) {
+	if ( tess.staticBatch == STATIC_BATCH_ON && !RB_StaticSurface( surface ) ) {
+		RB_StaticBatchToCPU();
+	}
+	rb_surfaceTable[ *surface ]( surface );
+}
+
+/*
+==================
 RB_RenderDrawSurfList
 ==================
 */
@@ -658,7 +679,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
 		if ( drawSurf->sort == (unsigned)oldSort && *drawSurf->surface != SF_SPRITE ) {
 			// fast path, same as previous sort
-			rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
+			RB_AddSurface( drawSurf->surface );
 			continue;
 		}
 		oldSort = (int)drawSurf->sort;
@@ -678,12 +699,17 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		if (shader != oldShader || dlightMap != oldDlightMap || (oldShader->flags & 1)
 			|| ( entityNum != oldEntityNum && !shader->entityMergable )
 			|| ( bStaticModel != oldbStaticModel && !shader->entityMergable )) {
-			if (oldShader != NULL) {
-				RB_EndSurface();
+			// static models drawn from the static geometry with the same
+			// shader can share a batch (tr_staticgeom.c)
+			if (shader != oldShader || dlightMap != oldDlightMap || (oldShader->flags & 1)
+				|| !bStaticModel || !oldbStaticModel || !RB_StaticMerge(entityNum)) {
+				if (oldShader != NULL) {
+					RB_EndSurface();
+				}
+				RB_BeginSurface( shader );
+				oldShader = shader;
+				oldDlightMap = dlightMap;
 			}
-			RB_BeginSurface( shader );
-			oldShader = shader;
-			oldDlightMap = dlightMap;
 		}
 
 		backEnd.currentSphere = &backEnd.spareSphere;
@@ -806,7 +832,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		}
 
 		// add the triangles for this surface
-		rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
+		RB_AddSurface( drawSurf->surface );
 	}
 
 	// draw the contents of the last shader batch

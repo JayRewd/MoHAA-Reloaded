@@ -40,6 +40,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_sky.c
     ${SOURCE_DIR}/renderervk/tr_sphere_shade.cpp
     ${SOURCE_DIR}/renderervk/tr_sprite.c
+    ${SOURCE_DIR}/renderervk/tr_staticgeom.c
     ${SOURCE_DIR}/renderervk/tr_staticmodels.cpp
     ${SOURCE_DIR}/renderervk/tr_sun_flare.cpp
     ${SOURCE_DIR}/renderervk/tr_surface.c

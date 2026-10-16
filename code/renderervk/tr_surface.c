@@ -264,11 +264,30 @@ void RB_SurfaceTriangles( srfTriangles_t *srf ) {
 	byte		*color;
 	int			dlightBits;
 	qboolean	needsNormal;
+	qboolean	added;
 
 	dlightBits = srf->dlightBits[backEnd.smpFrame];
+	if ( tess.staticBatch == STATIC_BATCH_ON && RB_StaticDlights( dlightBits ) ) {
+		// the bits go to the batch before the overflow check
+		RB_StaticBatchToCPU();
+	}
 	tess.dlightBits |= dlightBits;
+	added = tess.numVertexes || tess.numIndexes;
 
 	RB_CHECKOVERFLOW( srf->numVerts, srf->numIndexes );
+
+	if ( RB_StaticBatch() ) {
+		if ( srf->staticIndex >= 0 && RB_StaticAddSurface( (surfaceType_t *)srf, dlightBits, srf->staticOpaque ) ) {
+			RB_StaticAddRange( srf->staticIndex, srf->numIndexes );
+			tess.numVertexes += srf->numVerts;
+			return;
+		}
+		RB_StaticBatchToCPU();
+		// unless the overflow check started a new batch
+		if ( !added || tess.numVertexes || tess.numIndexes ) {
+			tess.dlightBits |= dlightBits;
+		}
+	}
 
 	for ( i = 0 ; i < srf->numIndexes ; i += 3 ) {
 		tess.indexes[ tess.numIndexes + i + 0 ] = tess.numVertexes + srf->indexes[ i + 0 ];
@@ -389,6 +408,17 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	RB_CHECKOVERFLOW( surf->numPoints, surf->numIndices );
 
 	dlightBits = surf->dlightBits[backEnd.smpFrame];
+
+	if ( RB_StaticBatch() ) {
+		if ( surf->staticIndex >= 0 && RB_StaticAddSurface( (surfaceType_t *)surf,
+				( tess.shader->surfaceFlags & ( SURF_NODLIGHT | SURF_SKY ) ) ? 0 : dlightBits, surf->staticOpaque ) ) {
+			RB_StaticAddRange( surf->staticIndex, surf->numIndices );
+			tess.numVertexes += surf->numPoints;
+			return;
+		}
+		RB_StaticBatchToCPU();
+	}
+
 	tess.dlightBits |= dlightBits;
 
 	if ((tess.shader->surfaceFlags & SURF_NODLIGHT) || (tess.shader->surfaceFlags & SURF_SKY)) {
@@ -485,63 +515,237 @@ static float	LodErrorForVolume( vec3_t local, float radius ) {
 
 /*
 =============
-RB_SurfaceGrid
+RB_GridLodTables
 
-Just copy the grid of points and triangulate
+The rows and columns of the subdivision a grid is drawn with at its
+distance
 =============
 */
-void RB_SurfaceGrid( srfGridMesh_t *cv ) {
+static void RB_GridLodTables( const srfGridMesh_t *cv, int *widthTable, int *heightTable, int *lodWidth, int *lodHeight ) {
+	float	lodError;
+	int		i;
+
+	// determine the allowable discrepance
+	lodError = LodErrorForVolume( (float *)cv->lodOrigin, cv->lodRadius );
+
+	// determine which rows and columns of the subdivision
+	// we are actually going to use
+	widthTable[0] = 0;
+	*lodWidth = 1;
+	for ( i = 1 ; i < cv->width-1 ; i++ ) {
+		if ( cv->widthLodError[i] <= lodError ) {
+			widthTable[*lodWidth] = i;
+			(*lodWidth)++;
+		}
+	}
+	widthTable[*lodWidth] = cv->width-1;
+	(*lodWidth)++;
+
+	heightTable[0] = 0;
+	*lodHeight = 1;
+	for ( i = 1 ; i < cv->height-1 ; i++ ) {
+		if ( cv->heightLodError[i] <= lodError ) {
+			heightTable[*lodHeight] = i;
+			(*lodHeight)++;
+		}
+	}
+	heightTable[*lodHeight] = cv->height-1;
+	(*lodHeight)++;
+}
+
+/*
+=============
+RB_GridRows
+
+Adds rows used to used + rows - 1 of the subdivision to tess
+=============
+*/
+static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *heightTable, int lodWidth, int used, int rows, int dlightBits ) {
 	int		i, j;
 	float	*xyz;
 	float	*texCoords;
 	float	*normal;
 	unsigned char *color;
 	drawVert_t	*dv;
+	int		numVertexes;
+	int		*vDlightBits;
+	qboolean	needsNormal;
+
+	numVertexes = tess.numVertexes;
+
+	xyz = tess.xyz[numVertexes];
+	normal = tess.normal[numVertexes];
+	texCoords = tess.texCoords[numVertexes][0];
+	color = ( unsigned char * ) &tess.vertexColors[numVertexes];
+	vDlightBits = &tess.vertexDlightBits[numVertexes];
+	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights;
+
+	if ( tess.dlightMap ) {
+		for ( i = 0 ; i < rows ; i++ ) {
+			for ( j = 0 ; j < lodWidth ; j++ ) {
+				dv = cv->verts + heightTable[ used + i ] * cv->width
+					+ widthTable[ j ];
+
+				xyz[0] = dv->xyz[0];
+				xyz[1] = dv->xyz[1];
+				xyz[2] = dv->xyz[2];
+				texCoords[0] = dv->st[0];
+				texCoords[1] = dv->st[1];
+				texCoords[2] = dv->lightmap[0] + cv->lightmapOffset[0];
+				texCoords[3] = dv->lightmap[1] + cv->lightmapOffset[1];
+				if ( needsNormal ) {
+					normal[0] = dv->normal[0];
+					normal[1] = dv->normal[1];
+					normal[2] = dv->normal[2];
+				}
+				* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
+				*vDlightBits++ = dlightBits;
+				xyz += 4;
+				normal += 4;
+				texCoords += 4;
+				color += 4;
+			}
+		}
+	} else {
+		for ( i = 0 ; i < rows ; i++ ) {
+			for ( j = 0 ; j < lodWidth ; j++ ) {
+				dv = cv->verts + heightTable[ used + i ] * cv->width
+					+ widthTable[ j ];
+
+				xyz[0] = dv->xyz[0];
+				xyz[1] = dv->xyz[1];
+				xyz[2] = dv->xyz[2];
+				texCoords[0] = dv->st[0];
+				texCoords[1] = dv->st[1];
+				texCoords[2] = dv->lightmap[0];
+				texCoords[3] = dv->lightmap[1];
+				if ( needsNormal ) {
+					normal[0] = dv->normal[0];
+					normal[1] = dv->normal[1];
+					normal[2] = dv->normal[2];
+				}
+				* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
+				*vDlightBits++ = dlightBits;
+				xyz += 4;
+				normal += 4;
+				texCoords += 4;
+				color += 4;
+			}
+		}
+	}
+
+
+	// add the indexes
+	{
+		int		numIndexes;
+		int		w, h;
+
+		h = rows - 1;
+		w = lodWidth - 1;
+		numIndexes = tess.numIndexes;
+		for (i = 0 ; i < h ; i++) {
+			for (j = 0 ; j < w ; j++) {
+				int		v1, v2, v3, v4;
+		
+				// vertex order to be reckognized as tristrips
+				v1 = numVertexes + i*lodWidth + j + 1;
+				v2 = v1 - 1;
+				v3 = v2 + lodWidth;
+				v4 = v3 + 1;
+
+				tess.indexes[numIndexes] = v2;
+				tess.indexes[numIndexes+1] = v3;
+				tess.indexes[numIndexes+2] = v1;
+				
+				tess.indexes[numIndexes+3] = v1;
+				tess.indexes[numIndexes+4] = v3;
+				tess.indexes[numIndexes+5] = v4;
+				numIndexes += 6;
+			}
+		}
+
+		tess.numIndexes = numIndexes;
+	}
+
+	tess.numVertexes += rows * lodWidth;
+}
+
+/*
+=============
+RB_StaticGridRows
+
+The same rows in a batch of the static geometry, which has every vertex of
+the grid: only the indexes, in the same order
+=============
+*/
+static void RB_StaticGridRows( srfGridMesh_t *cv, const int *widthTable, const int *heightTable, int lodWidth, int used, int rows ) {
+	glIndex_t *out = RB_StaticCopyIndexes();
+	int i, j, n;
+
+	n = 0;
+	for ( i = 0; i < rows - 1; i++ ) {
+		int row0 = cv->staticVertex + heightTable[used + i] * cv->width;
+		int row1 = cv->staticVertex + heightTable[used + i + 1] * cv->width;
+
+		for ( j = 0; j < lodWidth - 1; j++ ) {
+			out[n] = row0 + widthTable[j];
+			out[n + 1] = row1 + widthTable[j];
+			out[n + 2] = row0 + widthTable[j + 1];
+			out[n + 3] = row0 + widthTable[j + 1];
+			out[n + 4] = row1 + widthTable[j];
+			out[n + 5] = row1 + widthTable[j + 1];
+			n += 6;
+		}
+	}
+
+	RB_StaticIndexesAdded( n );
+	tess.numVertexes += rows * lodWidth;
+}
+
+/*
+=============
+RB_SurfaceGridRows
+
+Adds rows of a grid to tess the usual way (RB_StaticBatchToCPU); its dynamic
+lights don't count there (see RB_SurfaceGrid)
+=============
+*/
+void RB_SurfaceGridRows( srfGridMesh_t *cv, int used, int rows ) {
+	int		widthTable[MAX_GRID_SIZE];
+	int		heightTable[MAX_GRID_SIZE];
+	int		lodWidth, lodHeight;
+
+	RB_GridLodTables( cv, widthTable, heightTable, &lodWidth, &lodHeight );
+	RB_GridRows( cv, widthTable, heightTable, lodWidth, used, rows, cv->dlightBits[backEnd.smpFrame] );
+}
+
+/*
+=============
+RB_SurfaceGrid
+
+Just copy the grid of points and triangulate
+=============
+*/
+void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 	int		rows, irows, vrows;
 	int		used;
 	int		widthTable[MAX_GRID_SIZE];
 	int		heightTable[MAX_GRID_SIZE];
-	float	lodError;
 	int		lodWidth, lodHeight;
-	int		numVertexes;
 	int		dlightBits;
-	int		*vDlightBits;
-	qboolean	needsNormal;
 
 	dlightBits = cv->dlightBits[backEnd.smpFrame];
+	if ( tess.staticBatch == STATIC_BATCH_ON && !( tess.shader->surfaceFlags & ( SURF_NODLIGHT | SURF_SKY ) ) && RB_StaticDlights( dlightBits ) ) {
+		// the dynamic lights of the batch it starts in
+		RB_StaticBatchToCPU();
+	}
 	tess.dlightBits |= dlightBits;
 
 	if (tess.shader->surfaceFlags & (SURF_NODLIGHT | SURF_SKY)) {
 		tess.dlightBits = 0;
 	}
 
-	// determine the allowable discrepance
-	lodError = LodErrorForVolume( cv->lodOrigin, cv->lodRadius );
-
-	// determine which rows and columns of the subdivision
-	// we are actually going to use
-	widthTable[0] = 0;
-	lodWidth = 1;
-	for ( i = 1 ; i < cv->width-1 ; i++ ) {
-		if ( cv->widthLodError[i] <= lodError ) {
-			widthTable[lodWidth] = i;
-			lodWidth++;
-		}
-	}
-	widthTable[lodWidth] = cv->width-1;
-	lodWidth++;
-
-	heightTable[0] = 0;
-	lodHeight = 1;
-	for ( i = 1 ; i < cv->height-1 ; i++ ) {
-		if ( cv->heightLodError[i] <= lodError ) {
-			heightTable[lodHeight] = i;
-			lodHeight++;
-		}
-	}
-	heightTable[lodHeight] = cv->height-1;
-	lodHeight++;
-
+	RB_GridLodTables( cv, widthTable, heightTable, &lodWidth, &lodHeight );
 
 	// very large grids may have more points or indexes than can be fit
 	// in the tess structure, so we may have to issue it in multiple passes
@@ -571,103 +775,19 @@ void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 			rows = lodHeight - used;
 		}
 
-		numVertexes = tess.numVertexes;
-
-		xyz = tess.xyz[numVertexes];
-		normal = tess.normal[numVertexes];
-		texCoords = tess.texCoords[numVertexes][0];
-		color = ( unsigned char * ) &tess.vertexColors[numVertexes];
-		vDlightBits = &tess.vertexDlightBits[numVertexes];
-		needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights;
-
-		if ( tess.dlightMap ) {
-			for ( i = 0 ; i < rows ; i++ ) {
-				for ( j = 0 ; j < lodWidth ; j++ ) {
-					dv = cv->verts + heightTable[ used + i ] * cv->width
-						+ widthTable[ j ];
-
-					xyz[0] = dv->xyz[0];
-					xyz[1] = dv->xyz[1];
-					xyz[2] = dv->xyz[2];
-					texCoords[0] = dv->st[0];
-					texCoords[1] = dv->st[1];
-					texCoords[2] = dv->lightmap[0] + cv->lightmapOffset[0];
-					texCoords[3] = dv->lightmap[1] + cv->lightmapOffset[1];
-					if ( needsNormal ) {
-						normal[0] = dv->normal[0];
-						normal[1] = dv->normal[1];
-						normal[2] = dv->normal[2];
-					}
-					* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
-					*vDlightBits++ = dlightBits;
-					xyz += 4;
-					normal += 4;
-					texCoords += 4;
-					color += 4;
-				}
+		// the dynamic lights don't count here: they did where the grid
+		// started (above), not in the batches that the overflow starts
+		if ( RB_StaticBatch() ) {
+			if ( cv->staticVertex >= 0 && RB_StaticAddSurface( (surfaceType_t *)cv, 0, cv->staticOpaque ) ) {
+				tess.staticSurfRows[tess.numStaticSurfs - 1] = ( used << 16 ) | rows;
+				RB_StaticGridRows( cv, widthTable, heightTable, lodWidth, used, rows );
+				used += rows - 1;
+				continue;
 			}
-		} else {
-			for ( i = 0 ; i < rows ; i++ ) {
-				for ( j = 0 ; j < lodWidth ; j++ ) {
-					dv = cv->verts + heightTable[ used + i ] * cv->width
-						+ widthTable[ j ];
-
-					xyz[0] = dv->xyz[0];
-					xyz[1] = dv->xyz[1];
-					xyz[2] = dv->xyz[2];
-					texCoords[0] = dv->st[0];
-					texCoords[1] = dv->st[1];
-					texCoords[2] = dv->lightmap[0];
-					texCoords[3] = dv->lightmap[1];
-					if ( needsNormal ) {
-						normal[0] = dv->normal[0];
-						normal[1] = dv->normal[1];
-						normal[2] = dv->normal[2];
-					}
-					* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
-					*vDlightBits++ = dlightBits;
-					xyz += 4;
-					normal += 4;
-					texCoords += 4;
-					color += 4;
-				}
-			}
+			RB_StaticBatchToCPU();
 		}
 
-
-		// add the indexes
-		{
-			int		numIndexes;
-			int		w, h;
-
-			h = rows - 1;
-			w = lodWidth - 1;
-			numIndexes = tess.numIndexes;
-			for (i = 0 ; i < h ; i++) {
-				for (j = 0 ; j < w ; j++) {
-					int		v1, v2, v3, v4;
-			
-					// vertex order to be reckognized as tristrips
-					v1 = numVertexes + i*lodWidth + j + 1;
-					v2 = v1 - 1;
-					v3 = v2 + lodWidth;
-					v4 = v3 + 1;
-
-					tess.indexes[numIndexes] = v2;
-					tess.indexes[numIndexes+1] = v3;
-					tess.indexes[numIndexes+2] = v1;
-					
-					tess.indexes[numIndexes+3] = v1;
-					tess.indexes[numIndexes+4] = v3;
-					tess.indexes[numIndexes+5] = v4;
-					numIndexes += 6;
-				}
-			}
-
-			tess.numIndexes = numIndexes;
-		}
-
-		tess.numVertexes += rows * lodWidth;
+		RB_GridRows( cv, widthTable, heightTable, lodWidth, used, rows, dlightBits );
 
 		used += rows - 1;
 	}

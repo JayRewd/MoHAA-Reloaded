@@ -97,7 +97,18 @@ static int			vk_dirty;
 static struct {
 	VkPipeline		pipeline;
 	VkDescriptorSet	sets[NUM_TEXTURE_BUNDLES];
+	VkBuffer		vertexBuffers[4];
+	VkDeviceSize	vertexOffsets[4];
+	VkBuffer		indexBuffer;
+	VkDeviceSize	indexOffset;
 } vkb;
+
+// the static geometry (vk_set_static_geometry): one device local buffer
+// with the streams one after the other
+static struct {
+	vkBuffer_t		buffer;
+	VkDeviceSize	xyzOffset, stOffset[2], colorOffset, indexOffset;
+} vk_static;
 
 static vkPipelineKey_t	vk_lastKey;
 static VkPipeline		vk_lastPipeline;
@@ -118,6 +129,23 @@ static struct {
 	VkDeviceSize	indexOffset;
 } vk_lastGeometry;
 static uint64_t			vk_vertexEpoch = 1;
+
+// the same for the indexes of the last static draw with a version, and the
+// last constant color copied into the vertex buffer
+static struct {
+	uint64_t		epoch;
+	unsigned int	version;
+	const glIndex_t	*indexes;
+	int				numIndexes;
+	VkBuffer		buffer;
+	VkDeviceSize	offset;
+} vk_lastStaticIndexes;
+static struct {
+	uint64_t		epoch;
+	float			color[4];
+	VkBuffer		buffer;
+	VkDeviceSize	offset;
+} vk_lastConstant;
 
 /*
 ====================================================================
@@ -1764,12 +1792,12 @@ static void VK_Info_f( void ) {
 	int numBlocks;
 
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
-	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu pipelineBinds=%llu"
+	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
 		" waitUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu allocationUs=%llu textureUs=%llu"
 		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
-		VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
+		VK_DELTA( staticDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
 		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( waitUs ), VK_DELTA( submitUs ),
 		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
 		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ) );
@@ -1841,6 +1869,8 @@ void vk_shutdown( void ) {
 			VK_ProcessDestroyList( &vk.frames[i] );
 		}
 		VK_ShutdownTextureObjects();
+		VK_DestroyBuffer( &vk_static.buffer );
+		Com_Memset( &vk_static, 0, sizeof( vk_static ) );
 		VK_ShutdownPipelines();
 		VK_DestroyFrames();
 		VK_DestroyRenderTargets();
@@ -2287,7 +2317,7 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 	}
 	bits |= (uint64_t)alphaFunc << VK_PIPE_ATEST_SHIFT;
 
-	if ( geometry->colors ) {
+	if ( geometry->isStatic ? geometry->staticColor >= 0 : geometry->colors != NULL ) {
 		bits |= VK_PIPE_COLOR_ARRAY;
 	}
 
@@ -2369,6 +2399,22 @@ static void VK_CopyStream( float *dst, const float *src, int count, int numFloat
 		Com_Memcpy( dst, src, sizeof( float ) * numFloats );
 		dst += numFloats;
 		src = (const float *)( (const byte *)src + stride );
+	}
+}
+
+static void VK_BindVertexBuffers( VkCommandBuffer cmd, const VkBuffer *buffers, const VkDeviceSize *offsets ) {
+	if ( memcmp( vkb.vertexBuffers, buffers, sizeof( vkb.vertexBuffers ) ) || memcmp( vkb.vertexOffsets, offsets, sizeof( vkb.vertexOffsets ) ) ) {
+		qvkCmdBindVertexBuffers( cmd, 0, 4, buffers, offsets );
+		Com_Memcpy( vkb.vertexBuffers, buffers, sizeof( vkb.vertexBuffers ) );
+		Com_Memcpy( vkb.vertexOffsets, offsets, sizeof( vkb.vertexOffsets ) );
+	}
+}
+
+static void VK_BindIndexBuffer( VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset ) {
+	if ( vkb.indexBuffer != buffer || vkb.indexOffset != offset ) {
+		qvkCmdBindIndexBuffer( cmd, buffer, offset, VK_INDEX_TYPE_UINT32 );
+		vkb.indexBuffer = buffer;
+		vkb.indexOffset = offset;
 	}
 }
 
@@ -2469,8 +2515,90 @@ static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geomet
 		}
 	}
 
-	qvkCmdBindVertexBuffers( cmd, 0, 4, buffers, offsets );
-	qvkCmdBindIndexBuffer( cmd, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT32 );
+	VK_BindVertexBuffers( cmd, buffers, offsets );
+	VK_BindIndexBuffer( cmd, indexBuffer, indexOffset );
+}
+
+/*
+===============
+VK_ConstantColor
+
+The constant color of a draw in the vertex buffer of the frame (read with a
+stride of 0), copied once while it doesn't change
+===============
+*/
+static void VK_ConstantColor( const float *color, VkBuffer *buffer, VkDeviceSize *offset ) {
+	if ( vk_lastConstant.epoch != vk_vertexEpoch || memcmp( vk_lastConstant.color, color, sizeof( vk_lastConstant.color ) ) ) {
+		byte *data = VK_VertexAlloc( sizeof( float ) * 4, &vk_lastConstant.buffer, &vk_lastConstant.offset );
+
+		Com_Memcpy( data, color, sizeof( float ) * 4 );
+		Com_Memcpy( vk_lastConstant.color, color, sizeof( vk_lastConstant.color ) );
+		vk_lastConstant.epoch = vk_vertexEpoch;
+		vk.stats.vertexBytes += sizeof( float ) * 4;
+	}
+	*buffer = vk_lastConstant.buffer;
+	*offset = vk_lastConstant.offset;
+}
+
+/*
+===============
+VK_BindStaticGeometry
+
+Binds the streams of the static geometry for a draw and its indexes: a
+range of the static index stream, or the renderer's indexes copied into the
+vertex buffer of the frame (once for the passes of a shader, see
+drawGeometry_t::version). Returns the first index of the draw
+===============
+*/
+static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+	VkBuffer buffers[4];
+	VkDeviceSize offsets[4];
+	VkBuffer buffer = vk_static.buffer.buffer;
+	int i;
+
+	buffers[0] = buffer;
+	offsets[0] = vk_static.xyzOffset + sizeof( float ) * 3 * geometry->staticVertex;
+
+	if ( geometry->staticColor >= 0 ) {
+		buffers[1] = buffer;
+		offsets[1] = vk_static.colorOffset + 4 * geometry->staticColor;
+	} else {
+		VK_ConstantColor( geometry->color, &buffers[1], &offsets[1] );
+	}
+
+	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
+		if ( geometry->staticSt[i] == STATIC_ST_NONE ) {
+			// the pipeline reads it with a stride of 0 and ignores it
+			buffers[2 + i] = buffers[0];
+			offsets[2 + i] = offsets[0];
+		} else {
+			buffers[2 + i] = buffer;
+			offsets[2 + i] = vk_static.stOffset[geometry->staticSt[i] == STATIC_ST_LIGHTMAP]
+				+ sizeof( float ) * 2 * geometry->staticVertex;
+		}
+	}
+
+	VK_BindVertexBuffers( cmd, buffers, offsets );
+
+	if ( geometry->staticFirstIndex >= 0 ) {
+		VK_BindIndexBuffer( cmd, buffer, vk_static.indexOffset );
+		return geometry->staticFirstIndex;
+	}
+
+	if ( !geometry->version || vk_lastStaticIndexes.epoch != vk_vertexEpoch || vk_lastStaticIndexes.version != geometry->version
+		|| vk_lastStaticIndexes.indexes != indexes || vk_lastStaticIndexes.numIndexes != numIndexes ) {
+		VkDeviceSize size = sizeof( glIndex_t ) * numIndexes;
+		byte *data = VK_VertexAlloc( size, &vk_lastStaticIndexes.buffer, &vk_lastStaticIndexes.offset );
+
+		Com_Memcpy( data, indexes, size );
+		vk.stats.vertexBytes += size;
+		vk_lastStaticIndexes.epoch = vk_vertexEpoch;
+		vk_lastStaticIndexes.version = geometry->version;
+		vk_lastStaticIndexes.indexes = indexes;
+		vk_lastStaticIndexes.numIndexes = numIndexes;
+	}
+	VK_BindIndexBuffer( cmd, vk_lastStaticIndexes.buffer, vk_lastStaticIndexes.offset );
+	return 0;
 }
 
 void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
@@ -2480,7 +2608,8 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	VkPipeline pipeline;
 	int i;
 
-	if ( !vk.device || numIndexes <= 0 || geometry->numVertexes <= 0 || !geometry->xyz ) {
+	if ( !vk.device || numIndexes <= 0 || geometry->numVertexes <= 0
+		|| !( geometry->isStatic ? vk_static.buffer.buffer != VK_NULL_HANDLE : geometry->xyz != NULL ) ) {
 		return;
 	}
 
@@ -2490,7 +2619,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	// a unit is used when the geometry has texture coordinates for it
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		textures[i] = NULL;
-		if ( geometry->st[i] ) {
+		if ( geometry->isStatic ? geometry->staticSt[i] != STATIC_ST_NONE : geometry->st[i] != NULL ) {
 			textures[i] = VK_GetTexture( vks.texture[i] );
 			if ( !textures[i] ) {
 				textures[i] = VK_DefaultTexture();
@@ -2525,10 +2654,95 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	}
 
 	VK_ApplyDynamicState( cmd, ( key.bits & VK_PIPE_STIPPLE ) != 0 );
-	VK_UploadGeometry( cmd, geometry, numIndexes, indexes );
-
-	qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
+	if ( geometry->isStatic ) {
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes ), 0, 0 );
+		vk.stats.staticDraws++;
+	} else {
+		VK_UploadGeometry( cmd, geometry, numIndexes, indexes );
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
+	}
 	vk.stats.draws++;
+}
+
+/*
+===============
+vk_set_static_geometry
+
+The streams go into one device local buffer through the staging buffer and
+the upload command buffer of the frame, which is submitted before anything
+draws from them
+===============
+*/
+void vk_set_static_geometry( const staticGeometry_t *geometry ) {
+	VkDeviceSize xyzSize, stSize, colorSize, size;
+	VkBufferMemoryBarrier barrier;
+	VkBufferCopy region;
+	VkCommandBuffer cmd;
+	VkBuffer staging;
+	VkDeviceSize stagingOffset;
+	byte *data;
+	int i;
+
+	if ( !vk.device ) {
+		return;
+	}
+
+	if ( vk_static.buffer.buffer ) {
+		// draws already recorded may use it
+		VK_DeferDestroy( VK_DESTROY_BUFFER, (uint64_t)vk_static.buffer.buffer, 0 );
+		VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)vk_static.buffer.memory, 0 );
+		Com_Memset( &vk_static, 0, sizeof( vk_static ) );
+	}
+
+	if ( !geometry || geometry->numVertexes <= 0 || geometry->numIndexes <= 0 ) {
+		return;
+	}
+
+	xyzSize = PAD( sizeof( float ) * 3 * geometry->numVertexes, 16 );
+	stSize = PAD( sizeof( float ) * 2 * geometry->numVertexes, 16 );
+	colorSize = PAD( 4 * Q_max( geometry->numColors, 1 ), 16 );
+	vk_static.xyzOffset = 0;
+	vk_static.stOffset[0] = xyzSize;
+	vk_static.stOffset[1] = vk_static.stOffset[0] + stSize;
+	vk_static.colorOffset = vk_static.stOffset[1] + stSize;
+	vk_static.indexOffset = vk_static.colorOffset + colorSize;
+	size = vk_static.indexOffset + sizeof( glIndex_t ) * geometry->numIndexes;
+
+	VK_CreateBuffer( &vk_static.buffer, size,
+		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 );
+
+	data = VK_StagingAlloc( size, 16, &staging, &stagingOffset );
+	Com_Memset( data, 0, size );
+	Com_Memcpy( data + vk_static.xyzOffset, geometry->xyz, sizeof( float ) * 3 * geometry->numVertexes );
+	for ( i = 0; i < 2; i++ ) {
+		Com_Memcpy( data + vk_static.stOffset[i], geometry->st[i], sizeof( float ) * 2 * geometry->numVertexes );
+	}
+	if ( geometry->numColors > 0 ) {
+		Com_Memcpy( data + vk_static.colorOffset, geometry->colors, 4 * geometry->numColors );
+	}
+	Com_Memcpy( data + vk_static.indexOffset, geometry->indexes, sizeof( glIndex_t ) * geometry->numIndexes );
+
+	cmd = VK_GetUploadCommandBuffer();
+	region.srcOffset = stagingOffset;
+	region.dstOffset = 0;
+	region.size = size;
+	qvkCmdCopyBuffer( cmd, staging, vk_static.buffer.buffer, 1, &region );
+
+	// the upload command buffer is submitted before the main one
+	Com_Memset( &barrier, 0, sizeof( barrier ) );
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = vk_static.buffer.buffer;
+	barrier.offset = 0;
+	barrier.size = VK_WHOLE_SIZE;
+	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, NULL, 1, &barrier, 0, NULL );
+
+	ri.Printf( PRINT_DEVELOPER, "Vulkan: static geometry %d vertexes, %d colors, %d indexes, %d KB\n",
+		geometry->numVertexes, geometry->numColors, geometry->numIndexes, (int)( size / 1024 ) );
 }
 
 /*

@@ -2440,6 +2440,7 @@ void RE_LoadWorldMap( const char *name ) {
     R_InitTerrain();
     ri.UI_LoadResource("*113");
     R_InitStaticModels();
+    R_BuildStaticGeometry();
     ri.UI_LoadResource("*114");
     R_LevelMarksLoad(name);
     ri.UI_LoadResource("*115");

@@ -335,7 +335,7 @@ def run(renderer, view, extra, pauser, cold, stacks=None):
 
 
 def per_frame(vk, key, scale=1.0):
-    return vk[key] * scale / max(vk["frames"], 1)
+    return vk.get(key, 0) * scale / max(vk["frames"], 1)
 
 
 def gpu_ms(vk, key):
@@ -418,7 +418,7 @@ def main():
                           + (f"  GPU {res['gpu']:3.0f} %" if res["gpu"] is not None else "")
                           + (f"  {res['mhz']:4.0f} MHz" if res["mhz"] is not None else "")
                           + (f"  gpu frame {gpu_ms(vk, 'gpuFrameUs'):5.3f} (copy {gpu_ms(vk, 'gpuPresentUs'):5.3f})"
-                             f" {per_frame(vk, 'draws'):5.0f} draws {per_frame(vk, 'renderPasses'):4.2f} passes"
+                             f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static) {per_frame(vk, 'renderPasses'):4.2f} passes"
                              f" {per_frame(vk, 'vertexBytes', 1 / 1024):5.0f} KB" if vk and vk["gpuFrames"] else "")
                           + (f"  load: {vl['pipelines']} pipelines {vl['pipelineUs'] / 1000:.0f} ms,"
                              f" {vl['textures']} textures {vl['textureUs'] / 1000:.0f} ms,"

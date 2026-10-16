@@ -72,6 +72,17 @@ below are done.
   the wait for the display happens after the present, like GL's swap.
   `r_ext_multisample` works (2 to 16 samples), 3 % slower than GL1's with 4
   samples (9 % before alpha was written with it)
+- static geometry (2026-10-15, step 1 of a redesign of the back end): the
+  world's faces, triangle surfaces and grids and the static models are
+  uploaded once per map and drawn from device memory when their shader
+  allows it, instead of being tessellated and copied every frame;
+  consecutive static models with the same one-pass shader share a batch.
+  The frames are the same to the bit as before in every view without
+  random content; the renderer's CPU time goes down 15 to 20 % in the
+  `obj_team2` yard and the `dm/mohdm3` overview (640x480 to 3840x2160, see
+  Performance, Static geometry), with little change in the forests, whose
+  static models mostly still need the CPU (steps 2 and 3, see Plan); the
+  GPU time is unchanged
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -87,13 +98,14 @@ below are done.
 | `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file |
+| `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | GL1/Vulkan screenshot comparison and performance scripts, view lists (see Testing) |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
 | `tr_backend.c` | renderer-side state tracking (`GL_State`, `GL_Bind`, `GL_Cull`, `GL_TexEnv`, matrices, vertex arrays, current color) |
-| `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged |
+| `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged but for the performance work (see Performance) and the static geometry hooks of the surface functions and stage iterators |
 | `../sdl/sdl_vkimp.c` | SDL window, video modes and fullscreen without a GL context (`VKimp_*`) |
 | `../../cmake/renderer_vulkan.cmake` | build target `renderer_vulkan` (only `GetRefAPI` is exported: hidden symbol visibility) |
 
@@ -133,6 +145,7 @@ Cvars of the backend:
 | `r_vkValidation` (latched, default 0) | 1 enables `VK_LAYER_KHRONOS_validation` and prints its warnings and errors to the console; 2 also enables synchronization validation (slow) |
 | `r_swapInterval` (latched) | 0: immediate present mode (mailbox if unavailable), < 0: FIFO relaxed, > 0: FIFO; FIFO when the wanted mode is missing |
 | `r_ext_multisample` (latched, shared with GL1) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
+| `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 
 The console command `vkinfo` prints the backend's counters since its last
 call: frames, render passes, submissions, mid-frame flushes, draws,
@@ -555,6 +568,40 @@ synchronization validation (`r_vkValidation 2`) on `dm/mohdm1` (also with
 1`), `m6l1a`, `mohdm1_dlight` and `m2l1_skyportal`; the main menu matches
 GL1 (fan masked).
 
+The static geometry (2026-10-15, see Implementation notes) was checked
+against the build before it in the same way, on the 31 view lists at
+640x480 plus `mohdm1_dlight` with `r_fastdlights 1` and `mohdm1_texenv`
+with `r_ext_texture_env_add 1` (151 views): 119 views give the same
+frames to the bit, among them every view of `dm/mohdm1` to `dm/mohdm4`,
+`dm/mohdm6`, `m2l3`, `m3l2`, `m3l3`, `m6l2a`, `m6l3a`, `obj/obj_team1` to
+`obj/obj_team4`, the decal, dynamic light (both modes), texture env, sun
+flare, fog and debug drawing lists. The other 32 are the random content
+and run-to-run noise named above: the smoke and convoy of `m1l1`, AI in
+`m1l2a` and `m1l3a` (`m13_sky` caught the red damage flash of AI fire),
+the camera shake of `m3l1a`, the shutters of `m5l1a`, the tank of
+`m5l2a`, snow in `m6l1a` and `mohdm5_fog`, a particle in `m53_street`
+(`m5l3`, which two runs of the old build show too), and the near-camera
+noise of `m2l1_skyportal`, `m4l1_fog`, `m61_slope` and `d7_arch` (±1). Also
+the same to the bit with `r_vertexLight 1` and with `r_lightmap 1` on
+`dm/mohdm1` and `obj/obj_team2`. A bug found that way: a static model
+whose surfaces draw nothing at their level of detail still joined a merged
+batch and changed the modelview, so the next one-model batch was drawn
+with the wrong matrix (29 pixels of `d3_top`); each model's batch now sets
+its own matrix. Against GL1 (`compare.sh`, `summary.py`) every list gives
+the numbers of the milestone 6 table at 640x480 and at 4160x240 except
+where the game randomizes (`m1l1`, `m3l1a`, AI in `m1l3a` and `m3l2`, the
+shutters of `m5l1a`, snow in `m6l1a` and `m6l3a`), after running again
+the lists where GL1 saved a black frame (`m51_sky`, `d3_terrain` at
+4160x240) or the previous shot's frame (`m53_river`); `obj_team1` at
+4160x240 gives 0.15 % like the second round, `mohdm7` the `d7_window`
+crack noted above. No validation message in any of these runs
+(`r_vkValidation 1`), nor with synchronization validation
+(`r_vkValidation 2`) on `dm/mohdm1`, `mohdm1_dlight` (both modes),
+`m2l1_skyportal`, `m6l1a`, `obj/obj_team2` and a script that loads
+`dm/mohdm1`, turns `r_staticGeometry` off and on, runs `vid_restart`,
+then loads `dm/mohdm3` and `m6l1a`; the main menu matches GL1 (fan
+masked).
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -878,7 +925,9 @@ tessellation (static and skeletal models, terrain, `ComputeColors`) about
 20, the sun traces of moving entities 3, `vk_end_frame` 7.5 (RADV's
 submission ioctl and the sync objects of the X11 present and acquire), the
 front end 14. Keeping static geometry in GPU buffers would save part of
-the copies (about 0.03 ms), not worth its complexity.
+the copies (about 0.03 ms), not worth its complexity on its own (it was
+done since as the first step of a redesign, see Static geometry below:
+what it saves is mostly the tessellation, not the copies).
 
 Multisampling: the gap to GL1 was the color write mask. The pipelines
 wrote RGB only (no destination alpha), and on the multisampled
@@ -892,6 +941,60 @@ of 3: GL1 2.699 ms, before 2.934, after 2.774 ms (3 % slower than GL1
 instead of 9 %), the same frames as before with multisampling (the
 `mohdm1` views). The depth
 format without stencil changed nothing there (2.889 against 2.884 ms).
+
+Static geometry (2026-10-15, step 1 of the redesign, see Implementation
+notes): the world's faces, triangle surfaces and grids and the static
+models are drawn from device memory instead of being tessellated into
+`tess` and copied every frame. What it covers (`vkinfo` per frame at
+640x480, `m6l1a` / `obj_team2` / `dm/mohdm3` / `m3l3`): 107 / 93 / 221 / 25
+of 322 / 201 / 408 / 262 draws come from the static geometry, and the
+vertex bytes copied go from 584 / 819 / 690 / 503 KB to 529 / 256 / 252 /
+436 KB. There are as many draws as before (a merged batch still draws each
+of its static models); there are fewer batches, the stage iterator runs:
+88 static models in 3 batches in the `m6l1a` forest, 118 in 35 in the
+`dm/mohdm3` overview. In the forests most static models still take the CPU
+path (deforms, `alphaGen distFade`, see Plan, Remaining), and the terrain
+and skeletal models are not part of this step, so `m6l1a` and `m3l3`
+change little. Stack samples (640x480): `RB_SurfaceFace` went from 8.7 % to
+1.0 % of the `obj_team2` frame (4.1 to 1.0 % in `dm/mohdm3`), `vk_draw`
+below the lightmapped iterator from 6.8 to 4.0 %.
+
+Against GL1 and the build before (2026-10-15 evening, idle machine: load
+1.0 to 1.8 with the game, other processes 1.6 CPUs at most, 2.2 in one GL1
+run at 3840x2160; medians of 3 interleaved runs; frame time with the fps
+of the median, the renderer's main-thread time without the fence waits
+(GL1's includes its waits in the swap), the main pass's GPU time; ms per
+frame):
+
+| view | size | frame GL1 | frame before | frame after | renderer GL1 | before | after | GPU before / after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `m6l1a` forest | 640x480 | 1.049 (953 fps) | 1.000 | 1.000 | 0.881 | 0.648 | 0.640 | 0.447 / 0.440 |
+| | 1920x1080 | 1.374 (728) | 1.255 (797) | 1.256 (796) | 1.153 | 0.827 | 0.824 | 1.229 / 1.228 |
+| | 3840x2160 | 4.403 (227) | 4.091 (244) | 4.093 (244) | 3.994 | 1.139 | 1.118 | 4.043 / 4.044 |
+| `obj_team2` yard | 640x480 | 1.000 | 1.000 | 1.000 | 0.562 | 0.487 | 0.405 | 0.216 / 0.207 |
+| | 1920x1080 | 1.000 | 1.000 | 1.000 | 0.638 | 0.499 | 0.402 | 0.620 / 0.621 |
+| | 3840x2160 | 1.766 (566) | 1.765 (567) | 1.755 (570) | 1.605 | 0.664 | 0.535 | 1.741 / 1.732 |
+| `dm/mohdm3` overview | 640x480 | 1.000 | 1.000 | 1.000 | 0.627 | 0.546 | 0.443 | 0.270 / 0.283 |
+| | 1920x1080 | 1.000 | 1.000 | 1.000 | 0.748 | 0.652 | 0.539 | 0.726 / 0.718 |
+| | 3840x2160 | 2.469 (405) | 2.566 (390) | 2.556 (391) | 2.322 | 0.886 | 0.750 | 2.533 / 2.523 |
+| `m3l3` path | 640x480 | 1.168 (856) | 1.007 (993) | 1.012 (988) | 0.929 | 0.763 | 0.769 | 0.339 / 0.361 |
+| | 1920x1080 | 1.347 (742) | 1.132 (884) | 1.128 (887) | 1.018 | 0.863 | 0.847 | 0.930 / 0.929 |
+| | 3840x2160 | 3.020 (331) | 3.094 (323) | 3.091 (323) | 2.472 | 1.092 | 1.119 | 3.053 / 3.050 |
+
+(1.000 is the 1000 frames per second limit.) The renderer's CPU time goes
+down 17 to 20 % in the `obj_team2` yard and 15 to 19 % in the `dm/mohdm3`
+overview; in the forests the changes are within the noise (±0.03 ms). The
+GPU time doesn't change: equal at 1920x1080 and 3840x2160, where it is
+stable; at 640x480 the GPU is a fifth busy and its time varies by ±10 %
+from run to run with either build (`m3l3`: 0.315 to 0.367 ms before, 0.361
+to 0.366 after). Where the GPU limits (3840x2160, the forest at 1080p) the
+frames take the same time as before.
+
+Merged static model batches and grids, each measured against the same
+build without it (640x480, 5 interleaved runs of 5000 frames, medians):
+merging 0.643 against 0.657 ms in the `m6l1a` forest and 0.453 against
+0.463 in the `dm/mohdm3` overview; grids 0.767 against 0.782 in the `m3l3`
+path (2 % each; 3 runs of 1000 frames could not tell them from the noise).
 
 The plan items, each measured before and after with interleaved builds:
 
@@ -1318,7 +1421,47 @@ selects the sample count (see Implementation notes).
   the same array and count; the dlight pass has its own). The copy is valid
   until the frame's vertex buffer is reused from its start (new frame,
   mid-frame flush). In the measured views this saves 1 to 4 % of the
-  vertex bytes (most surfaces are one multitextured pass).
+  vertex bytes (most surfaces are one multitextured pass). Draws from the
+  static geometry (below) copy nothing but, when they need them, their
+  indexes and a constant color; vertex and index buffers are only bound
+  again when they or their offsets change.
+- **Static geometry** (`tr_staticgeom.c`, `vk_set_static_geometry`). At the
+  end of a map load, `R_BuildStaticGeometry` puts into one device-local
+  buffer (through the staging buffer and the upload command buffer, with a
+  barrier to vertex input): positions, texture and lightmap coordinates of
+  the world's faces, triangle surfaces and grids (every vertex of a grid's
+  subdivision), then of each TIKI that static models use (its surfaces in
+  the order of `R_AddStaticModelSurfaces`, from `pStaticXyz` and
+  `pStaticTexCoords` like `RB_StaticMesh`); vertex colors (the world's, the
+  same with white RGB, the static models' `staticModelData`, so vertex v of
+  a model has color `staticColor + v`); and indexes: those of the faces and
+  triangle surfaces, grouped by shader in the order a traversal of the BSP
+  tree first reaches the surfaces (what the front end adds in a frame is a
+  subsequence), then those of the TIKI surfaces. The back end decides at
+  the first surface of a batch whether it draws it from there
+  (`RB_StaticBatch`): faces, triangle surfaces, grids and static models
+  whose shader has no deform, isn't the sky, with no dynamic lightmap and no
+  debug drawing, every stage's texture coordinates from `tcGen texture` or
+  `lightmap` without `tcMod`, and colors that `ComputeColors` would make a
+  constant (evaluated on the CPU for one vertex, `RB_StaticStage`), the
+  vertex colors as they are, with alpha 255, or white with the vertex alpha
+  (`RB_StaticStageColor` follows `ComputeColors` case by case, including
+  where it leaves colors of an earlier batch, which stays on the CPU). The
+  stage iterators run as before; their arrays (`tess.xyz`,
+  `tess.svars.colors`, ...) stand for the streams and `RB_DrawElements` draws
+  those (`RB_StaticDraw`). Such a batch counts the vertexes and indexes it
+  would have put into `tess`, so it is split at the same surfaces as on the
+  CPU; a surface it can't take (one that needs a dynamic light pass, vertex
+  alphas below 255 where a stage needs 255, another surface type) turns it
+  into a CPU batch: its surfaces are added again (`RB_StaticBatchToCPU`).
+  Grids and static models with a lower level of detail compute their
+  indexes per frame (into `tess.indexes`); a batch whose surfaces are not
+  one range of the index stream copies them there too, and the backend
+  copies them once for all passes. Consecutive static models with the same
+  one-pass shader whose colors don't depend on the model share one batch
+  (`RB_StaticMerge`): one draw per model with its modelview, colors and
+  indexes, one stage setup for all, the same triangles in the same order.
+  `r_staticGeometry 0` draws everything through `tess` again.
 - **Push constants** (`vkPushConstants_t`, 120 bytes of the guaranteed 128).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -1348,7 +1491,8 @@ selects the sample count (see Implementation notes).
   create, 18 ms for the 15 pipelines up to the first view of `m6l1a`, and
   0.2 ms with the file; RADV's own disk cache brings it to 0.5 ms without
   the file.
-- **Counters** (`vkinfo`, `vkStats_t`). Every `vkAllocateMemory` goes
+- **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
+  the static geometry). Every `vkAllocateMemory` goes
   through `VK_AllocateMemory`, which counts it; GPU times come from
   timestamps at the start and end of the main command buffer and around the
   copy to the swapchain image (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`), read without
@@ -1525,7 +1669,38 @@ Done:
    backend's duplicated framebuffer, present and readback barrier code is
    shared.
 
+7. Step 1 of the redesign: static geometry (see Implementation notes,
+   Static geometry, and Performance, Static geometry). The world's faces,
+   triangle surfaces and grids and the static models are uploaded once at
+   map load and drawn from device memory when their shader allows it,
+   instead of being tessellated into `tess` and copied into the frame's
+   vertex buffer every frame; consecutive static models with the same
+   one-pass shader share one batch. Everything the GPU path doesn't
+   support falls back to the CPU path, batch by batch, with GL1's batches
+   and draw order. The frames are the same to the bit as the build before
+   it in every view without random content (see Testing).
+
 Remaining:
+
+- Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
+  forests most batches still go through the CPU because of them: in
+  `m6l1a`, `m3l3`, `dm/mohdm3` and `obj/obj_team2` a surface of the tree
+  models uses `rgbGen vertex` with `alphaGen distFade` (a per-vertex
+  distance fade) and the others deform (wind sway, autosprites); 69 to
+  144 static model batches per frame in the measured views, against 8 to
+  118 static models that the static path draws. Then `tcMod` (scroll, rotate, ...), `tcGen environment` (the
+  windows of `dm/mohdm3`) and the other `rgbGen`/`alphaGen` cases of
+  `RB_StaticStageColor` that need the CPU, and the dynamic light pass
+  (`ProjectDlightTexture`). Once the forests' static models are on the
+  GPU path, drawing a merged batch's models with one instanced or indirect
+  draw (per-model matrix and color offset in a buffer, colors read with
+  the vertex index) would take most of the remaining per-model cost of the
+  backend (`vk_draw` per model: pipeline key, push constants, binds); with
+  step 1's eligible models (8 to 118 per frame) it isn't worth a second
+  vertex shader yet.
+- Step 3: skinning of skeletal models on the GPU (`RB_SkelMesh` is 5 to 8 %
+  of the forest frames); and the LOD terrain, which is re-split every frame
+  (`RB_DrawTerrainTris`), still copies its vertexes.
 
 - At 3840x2160 the GPU-bound `dm/mohdm3` overview and `m3l3` path take
   3 to 4 % more GPU time than GL1's frames (2.53 against 2.46-2.48 ms,
@@ -1558,11 +1733,10 @@ Remaining:
   image with a shader; `vkCmdResolveImage` costs the same, and no image
   without DCC could be had to try the hardware resolve).
 - The renderer's own CPU cost per draw (`vk_draw`, about 0.3 µs, 10 % of
-  a 640x480 frame in the `m6l1a` forest) is mostly the vertex copies and
-  RADV's command recording; static geometry kept in GPU buffers would save
-  part of the copies, about 0.03 ms per frame, at the cost of a second
-  geometry path. The end of the frame (0.07 ms) is RADV's submission and
-  the sync objects of the X11 present and acquire.
+  a 640x480 frame in the `m6l1a` forest before the static geometry) is
+  RADV's command recording, the backend's bookkeeping and, for the CPU
+  path, the vertex copies. The end of the frame (0.07 ms) is RADV's
+  submission and the sync objects of the X11 present and acquire.
 - The front end used to take up to 8 % longer than GL1's in the `m6l1a`
   forest: explained, the calls through the PLT and the static model loop
   (see Performance, Second round); it now takes 0.19 against GL1's 0.32
