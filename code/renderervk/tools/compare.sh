@@ -14,6 +14,10 @@
 # reported: parts of their frame are undefined. So are all-black GL1 frames
 # (Mesa now and then hands out a back buffer that was never drawn): run the
 # list again.
+# Menu shots (`menu` lines) are compared like the others; `mask <view>
+# x,y,w,h` lines of the list leave a rectangle of the 640x480 UI screen out
+# of that view's statistics (scaled to the frame size, e.g. the ceiling fan
+# of the main menu, which turns with the wall clock).
 # A <list>.shader file next to the view list is installed as
 # main/scripts/aaa_<list>.shader for the runs (the first shader file in
 # alphabetical order overrides the others), to test shaders no game data has.
@@ -36,7 +40,7 @@ if [ -f "$SHADER" ]; then
 	mkdir -p "$MOH_HOMEPATH/main/scripts"
 	cp "$SHADER" "$INSTALLED"
 fi
-VIEWS=$(awk '$1 == "shot" { print $2 }' "$LIST")
+VIEWS=$(awk '$1 == "shot" || $1 == "menu" { print $2 }' "$LIST")
 
 for R in opengl1 vulkan; do
 	for v in $VIEWS; do rm -f "$SS/$v.tga"; done
@@ -68,7 +72,9 @@ done
 SUMMARY=$MOH_OUT/$CFG$TAG.txt
 : > "$SUMMARY"
 for v in $VIEWS; do
+	MASKS=$(awk -v v="$v" '$1 == "mask" && $2 == v { printf "--mask %s ", $3 }' "$LIST")
+	[ -n "$MASKS" ] && MASKS="$MASKS --mask-res 640x480"
 	echo "== $v$TAG" | tee -a "$SUMMARY"
 	python3 "$TOOLS/tgadiff.py" "$SS/$v${TAG}_gl.tga" "$SS/$v${TAG}_vk.tga" --diff "$MOH_OUT/$v${TAG}_diff.png" \
-		--png-a "$MOH_OUT/$v${TAG}_gl.png" --png-b "$MOH_OUT/$v${TAG}_vk.png" $DIFFARGS | tee -a "$SUMMARY"
+		--png-a "$MOH_OUT/$v${TAG}_gl.png" --png-b "$MOH_OUT/$v${TAG}_vk.png" $MASKS $DIFFARGS | tee -a "$SUMMARY"
 done

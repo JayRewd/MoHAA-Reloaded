@@ -13,7 +13,9 @@ Status (2026-10-14, branch `vulkan-renderer`): milestones 1 to 6 of the plan
 below are done.
 
 - the main menu matches GL1 pixel for pixel, except the animated ceiling fan
-  (its frame depends on the wall clock)
+  (its frame depends on the wall clock), and so do the options pages, the
+  weapon and team selection and the main menu of a game (`views/menus.txt`,
+  but for a few pixels off by 1)
 - with the deterministic setup described in [Testing](#testing), 3D views
   match GL1: world surfaces and lightmaps, static and animated models,
   alpha-tested and blended surfaces, decals, the view weapon, the sky, the
@@ -337,9 +339,15 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
 ```
 
 - `views/*.txt`: view lists (`map <name>`, or `spmap <name>` for a single
-  player game, `set <command>`, `shot <name> x y z pitch yaw roll [wait]`),
-  one per map or feature tested so far. `shot` waits 2 s of game time after
-  moving the camera, or `wait` milliseconds (to catch a fade).
+  player game, `set <command>`, `shot <name> x y z pitch yaw roll [wait]`,
+  `menu <name> [<menu> [wait]]`, `mask <name> x,y,w,h`), one per map or
+  feature tested so far. `shot` waits 2 s of game time after moving the
+  camera, or `wait` milliseconds (to catch a fade). `menu` takes a
+  screenshot of a UI menu (`pushmenu <menu>`, then `popmenu`): over the
+  main menu before the first `map`, over the paused view of the previous
+  `shot` after it. `mask` leaves a rectangle of the 640x480 UI screen out
+  of a view's statistics, scaled to the frame size (`tgadiff.py
+  --mask-res`), for what the UI animates with the wall clock.
 - `compare.sh`: writes the cfg (`shots.py`), runs it with GL1 and Vulkan
   (`run.sh`), then prints per channel the max and mean absolute difference
   and the number of differing pixels for every view (`tgadiff.py`), and
@@ -461,6 +469,23 @@ Test content:
   the same frames, but for 2 or 3 pixels of `pm7_front`.
   `views/perf_mp.txt` times them (`perf.py` takes the shots of a view
   list with `views <list> [shot ...]`).
+- Menus: `menus.txt` takes the main menu (fan masked), the options pages
+  (options, controls, video, audio, advanced, multiplayer), the weapon
+  selection, then in a game of `dm/mohdm1`, over a paused view, the weapon
+  selection with the sign of a hovered weapon (`ui_weaponsign`), the main
+  menu of a game (BACK TO GAME, QUIT; fan masked) and the team selection.
+  Menu names are the first line of each `ui/*.urc` (`listmenus` lists the
+  loaded ones). The panels and buttons of most of these menus (the
+  weapon selection's wood panel, the controls, video and options pages,
+  BACK TO GAME, QUIT, APPLY, DEFAULT, BACK) are in `Pak6EnUk.pk3`, the
+  English localization pak; an install without it draws them, with
+  either renderer, with the default image (`*default`: 16x16, grey 32
+  with a white border, stretched and filtered: dark grey panels with
+  soft white frames), and with `developer 1` the log shows `could not
+  find 'textures/mohmenu/...'`. That was a tester's report on 2026-10-16
+  (NVIDIA, Linux; GL1 the same); adding the pak fixed it. Running
+  `menus.txt` with a basepath without that pak gives the same frames with
+  both renderers.
 - Cinematics: the game data has no RoQ file. `ffmpeg -loop 1 -i still.png
   -t 2 -r 30 -c:v roqvideo -f roq <homepath>/main/video/test.roq` makes one
   (the encoder is slow, about 10 frames a second); `cinematic test.roq 1`
@@ -533,6 +558,17 @@ of each list; per channel max R/G/B and the share of differing pixels):
 | `mohdm1_debug` (`r_showtris 2`) | 252/253/253 | 0.015 % | a few nearly horizontal line segments |
 | cinematics (held last frame, 256x256 and 512x256, 640x480) | 0/0/0 | 0 % | |
 | main menu (fan masked, 640x480) | 0/0/0 | 0 % | |
+
+Menus (`menus.txt`, 2026-10-16, 12 views): the 8 views over the main
+menu give 0 differing pixels but 17 pixels off by 1 in `mn_video` at
+640x480, and at 4160x240 198 in `mn_controls` and 14 in `mn_video`, all
+off by 1. The 4 views in `dm/mohdm1` are the 3D view `m1_spawn` with the
+menus over it: at 640x480 the differences of that view (5 to 7 % of the
+pixels, nearly all ±1, 140 to 220 foliage pixels by more than 3), none
+in the menus, and the main menu of the game, which covers the view, 0; at
+4160x240 28 to 36 pixels, max 4 (0 for the main menu). The same numbers
+at 640x480 with the game data without `Pak6EnUk.pk3`. No validation message, also with
+synchronization validation (`VAL=2`).
 
 At 640x480 the same lists show the usual 1 to 10 % of pixels off by 1 and a
 few dozen to a few hundred isolated pixels off by more (alpha-tested foliage,

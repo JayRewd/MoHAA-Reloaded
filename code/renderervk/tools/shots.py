@@ -11,6 +11,10 @@ The list file has one directive per line ('#' starts a comment):
                                  command needs (e.g. to give an entity a light)
   set <console command>          console command run before the next shot
   shot <name> x y z pitch yaw roll [wait]
+  menu <name> [<menu> [wait]]    screenshot of a UI menu (see below)
+  mask <name> x,y,w,h            for compare.sh: a rectangle of the 640x480
+                                 UI screen left out of the comparison of
+                                 shot <name> (scaled to the frame size)
 
 Each shot teleports the player (noclip, god mode, no HUD, no view weapon) to
 the position, sets the view angles, waits 2 s of game time (or [wait]
@@ -23,6 +27,14 @@ camera). The pause matters too: the screenshot command reads the frame
 before it is drawn, which is the last presented frame with Vulkan but an
 older one with GL (Mesa hands out a back buffer from 2 or 3 swaps ago);
 while paused all frames are the same.
+
+A menu shot pushes the menu (`pushmenu <menu>`; none, or `-`, for the
+screen as it is), waits 1 s (or [wait] milliseconds), takes the
+screenshot <name> and pops the menu. Before the first map it is taken over
+the main menu (the first one waits 6 s for the game to start); after a
+map, over the view of the previous shot, with the game paused like a shot.
+Menus are 2D and drawn every frame the same way, but for what they animate
+with the wall clock (the ceiling fan of the main menu's room): mask it.
 
 r_showcluster 1 prints the view cluster whenever it changes and every shot
 is announced with `echo shot <name>`, so compare.sh can warn about shots
@@ -50,6 +62,7 @@ def main():
     # "Wrote ..." on the screen; a blank centerprint replaces it.
     out = ["set thereisnomonkey 1", "set fixedtime 16"]
     started = False
+    menus = 0
     for raw in open(src):
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -70,6 +83,22 @@ def main():
             out += [f"tele {' '.join(pos)}", f"face {' '.join(ang)}", f"wait {wait}",
                     "pause", "wait 300", f"echo shot {shot}", f"screenshot {shot}", "wait 100", 'centerprint " "',
                     "pause", "wait 100"]
+        elif cmd == "menu":
+            parts = rest.split()
+            shot = parts[0]
+            menu = parts[1] if len(parts) > 1 and parts[1] != "-" else None
+            wait = parts[2] if len(parts) > 2 else "1000"
+            push = [f"pushmenu {menu}"] if menu else []
+            pop = ["popmenu 0"] if menu else []
+            if started:
+                out += ["pause", "wait 300"] + push + [f"wait {wait}", f"echo shot {shot}", f"screenshot {shot}",
+                        "wait 100"] + pop + ['centerprint " "', "pause", "wait 100"]
+            else:
+                out += ([] if menus else ["wait 6000"]) + push + [f"wait {wait}", f"echo shot {shot}",
+                        f"screenshot {shot}", "wait 300"] + pop + ["wait 300"]
+            menus += 1
+        elif cmd == "mask":
+            pass
         else:
             sys.exit(f"unknown directive: {line}")
     out.append("quit")

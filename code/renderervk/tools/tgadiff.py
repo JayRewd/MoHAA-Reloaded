@@ -8,13 +8,17 @@ the number of differing pixels. Optionally writes a diff PNG and PNG copies
 of the inputs.
 
   tgadiff.py a.tga b.tga [--diff diff.png] [--scale 8] [--png-a a.png]
-             [--png-b b.png] [--mask x,y,w,h ...] [--threshold N]
+             [--png-b b.png] [--mask x,y,w,h ...] [--mask-res WxH]
+             [--threshold N]
 
 --diff     writes |a - b| per channel multiplied by --scale (default 8) and
            clamped to 255; pixels that are equal are drawn as a dark copy of
            image a so the differences can be located
 --mask     rectangles (top-left origin, in pixels) left out of the
            statistics, e.g. a HUD element; may be repeated
+--mask-res the masks are given for a WxH frame and scaled to the size of
+           the images (rounded outwards), e.g. 640x480 for UI elements,
+           which the UI stretches to the screen
 --threshold pixels whose largest channel difference is <= N are counted as
            equal in the "differing pixels" figure (default 0)
 
@@ -140,6 +144,13 @@ def parse_rect(text):
     return parts
 
 
+def parse_res(text):
+    parts = [int(v) for v in text.lower().split("x")]
+    if len(parts) != 2 or min(parts) <= 0:
+        raise argparse.ArgumentTypeError("resolution is WxH")
+    return parts
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("a")
@@ -149,6 +160,7 @@ def main():
     ap.add_argument("--png-a")
     ap.add_argument("--png-b")
     ap.add_argument("--mask", type=parse_rect, action="append", default=[])
+    ap.add_argument("--mask-res", type=parse_res)
     ap.add_argument("--threshold", type=int, default=0)
     args = ap.parse_args()
 
@@ -162,6 +174,12 @@ def main():
         print(f"error: sizes differ: {wa}x{ha} vs {wb}x{hb}", file=sys.stderr)
         return 2
     w, h = wa, ha
+
+    if args.mask_res:
+        rw, rh = args.mask_res
+        # integer arithmetic: floor of the start, ceiling of the end
+        args.mask = [(x * w // rw, y * h // rh, -(-(x + mw) * w // rw) - x * w // rw, -(-(y + mh) * h // rh) - y * h // rh)
+                     for x, y, mw, mh in args.mask]
 
     masked = bytearray(w * h)
     for x, y, mw, mh in args.mask:
