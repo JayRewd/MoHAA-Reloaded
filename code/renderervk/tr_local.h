@@ -171,6 +171,14 @@ typedef struct {
 	float		lodpercentage[2];
 	qboolean	sphereCalculated;
 	int			lightingSphere;
+	int			numMorphs;		// morph weights R_AddSkelSurfaces put in skeletorMorphCache
+
+	// what tr_skin.c put in the frame data for it (RB_SkinEntity): words of
+	// its bones, morph weights and lights, for frame skinSerial and the
+	// e.bonestart of its last view
+	unsigned int	skinSerial;
+	int			skinBonestart;
+	uint32_t	skinBones, skinMorphs, skinLights;
 
 	//
 	// old lighting variables
@@ -1964,6 +1972,17 @@ typedef struct {
 	int			copiedIndex;	// or from there in tess.indexes, -1 for none
 } staticInstance_t;
 
+// a surface of a skinned batch (tr_skin.c)
+typedef struct {
+	int			vertex;			// first vertex record in the skin data
+	int			numVertexes;
+	int			firstIndex;		// word of the skin data, or -1 - its first index in tess.indexes
+	int			numIndexes;
+	uint32_t	remap;			// vkSkinDraw_t::remap
+} skinBatchSurf_t;
+
+#define MAX_SKIN_SURFS	256
+
 typedef struct shaderCommands_s 
 {
 	glIndex_t	indexes[SHADER_MAX_INDEXES] Q_ALIGN(16);
@@ -2019,6 +2038,16 @@ typedef struct shaderCommands_s
 	int			staticStageColor;	// staticColor_t
 	color4ub_t	staticStageConstant;
 	int			staticStageSt[NUM_TEXTURE_BUNDLES];	// staticSt_t
+
+	// a batch of skeletal model surfaces skinned on the GPU (tr_skin.c,
+	// STATIC_BATCH_SKINNED; it doesn't fill the vertex arrays either): its
+	// surfaces, their draw records, the light list or the color
+	int			numSkinSurfs;
+	skinBatchSurf_t	skinSurfs[MAX_SKIN_SURFS];
+	vkSkinDraw_t	*skinRecords;
+	int			skinFirstRecord;
+	uint32_t	skinLights;
+	uint32_t	skinColor;
 } shaderCommands_t;
 
 extern	shaderCommands_t	tess;
@@ -2030,7 +2059,8 @@ void RB_EndSurface(void);
 typedef enum {
 	STATIC_BATCH_UNDECIDED,		// no surface added yet
 	STATIC_BATCH_OFF,			// the vertex arrays of tess are filled
-	STATIC_BATCH_ON				// drawn from the static geometry
+	STATIC_BATCH_ON,			// drawn from the static geometry
+	STATIC_BATCH_SKINNED		// skeletal models skinned on the GPU (tr_skin.c)
 } staticBatch_t;
 
 // what ComputeColors gives a stage of a static batch (tr_shade.c)
@@ -2062,6 +2092,13 @@ staticColor_t RB_StaticStageColor( const shaderStage_t *pStage );
 staticSt_t RB_StaticStageSt( const textureBundle_t *bundle );
 void RB_StaticStage( shaderStage_t *pStage );
 void RB_CheckOverflow( int verts, int indexes );
+
+// tr_skin.c
+extern cvar_t *r_gpuSkinning;
+
+void R_ClearSkinData( void );
+qboolean RB_SkinSurface( skelSurfaceGame_t *sf, int mesh, int render_count );
+void RB_SkinDraw( drawGeometry_t *geometry );
 #define RB_CHECKOVERFLOW(v,i) if (tess.numVertexes + (v) >= SHADER_MAX_VERTEXES || tess.numIndexes + (i) >= SHADER_MAX_INDEXES ) {RB_CheckOverflow(v,i);}
 
 void RB_StageIteratorGeneric( void );

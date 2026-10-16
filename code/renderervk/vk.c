@@ -116,6 +116,14 @@ static struct {
 	VkDeviceSize	xyzOffset, stOffset[2], colorOffset, indexOffset;
 } vk_static;
 
+// the skin data of the skinned draws (vk_add_skin_data): one device local
+// buffer of VK_SKIN_DATA_WORDS words, filled from the start
+static struct {
+	vkBuffer_t		buffer;
+	int				words;
+	qboolean		full;		// warned
+} vk_skin;
+
 static vkPipelineKey_t	vk_lastKey;
 static VkPipeline		vk_lastPipeline;
 
@@ -512,6 +520,7 @@ void VK_BeginFrameIfNeeded( void ) {
 	frame->vertexOffset = 0;
 	frame->stagingOffset = 0;
 	frame->numDlights = 0;
+	frame->skinWords = 0;
 	frame->serial = ++vk.frameSerial;
 	vk_vertexEpoch++;
 	vk.frameStartUs = VK_Microseconds();
@@ -1041,7 +1050,15 @@ static void VK_CreateFrames( void ) {
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
 		VK_CreateBuffer( &frame->dlightBuffer, VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
+		VK_CreateBuffer( &frame->skinBuffer, VK_SKIN_FRAME_WORDS * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 	}
+
+	VK_CreateBuffer( &vk_skin.buffer, VK_SKIN_DATA_WORDS * 4,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 );
+	vk_skin.words = 0;
+	vk_skin.full = qfalse;
 
 	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
 		VK_CHECK( qvkCreateSemaphore( vk.device, &semaphoreInfo, NULL, &vk.presentSemaphores[i] ) );
@@ -1061,15 +1078,16 @@ static void VK_CreateFrames( void ) {
 ===============
 VK_CreateDlightSets
 
-The descriptor sets of the frames' dlight buffers (set 2 of the shaders),
-from vk.dlightPool (VK_InitPipelines), which frees them
+The descriptor sets of the frames' dlight buffers, skin data and frame data
+of the skinned draws (set 2 of the shaders), from vk.dlightPool
+(VK_InitPipelines), which frees them
 ===============
 */
 static void VK_CreateDlightSets( void ) {
 	VkDescriptorSetAllocateInfo allocInfo;
-	VkDescriptorBufferInfo bufferInfo;
-	VkWriteDescriptorSet write;
-	int i;
+	VkDescriptorBufferInfo bufferInfo[3];
+	VkWriteDescriptorSet writes[3];
+	int i, j;
 
 	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
 		vkFrame_t *frame = &vk.frames[i];
@@ -1081,17 +1099,22 @@ static void VK_CreateDlightSets( void ) {
 		allocInfo.pSetLayouts = &vk.dlightSetLayout;
 		VK_CHECK( qvkAllocateDescriptorSets( vk.device, &allocInfo, &frame->dlightSet ) );
 
-		bufferInfo.buffer = frame->dlightBuffer.buffer;
-		bufferInfo.offset = 0;
-		bufferInfo.range = VK_WHOLE_SIZE;
-		Com_Memset( &write, 0, sizeof( write ) );
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = frame->dlightSet;
-		write.dstBinding = 0;
-		write.descriptorCount = 1;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		write.pBufferInfo = &bufferInfo;
-		qvkUpdateDescriptorSets( vk.device, 1, &write, 0, NULL );
+		bufferInfo[0].buffer = frame->dlightBuffer.buffer;
+		bufferInfo[1].buffer = vk_skin.buffer.buffer;
+		bufferInfo[2].buffer = frame->skinBuffer.buffer;
+		// one write per binding: their stages differ
+		Com_Memset( writes, 0, sizeof( writes ) );
+		for ( j = 0; j < 3; j++ ) {
+			bufferInfo[j].offset = 0;
+			bufferInfo[j].range = VK_WHOLE_SIZE;
+			writes[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[j].dstSet = frame->dlightSet;
+			writes[j].dstBinding = j;
+			writes[j].descriptorCount = 1;
+			writes[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[j].pBufferInfo = &bufferInfo[j];
+		}
+		qvkUpdateDescriptorSets( vk.device, 3, writes, 0, NULL );
 	}
 }
 
@@ -1109,6 +1132,7 @@ static void VK_DestroyFrames( void ) {
 		VK_DestroyBuffer( &frame->stagingBuffer );
 		VK_DestroyBuffer( &frame->depthReadBuffer );
 		VK_DestroyBuffer( &frame->dlightBuffer );
+		VK_DestroyBuffer( &frame->skinBuffer );
 		if ( frame->queryPool ) {
 			qvkDestroyQueryPool( vk.device, frame->queryPool, NULL );
 		}
@@ -1840,20 +1864,21 @@ static void VK_Info_f( void ) {
 	int numBlocks;
 
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
-	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu pipelineBinds=%llu"
+	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu skinDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
 		" waitUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu allocationUs=%llu textureUs=%llu"
 		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
-		VK_DELTA( staticDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
+		VK_DELTA( staticDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
 		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( waitUs ), VK_DELTA( submitUs ),
 		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
 		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ) );
 #undef VK_DELTA
 	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
-	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines, depth image %sreadable\n",
+	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines, depth image %sreadable,"
+		" skin data %.1f MB of %d\n",
 		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), VK_NumPipelines(),
-		vk.depthReadable ? "" : "not " );
+		vk.depthReadable ? "" : "not ", vk_skin.words / ( 256.0 * 1024.0 ), VK_SKIN_DATA_WORDS / ( 256 * 1024 ) );
 
 	vk.statsReported = vk.stats;
 }
@@ -1921,6 +1946,8 @@ void vk_shutdown( void ) {
 		VK_ShutdownTextureObjects();
 		VK_DestroyBuffer( &vk_static.buffer );
 		Com_Memset( &vk_static, 0, sizeof( vk_static ) );
+		VK_DestroyBuffer( &vk_skin.buffer );
+		Com_Memset( &vk_skin, 0, sizeof( vk_skin ) );
 		VK_ShutdownPipelines();
 		VK_DestroyFrames();
 		VK_DestroyRenderTargets();
@@ -2423,7 +2450,9 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 	}
 	bits |= (uint64_t)alphaFunc << VK_PIPE_ATEST_SHIFT;
 
-	if ( geometry->isStatic ? geometry->staticColor >= 0 : geometry->colors != NULL ) {
+	if ( geometry->isSkinned ) {
+		bits |= VK_PIPE_SKINNED;
+	} else if ( geometry->isStatic ? geometry->staticColor >= 0 : geometry->colors != NULL ) {
 		bits |= VK_PIPE_COLOR_ARRAY;
 	}
 
@@ -2721,8 +2750,8 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	VkPipeline pipeline;
 	int i;
 
-	if ( !vk.device || numIndexes <= 0 || geometry->numVertexes <= 0
-		|| !( geometry->isStatic ? vk_static.buffer.buffer != VK_NULL_HANDLE : geometry->xyz != NULL ) ) {
+	if ( !vk.device || numIndexes <= 0 || geometry->numVertexes <= 0 || ( geometry->isSkinned ? !vk_skin.buffer.buffer
+		: !( geometry->isStatic ? vk_static.buffer.buffer != VK_NULL_HANDLE : geometry->xyz != NULL ) ) ) {
 		return;
 	}
 
@@ -2730,9 +2759,10 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	cmd = vk.frame->mainCmd;
 
 	// a unit is used when the geometry has texture coordinates for it
+	// (skinned draws: unit 0 only)
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		textures[i] = NULL;
-		if ( geometry->isStatic ? geometry->staticSt[i] != STATIC_ST_NONE : geometry->st[i] != NULL ) {
+		if ( geometry->isStatic ? geometry->staticSt[i] != STATIC_ST_NONE : geometry->st[i] != NULL && ( !i || !geometry->isSkinned ) ) {
 			textures[i] = VK_GetTexture( vks.texture[i] );
 			if ( !textures[i] ) {
 				textures[i] = VK_DefaultTexture();
@@ -2774,7 +2804,25 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	}
 
 	VK_ApplyDynamicState( cmd, ( key.bits & VK_PIPE_STIPPLE ) != 0 );
-	if ( geometry->isStatic ) {
+	if ( geometry->isSkinned ) {
+		uint32_t firstIndex;
+
+		if ( geometry->skinFirstIndex >= 0 ) {
+			VK_BindIndexBuffer( cmd, vk_skin.buffer.buffer, 0 );
+			firstIndex = geometry->skinFirstIndex;
+		} else {
+			VkBuffer buffer;
+			VkDeviceSize offset;
+			byte *data = VK_VertexAlloc( sizeof( glIndex_t ) * numIndexes, &buffer, &offset );
+
+			Com_Memcpy( data, indexes, sizeof( glIndex_t ) * numIndexes );
+			vk.stats.vertexBytes += sizeof( glIndex_t ) * numIndexes;
+			VK_BindIndexBuffer( cmd, buffer, offset );
+			firstIndex = 0;
+		}
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, firstIndex, geometry->skinVertex, geometry->skinDraw );
+		vk.stats.skinDraws++;
+	} else if ( geometry->isStatic ) {
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes ), 0, 0 );
 		vk.stats.staticDraws++;
 	} else {
@@ -2863,6 +2911,106 @@ void vk_set_static_geometry( const staticGeometry_t *geometry ) {
 
 	ri.Printf( PRINT_DEVELOPER, "Vulkan: static geometry %d vertexes, %d colors, %d indexes, %d KB\n",
 		geometry->numVertexes, geometry->numColors, geometry->numIndexes, (int)( size / 1024 ) );
+}
+
+/*
+===============
+vk_skin_available
+===============
+*/
+qboolean vk_skin_available( void ) {
+	return vk.device && vk_skin.buffer.buffer && vk.skinVertexShader;
+}
+
+/*
+===============
+vk_add_skin_data
+
+Through the staging buffer and the upload command buffer of the frame,
+which is submitted before the main one; nothing recorded before uses the
+words written
+===============
+*/
+int vk_add_skin_data( const uint32_t *words, int numWords ) {
+	VkBufferMemoryBarrier barrier;
+	VkBufferCopy region;
+	VkCommandBuffer cmd;
+	VkBuffer staging;
+	VkDeviceSize stagingOffset;
+	void *data;
+	int first;
+
+	if ( !vk_skin_available() || numWords <= 0 ) {
+		return -1;
+	}
+	first = PAD( vk_skin.words, 8 );
+	if ( first + numWords > VK_SKIN_DATA_WORDS || (VkDeviceSize)numWords * 4 > VK_STAGING_BUFFER_SIZE ) {
+		if ( !vk_skin.full ) {
+			ri.Printf( PRINT_ALL, "Vulkan: skin data full (%d MB), more skeletal models are skinned on the CPU\n",
+				VK_SKIN_DATA_WORDS / ( 256 * 1024 ) );
+			vk_skin.full = qtrue;
+		}
+		return -1;
+	}
+	VK_BeginFrameIfNeeded();
+
+	data = VK_StagingAlloc( (VkDeviceSize)numWords * 4, 16, &staging, &stagingOffset );
+	Com_Memcpy( data, words, (size_t)numWords * 4 );
+
+	cmd = VK_GetUploadCommandBuffer();
+	region.srcOffset = stagingOffset;
+	region.dstOffset = (VkDeviceSize)first * 4;
+	region.size = (VkDeviceSize)numWords * 4;
+	qvkCmdCopyBuffer( cmd, staging, vk_skin.buffer.buffer, 1, &region );
+
+	Com_Memset( &barrier, 0, sizeof( barrier ) );
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = vk_skin.buffer.buffer;
+	barrier.offset = region.dstOffset;
+	barrier.size = region.size;
+	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		0, 0, NULL, 1, &barrier, 0, NULL );
+
+	vk_skin.words = first + numWords;
+	return first;
+}
+
+void vk_clear_skin_data( void ) {
+	if ( !vk_skin.words ) {
+		return;
+	}
+	// frames in flight may still read it
+	vk_finish();
+	vk_skin.words = 0;
+	vk_skin.full = qfalse;
+}
+
+int vk_alloc_skin_frame( int numWords, uint32_t **data ) {
+	int first;
+
+	if ( !vk_skin_available() ) {
+		return -1;
+	}
+	VK_BeginFrameIfNeeded();
+	first = PAD( vk.frame->skinWords, 8 );
+	if ( first + numWords > VK_SKIN_FRAME_WORDS ) {
+		return -1;
+	}
+	vk.frame->skinWords = first + numWords;
+	*data = (uint32_t *)vk.frame->skinBuffer.mapped + first;
+	return first;
+}
+
+unsigned int vk_frame_serial( void ) {
+	if ( !vk.device ) {
+		return 0;
+	}
+	VK_BeginFrameIfNeeded();
+	return (unsigned int)vk.frameSerial;
 }
 
 /*

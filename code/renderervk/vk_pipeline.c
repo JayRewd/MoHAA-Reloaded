@@ -169,7 +169,11 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	Com_Memset( stages, 0, sizeof( stages ) );
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.vertexShaderClip ) ? vk.vertexShaderClip : vk.vertexShader;
+	if ( bits & VK_PIPE_SKINNED ) {
+		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.skinVertexShaderClip ) ? vk.skinVertexShaderClip : vk.skinVertexShader;
+	} else {
+		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.vertexShaderClip ) ? vk.vertexShaderClip : vk.vertexShader;
+	}
 	stages[0].pName = "main";
 	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -202,10 +206,13 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 
 	Com_Memset( &vertexInput, 0, sizeof( vertexInput ) );
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInput.vertexBindingDescriptionCount = ARRAY_LEN( bindings );
-	vertexInput.pVertexBindingDescriptions = bindings;
-	vertexInput.vertexAttributeDescriptionCount = ARRAY_LEN( attributes );
-	vertexInput.pVertexAttributeDescriptions = attributes;
+	if ( !( bits & VK_PIPE_SKINNED ) ) {
+		// skinned draws read their vertexes from storage buffers
+		vertexInput.vertexBindingDescriptionCount = ARRAY_LEN( bindings );
+		vertexInput.pVertexBindingDescriptions = bindings;
+		vertexInput.vertexAttributeDescriptionCount = ARRAY_LEN( attributes );
+		vertexInput.pVertexAttributeDescriptions = attributes;
+	}
 
 	Com_Memset( &inputAssembly, 0, sizeof( inputAssembly ) );
 	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -493,7 +500,7 @@ static void VK_WritePipelineCache( void ) {
 }
 
 void VK_InitPipelines( void ) {
-	VkDescriptorSetLayoutBinding binding;
+	VkDescriptorSetLayoutBinding binding, bindings[3];
 	VkDescriptorSetLayoutCreateInfo setLayoutInfo;
 	VkDescriptorSetLayout setLayouts[3];
 	VkDescriptorPoolCreateInfo poolInfo;
@@ -503,6 +510,7 @@ void VK_InitPipelines( void ) {
 	VkPipelineCacheCreateInfo cacheInfo;
 	void *cacheData;
 	size_t cacheSize;
+	int i;
 
 	// one combined image sampler per texture unit, sets 0 and 1
 	Com_Memset( &binding, 0, sizeof( binding ) );
@@ -517,13 +525,21 @@ void VK_InitPipelines( void ) {
 	setLayoutInfo.pBindings = &binding;
 	VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.textureSetLayout ) );
 
-	// set 2: the dynamic lights of the frame (vk_add_dlights), one set per
-	// frame slot
-	binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	// set 2, one per frame slot: the dynamic lights of the frame
+	// (vk_add_dlights), the skin data and the frame's skin data
+	// (vk_add_skin_data, vk_alloc_skin_frame)
+	for ( i = 0; i < 3; i++ ) {
+		bindings[i] = binding;
+		bindings[i].binding = i;
+		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		bindings[i].stageFlags = i ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+	}
+	setLayoutInfo.bindingCount = ARRAY_LEN( bindings );
+	setLayoutInfo.pBindings = bindings;
 	VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.dlightSetLayout ) );
 
 	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize.descriptorCount = VK_MAX_FRAMES;
+	poolSize.descriptorCount = VK_MAX_FRAMES * ARRAY_LEN( bindings );
 	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.maxSets = VK_MAX_FRAMES;
@@ -554,6 +570,10 @@ void VK_InitPipelines( void ) {
 		vk.vertexShaderClip = VK_CreateShaderModule( vk_spirv_generic_clip_vert, vk_spirv_generic_clip_vert_size );
 	}
 	vk.fragmentShader = VK_CreateShaderModule( vk_spirv_generic_frag, vk_spirv_generic_frag_size );
+	vk.skinVertexShader = VK_CreateShaderModule( vk_spirv_skinned_vert, vk_spirv_skinned_vert_size );
+	if ( vk.enabledFeatures.shaderClipDistance ) {
+		vk.skinVertexShaderClip = VK_CreateShaderModule( vk_spirv_skinned_clip_vert, vk_spirv_skinned_clip_vert_size );
+	}
 
 	cacheData = VK_ReadPipelineCache( &cacheSize );
 	Com_Memset( &cacheInfo, 0, sizeof( cacheInfo ) );
@@ -605,6 +625,12 @@ void VK_ShutdownPipelines( void ) {
 	if ( vk.fragmentShader ) {
 		qvkDestroyShaderModule( vk.device, vk.fragmentShader, NULL );
 	}
+	if ( vk.skinVertexShader ) {
+		qvkDestroyShaderModule( vk.device, vk.skinVertexShader, NULL );
+	}
+	if ( vk.skinVertexShaderClip ) {
+		qvkDestroyShaderModule( vk.device, vk.skinVertexShaderClip, NULL );
+	}
 	if ( vk.pipelineLayout ) {
 		qvkDestroyPipelineLayout( vk.device, vk.pipelineLayout, NULL );
 	}
@@ -619,6 +645,7 @@ void VK_ShutdownPipelines( void ) {
 	}
 	vk.pipelineCache = VK_NULL_HANDLE;
 	vk.vertexShader = vk.vertexShaderClip = vk.fragmentShader = VK_NULL_HANDLE;
+	vk.skinVertexShader = vk.skinVertexShaderClip = VK_NULL_HANDLE;
 	vk.pipelineLayout = VK_NULL_HANDLE;
 	vk.textureSetLayout = VK_NULL_HANDLE;
 	vk.dlightSetLayout = VK_NULL_HANDLE;

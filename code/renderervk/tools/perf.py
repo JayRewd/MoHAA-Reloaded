@@ -28,7 +28,11 @@ options:
                     run to PREFIX_<view>_<size>_<renderer>_<run>.txt, with
                     the measured window; tools/stacks.py sums them up
 
-A list file has one view per line: `name map x y z pitch yaw roll [sp]`.
+A list file has one view per line: `name map x y z pitch yaw roll [sp]`,
+or `views <view list> [shot ...]`: the shots of a view list (the path is
+relative to the list file; all its shots when none is named), each with
+the list's map and the `set` commands before it in the list (spawned
+models, lights), run after loading and before the camera moves.
 
 Each measurement loads the map in a new game (devmap, or spdevmap) with
 `fixedtime 16`, puts the camera at the position like a view list `shot`,
@@ -93,7 +97,8 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(TOOLS, "..", "..", ".."))
 BASEPATH = os.environ.get("MOH_BASEPATH", os.path.expanduser("~/Documents/moh"))
 HOMEPATH = os.environ.get("MOH_HOMEPATH", "/tmp/moh-vktest")
-BINDIR = os.environ.get("MOH_BINDIR", os.path.join(REPO, "build-vk", "RelWithDebInfo"))
+# absolute: the game runs in it, and LD_PRELOAD (--stacks) must find libstacks.so from there
+BINDIR = os.path.abspath(os.environ.get("MOH_BINDIR", os.path.join(REPO, "build-vk", "RelWithDebInfo")))
 CPUS = os.cpu_count() or 1
 HZ = os.sysconf("SC_CLK_TCK")
 BUSY = 2.0  # CPUs used by other processes above which a measurement is flagged
@@ -102,10 +107,33 @@ GPU_BUSY = sorted(glob.glob("/sys/class/drm/card*/device/gpu_busy_percent"))
 
 
 class View:
-    def __init__(self, name, map, x, y, z, pitch, yaw, roll, sp=False):
+    def __init__(self, name, map, x, y, z, pitch, yaw, roll, sp=False, setup=()):
         self.name, self.map, self.sp = name, map, sp
         self.pos = (x, y, z)
         self.angles = (pitch, yaw, roll)
+        self.setup = list(setup)  # console commands run before the camera moves
+
+
+def list_views(path, shots):
+    """the shots of a view list (shots.py's format) as views: each gets the
+    list's map and the `set` commands that come before it in the list"""
+    views, map_, sp, setup = [], None, False, []
+    with open(path) as f:
+        for line in f:
+            w = line.split("#", 1)[0].strip()
+            cmd, _, rest = w.partition(" ")
+            if cmd in ("map", "spmap"):
+                map_, sp, setup = rest, cmd == "spmap", []
+            elif cmd == "set":
+                setup.append(rest)
+            elif cmd == "shot":
+                p = rest.split()
+                if not shots or p[0] in shots:
+                    views.append(View(p[0], map_, *p[1:7], sp=sp, setup=setup))
+    missing = set(shots) - {v.name for v in views}
+    if missing:
+        sys.exit(f"{path}: no shot {' '.join(sorted(missing))}")
+    return views
 
 
 def cfg_name(view):
@@ -115,7 +143,7 @@ def cfg_name(view):
 def write_cfg(view, frames, commands=()):
     cfg = ["set thereisnomonkey 1", "set fixedtime 16",
            f"{'spdevmap' if view.sp else 'devmap'} {view.map}", "wait 3000", "finishloadingscreen", "wait 1000",
-           "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0",
+           "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0", *view.setup,
            "tele %s %s %s" % view.pos, "face %s %s %s" % view.angles, *commands,
            "vkinfo", "echo perf_ready", "wait 2000",
            "com_speeds 1", "vkinfo", "echo perf_start", "set rt_record 1", f"wait {16 * frames}", "set rt_record 0",
@@ -381,7 +409,9 @@ def main():
         with open(args.list) as f:
             for line in f:
                 w = line.split("#", 1)[0].split()
-                if w:
+                if w and w[0] == "views":
+                    views += list_views(os.path.join(os.path.dirname(args.list), w[1]), w[2:])
+                elif w:
                     views.append(View(*w[:8], sp=len(w) > 8 and w[8] == "sp"))
     if args.view:
         if len(args.view) != 7:
@@ -421,7 +451,7 @@ def main():
                           + (f"  GPU {res['gpu']:3.0f} %" if res["gpu"] is not None else "")
                           + (f"  {res['mhz']:4.0f} MHz" if res["mhz"] is not None else "")
                           + (f"  gpu frame {gpu_ms(vk, 'gpuFrameUs'):5.3f} (copy {gpu_ms(vk, 'gpuPresentUs'):5.3f})"
-                             f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static) {per_frame(vk, 'renderPasses'):4.2f} passes"
+                             f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static, {per_frame(vk, 'skinDraws'):4.0f} skinned) {per_frame(vk, 'renderPasses'):4.2f} passes"
                              f" {per_frame(vk, 'vertexBytes', 1 / 1024):5.0f} KB" if vk and vk["gpuFrames"] else "")
                           + (f"  load: {vl['pipelines']} pipelines {vl['pipelineUs'] / 1000:.0f} ms,"
                              f" {vl['textures']} textures {vl['textureUs'] / 1000:.0f} ms,"

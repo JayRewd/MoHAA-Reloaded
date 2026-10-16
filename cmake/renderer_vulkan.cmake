@@ -36,6 +36,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_shade.c
     ${SOURCE_DIR}/renderervk/tr_shader.c
     ${SOURCE_DIR}/renderervk/tr_shadows.c
+    ${SOURCE_DIR}/renderervk/tr_skin.c
     ${SOURCE_DIR}/renderervk/tr_sky_portal.cpp
     ${SOURCE_DIR}/renderervk/tr_sky.c
     ${SOURCE_DIR}/renderervk/tr_sphere_shade.cpp

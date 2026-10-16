@@ -608,13 +608,21 @@ static sunTrace_t s_sunTraces[SUN_TRACES];
 
 static const sunTrace_t *RB_Sphere_TraceSun(const vec3_t origin)
 {
-    unsigned int bits[3];
+    unsigned int bits[3], h;
     sunTrace_t  *st;
     trace_t      trace;
     vec3_t       end;
 
+    // origins on whole units (map entities, network snapped positions)
+    // have many low mantissa bits clear, which products with odd constants
+    // keep clear: the high bits are mixed in (without that, all of them
+    // went to the same entry)
     Com_Memcpy(bits, origin, sizeof(bits));
-    st = &s_sunTraces[(bits[0] * 73856093u ^ bits[1] * 19349663u ^ bits[2] * 83492791u) & (SUN_TRACES - 1)];
+    h = bits[0] * 73856093u ^ bits[1] * 19349663u ^ bits[2] * 83492791u;
+    h ^= h >> 15;
+    h *= 2246822519u;
+    h ^= h >> 13;
+    st = &s_sunTraces[h & (SUN_TRACES - 1)];
     if (st->valid && !memcmp(st->origin, origin, sizeof(vec3_t))
         && !memcmp(st->direction, s_sun.direction, sizeof(vec3_t))) {
         return st;

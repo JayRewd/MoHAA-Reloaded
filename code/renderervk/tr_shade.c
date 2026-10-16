@@ -1595,7 +1595,11 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 
 	shader = input->shader;
 
-	if (backEnd.currentSphere->TessFunction && r_drawspherelights->integer)
+	if (tess.staticBatch == STATIC_BATCH_SKINNED)
+	{
+		// the vertex shader lights it (RB_SkinBatchAllowed)
+	}
+	else if (backEnd.currentSphere->TessFunction && r_drawspherelights->integer)
 	{
 		//
 		// compute colors using the sphere function

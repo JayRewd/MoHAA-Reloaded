@@ -274,8 +274,10 @@ typedef struct {
 	vkBuffer_t		stagingBuffer;	// texture upload data of this frame
 	VkDeviceSize	stagingOffset;
 	vkBuffer_t		dlightBuffer;	// lights of vk_add_dlights (vkDlightGPU_t), set 2 of the shaders
-	VkDescriptorSet	dlightSet;
+	VkDescriptorSet	dlightSet;		// set 2: the dlight buffer, the skin data and this frame's skin data
 	int				numDlights;
+	vkBuffer_t		skinBuffer;		// frame data of the skinned draws (vk_alloc_skin_frame)
+	int				skinWords;
 
 	vkDeferredDestroy_t	*destroyList;
 	int				numDestroy, maxDestroy;
@@ -301,6 +303,7 @@ typedef struct {
 	uint64_t	flushes;			// mid-frame submissions that waited for the GPU
 	uint64_t	draws;
 	uint64_t	staticDraws;		// draws from the static geometry (vk_set_static_geometry)
+	uint64_t	skinDraws;			// skinned draws (drawGeometry_t::isSkinned)
 	uint64_t	pipelineBinds;
 	uint64_t	descriptorBinds;	// descriptor sets bound
 	uint64_t	vertexBytes;		// copied into the vertex buffers
@@ -405,11 +408,13 @@ typedef struct {
 
 	// shared objects
 	VkDescriptorSetLayout textureSetLayout;
-	VkDescriptorSetLayout dlightSetLayout;	// set 2: the frame's dlight buffer
+	VkDescriptorSetLayout dlightSetLayout;	// set 2: the frame's dlight buffer, the skin data and the frame's skin data
 	VkDescriptorPool	dlightPool;
 	VkPipelineLayout	pipelineLayout;
 	VkShaderModule		vertexShader;
 	VkShaderModule		vertexShaderClip;	// writes gl_ClipDistance (shaderClipDistance only)
+	VkShaderModule		skinVertexShader;	// skinned draws (shaders/skinned.vert)
+	VkShaderModule		skinVertexShaderClip;
 	VkShaderModule		fragmentShader;
 	VkPipelineCache		pipelineCache;
 
@@ -534,6 +539,7 @@ int			VK_NumPipelines( void );
 #define VK_PIPE_STIPPLE				( 1ull << 41 )	// line stipple (lines and polygon edges)
 #define VK_PIPE_DLIGHT_SHIFT		42		// unit + 1 whose texture gets the dynamic lights, 0 for none, 2 bits
 #define VK_PIPE_DLIGHT_BACKS		( 1ull << 44 )	// no dynamic light from behind the triangle
+#define VK_PIPE_SKINNED				( 1ull << 45 )	// skinned draw: shaders/skinned.vert, no vertex input
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
@@ -563,6 +569,9 @@ typedef struct {
 
 #define VK_MAX_FRAME_DLIGHTS	4096	// per frame: 128 lists of 32 lights
 
+#define VK_SKIN_DATA_WORDS		( 8 * 1024 * 1024 )	// skin data, 32 MB
+#define VK_SKIN_FRAME_WORDS		( 512 * 1024 )		// frame data of the skinned draws, 2 MB per frame
+
 #define VK_PUSH_VERTEX_SIZE		( (uint32_t)offsetof( vkPushConstants_t, fogColor ) )
 #define VK_PUSH_FRAGMENT_SIZE	( (uint32_t)( sizeof( vkPushConstants_t ) - VK_PUSH_VERTEX_SIZE ) )
 
@@ -573,6 +582,10 @@ extern const uint32_t	vk_spirv_generic_clip_vert[];
 extern const size_t		vk_spirv_generic_clip_vert_size;
 extern const uint32_t	vk_spirv_generic_frag[];
 extern const size_t		vk_spirv_generic_frag_size;
+extern const uint32_t	vk_spirv_skinned_vert[];
+extern const size_t		vk_spirv_skinned_vert_size;
+extern const uint32_t	vk_spirv_skinned_clip_vert[];
+extern const size_t		vk_spirv_skinned_clip_vert_size;
 
 // cvars
 extern cvar_t	*r_vkValidation;

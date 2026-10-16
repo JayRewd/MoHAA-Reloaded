@@ -1536,6 +1536,8 @@ void R_Register( void )
 	r_drawstaticmodelpoly = ri.Cvar_Get("r_drawstaticmodelpoly", "1", CVAR_CHEAT);
 	// 0 tessellates world surfaces and static models on the CPU (tr_staticgeom.c)
 	r_staticGeometry = ri.Cvar_Get("r_staticGeometry", "1", 0);
+	// 0 skins and lights skeletal models on the CPU (tr_skin.c)
+	r_gpuSkinning = ri.Cvar_Get("r_gpuSkinning", "1", 0);
 	r_drawbrushes = ri.Cvar_Get("r_drawbrushes", "1", CVAR_CHEAT);
 	r_drawbrushmodels = ri.Cvar_Get("r_drawbrushmodels", "1", CVAR_CHEAT);	
 	r_drawterrain = ri.Cvar_Get("r_drawterrain", "1", CVAR_CHEAT);
@@ -1789,6 +1791,7 @@ void RE_Shutdown( qboolean destroyWindow ) {
 	}
 
 	R_FreeStaticGeometry();
+	R_ClearSkinData();
 
 	// shut down the backend and the window
 	if ( destroyWindow ) {

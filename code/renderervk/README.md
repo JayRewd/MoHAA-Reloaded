@@ -94,6 +94,18 @@ below are done.
   fps; GL1 479 and 447), with no measurable GPU cost at 3840x2160 (see
   Performance, Dynamic lights); views without dynamic lights are the same
   to the bit as before
+- skeletal models on the GPU (2026-10-16, step 3, measured on new
+  multiplayer views with 20 player models, see Testing): the vertex
+  shader skins them and lights them (`rgbGen lightingSpherical`) with the
+  CPU's floating point operations, so the frames are the same to the bit,
+  and also collapses their vertexes at a lower level of detail; with a
+  fix of the sun visibility trace cache, whose hash sent every entity on
+  whole-unit coordinates to the same slot, the renderer's CPU time goes
+  down 57 to 64 % in these views (1.00 to 1.41 ms to 0.39 to 0.56 ms at
+  640x480; at 1920x1080 three of them now reach the 1000 fps limit, from
+  652 to 838 fps, GL1 506 to 757, and the fourth runs at 772 fps instead of
+  614, GL1 500), with the GPU time unchanged within 1 % at 3840x2160 (see
+  Performance, Skeletal models); views without players don't change
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -110,7 +122,9 @@ below are done.
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
+| `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces, the frame data of each entity, the skinned batches (see Implementation notes) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
+| `shaders/skinned.vert` | the vertex shader of skinned draws (skinning and `rgbGen lightingSpherical`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | GL1/Vulkan screenshot comparison and performance scripts, view lists (see Testing) |
@@ -157,6 +171,7 @@ Cvars of the backend:
 | `r_swapInterval` (latched) | 0: immediate present mode (mailbox if unavailable), < 0: FIFO relaxed, > 0: FIFO; FIFO when the wanted mode is missing |
 | `r_ext_multisample` (latched, shared with GL1) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
+| `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
 
 The console command `vkinfo` prints the backend's counters since its last
 call: frames, render passes, submissions, mid-frame flushes, draws,
@@ -334,6 +349,8 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   uncapped, in interleaved runs (see Performance); `rtimer/` builds the
   `renderer_timed.so` wrapper it uses and `libstacks.so`, a stack sampler
   whose output `stacks.py` sums up.
+- `soldiers.py`: writes a view list of a multiplayer scene, soldier models
+  around the camera and muzzle flash lights (see Test content).
 - `summary.py`: the worst view's numbers of several lists after
   `compare.sh` (`--wide` for the `WIDE=1` runs), in the form of the
   milestone 6 table below, with that table's row next to them
@@ -404,6 +421,30 @@ Test content:
   `mohdm3_dlight` LOD terrain. `cg_acidtrip N` adds N random dlights a
   frame (radius 128 to 639) for a quick look and for timing (`perf.py
   --exec`), not for comparisons.
+- Multiplayer views with players (2026-10-16): `mp_mohdm1`, `mp_mohdm2`,
+  `mp_mohdm7`, `mp_obj_team1` and `mp_obj_team4`, written by
+  `tools/soldiers.py` (the command is in each list's first lines). Each
+  spawns 20 `script_model`s with the player TIKIs of multiplayer
+  (`models/player/*.tik`, allied and axis), 16 in a fan in front of the
+  camera from 160 to 1060 units and 4 beside it, outside the view; they
+  are dropped to the floor (`physics_on`, so that `droptofloor` traces
+  against the world, then `physics_off`, and `physics_velocity "0 0 -1"`
+  to cancel the upward velocity `physics_on` gives, which `physics_off`
+  keeps: without it the soldiers rise by a unit a second), turned,
+  animated with player animations (run, walk, idle, crouch) and most get
+  a weapon in the right hand (`attachmodel models/weapons/<weapon>.tik
+  tag_weapon_right`). Shots: `<tag>_front`; `<tag>_flash`, the same view
+  with three dynamic lights next to three soldiers (muzzle flashes), 1.6 s
+  of game time later; and `<tag>_side`, the view turned towards the
+  soldiers beside the camera. The first shot comes more than 33 s after
+  the map is loaded: the engine's skeletor keeps the time of a head's next
+  blink in a `short` (`skeletor_c::m_timeNextBlink`), so heads blink at
+  random during the first 32.8 s of `Sys_Milliseconds` and never after,
+  and earlier shots differed between two runs of the same build in a few
+  dozen pixels of one soldier's face. Now two runs of the same build give
+  the same frames, but for 2 or 3 pixels of `pm7_front`.
+  `views/perf_mp.txt` times them (`perf.py` takes the shots of a view
+  list with `views <list> [shot ...]`).
 - Cinematics: the game data has no RoQ file. `ffmpeg -loop 1 -i still.png
   -t 2 -r 30 -c:v roqvideo -f roq <homepath>/main/video/test.roq` makes one
   (the encoder is slow, about 10 frames a second); `cinematic test.roq 1`
@@ -668,6 +709,56 @@ loads `dm/mohdm1` with `cg_acidtrip 16`, turns `r_staticGeometry` and
 `r_dlightBacks` off and on, runs `vid_restart` and loads `dm/mohdm3` and
 `m3l3` with the same lights; the main menu matches GL1 (fan masked).
 
+The skeletal models on the GPU (2026-10-16, see Implementation notes,
+Skeletal models), against GL1 (`compare.sh`, `summary.py`): the 19
+multiplayer and dm/obj lists of the earlier tables give their numbers
+exactly at 640x480, and at 4160x240 too (`mohdm7`: 48/36/35, 0.057 %, 56,
+the `d7_window` crack; `obj_team1` 0.149 % as in the second round); the
+dynamic light lists those of their table. The new multiplayer lists (worst
+view of each; the `_flash` views have the accepted per-pixel dynamic
+light falloff, the others don't):
+
+| list (views) | 640x480 max R/G/B | differing | > 3 | 4160x240 max R/G/B | differing | > 3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `mp_mohdm1` (3) | 253/228/189 | 16.0 % | 2514 | 25/18/9 | 27.4 % | 994 |
+| `mp_mohdm2` (3) | 96/82/91 | 15.2 % | 2593 | 64/64/72 | 14.6 % | 2115 |
+| `mp_mohdm7` (3) | 117/86/110 | 2.23 % | 102 | 2/1/1 | 0.054 % | 0 |
+| `mp_obj_team1` (3) | 105/95/106 | 10.2 % | 1058 | 66/93/77 | 0.528 % | 179 |
+| `mp_obj_team4` (3) | 93/91/103 | 22.7 % | 4066 | 54/44/31 | 17.0 % | 1004 |
+
+Without dynamic lights (`_front`, `_side`) the 4160x240 frames differ
+from GL1's in 2 to 243 pixels (nearly all by 1) where the soldiers
+face the camera, and in 2324 to 8912 pixels (nearly all by 1) in three side
+views that face a nearby wall (the clipping case of Comparing): the 20
+skinned, lit soldiers of each view come out as GL1's.
+Against the previous build (`run.sh`, `tgadiff.py`, 640x480) on the 41
+view lists plus `mohdm1_dlight`, `mohdm1_dlight2` and `mohdm3_dlight` with
+`r_fastdlights 1` and `mohdm1_texenv` with `r_ext_texture_env_add 1` (178
+views): 142 views give the same frames to the bit, among them every view
+of the multiplayer lists (but 1 pixel of `pm7_front`, which two runs of
+one build show too), of `dm/mohdm1` to `dm/mohdm4`, `dm/mohdm6`,
+`obj/obj_team1` to `obj/obj_team4`, the dynamic light lists (both modes),
+`m2l3`, `m3l2`, `m5l3` but a particle, `m6l2a` and `m6l3a`. The other 36
+are the random content and run-to-run noise named above: the smoke, fire
+and convoy of `m1l1`, the camera shake of `m3l1a`, AI in `m1l3a`, the
+shutters of `m5l1a`, the tank of `m5l2a`, snow in `m6l1a` and
+`mohdm5_fog`, and the near-camera ±1 of `m2l1_skyportal`, `m33_grass`,
+`fm4_a`/`fm4_b`, `m61_slope`, `d7_alley`, `d7_arch` and `m1l2a` (whose
+`m12_*` views differ exactly the same way between two runs of the
+previous build). The view weapon (`m2l3` with `cg_drawviewmodel 1`,
+skinned and lit in the vertex shader) gives the same frames too, and so
+does `mp_mohdm1` with `r_gpuSkinning 0` and 1. Coverage of these views (counted with
+a temporary build, `mp_mohdm1` with the view weapon): 139 skinned
+batches a frame and 2 left on the CPU (other shaders), surfaces at a
+lower level of detail and at full detail, entities with head morphs,
+meshes after the first (bone remap tables), light lists and constant
+colors. No validation message in any of these runs (`r_vkValidation 1`),
+nor with synchronization validation (`r_vkValidation 2`) on `mp_mohdm1`,
+`mp_mohdm7`, `mohdm1_dlight2`, the view weapon test and a script that
+spawns the soldiers of `mp_mohdm1`, turns `r_gpuSkinning` off and on,
+runs `vid_restart` and loads `obj/obj_team4` with its soldiers (the skin
+data cleared and filled again); the main menu matches GL1 (fan masked).
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -734,6 +825,9 @@ code/renderervk/tools/stacks.py out_m6l1a_640x480_vulkan_1.txt --tree RB_RenderD
 Each measurement starts a game, loads the map with `fixedtime 16`, puts the
 camera at the view, waits 2 s of game time and times 1000 frames with the
 frame rate uncapped (`com_maxfps 0`, `r_swapInterval 0`, no validation).
+A list line `views <view list> [shot ...]` takes shots of a view list,
+with the commands that come before them in it (`views/perf_mp.txt`: the
+soldiers of the multiplayer views, see Comparing).
 The runs interleave the renderers (run i starts with renderer i), and the
 summary gives medians with the lowest and highest. `--renderers` takes any
 `renderer_<name>.so` of the binary directory: a copy of an older
@@ -1151,6 +1245,115 @@ reach), and in the overview the per-vertex lighting of the static models
 within twice a light's radius (`ComputeColors` and `RB_StaticMesh`, 13 %:
 those models leave the static geometry), see Plan, Remaining. The
 entities' lighting (`RB_Light_Real`) takes 0.3 %.
+
+Skeletal models (2026-10-16, step 3, see Implementation notes, Skeletal
+models). The views measured until then had few characters; in
+multiplayer the players are most of the frame. On the multiplayer views
+with 20 player models (`views/perf_mp.txt`: `pm1_front`, `po1_front`,
+`po4_front` and `pm7_flash`, the last with three muzzle flash lights, see
+Testing), the stack samples of the build before (640x480, % of the
+frame; one run each) put the skinning (`RB_SkelMesh` and the functions
+inlined into it) at 27 / 34 / 31 / 29 %, the per-vertex lighting
+(`RB_Light_Real`) at 7 / 3 / 7 / 14 %, the copies of the skinned
+vertexes into the frame's vertex buffer at 5 to 7 % (1.05 MB per frame
+against 0.25 MB without the players), the sun visibility traces of the
+entities (`RB_Sphere_TraceSun`, `CM_BoxTrace`) at 8 to 10 % and the
+skeletons (`R_AddSkelSurfaces`, the engine's skeletor) at 6 to 9 %; the
+renderer's time per frame was 1.0 to 1.4 ms there, against 0.40 to 0.47
+in the `obj_team2` yard and the `dm/mohdm3` overview. Each change against
+the build before it, renderer time (ms per frame, 640x480, where there
+are no fence waits; medians of 3 interleaved runs, idle machine, other
+processes 1.8 CPUs at most):
+
+| change | `pm1_front` | `po1_front` | `po4_front` | `pm7_flash` | `obj_team2` yard | `dm/mohdm3` overview |
+| --- | --- | --- | --- | --- | --- | --- |
+| before | 1.336 | 1.042 | 1.208 | 1.421 | 0.398 | 0.474 |
+| skinning and lighting in the vertex shader | 0.810 | 0.605 | 0.660 | 0.735 | 0.413 | 0.454 |
+| sun traces kept for real (hash fix) | 0.642 | 0.476 | 0.548 | 0.596 | 0.401 | 0.453 |
+| level of detail collapsed in the vertex shader | 0.650 → 0.571 | 0.471 → 0.397 | 0.554 → 0.467 | 0.597 → 0.511 | 0.402 → 0.385 | 0.450 → 0.448 |
+
+(The first three rows in one batch, the last in a batch of its own with
+the build of the row above.)
+
+- The vertex shader does `RB_SkelMesh`'s and `RB_Light_Real`'s work with
+  their floating point operations: 39 to 48 % less time in these views.
+  The vertexes are no longer copied (497 against 1095 KB per frame in
+  `pm1_front`); there are more draws (one per surface instead of one per
+  batch: 556 against 497).
+- The sun trace cache of the second round (`RB_Sphere_TraceSun`) hashed
+  the bits of the origin with products by odd constants, which keep the
+  low bits clear: an origin on whole or eighth units (map entities,
+  network snapped positions) has many clear low mantissa bits, so every
+  such entity went to the first of the 1024 slots and evicted the one
+  before it, and all 36 traces of a `pm1_front` frame missed (counted
+  with a temporary build). With the high bits mixed into the slot, the
+  entities that don't move keep their trace: 17 to 21 % less. The
+  soldiers of these views drift by tenths of a unit in the uncapped
+  frames of `perf.py` (client interpolation), so about 15 of the 36 still
+  miss there, as moving players do in a game: the trace of a moving
+  entity is the engine's collision code (`CM_BoxTrace`, 5 to 8 % of these
+  frames now), which only an approximation could avoid.
+- The collapse of the vertexes at a lower level of detail (most of the
+  surfaces of these views: `RB_SkelMesh` recomputed it every frame, 6 to 8
+  % of the frame after the first change) is done by the vertex shader,
+  which follows each vertex's collapse chain, and the draw takes a prefix
+  of the surface's triangles found with a binary search (see
+  Implementation notes, Skeletal models): 12 to 16 % less, and no indexes
+  are copied any more.
+- Tried and dropped: keeping the results of the visibility traces of
+  `needs_trace` sphere lights (`RB_Sphere_AddLight`) by origin and light,
+  like the sun's: no such light in these maps (no difference beyond the
+  noise).
+
+The result against GL1 and the build before (medians of 3 interleaved
+runs, idle machine: others 2.0 CPUs at most, the one run at 2.0 being the
+slowest of its median; frame time with the fps of the median, the
+renderer's main-thread time without the fence waits (GL1's includes its
+waits in the swap), the main pass's GPU time; ms per frame):
+
+| view | size | frame GL1 | before | after | renderer GL1 | before | after | GPU before | after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `pm1_front` | 640x480 | | 1.480 (676 fps) | 0.999 | | 1.320 | 0.564 | 0.480 | 0.548 |
+| | 1920x1080 | 2.001 (500) | 1.630 (614) | 1.295 (772) | 1.768 | 1.432 | 0.701 | 1.239 | 1.268 |
+| | 3840x2160 | 4.050 (247) | 4.093 (244) | 4.096 (244) | 3.709 | 1.946 | 0.977 | 4.045 | 4.056 |
+| `po1_front` | 640x480 | | 1.140 (877) | 0.999 | | 1.004 | 0.385 | 0.301 | 0.408 |
+| | 1920x1080 | 1.321 (757) | 1.193 (838) | 0.999 | 1.135 | 1.035 | 0.409 | 0.809 | 0.835 |
+| | 3840x2160 | 2.736 (365) | 2.771 (361) | 2.783 (359) | 2.459 | 1.254 | 0.570 | 2.743 | 2.754 |
+| `po4_front` | 640x480 | | 1.364 (733) | 0.999 | | 1.188 | 0.470 | 0.272 | 0.383 |
+| | 1920x1080 | 1.529 (654) | 1.426 (702) | 0.999 | 1.315 | 1.206 | 0.521 | 0.891 | 0.812 |
+| | 3840x2160 | 2.526 (396) | 2.600 (385) | 2.610 (383) | 2.154 | 1.407 | 0.673 | 2.574 | 2.586 |
+| `pm7_flash` | 640x480 | | 1.577 (634) | 0.999 | | 1.413 | 0.504 | 0.275 | 0.391 |
+| | 1920x1080 | 1.976 (506) | 1.534 (652) | 0.999 | 1.795 | 1.372 | 0.548 | 0.929 | 0.662 |
+| | 3840x2160 | 2.289 (437) | 2.004 (499) | 2.000 (500) | 2.058 | 1.547 | 0.640 | 1.967 | 1.982 |
+| `obj_team2` yard | 1920x1080 | 0.999 | 0.999 | 0.999 | 0.618 | 0.404 | 0.396 | 0.621 | 0.622 |
+| | 3840x2160 | 1.765 (566) | 1.752 (571) | 1.750 (571) | 1.605 | 0.538 | 0.522 | 1.737 | 1.735 |
+| `dm/mohdm3` overview | 1920x1080 | 0.999 | 0.999 | 0.999 | 0.756 | 0.540 | 0.545 | 0.719 | 0.718 |
+| | 3840x2160 | 2.468 (405) | 2.554 (392) | 2.551 (392) | 2.322 | 0.729 | 0.738 | 2.530 | 2.527 |
+
+(0.999 is the 1000 frames per second limit.) Where the GPU limits
+(3840x2160) the frames take the same time as before and the GPU time is
+within 1 % (+0.3 to +0.8 % in the soldier views, the same in the
+others): the skinning costs the GPU next to nothing. At 640x480 and
+1920x1080 the GPU is a quarter to two thirds busy and its timestamps vary
+with its clock from run to run (up and down by up to 30 % here: they
+rose at 640x480 while the frames came faster, fell in `pm7_flash` at
+1080p), which a fixed cost per frame wouldn't do: at 3840x2160 it would
+show as much. At 1920x1080 `pm1_front` is now GPU-bound (93 % busy).
+
+With four random dynamic lights (`cg_acidtrip 4`, 1920x1080, same
+batches): `pm1_front` 2.685 ms (373 fps) with GL1, 1.731 (578) before,
+1.293 (773) after, renderer 2.476 / 1.529 / 0.779; `po4_front` 1.805
+(554), 1.455 (687), 0.999 (1000 fps limit), renderer 1.582 / 1.238 /
+0.549. The lights now cost the entities nothing but the sphere setup:
+their lighting is in the vertex shader.
+
+What is left in these views (stack samples, 640x480): the skeletons in
+the engine (`R_AddEntitySurfaces`, 7 to 8 %), the sun traces of the
+entities that move (5 to 8 %), the skinned draws (`RB_SkinDraw`, 3 %:
+`vk_draw` per surface), the index prefixes (`RB_SkinSurface`, 1.3 %),
+the world and the static models (`RB_StaticMesh` 4 % in `pm1_front`),
+cgame (about 20 % of the wall clock time, outside the renderer) and the
+end of the frame.
 
 The plan items, each measured before and after with interleaved builds:
 
@@ -1580,8 +1783,10 @@ selects the sample count (see Implementation notes).
   mid-frame flush). In the measured views this saves 1 to 4 % of the
   vertex bytes (most surfaces are one multitextured pass). Draws from the
   static geometry (below) copy nothing but, when they need them, their
-  indexes and a constant color; vertex and index buffers are only bound
-  again when they or their offsets change.
+  indexes and a constant color, skinned draws (Skeletal models) nothing
+  (but the indexes of a lower level of detail of the rare surfaces whose
+  collapse map the vertex shader can't follow); vertex and index buffers are
+  only bound again when they or their offsets change.
 - **Static geometry** (`tr_staticgeom.c`, `vk_set_static_geometry`). At the
   end of a map load, `R_BuildStaticGeometry` puts into one device-local
   buffer (through the staging buffer and the upload command buffer, with a
@@ -1682,6 +1887,69 @@ selects the sample count (see Implementation notes).
   per-vertex texture coordinates and colors) is unchanged, and so is the
   per-vertex lighting of entities (`RB_Light_Real`) and static models
   (`useSpecialLighting`), see Performance.
+- **Skeletal models** (`tr_skin.c`, `shaders/skinned.vert`, `vk_add_skin_data`,
+  `vk_alloc_skin_frame`). `RB_SkelMesh` computed every vertex of a
+  skeletal model's surfaces from its bones on the CPU (each weight's offset
+  rotated by its bone, plus the bone's position, times the weight; morph
+  offsets on the first weight; the normal rotated by the first weight's
+  bone), and the vertex-lit iterator lit them per vertex
+  (`RB_Light_Real`, `rgbGen lightingSpherical`), every frame. A batch of
+  skeletal model surfaces whose shader takes
+  `RB_StageIteratorVertexLitTextureUnfogged` (one stage, `rgbGen
+  lightingSpherical` or `lightingGrid`, `tcGen texture` without `tcMod`,
+  no deform: the characters, the weapons and most other skeletal models)
+  is now drawn with `shaders/skinned.vert`, which does both with the same
+  floating point operations in the same order (`precise`, so no fused
+  multiply-add the C code doesn't have; the build has no FMA and no
+  fast-math): positions, normals and colors are the CPU's to the bit, so
+  the frames are too. Divisions (`fDot / fDistSquared`) get one correction
+  step with the exact residual (`fma`), which makes the GPU's reciprocal
+  product correctly rounded but for very rare operands, and the color
+  bytes are turned into floats as `c / 255` correctly rounded (one
+  correction step, exact for all 256 values), the value an `R8G8B8A8_UNORM`
+  vertex color has. The vertexes of each surface go once into the skin
+  data, a 32 MB device local buffer (`vk_add_skin_data`, through the
+  staging buffer and the upload command buffer): 8-word vertex records
+  (normal, texture coordinates, counts, where its morphs and weights
+  start), the morphs and weights, the indexes of all the triangles, and
+  the bone remap tables of the meshes after a TIKI's first (heads, hands,
+  helmets: `TIKI_GetLocalChannel` of each bone's channel, as `RB_SkelMesh`
+  maps them), when a TIKI is first drawn; everything is forgotten at each
+  map load (`R_ClearSkinData`, after `vk_finish`). What changes every
+  frame goes into the frame data, a 2 MB host-visible buffer per frame
+  slot (`vk_alloc_skin_frame`), once per entity and frame: its bones (the
+  `skelBoneCache_t` that `R_AddSkelSurfaces` filled), its morph weights,
+  and its sphere's lights (`reallightinfo_t`: point, directional, spot),
+  or the constant color the other lighting functions give
+  (`RB_CalcLightGridColor`, `RB_Light_Fullbright`, `RB_Light_Real` without
+  lights), evaluated for one vertex. The skin data and the frame data are
+  bindings 1 and 2 of set 2, next to the dynamic lights. A skinned batch
+  counts the vertexes and indexes `RB_SkelMesh` would have added, so it is
+  split at the same surfaces, and draws each surface in turn (one draw per
+  surface instead of one per batch): `vertexOffset` is its first vertex
+  record, `firstInstance` its draw record (bones, remap table, morphs,
+  lights or color, scale, level of detail), and the indexes are those of
+  the skin data. At a lower level of detail (`render_count` below the
+  surface's vertex count) `RB_SkelMesh` collapsed each vertex from
+  `render_count` on along its collapse chain and kept the triangles up to
+  the first degenerate one; the vertex shader follows the chain itself
+  (the target is the eighth word of the vertex record), and the draw takes
+  the same prefix of the surface's triangles: a triangle that is
+  degenerate at a level of detail is at every lower one (the chains only
+  go down and stay together once they meet), so each has a threshold,
+  computed at upload with a binary search, and the prefix is found with a
+  binary search in their running maximum (`R_SkinThresholds`). Surfaces
+  whose collapse map has a target that isn't below its vertex (the colt45:
+  `RB_SkelMesh` then reads entries it hasn't filled) get their collapsed
+  indexes from the CPU as `RB_SkelMesh` computes them, copied into the
+  frame's vertex buffer. The pipelines of skinned
+  draws have no vertex input (`VK_PIPE_SKINNED`); the fragment stage is
+  the same. Still skinned on the CPU: the other shaders (`alphaGen
+  distFade`, `tcGen environment`, deforms...), debug drawing (`r_showtris`,
+  `r_shownormals`), `lod_tool`, stencil shadows, a TIKI whose mesh maps a
+  bone to no channel or reads more morph weights than the entity has, and
+  what doesn't fit in the skin or frame data. `r_gpuSkinning 0` skins
+  everything on the CPU.
 - **Push constants** (`vkPushConstants_t`, the guaranteed 128 bytes).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -1697,7 +1965,8 @@ selects the sample count (see Implementation notes).
   constant color, texture env per unit (0 for an unused unit), "RGB texture
   with TEXENV_REPLACE" per unit, the stencil function and ops, fog on/off
   clip plane on/off, line stipple on/off, the unit whose texture gets the
-  dynamic lights (0 for none) and `r_dlightBacks 0`'s test. Viewport, scissor, depth bias,
+  dynamic lights (0 for none), `r_dlightBacks 0`'s test and whether the
+  draw is skinned (no vertex input, `shaders/skinned.vert`). Viewport, scissor, depth bias,
   line width and stencil reference/masks are dynamic, and the stipple factor
   and pattern for stippled pipelines (set when such a pipeline is bound and
   they changed). Line pipelines and polygon-line pipelines chain a
@@ -1956,6 +2225,20 @@ Done:
    lightmaps took). `r_fastdlights 1`, entities and static
    models are unchanged (see Remaining).
 
+9. Step 3 of the redesign: skeletal models on the GPU (2026-10-16, see
+   Implementation notes, Skeletal models, and Performance, Skeletal
+   models), chosen from the profiles of new multiplayer views with 20
+   player models (`tools/soldiers.py`, `views/mp_*.txt`,
+   `views/perf_mp.txt`), where skinning, per-vertex lighting and the
+   copies of the skinned vertexes took 35 to 50 % of the frame. The
+   vertex shader skins the surfaces of the vertex-lit shaders (characters,
+   weapons), lights them like `RB_Light_Real` and collapses their
+   vertexes at a lower level of detail, with the CPU's floating point
+   operations: the frames are the same to the bit. A bug of the sun trace
+   cache of the second round was fixed on the way (every entity on
+   whole-unit coordinates went to the same slot). The renderer's CPU time
+   goes down 57 to 64 % in these views, with no measurable GPU cost.
+
 Remaining:
 
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
@@ -1982,25 +2265,27 @@ Remaining:
   `obj_team2` yard) belongs with step 2: it needs normals in the static
   geometry and the light loop in the vertex stage (GL1 lights per vertex,
   with N·L and an inverse square falloff). The entities' lighting
-  (`RB_Light_Real`) took 0.3 % of the frame with 16 lights and goes with
-  step 3 (skinning). `r_fastdlights 1` (`ProjectDlightTexture`: a pass per
+  (`RB_Light_Real`) is done by the vertex shader since step 3.
+  `r_fastdlights 1` (`ProjectDlightTexture`: a pass per
   light with per-vertex colors and texture coordinates) is GL1's look of
   that mode and is still needed in `r_fastdlights 0` for the surfaces of
   brush models that light 0 doesn't reach (and their triangle surfaces),
   so it stays.
-- Step 3: skinning of skeletal models on the GPU (`RB_SkelMesh` is 6 to 8 %
-  of the forest frames, more with many characters). The data suits it (95 %
-  of the vertexes have one weight, at most 6, per-weight offsets instead of
-  bind poses, at most 100 bones; morphs only on the heads), but most
-  character shaders use `rgbGen lightingSpherical`, lit per vertex on the
-  CPU after skinning (`RB_Light_Real`), so that lighting has to move to the
-  GPU first (step 2). Before that: skeletal models entirely outside the
-  view are still skinned and lit, as in GL1 (`R_AddSkelSurfaces` lets
-  `CULL_OUT` through and `R_CullSkelModel` returns `CULL_IN`, "FIXME: not
-  working properly"). The entities' sun visibility traces
-  (`RB_Sphere_SetupEntity`, `CM_BoxTrace`) of the moving entities still take
-  23 % of the `m3l3` path frame. The LOD terrain, re-split every frame
-  (`RB_DrawTerrainTris`), still copies its vertexes.
+- After step 3, skeletal models: the shaders that don't take the
+  vertex-lit iterator (`alphaGen distFade`, `tcGen environment`, deforms,
+  about 150 of the 870 `lightingSpherical` shaders of the game data) are
+  still skinned on the CPU. Skeletal models entirely outside the view are
+  still prepared as in GL1 (`R_AddSkelSurfaces` lets `CULL_OUT` through
+  and `R_CullSkelModel` returns `CULL_IN`, "FIXME: not working properly"):
+  their skeleton (the engine's skeletor, 7 to 8 % of the multiplayer
+  views with all models) and their sphere setup and draws (the GPU clips
+  them); the skeletor's frame radius comes from the animation files, so
+  culling with it needs a proof that it bounds every mesh (a verification
+  build, as for the dynamic lights). The sun visibility traces of the
+  entities that move (5 to 8 % of those views) are the engine's collision
+  code. The `m3l3` path, whose sun traces took 23 % of the frame, wasn't
+  measured again after the trace cache fix. The LOD terrain, re-split
+  every frame (`RB_DrawTerrainTris`), still copies its vertexes.
 
 - At 3840x2160 the GPU-bound `dm/mohdm3` overview and `m3l3` path take
   3 to 4 % more GPU time than GL1's frames (2.53 against 2.46-2.48 ms,

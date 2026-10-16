@@ -2420,6 +2420,7 @@ void RE_LoadWorldMap( const char *name ) {
     R_InitTerrain();
     ri.UI_LoadResource("*113");
     R_InitStaticModels();
+    R_ClearSkinData();
     R_BuildStaticGeometry();
     R_SetupDlightBounds();
     ri.UI_LoadResource("*114");

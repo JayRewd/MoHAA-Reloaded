@@ -864,6 +864,7 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
     );
     ent->e.morphstart = skeletorMorphCacheIndex;
 
+    ent->numMorphs = added;
     if (added) {
         // found morphs
         skeletorMorphCacheIndex += added;
@@ -1139,6 +1140,12 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
 
     indexes = sf->numTriangles * 3;
     RB_CHECKOVERFLOW(render_count, indexes);
+
+    // skinned and lit on the GPU (tr_skin.c)
+    if (RB_SkinSurface(sf, mesh, render_count)) {
+        entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
+        return;
+    }
 
     collapse_map = sf->pCollapse;
     triangles    = sf->pTriangles;

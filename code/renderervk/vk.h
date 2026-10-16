@@ -307,6 +307,17 @@ typedef struct {
 	int				staticColor;
 	staticSt_t		staticSt[NUM_TEXTURE_BUNDLES];
 	int				staticFirstIndex;
+	// a skinned draw (see SKINNED DRAWS below) instead of xyz, colors and
+	// st: vertex i of the indexes is vertex record skinVertex + i of the
+	// skin data, the colors and the texture coordinates of unit 0 (when
+	// st[0] isn't NULL) come from the vertex shader, skinDraw is the draw
+	// record (vk_alloc_skin_frame word / 8). With skinFirstIndex >= 0 the
+	// indexes are numIndexes of the skin data from that word, otherwise
+	// those given to vk_draw
+	qboolean		isSkinned;
+	int				skinVertex;
+	int				skinDraw;
+	int				skinFirstIndex;
 } drawGeometry_t;
 
 // draw indexed primitives with the current state; the arrays are only read
@@ -330,6 +341,70 @@ typedef struct {
 // replace the static geometry; NULL releases it. Draws recorded before
 // keep the old one
 void		vk_set_static_geometry( const staticGeometry_t *geometry );
+
+/*
+====================================================================
+
+SKINNED DRAWS
+
+Skeletal models skinned and lit in the vertex shader (shaders/skinned.vert,
+tr_skin.c). The vertexes of their surfaces don't change: they are added
+once to the skin data. What changes every frame (bones, morph weights,
+lights) goes into the frame data, and each draw has a record there. Both
+are arrays of 32-bit words.
+
+Skin data: vertex records of 8 words (normal xyz, st, numWeights |
+numMorphs << 16, how many words after the record's first the vertex's
+morphs start, 4 words each: morph target, offset xyz, followed by its
+weights, 5 words each: bone, weight, offset xyz; the vertex it collapses
+to at a lower level of detail, in the surface), bone remap tables (bone of
+a mesh to bone of the entity) and indexes.
+
+Frame data: draw records (vkSkinDraw_t), the bones of each entity
+(skelBoneCache_t, 16 words each), its morph weights (ints), and light lists
+(count, ambient RGBA8, then a vkSkinLight_t per light).
+
+====================================================================
+*/
+
+#define VK_SKIN_NONE	0xFFFFFFFFu
+
+typedef struct {
+	uint32_t		bones;		// first word of the entity's bones
+	uint32_t		remap;		// first word of the mesh's bone remap table in the skin data, or VK_SKIN_NONE
+	uint32_t		morphs;		// first word of the entity's morph weights, or VK_SKIN_NONE
+	uint32_t		lights;		// first word of the light list, or VK_SKIN_NONE for color
+	float			scale;
+	uint32_t		color;		// RGBA8, without a light list
+	uint32_t		renderCount;	// level of detail: the vertexes from there are collapsed (vertex record word 7)
+	uint32_t		firstVertex;	// the surface's first vertex record
+} vkSkinDraw_t;
+
+typedef struct {
+	uint32_t		type;		// lighttype_t
+	float			color[3];
+	float			origin[3];
+	float			direction[3];
+	float			spotConst;
+	float			spotScale;
+	uint32_t		unused[4];
+} vkSkinLight_t;
+
+// whether the device draws skinned draws
+qboolean	vk_skin_available( void );
+// adds words to the skin data; returns the first one, a multiple of 8, or
+// -1 when there is no room left. Draws recorded later in the frame can use them
+int			vk_add_skin_data( const uint32_t *words, int numWords );
+// forgets the skin data (a new map: the models it was made from may be
+// freed); waits for the GPU
+void		vk_clear_skin_data( void );
+// space for numWords words in the frame data of the current frame: returns
+// the first word, a multiple of 8, and where to write them, or -1 when the
+// frame has no room left
+int			vk_alloc_skin_frame( int numWords, uint32_t **data );
+// a number that changes with every frame (the frame data starts empty);
+// starts the frame
+unsigned int vk_frame_serial( void );
 
 #define CLEAR_COLOR		1
 #define CLEAR_DEPTH		2	// to 1.0

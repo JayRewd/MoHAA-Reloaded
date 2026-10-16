@@ -458,6 +458,7 @@ void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes 
 	int i;
 
 	geometry.numVertexes = numVertexes;
+	geometry.isSkinned = qfalse;
 	geometry.xyz = glState.arrays.xyz;
 	geometry.xyzStride = glState.arrays.xyzStride;
 	geometry.version = glState.arrays.xyzVersion;
@@ -474,9 +475,14 @@ void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes 
 		}
 	}
 
-	// the stage iterators drawing a batch of the static geometry
+	// the stage iterators drawing a batch of the static geometry, or a
+	// skinned batch
 	if ( tess.staticBatch == STATIC_BATCH_ON && geometry.xyz == tess.xyz[0] && indexes == tess.indexes ) {
 		RB_StaticDraw( &geometry );
+		return;
+	}
+	if ( tess.staticBatch == STATIC_BATCH_SKINNED && geometry.xyz == tess.xyz[0] && indexes == tess.indexes ) {
+		RB_SkinDraw( &geometry );
 		return;
 	}
 

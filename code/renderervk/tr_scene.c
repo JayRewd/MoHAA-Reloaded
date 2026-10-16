@@ -239,6 +239,7 @@ void RE_AddRefEntityToScene( const refEntity_t *ent, int parentEntityNumber) {
 	backEndData->entities[r_numentities].e = *ent;
 	backEndData->entities[r_numentities].bLightGridCalculated = qfalse;
 	backEndData->entities[r_numentities].sphereCalculated = qfalse;
+	backEndData->entities[r_numentities].skinSerial = 0;
 
 	if (parentEntityNumber != ENTITYNUM_NONE)
 	{
