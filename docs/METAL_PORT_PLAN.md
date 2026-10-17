@@ -739,9 +739,8 @@ Plan (session 1):
 
 ## 6. Next session
 
-**Session 10: slice 3d if the user is back; otherwise Phase 5a.** Start with CLAUDE.md, then this section, then §3.2 "Added in session 9".
-- **User back → slice 3d** ("What 3d needs" below). Ask early (`AskUserQuestion`, or in the report): both steps need the user.
-- **User still away → Phase 5a, the user-free part of Phase 5** ("Phase 5a" below). Don't start anything that needs the user's OK (the list is below).
+**Session 10: Phase 5a, without the user** ("Phase 5a" below). The user asked on 2026-10-17 that the next session runs without them: don't ask them anything and don't wait for them; take the conservative choice where a decision would need them, record it here, and move on. Don't start anything that needs the user's OK (the list is below). Slice 3d waits for the first session the user is present for ("What 3d needs" below). Start with CLAUDE.md, then this section, then §3.2 "Added in session 9".
+- The screen may lock while the user is away. Benchmark anyway: GL1 reference and Metal in the same sitting, and record that the screen was locked (session 3: Metal 0.36 ms locked vs 0.39 unlocked). Fixed-view screenshots work on a locked screen. The user may use the machine at times: compare numbers only within one sitting.
 
 Where things stand (end of session 9):
 - **Phase 4 is done and pushed** (`metal` on origin now has 3a, 3b, 3c and 4; Phase 3 stays open until 3d). What it did (§3.2 "Added in session 9", Phase 4 result):
