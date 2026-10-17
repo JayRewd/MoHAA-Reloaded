@@ -7,7 +7,8 @@
 #   port/shot.sh diff <name>   per-pixel difference of every <name>-opengl1-<n> / <name>-metal-<n> pair
 #                              (diff images: <name>-diff-<n>.png, differences x16)
 #   port/shot.sh pair <name> <cfg> [engine args...]   fixed 3D views (shot_dm6.cfg, shot_dm5.cfg, shot_dm6fx.cfg,
-#                              shot_dm4.cfg, shot_obj3.cfg, shot_m2l1.cfg): both renderers, then the diff of each view; the cfg's
+#                              shot_dm4.cfg, shot_obj3.cfg, shot_m2l1.cfg, shot_sh.cfg, shot_bt.cfg, shot_texmodes.cfg,
+#                              shot_debug.cfg, shot_cinematic.cfg): both renderers, then the diff of each view; the cfg's
 #                              "// args:" line gives the engine args. -> <name>-view<k>-{opengl1,metal,diff}.png
 #   port/shot.sh fixed <renderer> <name> <cfg> [engine args...]   one renderer of a pair
 #   port/shot.sh views <name>  the per-view diffs again (after re-running one renderer with `fixed`)
@@ -75,12 +76,13 @@ fi
 
 R="$1"; NAME="$2"; CFG="$3"; shift 3
 [ -f "$OMM_PORT/shots/$CFG" ] && cp "$OMM_PORT/shots/$CFG" "$OMM_HOME/main/"
-rm -rf "$OMM_HOME/main/screenshots" "$OMM_HOME/main/configs" "$OUT/$NAME-$R"-* "$OUT/$NAME-view"*-"$R".*
+# screenshots land in the game dir: main/, or mainta/ / maintt/ with com_target_game 1/2 (Spearhead/Breakthrough)
+rm -rf "$OMM_HOME"/main*/screenshots "$OMM_HOME/main/configs" "$OUT/$NAME-$R"-* "$OUT/$NAME-view"*-"$R".*
 perl -e 'alarm shift; exec @ARGV' 120 "$OMM_PORT/run.sh" "${OMM_FLAVOR:-metal}" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
 	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 "$@" +exec "$CFG" > "$OUT/$NAME-$R.log" 2>&1
 n=0
-for f in "$OMM_HOME"/main/screenshots/*.tga; do
+for f in "$OMM_HOME"/main*/screenshots/*.tga; do
 	[ -e "$f" ] || continue
 	cp "$f" "$OUT/$NAME-$R-$n.tga"
 	sips -s format png "$f" --out "$OUT/$NAME-$R-$n.png" >/dev/null 2>&1

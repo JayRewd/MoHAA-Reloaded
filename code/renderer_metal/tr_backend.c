@@ -1370,6 +1370,24 @@ const void *RB_ClearDepth(const void *data)
 
 /*
 =============
+RB_SumOverdraw
+
+The stencil readback of r_measureOverdraw, once the GPU has drawn its frame
+=============
+*/
+static void RB_SumOverdraw( byte *stencil, int width, int height, void *arg ) {
+	int i;
+	long sum = 0;
+
+	for ( i = 0; i < width * height; i++ ) {
+		sum += stencil[i];
+	}
+
+	backEnd.pc.c_overDraw += sum;
+}
+
+/*
+=============
 RB_SwapBuffers
 
 =============
@@ -1391,20 +1409,9 @@ const void	*RB_SwapBuffers( const void *data ) {
 
 	// we measure overdraw by reading back the stencil buffer and
 	// counting up the number of increments that have happened
+	// (without a GPU wait: the sum goes into the counters r_metalFramesInFlight frames later, see RB_SumOverdraw)
 	if ( r_measureOverdraw->integer ) {
-		int i;
-		long sum = 0;
-		unsigned char *stencilReadback;
-
-		stencilReadback = ri.Hunk_AllocateTempMemory( glConfig.vidWidth * glConfig.vidHeight );
-		mbReadPixels( 0, 0, glConfig.vidWidth, glConfig.vidHeight, MB_STENCIL_INDEX, MB_UNSIGNED_BYTE, stencilReadback );
-
-		for ( i = 0; i < glConfig.vidWidth * glConfig.vidHeight; i++ ) {
-			sum += stencilReadback[i];
-		}
-
-		backEnd.pc.c_overDraw += sum;
-		ri.Hunk_FreeTempMemory( stencilReadback );
+		mbReadPixelsAsync( 0, 0, glConfig.vidWidth, glConfig.vidHeight, MB_STENCIL_INDEX, RB_SumOverdraw, NULL );
 	}
 
 

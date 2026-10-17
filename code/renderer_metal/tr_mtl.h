@@ -311,9 +311,25 @@ void	mbColor4ubv( const byte *v );
 // synchronization and readback
 //
 void	mbFinish( void );						// doesn't wait (see tr_mtl.m): queueing is bounded by r_metalFramesInFlight
-void	mbReadPixels( int x, int y, int width, int height, int format, int type, void *pixels );	// rows tightly packed, bottom row first; waits for the GPU
+void	mbReadPixels( int x, int y, int width, int height, int format, int type, void *pixels );	// MB_RGB/MB_RGBA, rows tightly packed, bottom row first; waits for the GPU
 void	mbDrawPixels( int width, int height, int format, int type, const void *pixels );
 void	mbPixelZoom( float xfactor, float yfactor );
+
+// Readback without waiting: the copy is recorded at this point of the frame (what has been drawn so far) and
+// done() gets the pixels once the GPU has finished the frame, from a later mbEndFrame (after that frame's
+// present, before the next frame's input sampling) or from mbFlushReadbacks. Pixels as mbReadPixels returns
+// them, MB_UNSIGNED_BYTE: format MB_RGB, MB_RGBA or MB_STENCIL_INDEX. They are valid during the call only, and
+// done() may modify them.
+typedef void ( *mbReadbackFunc_t )( byte *pixels, int width, int height, void *arg );
+qboolean	mbReadPixelsAsync( int x, int y, int width, int height, int format, mbReadbackFunc_t done, void *arg );	// qfalse: done() is never called
+void		mbFlushReadbacks( void );		// waits for the pending readbacks and runs their callbacks
+
+// Depth queries without waiting (Q3 flares): a one-pixel point at window position x, y (origin bottom-left)
+// with the given window depth, depth-tested (less) against what has been drawn so far, nothing written.
+// mbDepthQuery returns a handle (0: none issued). mbDepthQueryResult returns 1 if the point passed, 0 if not,
+// -1 while its frame is still in flight (answered from r_metalFramesInFlight frames later), -2 if it is lost.
+int		mbDepthQuery( int x, int y, float depth );
+int		mbDepthQueryResult( int handle );
 
 static ID_INLINE int mbGetError( void ) { return MB_NO_ERROR; }
 

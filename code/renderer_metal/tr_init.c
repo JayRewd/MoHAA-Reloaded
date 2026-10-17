@@ -459,63 +459,51 @@ FIXME: the statics don't get a reinit between fs_game changes
 ============================================================================== 
 */ 
 
-/* 
-================== 
-RB_ReadPixels
+/*
+==================
+Screenshots are read back without a GPU wait: the copy is recorded where the screenshot command is in the
+frame, and the file is written when the GPU has finished that frame (mbReadPixelsAsync), a frame or two
+later. The pixels arrive as GL returns them: RGB rows, bottom row first, tightly packed.
+==================
+*/
+typedef struct {
+	char		fileName[MAX_OSPATH];
+	int			destWidth, destHeight;	// resampled shots (screenshot <name> <width> <height>, levelshots)
+	qboolean	jpeg;
+	qboolean	levelshot;
+} screenshotJob_t;
 
-Reads an image but takes care of alignment issues for reading RGB images.
+/*
+==================
+R_ReadScreenshot
+==================
+*/
+static void R_ReadScreenshot( int x, int y, int width, int height, const screenshotJob_t *job, mbReadbackFunc_t done ) {
+	screenshotJob_t *copy;
 
-Reads a minimum offset for where the RGB data starts in the image from
-integer stored at pointer offset. When the function has returned the actual
-offset was written back to address offset. This address will always have an
-alignment of packAlign to ensure efficient copying.
-
-Stores the length of padding after a line of pixels to address padlen
-
-Return value must be freed with ri.Hunk_FreeTempMemory()
-================== 
-*/  
-
-byte *RB_ReadPixels(int x, int y, int width, int height, size_t *offset, int *padlen)
-{
-	byte *buffer, *bufstart;
-	int padwidth, linelen;
-	int packAlign;
-	
-	packAlign = 1;	// mbReadPixels writes tightly packed rows
-	
-	linelen = width * 3;
-	padwidth = PAD(linelen, packAlign);
-	
-	// Allocate a few more bytes so that we can choose an alignment we like
-	buffer = ri.Hunk_AllocateTempMemory(padwidth * height + *offset + packAlign - 1);
-	
-	bufstart = PADP((intptr_t) buffer + *offset, packAlign);
-	mbReadPixels(x, y, width, height, MB_RGB, MB_UNSIGNED_BYTE, bufstart);
-	
-	*offset = bufstart - buffer;
-	*padlen = padwidth - linelen;
-	
-	return buffer;
+	copy = ri.Malloc( sizeof( *copy ) );
+	*copy = *job;
+	if ( !mbReadPixelsAsync( x, y, width, height, MB_RGB, done, copy ) ) {
+		ri.Printf( PRINT_WARNING, "Couldn't read back %s\n", job->fileName );
+		ri.Free( copy );
+	}
 }
 
 /*
 ==================
-RB_TakeScreenshot
+RB_WriteScreenshot
 ==================
 */
-void RB_TakeScreenshot( int x, int y, int width, int height, char *fileName ) {
-	byte *allbuf, *buffer;
+static void RB_WriteScreenshot( byte *pixels, int width, int height, void *arg ) {
+	screenshotJob_t *job = arg;
+	byte *buffer;
 	byte *srcptr, *destptr;
-	byte *endline, *endmem;
-	byte temp;
-	
-	int linelen, padlen;
-	size_t offset = 18, memcount;
-		
-	allbuf = RB_ReadPixels(x, y, width, height, &offset, &padlen);
-	buffer = allbuf + offset - 18;
-	
+	byte *endmem;
+	size_t memcount;
+
+	memcount = width * 3 * height;
+	buffer = ri.Hunk_AllocateTempMemory( memcount + 18 );
+
 	Com_Memset (buffer, 0, 18);
 	buffer[2] = 2;		// uncompressed type
 	buffer[12] = width & 255;
@@ -524,60 +512,44 @@ void RB_TakeScreenshot( int x, int y, int width, int height, char *fileName ) {
 	buffer[15] = height >> 8;
 	buffer[16] = 24;	// pixel size
 
-	// swap rgb to bgr and remove padding from line endings
-	linelen = width * 3;
-	
-	srcptr = destptr = allbuf + offset;
-	endmem = srcptr + (linelen + padlen) * height;
-	
+	// swap rgb to bgr
+	srcptr = pixels;
+	destptr = buffer + 18;
+	endmem = srcptr + memcount;
+
 	while(srcptr < endmem)
 	{
-		endline = srcptr + linelen;
+		*destptr++ = srcptr[2];
+		*destptr++ = srcptr[1];
+		*destptr++ = srcptr[0];
 
-		while(srcptr < endline)
-		{
-			temp = srcptr[0];
-			*destptr++ = srcptr[2];
-			*destptr++ = srcptr[1];
-			*destptr++ = temp;
-			
-			srcptr += 3;
-		}
-		
-		// Skip the pad
-		srcptr += padlen;
+		srcptr += 3;
 	}
-
-	memcount = linelen * height;
 
 	// gamma correct
 	if(glConfig.deviceSupportsGamma)
-		R_GammaCorrect(allbuf + offset, memcount);
+		R_GammaCorrect(buffer + 18, memcount);
 
-	ri.FS_WriteFile(fileName, buffer, memcount + 18);
+	ri.FS_WriteFile(job->fileName, buffer, memcount + 18);
 
-	ri.Hunk_FreeTempMemory(allbuf);
+	ri.Hunk_FreeTempMemory(buffer);
+	ri.Free(job);
 }
 
 /* 
 ================== 
-RB_TakeScreenshotJPEG
+RB_WriteScreenshotJPEG
 ================== 
 */  
-void RB_TakeScreenshotJPEG( int x, int y, int width, int height, char *fileName ) {
-	byte *buffer;
-	size_t offset = 0, memcount;
-	int padlen;
-
-	buffer = RB_ReadPixels(x, y, width, height, &offset, &padlen);
-	memcount = (width * 3 + padlen) * height;
+static void RB_WriteScreenshotJPEG( byte *pixels, int width, int height, void *arg ) {
+	screenshotJob_t *job = arg;
 
 	// gamma correct
 	if(glConfig.deviceSupportsGamma)
-		R_GammaCorrect(buffer + offset, memcount);
+		R_GammaCorrect(pixels, width * 3 * height);
 
-	RE_SaveJPG(fileName, r_screenshotJpegQuality->integer, width, height, buffer + offset, padlen);
-	ri.Hunk_FreeTempMemory(buffer);
+	RE_SaveJPG(job->fileName, r_screenshotJpegQuality->integer, width, height, pixels, 0);
+	ri.Free(job);
 }
 
 /*
@@ -587,13 +559,14 @@ RB_TakeScreenshotCmd
 */
 const void *RB_TakeScreenshotCmd( const void *data ) {
 	const screenshotCommand_t	*cmd;
+	screenshotJob_t				job;
 	
 	cmd = (const screenshotCommand_t *)data;
 	
-	if (cmd->jpeg)
-		RB_TakeScreenshotJPEG( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
-	else
-		RB_TakeScreenshot( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
+	Com_Memset( &job, 0, sizeof( job ) );
+	Q_strncpyz( job.fileName, cmd->fileName, sizeof( job.fileName ) );
+	job.jpeg = cmd->jpeg;
+	R_ReadScreenshot( cmd->x, cmd->y, cmd->width, cmd->height, &job, cmd->jpeg ? RB_WriteScreenshotJPEG : RB_WriteScreenshot );
 	
 	return (const void *)(cmd + 1);	
 }
@@ -674,23 +647,20 @@ void R_ScreenshotFilenameJPEG( int lastNumber, char *fileName ) {
 
 /*
 ====================
-R_ResampledScreenShot
+R_WriteResampledScreenShot
+
+Resamples a full-screen readback to destWidth x destHeight. Levelshots are the 128*128 case.
 ====================
 */
-void R_ResampledScreenShot(const char* filename, int destwidth, int destheight) {
-	char		checkname[MAX_OSPATH];
+static void R_WriteResampledScreenShot( byte *source, int width, int height, void *arg ) {
+	screenshotJob_t	*job = arg;
 	byte		*buffer;
-	byte		*source, *allsource;
 	byte		*src, *dst;
-	size_t			offset = 0;
-	int			padlen;
+	int			destwidth = job->destWidth, destheight = job->destHeight;
 	int			x, y;
 	int			r, g, b;
 	float		xScale, yScale;
 	int			xx, yy;
-
-	allsource = RB_ReadPixels(0, 0, glConfig.vidWidth, glConfig.vidHeight, &offset, &padlen);
-	source = allsource + offset;
 
 	buffer = ri.Hunk_AllocateTempMemory(destheight * destwidth * 3 + 18);
 	Com_Memset (buffer, 0, 18);
@@ -702,14 +672,14 @@ void R_ResampledScreenShot(const char* filename, int destwidth, int destheight) 
 	buffer[16] = 24;	// pixel size
 
 	// resample from source
-	xScale = glConfig.vidWidth / (float)(destwidth * 4);
-	yScale = glConfig.vidHeight / (float)(destheight * 3);
+	xScale = width / (float)(destwidth * 4);
+	yScale = height / (float)(destheight * 3);
 	for ( y = 0 ; y < destheight ; y++ ) {
 		for ( x = 0 ; x < destwidth ; x++ ) {
 			r = g = b = 0;
 			for ( yy = 0 ; yy < 3 ; yy++ ) {
 				for ( xx = 0 ; xx < 4 ; xx++ ) {
-					src = source + (3 * glConfig.vidWidth + padlen) * (int)((y*3 + yy) * yScale) +
+					src = source + (3 * width) * (int)((y*3 + yy) * yScale) +
 						3 * (int) ((x*4 + xx) * xScale);
 					r += src[0];
 					g += src[1];
@@ -728,10 +698,29 @@ void R_ResampledScreenShot(const char* filename, int destwidth, int destheight) 
 		R_GammaCorrect( buffer + 18, destheight * destwidth * 3 );
 	}
 
-	ri.FS_WriteFile( filename, buffer, destheight * destwidth * 3 + 18 );
+	ri.FS_WriteFile( job->fileName, buffer, destheight * destwidth * 3 + 18 );
 
 	ri.Hunk_FreeTempMemory( buffer );
-	ri.Hunk_FreeTempMemory( allsource );
+
+	if ( job->levelshot ) {
+		ri.Printf( PRINT_ALL, "Wrote %s\n", job->fileName );
+	}
+	ri.Free( job );
+}
+
+/*
+====================
+R_ResampledScreenShot
+====================
+*/
+void R_ResampledScreenShot(const char* filename, int destwidth, int destheight) {
+	screenshotJob_t	job;
+
+	Com_Memset( &job, 0, sizeof( job ) );
+	Q_strncpyz( job.fileName, filename, sizeof( job.fileName ) );
+	job.destWidth = destwidth;
+	job.destHeight = destheight;
+	R_ReadScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, &job, R_WriteResampledScreenShot );
 }
 
 /*
@@ -743,62 +732,14 @@ the menu system, sampled down from full screen distorted images
 ====================
 */
 void R_LevelShot( void ) {
-	char		checkname[MAX_OSPATH];
-	byte		*buffer;
-	byte		*source, *allsource;
-	byte		*src, *dst;
-	size_t			offset = 0;
-	int			padlen;
-	int			x, y;
-	int			r, g, b;
-	float		xScale, yScale;
-	int			xx, yy;
+	screenshotJob_t	job;
 
-	Com_sprintf(checkname, sizeof(checkname), "levelshots/%s.tga", tr.world->baseName);
-
-	allsource = RB_ReadPixels(0, 0, glConfig.vidWidth, glConfig.vidHeight, &offset, &padlen);
-	source = allsource + offset;
-
-	buffer = ri.Hunk_AllocateTempMemory(128 * 128*3 + 18);
-	Com_Memset (buffer, 0, 18);
-	buffer[2] = 2;		// uncompressed type
-	buffer[12] = 128;
-	buffer[14] = 128;
-	buffer[16] = 24;	// pixel size
-
-	// resample from source
-	xScale = glConfig.vidWidth / 512.0f;
-	yScale = glConfig.vidHeight / 384.0f;
-	for ( y = 0 ; y < 128 ; y++ ) {
-		for ( x = 0 ; x < 128 ; x++ ) {
-			r = g = b = 0;
-			for ( yy = 0 ; yy < 3 ; yy++ ) {
-				for ( xx = 0 ; xx < 4 ; xx++ ) {
-					src = source + (3 * glConfig.vidWidth + padlen) * (int)((y*3 + yy) * yScale) +
-						3 * (int) ((x*4 + xx) * xScale);
-					r += src[0];
-					g += src[1];
-					b += src[2];
-				}
-			}
-			dst = buffer + 18 + 3 * ( y * 128 + x );
-			dst[0] = b / 12;
-			dst[1] = g / 12;
-			dst[2] = r / 12;
-		}
-	}
-
-	// gamma correct
-	if ( glConfig.deviceSupportsGamma ) {
-		R_GammaCorrect( buffer + 18, 128 * 128 * 3 );
-	}
-
-	ri.FS_WriteFile( checkname, buffer, 128 * 128*3 + 18 );
-
-	ri.Hunk_FreeTempMemory(buffer);
-	ri.Hunk_FreeTempMemory(allsource);
-
-	ri.Printf( PRINT_ALL, "Wrote %s\n", checkname );
+	Com_Memset( &job, 0, sizeof( job ) );
+	Com_sprintf( job.fileName, sizeof( job.fileName ), "levelshots/%s.tga", tr.world->baseName );
+	job.destWidth = 128;
+	job.destHeight = 128;
+	job.levelshot = qtrue;
+	R_ReadScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, &job, R_WriteResampledScreenShot );
 }
 
 /* 
@@ -1717,6 +1658,7 @@ void RE_Shutdown( qboolean destroyWindow ) {
 
 	if ( tr.registered ) {
 		R_IssuePendingRenderCommands();
+		mbFlushReadbacks();		// write the screenshots still in flight (one right before a quit or vid_restart)
 		R_DeleteTextures();
 	}
 

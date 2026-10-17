@@ -11,14 +11,18 @@ BASE="$OMM_BUILD/$FLAVOR-install/lib/openmohaa"   # fs_basepath (the folder hold
 APP="$BASE/openmohaa.app/Contents/MacOS"
 [ -x "$APP/openmohaa" ] || { echo "run.sh: build $FLAVOR first (port/build.sh $FLAVOR)" >&2; exit 1; }
 
-# Link only the retail paks (read-only) into the install's main/, never the user's own dylibs, mods or configs.
-mkdir -p "$BASE/main"
-for pak in "$OMM_GAME_DIR"/main/[Pp]ak[0-9]*.pk3; do ln -sfn "$pak" "$BASE/main/"; done
+# Link only the retail paks (read-only) into the install's main/ (and mainta/, maintt/ for Spearhead and
+# Breakthrough, com_target_game 1/2), never the user's own dylibs, mods or configs.
+for dir in main mainta maintt; do
+	[ -d "$OMM_GAME_DIR/$dir" ] || continue
+	mkdir -p "$BASE/$dir"
+	for pak in "$OMM_GAME_DIR/$dir"/[Pp]ak[0-9]*.pk3; do [ -e "$pak" ] && ln -sfn "$pak" "$BASE/$dir/"; done
+done
 [ -e "$BASE/main/Pak0.pk3" ] || { echo "run.sh: no retail paks in $OMM_GAME_DIR/main (set OMM_GAME_DIR)" >&2; exit 1; }
 
 # A PID file left by a killed run makes the game block on a modal "Abnormal Exit" dialog at startup.
 # Remove it when no game is running (pgrep matches the installed app binaries only).
-pgrep -f "build.noindex/.*/openmohaa.app/Contents/MacOS/openmohaa" >/dev/null || rm -f "$OMM_HOME"/main/*.pid
+pgrep -f "build.noindex/.*/openmohaa.app/Contents/MacOS/openmohaa" >/dev/null || rm -f "$OMM_HOME"/main*/*.pid
 
 # openal-soft from Homebrew, dlopen'ed as libopenal.1.dylib from the executable's folder.
 ln -sfn /opt/homebrew/opt/openal-soft/lib/libopenal.1.dylib "$APP/libopenal.1.dylib"

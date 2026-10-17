@@ -14,7 +14,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 - `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it.
 - `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
-- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` + `tgamontage.py` (renderer screenshot comparison and side-by-side tiles, cfgs in `port/shots/`), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
+- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` + `tgamontage.py` (renderer screenshot comparison and side-by-side tiles, cfgs in `port/shots/`), `roqtest.py` (a RoQ test video for the cinematic path), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, traces; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules

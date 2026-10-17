@@ -213,3 +213,21 @@ fragment float4 mb_clear_fs( constant float4 &color [[buffer(0)]] )
 {
 	return color;
 }
+
+//
+// depth queries (flares): one point at a pixel center and a window depth, depth-tested, counted by the
+// pass's visibility result buffer; no fragment function, nothing written
+//
+struct MbQueryOut
+{
+	float4	position [[position]];
+	float	size [[point_size]];
+};
+
+vertex MbQueryOut mb_query_vs( constant float4 &position [[buffer(1)]] )
+{
+	MbQueryOut out;
+	out.position = position;
+	out.size = 1.0f;
+	return out;
+}

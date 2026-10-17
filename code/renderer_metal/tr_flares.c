@@ -72,6 +72,9 @@ typedef struct flare_s {
 	qboolean	visible;			// state of last test
 	float		drawIntensity;		// may be non 0 even if !visible due to fading
 
+	int			query;				// pending depth query (mbDepthQuery), 0 = none
+	qboolean	tested;				// a query result has arrived since the flare was added
+
 	int			windowX, windowY;
 	float		eyeZ;
 
@@ -161,6 +164,8 @@ void RB_AddFlare( void *surface, int fogNum, vec3_t point, vec3_t color, vec3_t 
 		f->frameSceneNum = backEnd.viewParms.frameSceneNum;
 		f->inPortal = backEnd.viewParms.isPortal;
 		f->addedFrame = -1;
+		f->query = 0;
+		f->tested = qfalse;
 	}
 
 	if ( f->addedFrame != backEnd.viewParms.frameCount - 1 ) {
@@ -219,13 +224,20 @@ FLARE BACK END
 /*
 ==================
 RB_TestFlare
+
+GL1 reads the depth buffer under the flare with glReadPixels, a full GPU sync per flare. Here the test is
+a depth query (mbDepthQuery) whose result arrives r_metalFramesInFlight frames later, with no wait: until
+then the flare keeps its last state (and fades on), and a new flare stays in the chain, undrawn, until its
+first result is in.
 ==================
 */
 void RB_TestFlare( flare_t *f ) {
 	float			depth;
 	qboolean		visible;
 	float			fade;
-	float			screenZ;
+	float			zTest;
+	const float		*p;
+	int				result = -1;
 
 	backEnd.pc.c_flareTests++;
 
@@ -233,13 +245,32 @@ void RB_TestFlare( flare_t *f ) {
 	// don't bother with another sync
 	glState.finishCalled = qfalse;
 
-	// read back the z buffer contents
-	mbReadPixels( f->windowX, f->windowY, 1, 1, MB_DEPTH_COMPONENT, MB_FLOAT, &depth );
+	if ( f->query ) {
+		result = mbDepthQueryResult( f->query );
+		if ( result != -1 ) {
+			f->query = 0;
+		}
+	}
 
-	screenZ = backEnd.viewParms.projectionMatrix[14] / 
-		( ( 2*depth - 1 ) * backEnd.viewParms.projectionMatrix[11] - backEnd.viewParms.projectionMatrix[10] );
+	if ( !f->query ) {
+		// GL1's test, ( -f->eyeZ - -screenZ ) < 24 with screenZ the eye z of the depth buffer, passes where the
+		// depth buffer holds something farther away than the point 24 units in front of the flare: test that
+		// point's window depth (less). Closer than the near plane, it is always visible.
+		p = backEnd.viewParms.projectionMatrix;
+		zTest = f->eyeZ + 24;
+		depth = 0;
+		if ( zTest < 0 ) {
+			depth = ( ( p[10] * zTest + p[14] ) / ( p[11] * zTest ) + 1 ) * 0.5f;
+		}
+		f->query = mbDepthQuery( f->windowX, f->windowY, depth );
+	}
 
-	visible = ( -f->eyeZ - -screenZ ) < 24;
+	if ( result < 0 ) {
+		visible = f->visible;	// no new result
+	} else {
+		visible = result ? qtrue : qfalse;
+		f->tested = qtrue;
+	}
 
 	if ( visible ) {
 		if ( !f->visible ) {
@@ -384,7 +415,7 @@ void RB_RenderFlares (void) {
 			RB_TestFlare( f );
 			if ( f->drawIntensity ) {
 				draw = qtrue;
-			} else {
+			} else if ( f->tested ) {
 				// this flare has completely faded out, so remove it from the chain
 				*prev = f->next;
 				f->next = r_inactiveFlares;

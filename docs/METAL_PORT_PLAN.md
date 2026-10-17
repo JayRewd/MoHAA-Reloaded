@@ -11,7 +11,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); next 3c (session 8) |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); next 3d (session 9: the user's look, online smoke test, push) |
 | 4 | Delete OpenGL entirely | Not started |
 | 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
@@ -352,7 +352,27 @@ Added in session 7 (Phase 3b, world features):
   - **no `.gst` ghost texture** exists;
   - **swipes:** `models/fx/fx_grenade_explosion.tik` (the only tiki with a `trail`) is referenced by no tiki, script or map, and spawning it as an entity doesn't run its effects. So `re.SwipePoint` stays NULL, as in GL1 (§3.2 session 4); only a mod that spawns it could reach the unguarded cgame call (in both renderers);
   - **sun flare:** every map with a sun and no `"sunflarename" "none"` gets the default `sun` flare (mohdm6, mohdm1, mohdm3, obj_team2, …).
-- **Depth and stencil readback are still stubs** (`mbReadPixels` returns zeros for `MB_DEPTH_COMPONENT`/`MB_STENCIL_INDEX`). Q3 flares (`r_flares 1` on a map with flare surfaces) would therefore always test as hidden on Metal, and `r_measureOverdraw` reads zeros. Unreachable with retail data. 3c does them, without a GPU wait in the frame (§4b): a visibility-result query per flare, read a frame late, instead of GL1's `glReadPixels` per flare (a full GPU sync each).
+- **Depth and stencil readback are still stubs** (`mbReadPixels` returns zeros for `MB_DEPTH_COMPONENT`/`MB_STENCIL_INDEX`). Q3 flares (`r_flares 1` on a map with flare surfaces) would therefore always test as hidden on Metal, and `r_measureOverdraw` reads zeros. Unreachable with retail data. 3c does them, without a GPU wait in the frame (§4b): a visibility-result query per flare, read a frame late, instead of GL1's `glReadPixels` per flare (a full GPU sync each). *Done in session 8, see below.*
+
+Added in session 8 (Phase 3c, readback and the rest):
+- **Readback never waits for the GPU in the frame** (`mbReadPixelsAsync`, `tr_mtl.h`). The copy is a blit recorded where the front end asks for it, into the frame's own command buffer (the scene pass ends there, keeping depth/stencil, and the frame continues in a new pass), into a shared buffer. The callback gets the pixels the way `glReadPixels` returns them (rows bottom-up, tightly packed) once the frame event reaches that frame: from `mbEndFrame`, right after the frame-slot wait (after the present, before the next frame's input sampling), so `r_metalFramesInFlight` − 1 frames later, or from `mbFlushReadbacks`. Users:
+  - `screenshot`, `screenshotJPEG`, `screenshot <name> <w> <h>` (resampled) and `screenshot levelshot`: `tr_init.c` keeps the file name and size in a small job (`ri.Malloc`), and the callbacks write the TGA/JPEG as before. The content is unchanged: the same point in the command stream, so the fixed views give the same numbers. The file appears one frame later.
+  - `r_measureOverdraw`: the stencil is copied with `MTLBlitOptionStencilFromDepthStencil`; `RB_SumOverdraw` adds the sum to `backEnd.pc` when it arrives, so `r_speeds 1` prints it one frame later than GL1 (2 frames in flight), with the same value (2.94 on dm6 view 0 in both).
+  - `RE_Shutdown` calls `mbFlushReadbacks` (a screenshot right before `quit` or `vid_restart` is still written), and `mbShutdown` delivers whatever is left.
+  - **Video capture (`video`/`cl_aviFrameRate`) stays synchronous**: `mbReadPixels` is the async readback plus `mbFlushReadbacks`. A recording runs on a fixed time step anyway, and async frames would lose the last 1–2 frames at `stopvideo` (the AVI is closed before they arrive). GL1 waits there too.
+- **Q3 flares test depth with visibility queries** (`mbDepthQuery`/`mbDepthQueryResult`), never `glReadPixels`:
+  - GL1's test `( -eyeZ - -screenZ ) < 24` becomes a depth test: a one-pixel point at the flare's pixel, at the window depth of the point 24 units in front of the flare, `less` against the depth buffer, nothing written (`mb_query_vs`, no fragment function). The pass's visibility result buffer (one per frame slot, 256 counters, `MTLVisibilityResultTypeAccumulate`, each counter zeroed when read) counts what passes.
+  - Results are copied out when the frame-slot wait finds the frame complete (before the slot is reused), so a query is answered exactly `r_metalFramesInFlight` frames after it was issued, and stays readable for 4 frames. Handles carry the frame serial.
+  - `tr_flares.c`: a flare keeps one pending query; until its result arrives it keeps its last state (the fade goes on), and a new flare stays in the chain, undrawn, until its first result (GL1 would remove it at once as invisible). So flares appear and disappear 2 frames later than on GL1; the fade (`r_flareFade 7`: 143 ms) hides that.
+  - The visibility buffer is attached to passes only while queries are in use (64 frames after the last one); a query in a pass begun without it ends that pass once.
+- **Pipeline cache** (`MTLBinaryArchive`, `r_metalPipelineCache`, default 1, latched):
+  - Measured first: a pipeline variant that the system shader cache doesn't have yet took **42.6 ms** to create (`r_showtris`' line pipeline, first use mid-game); with a warm system cache, 10 pipelines took 2.6 ms (slowest 0.56 ms). So a cold cache (first run, every new build, every OS update) means one 40 ms hitch per new pipeline, at its first use: mid-match, the first grenade explosion or menu effect.
+  - `<fs_homepath>/metal/pipelines-<hash>.bin` (the archive, ~190 KB) + `.keys` (the stage/clear pipeline keys used). The hash covers the embedded metallib, the GPU name and the OS version, so a new build, GPU or OS starts a fresh cache, and other `pipelines-*` files are deleted.
+  - The first `mbInit` of a run creates every listed pipeline from the archive (`MTLPipelineOptionFailOnBinaryArchiveMiss` tells hits from misses). Misses compile as before; their descriptors are added to the archive and both files are written (temporary file + rename) at `mbShutdown` (vid_restart, quit), never during play.
+  - Result on dm6: second run, **12 pipelines from the cache, all created up front in 0.8 ms**, none during play (0.35 ms in total, slowest 0.06 ms).
+- **`r_showtris`/`r_shownormals` need `developer 1`** in MOHAA (`tr_shade.c`: `r_showtris->integer && r_developer->integer`). `r_showImages 1` draws nothing visible in either renderer (it runs, "0 msec to draw all images" per frame; upstream behavior). `sv_showbboxes 1` only boxes solid entities within 1000 units of the player; `sv_showbboxes 3` boxes tiki models.
+- **`port/run.sh` links `mainta/` and `maintt/` paks too** (only the retail `pak*.pk3`), for `com_target_game 1/2`.
+- **Test tools:** `port/roqtest.py` writes a RoQ test video (retail data ships no video, and there's no encoder here). The fixed-view cfgs gained `shot_readback.cfg`, `shot_cinematic.cfg`, `shot_texmodes.cfg`, `shot_debug.cfg`, `shot_sh.cfg` and `shot_bt.cfg`. The flare test is a scratch hook in both renderers (`r_flareTest "x y z …"` adds flares at world points), not committed: `build.noindex/experiments/flares/` has the GL1 patch (the Metal one is the same hunk) and its cfg.
 
 ---
 
@@ -567,7 +587,21 @@ Session 3 result (2a):
 - **2c:** the `cl_latencyStats` latency probe (§4b).
 - **Done when:** the bench demo plays fully on Metal; 5 fixed views match GL1 by eye and by screenshot diff; first Metal bench numbers are in §2's table (target work ≤ 0.45 ms/frame); first input→present latency numbers (windowed + fullscreen) recorded.
 
-### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 3b in session 7, 2026-10-17; next 3c).**
+### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 3b in session 7, 3c in session 8, 2026-10-17; next 3d).**
+Session 8 result (3c):
+- **Readback without a GPU wait in the frame** (§3.2 "Added in session 8"):
+  - `screenshot`, `screenshotJPEG`, resampled shots and levelshots are async: the fixed views give the same numbers as before (dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437), and a screenshot right before `quit` is still written. `shot_readback.cfg` vs GL1: levelshot 169 pixels (max 25), the 320×240 resampled shot 734, the JPEG alike (the compass and the HSR edge ties differ).
+  - `r_measureOverdraw`: Metal and GL1 both print 2.94 on dm6 view 0 (Metal one frame later).
+  - **Q3 flares:** visibility queries, answered 2 frames later. With a scratch hook in both renderers (8 flares at fixed world points of mohdm6, `build.noindex/experiments/flares/`), the steady views match GL1 exactly: the same flares visible and hidden, and the diff counts equal those of the same views without flares (1454 / 868 / 585). Right after a teleport a newly uncovered flare appears 2 frames (20 ms of game time) later than on GL1: 1458 pixels > 32 in that view.
+  - Video capture (`video`) stays synchronous and is **not verified**: `video` didn't execute after `demo` here (cfg or command line); not pursued.
+- **Cinematics:** `port/roqtest.py` writes a RoQ test video (no retail video exists; Spearhead has only `video/EAlogo.mp3`). `shot_cinematic.cfg`: a new 256×256 picture every frame for 1.5 s, then a held one; the capture matches GL1 to ≤ 4 levels except the "Wrote …" centerprint (frame age). So each frame's upload over a texture still in use reaches the screen, and the stretch filters like GL1.
+- **Texture modes and capability cvars** (`shot_texmodes.cfg`, dm6 view 0; pixels vs GL1): default trilinear 1454, `GL_NEAREST` 6, `GL_LINEAR_MIPMAP_NEAREST` 497, `GL_NEAREST_MIPMAP_LINEAR` 1683, `r_picmip 2` 814, anisotropy 16 1333, `r_ext_multitexture 0` 1459, `r_ext_compressed_textures 1` 1830. Each setting changes the picture by the same amount in both renderers (e.g. picmip 2: 680922 vs 680915 pixels changed from view 0). Compressed textures load the paks' `.dds` files, so **DDS/BC1–3 uploads are verified** too.
+- **Debug views** (`shot_debug.cfg`, `developer 1`): `r_showtris 1` 3059 pixels (2325 > 32: single line pixels, GL's and Metal's line rules differ), `r_showtris 2` on the soldier 29 pixels (max 3), `r_shownormals` 1396, `r_lightmap` 1427, `r_fullbright` 1485, `r_showSkeleton` 796 (line pixels), `r_showhbox` / `sv_showbboxes 3` (the game's debug lines) 642. `r_speeds 1`–`6` print identical numbers. `r_showImages` shows nothing in either renderer.
+- **Spearhead and Breakthrough** (`shot_sh.cfg`: `com_target_game 1`, dm/MP_Malta_DM; `shot_bt.cfg`: `com_target_game 2`, lib/mp_bizerteharbor_lib, fog): 6980 / 856 / 846 and 1241 / 2676 / 437 pixels (≤ 5 above 32 levels). `run.sh` links the expansions' paks, `shot.sh` collects their screenshots.
+- **Pipeline cache:** `MTLBinaryArchive` + key list in `<fs_homepath>/metal/`. Second run of dm6: 12 pipelines from the cache, all created up front in 0.8 ms, none during play. Without it a pipeline new to the system shader cache took 42.6–56 ms at its first use (twice this session, mid-game).
+- **Fixed views, final build:** dm6 above; dm5 1754 / 1383 / 777 / 580 (snow noise); dm6fx 0 / 4 / 605, stencil-shadow view 97.6% (explained), firing/grenade views by eye; m2l1 4252 / 753; dm4 843 / 1694 / 323 / 521; obj3 11389 / 16 / 14151. All as in session 7.
+- **Bench** (screen unlocked): GL1 **0.885 / 0.907 / 0.887 ms** work, Metal **0.401 / 0.400 / 0.405 ms**.
+
 Session 7 result (3b, world features):
 - **The local map-load crash: found, a compiler bug** (§3.2 "Added in session 7"). Proposed fix: `-mllvm -simplifycfg-merge-compatible-invokes=false` for C++ plus `-Wl,-mllvm,-simplifycfg-merge-compatible-invokes=false` at link, for AppleClang, in the macOS cmake. It's a build flag only: game logic, the protocol and timing don't change. **The user agreed (2026-10-17), and it's applied** (§3.2 decision): every map that crashed now loads.
 - **Fixed views** (pixels of 921600 differing; >8 levels in brackets). These are the numbers of the final build, with the flag; a scratch build with the flag gave the same before it went in.
@@ -619,9 +653,9 @@ Session 6 result (3a, display modes):
 
 - Sky box + cloud layers, portal sky, linear fog (all `GLS_FOG*` modes), mirrors/portals (clip distance).
 - Q3 flares + MOHAA sun/lens flares, dlights (lightmap ring uploads), stencil shadows (`r_shadows 2`) and blob shadows, ghost textures.
-- Cinematics (`DrawStretchRaw` ring), screenshots (`screenshot`, `screenshotJPEG`, levelshots; async readback), gamma/overbright final pass.
-- `r_picmip`, `r_textureMode`/anisotropy, `r_ext_*`-equivalent capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines).
-- Spearhead/Breakthrough (`com_target_game 1/2`), the `MTLBinaryArchive` pipeline cache.
+- Cinematics (`DrawStretchRaw` ring), screenshots (`screenshot`, `screenshotJPEG`, levelshots; async readback), gamma/overbright final pass. *Done (3c, session 8).*
+- `r_picmip`, `r_textureMode`/anisotropy, `r_ext_*`-equivalent capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines). *Done (3c, session 8).*
+- Spearhead/Breakthrough (`com_target_game 1/2`), the `MTLBinaryArchive` pipeline cache. *Done (3c, session 8).*
 - Fullscreen and borderless fullscreen hitting direct-to-display, Info.plist Game Mode keys (§4b rules 4–5).
   - Session 5 found that neither renderer's fullscreen goes direct today. Instruments' reason for Metal's layer: "layer requires a potential offscreen render". Find the cause (SDL's view and layer setup, the window style and fullscreen path, `CAMetalLayer` properties) and fix it.
   - Verify with `TRACE=1 LATSTATS=2 port/latency.sh metal <name> 12 +set r_fullscreen 1 +set r_customwidth 1920 +set r_customheight 1080`: `display_trace.py` prints "direct to display" per swap.
@@ -673,33 +707,32 @@ Session 6 result (3a, display modes):
 
 ## 6. Next session
 
-**Session 8 = Phase 3, slice 3c.** Start with CLAUDE.md, then Phase 3 (bullets, the session 7 and session 6 results), §3.2 "Added in session 7" (the compiler bug, the harness gotchas, the content survey, the readback stubs) and "Added in session 4" (the fixed-view harness, HSR ties).
+**Session 9 = Phase 3, slice 3d: the user's look, an online smoke test, then push.** Start with CLAUDE.md, then the Phase 3 bullets and results (sessions 8, 7, 6) and §3.2 "Added in session 8".
 
-Where things stand (end of session 7):
-- **Phase 3b is done** (world features). Committed on `metal`, not pushed: pushes happen at the end of a phase (CLAUDE.md), so 3a and 3b go out with the rest of Phase 3.
-- **What 3b found:**
-  - every world feature retail data has matches GL1 or is explained: sky, portal sky, fog in four maps, sun flare, blob shadow, terrain, decals;
-  - stencil shadows are a no-op on Metal; GL1 dims the whole view from its never-cleared stencil;
-  - firing and grenades are alike by eye (the game's randomness differs run to run).
-- **No Metal renderer bug was found in 3b**; renderer_metal is unchanged since 3a.
-- **The local map-load crash is an Apple clang 21 bug** (`MergeCompatibleInvokes`), not game code. The fix is a build flag in `cmake/compilers/appleclang.cmake`. The user agreed (2026-10-17), and it's in: all maps load, and the views of mohdm4, obj_team3 and m2l1 run on the normal build. Re-check the bug with each new Xcode (§3.2 has the repro).
-- **Bench** (final build): Metal 0.41–0.44 ms work vs GL1 0.93–1.05 ms. The user was active; session 6 had 0.39–0.40 vs 0.92–0.94.
-- **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen. Borderless at the desktop resolution has the same latency as exclusive, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b).
+Where things stand (end of session 8):
+- **Phase 3c is done** (commit on `metal`, not pushed: 3a, 3b and 3c go out together at the end of Phase 3). What it did:
+  - readback never waits for the GPU in the frame: async screenshots/JPEG/levelshots/resampled shots, `r_measureOverdraw`'s stencil, and Q3 flares through visibility queries answered 2 frames later (§3.2 session 8);
+  - cinematics, texture modes, picmip, anisotropy, the capability cvars, DDS/BC uploads, the debug views, Spearhead and Breakthrough: all match GL1 (Phase 3, session 8 result);
+  - the `MTLBinaryArchive` pipeline cache: every pipeline a run needs is created up front from `<fs_homepath>/metal/` (12 in 0.8 ms on dm6), instead of a 40–56 ms compile at first use mid-game on a cold system shader cache.
+- **Fixed views and bench unchanged:** all six maps as in session 7; bench Metal 0.400–0.405 ms work vs GL1 0.885–0.907 ms.
+- **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen (`r_fullscreen 1` + `r_noborder 1`). Borderless at the desktop resolution has the same latency as exclusive fullscreen, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b), which is always composited.
 - Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
-Phase 3's remaining slices (adjust if something turns out bigger):
-- **3c (session 8):**
-  - **readback without a GPU wait in the frame:**
-    - screenshots (`screenshot`, `screenshotJPEG`) and levelshots, async;
-    - the depth/stencil stubs in `mbReadPixels` (§3.2 session 7): Q3 flares via a visibility-result query per flare read a frame late, and `r_measureOverdraw`'s stencil read;
-    - check the flare path with `r_flares 1` on a map with flare surfaces: retail has none, so make a tiny test map or skip with a note;
-  - cinematics (`RE_StretchRaw`);
-  - `r_picmip`, `r_textureMode`/anisotropy, the capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines);
-  - Spearhead/Breakthrough (`com_target_game 1/2`; mainta/maintt are in the game folder);
-  - the `MTLBinaryArchive` pipeline cache.
+What 3d needs (both steps need the user, so ask early, with `AskUserQuestion` or in the report):
+1. **The user's look.** Show the fixed views side by side (GL1 | Metal | diff): `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first. Ask the user to play a few minutes with `cl_renderer metal` in borderless fullscreen and say whether anything looks or feels wrong.
+2. **Online smoke test on a real server** (Phase 3 "done when"): connect, play a few minutes, no errors, no desync. Connecting to a server is outward-facing: ask the user which server (one of theirs, or a public one they pick) and get their OK before connecting. Check the console log for errors and the `r_metalPresentStats` line at quit.
+3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and **push `metal` to origin** (CLAUDE.md: the user said yes to pushing at the end of every phase). Then Phase 4 (delete OpenGL) is next; that's session 10.
 
-  Keep `pair dm6`, `dm5`, `dm6fx`, `m2l1`, `dm4` and `obj3` passing, plus the bench.
-- **3d:** the user's look at the result, and an online smoke test on a real server. The session report should then also recommend fullscreen/borderless to the user (see above). Push at the end of Phase 3.
+If the user can't do 1–2 in session 9, don't wait idle: record it in the plan, and ask whether to push 3a–3c anyway and start Phase 4 (it removes GL1, the reference the fixed views compare against, so keep `build.noindex/shots` GL1 captures, or a GL1 build, for later checks).
+
+Gotchas found in session 8:
+- **The Bash tool runs zsh:** `for p in "a b" …; do cmd $p; done` passes "a b" as one argument; use `${=p}`.
+- **`com_target_game 1/2` writes into `home.noindex/mainta/` / `maintt/`** (screenshots, configs). `shot.sh` collects `main*/screenshots` now.
+- **`r_showtris`/`r_shownormals` need `developer 1`.** Cvars the renderer registers late (like a scratch cvar) need `set` in a cfg; the bare `name value` form is silently ignored when the cvar doesn't exist yet.
+- **Commands after `demo` in a cfg or on the command line didn't run** (so `video` couldn't be tested).
+- **The system Metal shader cache (`$(getconf DARWIN_USER_CACHE_DIR)com.apple.metal`) is shared by all apps:** don't clear it to measure cold compiles. A new pipeline variant shows the cold cost by itself (42–56 ms here).
+- **The pipeline cache lives in `home.noindex/metal/`** for our runs; delete it to measure a run without it, or set `r_metalPipelineCache 0`.
+- **A missing `quit` at the end of a shot cfg costs shot.sh's 120 s alarm per run.**
 
 Gotchas found in session 7:
 - **Fixed views only compare deterministic things:**
@@ -753,10 +786,11 @@ Gotchas found in session 5:
   - HiDPI input on 2× displays is untested (§6 of session 4: `SDL_WINDOWEVENT_RESIZED` compares points with pixels, relative mouse deltas are in points, `SDL_WarpMouseInWindow` expects points).
 
 Open bugs:
-- **In the renderer:** the depth/stencil readback stubs (`mbReadPixels`). With them, Q3 flares always test as hidden with `r_flares 1`, and `r_measureOverdraw` reads zeros. Unreachable with retail data → 3c.
+- **In the renderer:** none known. (The depth/stencil readback stubs are gone, session 8.)
 - **Display path:** GL1's fullscreen still isn't direct (same window shadow; left alone, GL1 goes away in Phase 4). The window's latency depends on the compositor's mode (§2).
 - **Outside it:** none known. The local map-load crash was the Apple clang 21 `MergeCompatibleInvokes` bug; the build flag fixes it (§3.2 session 7). Drop the flag once Xcode fixes the bug.
 - **Untested:**
-  - HiDPI input, DDS/BC uploads, cinematics;
-  - swipes and mirrors (no retail content reaches them, §3.2 session 7);
+  - HiDPI input;
+  - video capture (`video`; synchronous by design, see §3.2 session 8);
+  - swipes and mirrors (no retail content reaches them, §3.2 session 7); real map flare surfaces (none in retail; tested with a scratch hook);
   - exclusive fullscreen at a non-native resolution (a display mode change), and fullscreen on the 4K@2× display.

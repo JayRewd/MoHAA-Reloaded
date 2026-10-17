@@ -57,6 +57,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#include <errno.h>
 #include <mach/mach_time.h>
 #include <os/lock.h>
 #include <pthread.h>
@@ -108,6 +109,7 @@ static id<CAMetalDrawable>			mb_readyDrawable;	// guarded by mb_readyLock
 
 static cvar_t	*r_metalFramesInFlight;
 static cvar_t	*r_metalPresentStats;
+static cvar_t	*r_metalPipelineCache;
 
 // r_metalPresentStats: drawables actually shown on screen (presentedTime > 0) vs. presented
 static _Atomic int	mb_statPresented, mb_statShown;
@@ -117,6 +119,8 @@ static uint64_t		mb_statDraws, mb_statPasses, mb_statClearQuads, mb_statOrphans,
 static _Atomic uint64_t	mb_statGPUTime, mb_statGPULatency, mb_statCompletion;	// ns: frame command buffer GPU start..end, commit..GPU start, commit..completed handler
 static _Atomic int		mb_statGPUFrames;
 static int			mb_statPipelines, mb_statRingGrowths;
+static uint64_t		mb_statPipelineTime, mb_statPipelineMax;		// mach ticks creating pipelines (total, slowest)
+static int			mb_statPipelinesCached;						// of mb_statPipelines, found in the pipeline cache
 
 // cl_latencyStats (mbLatencyTag/mbLatencyPoll): when each tagged frame was committed, finished on the GPU and
 // shown. Records are polled in frame order; the command buffer's completed handler and the drawable's presented
@@ -189,6 +193,50 @@ typedef struct {
 
 static mbRetired_t	*mb_retired;
 static int			mb_numRetired, mb_maxRetired;
+
+// Readbacks (mbReadPixelsAsync): a blit into a shared buffer at that point of the frame, handed to the callback
+// once the frame event has reached the frame's serial.
+#define MB_MAX_READBACKS	16
+
+typedef struct {
+	void				*buffer;		// id<MTLBuffer>, retained
+	uint64_t			serial;			// the frame that fills it
+	int					width, height;
+	int					format;			// MB_RGB, MB_RGBA or MB_STENCIL_INDEX
+	mbReadbackFunc_t	done;
+	void				*arg;
+} mbReadback_t;
+
+static mbReadback_t	mb_readbacks[MB_MAX_READBACKS];
+static int			mb_numReadbacks;
+static byte			*mb_readbackPixels;					// the callback's pixels, converted from the buffer
+static size_t		mb_readbackPixelsSize;
+
+// Depth queries (mbDepthQuery): one point per query, counted into the frame slot's visibility result buffer.
+// The counts are copied out when the slot wait at the end of a frame finds that frame complete (so a query is
+// answered r_metalFramesInFlight frames after it was issued) and stay readable for MB_QUERY_HISTORY frames.
+#define MB_MAX_QUERIES		256
+#define MB_QUERY_HISTORY	4
+#define MB_QUERY_KEEP		64				// frames a pass still gets the visibility buffer after the last query
+#define MB_QUERY_TAG( s )	( (int)( ( s ) % 0x7fffff ) + 1 )	// a frame serial as it is stored in a handle
+
+typedef struct {
+	uint64_t	serial;						// 0 = empty
+	int			count;
+	byte		passed[MB_MAX_QUERIES];
+} mbQueryResults_t;
+
+static id<MTLBuffer>				mb_queryBuffers[MB_MAX_FRAMES];	// per frame slot, MB_MAX_QUERIES counters
+static uint64_t						mb_querySerial[MB_MAX_FRAMES];	// the frame whose queries a slot's buffer holds, 0 = none
+static int							mb_queryCount[MB_MAX_FRAMES];
+static mbQueryResults_t				mb_queryResults[MB_QUERY_HISTORY];
+static int							mb_queryKeep;
+static qboolean						mb_encQueries;		// the current pass has the visibility buffer
+static id<MTLRenderPipelineState>	mb_queryPipeline;
+
+static void MB_HarvestQueries( uint64_t completed );
+static void MB_ProcessReadbacks( uint64_t completed );
+static void *MB_Pipeline( uint32_t key );
 
 /*
 =============================================================
@@ -686,6 +734,14 @@ static qboolean MB_BeginPass( void )
 			pass.stencilAttachment.loadAction = MTLLoadActionLoad;
 		}
 
+		// depth queries count into the frame slot's buffer while they are in use (accumulated across the
+		// frame's passes: every query has its own counter, zeroed when its results are copied out)
+		mb_encQueries = ( mb_queryKeep > 0 && mb_queryBuffers[mb_frameSlot] ) ? qtrue : qfalse;
+		if ( mb_encQueries ) {
+			pass.visibilityResultBuffer = mb_queryBuffers[mb_frameSlot];
+			pass.visibilityResultType = MTLVisibilityResultTypeAccumulate;
+		}
+
 		mb_enc = [mb_cmd renderCommandEncoderWithDescriptor:pass];
 	}
 
@@ -732,6 +788,233 @@ static void MB_FlushAndWait( void )
 		[mb_cmd waitUntilCompleted];
 		mb_cmd = nil;
 	}
+}
+
+/*
+=============================================================
+
+PIPELINE CACHE
+
+=============================================================
+*/
+
+// Compiled pipelines are kept in an MTLBinaryArchive in <fs_homepath>/metal/, next to the list of the pipeline keys
+// used. The first mbInit of a run creates the listed pipelines from the archive: nothing is compiled, and no pipeline
+// is first created in the middle of a match (with a warm system shader cache, the first pipeline of a run took 42.6 ms
+// to create). A pipeline the archive lacks is compiled as before, and its descriptor is added to the archive when the
+// files are written: at mbShutdown (vid_restart, quit), never during play. The file names carry a hash of the embedded
+// metallib, the GPU and the OS version, so a new build, GPU or OS starts a new cache; the other files are deleted.
+#define MB_CACHE_MAGIC		0x4350424d		// "MBPC"
+#define MB_CACHE_VERSION	1
+
+static id<MTLBinaryArchive>		mb_archive;
+static NSMutableArray			*mb_archiveNew;		// descriptors of compiled pipelines, added at the next save
+static NSString					*mb_archivePath, *mb_keysPath;
+static uint32_t					mb_cacheKeys[MB_PIPELINE_SLOTS];	// stage/clear pipeline keys created in this process
+static int						mb_numCacheKeys, mb_savedCacheKeys;
+static qboolean					mb_cacheOpened;
+
+/*
+** MB_NewRenderPipeline
+**
+** From the archive if it holds the pipeline, else compiled (and remembered for the archive).
+*/
+static id<MTLRenderPipelineState> MB_NewRenderPipeline( MTLRenderPipelineDescriptor *desc, NSError **error )
+{
+	id<MTLRenderPipelineState> pipeline;
+
+	if ( mb_archive ) {
+		desc.binaryArchives = @[ mb_archive ];
+		pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss
+			reflection:nil error:nil];
+		if ( pipeline ) {
+			mb_statPipelinesCached++;
+			return pipeline;
+		}
+	}
+	pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc error:error];
+	if ( pipeline && mb_archive ) {
+		[mb_archiveNew addObject:desc];
+	}
+	return pipeline;
+}
+
+/*
+** MB_CacheHash
+**
+** FNV-1a over the metallib, the GPU's name and the OS version.
+*/
+static uint32_t MB_CacheHash( void )
+{
+	const char *strings[2];
+	uint32_t hash = 2166136261u;
+	const char *c;
+	unsigned int i;
+
+	for ( i = 0; i < tr_mtl_metallib_len; i++ ) {
+		hash = ( hash ^ tr_mtl_metallib[i] ) * 16777619u;
+	}
+	strings[0] = mb_device.name.UTF8String;
+	strings[1] = [NSProcessInfo processInfo].operatingSystemVersionString.UTF8String;
+	for ( i = 0; i < 2; i++ ) {
+		for ( c = strings[i]; c && *c; c++ ) {
+			hash = ( hash ^ (byte)*c ) * 16777619u;
+		}
+	}
+	return hash;
+}
+
+/*
+** MB_OpenPipelineCache
+**
+** Once per process, before the first pipeline is created.
+*/
+static void MB_OpenPipelineCache( void )
+{
+	NSFileManager *fm = [NSFileManager defaultManager];
+	MTLBinaryArchiveDescriptor *desc;
+	NSString *dir, *prefix, *name;
+	NSError *error = nil;
+	cvar_t *home;
+
+	if ( mb_cacheOpened ) {
+		return;
+	}
+	mb_cacheOpened = qtrue;
+
+	home = ri.Cvar_Get( "fs_homepath", "", 0 );
+	if ( !r_metalPipelineCache->integer || !home->string[0] ) {
+		return;
+	}
+
+	@autoreleasepool {
+		dir = [[NSString stringWithUTF8String:home->string] stringByAppendingPathComponent:@"metal"];
+		if ( ![fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&error] ) {
+			ri.Printf( PRINT_WARNING, "Metal: no pipeline cache: %s\n", error.localizedDescription.UTF8String );
+			return;
+		}
+		prefix = [NSString stringWithFormat:@"pipelines-%08x.", MB_CacheHash()];
+		mb_archivePath = [dir stringByAppendingPathComponent:[prefix stringByAppendingString:@"bin"]];
+		mb_keysPath = [dir stringByAppendingPathComponent:[prefix stringByAppendingString:@"keys"]];
+
+		// the caches of other builds, GPUs or OS versions
+		for ( name in [fm contentsOfDirectoryAtPath:dir error:nil] ) {
+			if ( [name hasPrefix:@"pipelines-"] && ![name hasPrefix:prefix] ) {
+				[fm removeItemAtPath:[dir stringByAppendingPathComponent:name] error:nil];
+			}
+		}
+
+		desc = [MTLBinaryArchiveDescriptor new];
+		if ( [fm fileExistsAtPath:mb_archivePath] ) {
+			desc.url = [NSURL fileURLWithPath:mb_archivePath];
+		}
+		mb_archive = [mb_device newBinaryArchiveWithDescriptor:desc error:&error];
+		if ( !mb_archive && desc.url ) {
+			ri.Printf( PRINT_WARNING, "Metal: pipeline cache unreadable, starting a new one: %s\n", error.localizedDescription.UTF8String );
+			[fm removeItemAtPath:mb_keysPath error:nil];
+			desc.url = nil;
+			mb_archive = [mb_device newBinaryArchiveWithDescriptor:desc error:&error];
+		}
+		if ( !mb_archive ) {
+			ri.Printf( PRINT_WARNING, "Metal: no pipeline cache: %s\n", error.localizedDescription.UTF8String );
+			return;
+		}
+		mb_archive.label = @"pipeline cache";
+		mb_archiveNew = [NSMutableArray new];
+	}
+}
+
+/*
+** MB_PrewarmPipelines
+**
+** Creates the pipelines the cache lists (once per process, after the shader library is loaded).
+*/
+static void MB_PrewarmPipelines( void )
+{
+	static qboolean done;
+	uint32_t header[3], key;
+	uint64_t t0;
+	FILE *f;
+	int i, count = 0;
+
+	if ( done || !mb_archive ) {
+		return;
+	}
+	done = qtrue;
+
+	f = fopen( mb_keysPath.fileSystemRepresentation, "rb" );
+	if ( !f ) {
+		return;
+	}
+	t0 = mach_absolute_time();
+	if ( fread( header, sizeof( header ), 1, f ) == 1 && header[0] == MB_CACHE_MAGIC && header[1] == MB_CACHE_VERSION ) {
+		for ( i = 0; i < (int)header[2] && fread( &key, sizeof( key ), 1, f ) == 1; i++ ) {
+			if ( MB_Pipeline( key ) ) {
+				count++;
+			}
+		}
+	}
+	fclose( f );
+	mb_savedCacheKeys = mb_numCacheKeys;
+
+	{
+		mach_timebase_info_data_t tb;
+
+		mach_timebase_info( &tb );
+		ri.Printf( PRINT_ALL, "Metal: %d pipelines created up front (%d from the pipeline cache) in %.1f ms\n",
+			count, mb_statPipelinesCached, (double)( mach_absolute_time() - t0 ) * tb.numer / tb.denom / 1e6 );
+	}
+}
+
+/*
+** MB_SavePipelineCache
+**
+** Adds the pipelines compiled since the last save to the archive and writes both files (each to a temporary file,
+** then renamed over the old one, which the archive may still have mapped).
+*/
+static void MB_SavePipelineCache( void )
+{
+	MTLRenderPipelineDescriptor *desc;
+	NSString *tmp;
+	NSError *error = nil;
+	uint32_t header[3];
+	FILE *f;
+
+	if ( !mb_archive || ( !mb_archiveNew.count && mb_numCacheKeys == mb_savedCacheKeys ) ) {
+		return;
+	}
+
+	@autoreleasepool {
+		for ( desc in mb_archiveNew ) {
+			if ( ![mb_archive addRenderPipelineFunctionsWithDescriptor:desc error:&error] ) {
+				ri.Printf( PRINT_WARNING, "Metal: pipeline cache: %s\n", error.localizedDescription.UTF8String );
+			}
+		}
+		[mb_archiveNew removeAllObjects];
+
+		error = nil;
+		tmp = [mb_archivePath stringByAppendingString:@".tmp"];
+		if ( ![mb_archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&error]
+			|| rename( tmp.fileSystemRepresentation, mb_archivePath.fileSystemRepresentation ) ) {
+			ri.Printf( PRINT_WARNING, "Metal: pipeline cache not written: %s\n", error ? error.localizedDescription.UTF8String : strerror( errno ) );
+			return;
+		}
+
+		tmp = [mb_keysPath stringByAppendingString:@".tmp"];
+		f = fopen( tmp.fileSystemRepresentation, "wb" );
+		if ( !f ) {
+			return;
+		}
+		header[0] = MB_CACHE_MAGIC;
+		header[1] = MB_CACHE_VERSION;
+		header[2] = mb_numCacheKeys;
+		fwrite( header, sizeof( header ), 1, f );
+		fwrite( mb_cacheKeys, sizeof( mb_cacheKeys[0] ), mb_numCacheKeys, f );
+		if ( fclose( f ) == 0 ) {
+			rename( tmp.fileSystemRepresentation, mb_keysPath.fileSystemRepresentation );
+		}
+	}
+	mb_savedCacheKeys = mb_numCacheKeys;
 }
 
 /*
@@ -786,6 +1069,7 @@ static void *MB_CreatePipeline( uint32_t key )
 	MTLRenderPipelineColorAttachmentDescriptor *color = desc.colorAttachments[0];
 	id<MTLRenderPipelineState> pipeline;
 	NSError *error = nil;
+	uint64_t t0;
 
 	if ( key & MB_PIPE_CLEAR ) {
 		desc.label = @"clear";
@@ -811,12 +1095,18 @@ static void *MB_CreatePipeline( uint32_t key )
 	desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 	desc.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-	pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc error:&error];
+	t0 = mach_absolute_time();
+	pipeline = MB_NewRenderPipeline( desc, &error );
+	t0 = mach_absolute_time() - t0;
 	if ( !pipeline ) {
 		ri.Printf( PRINT_WARNING, "Metal: pipeline 0x%x failed: %s\n", key, error.localizedDescription.UTF8String );
 		return NULL;
 	}
 	mb_statPipelines++;
+	mb_statPipelineTime += t0;
+	if ( t0 > mb_statPipelineMax ) {
+		mb_statPipelineMax = t0;
+	}
 	return (__bridge_retained void *)pipeline;
 }
 
@@ -836,6 +1126,9 @@ static void *MB_Pipeline( uint32_t key )
 	}
 	if ( mb_pipelines[i].object ) {
 		mb_pipelines[i].key = key + 1;
+		if ( mb_numCacheKeys < MB_PIPELINE_SLOTS ) {
+			mb_cacheKeys[mb_numCacheKeys++] = key;		// for the pipeline cache
+		}
 	}
 	return mb_pipelines[i].object;
 }
@@ -1030,12 +1323,29 @@ static qboolean MB_CreatePipelines( void )
 		}
 	}
 
+	if ( !mb_queryPipeline ) {
+		// depth queries: a point, depth-tested, no fragment function, nothing written (flares then just never
+		// test as visible if this fails)
+		desc = [MTLRenderPipelineDescriptor new];
+		desc.label = @"depth query";
+		desc.vertexFunction = [mb_library newFunctionWithName:@"mb_query_vs"];
+		desc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+		desc.colorAttachments[0].writeMask = MTLColorWriteMaskNone;
+		desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+		desc.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+		desc.inputPrimitiveTopology = MTLPrimitiveTopologyClassPoint;
+		mb_queryPipeline = MB_NewRenderPipeline( desc, &error );
+		if ( !mb_queryPipeline ) {
+			ri.Printf( PRINT_WARNING, "Metal: depth query pipeline failed: %s\n", error.localizedDescription.UTF8String );
+		}
+	}
+
 	desc = [MTLRenderPipelineDescriptor new];
 	desc.label = @"final";
 	desc.vertexFunction = [mb_library newFunctionWithName:@"mb_final_vs"];
 	desc.fragmentFunction = [mb_library newFunctionWithName:@"mb_final_fs"];
 	desc.colorAttachments[0].pixelFormat = mb_layer.pixelFormat;
-	mb_finalPipeline = [mb_device newRenderPipelineStateWithDescriptor:desc error:&error];
+	mb_finalPipeline = MB_NewRenderPipeline( desc, &error );
 	if ( !mb_finalPipeline ) {
 		ri.Printf( PRINT_ALL, "mbInit: final pipeline failed: %s\n", error.localizedDescription.UTF8String );
 		return qfalse;
@@ -1238,6 +1548,7 @@ qboolean mbInit( void *metalLayer )
 
 	r_metalFramesInFlight = ri.Cvar_Get( "r_metalFramesInFlight", "2", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalPresentStats = ri.Cvar_Get( "r_metalPresentStats", "0", 0 );
+	r_metalPipelineCache = ri.Cvar_Get( "r_metalPipelineCache", "1", CVAR_ARCHIVE | CVAR_LATCH );
 
 	if ( !mb_device ) {
 		mb_device = MTLCreateSystemDefaultDevice();
@@ -1255,10 +1566,12 @@ qboolean mbInit( void *metalLayer )
 	mb_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;	// not sRGB: Q3 math is gamma-space
 	mb_layer.framebufferOnly = YES;
 
+	MB_OpenPipelineCache();
 	if ( !MB_CreatePipelines() || !MB_CreateSceneTargets( glConfig.vidWidth, glConfig.vidHeight ) ) {
 		mbShutdown();
 		return qfalse;
 	}
+	MB_PrewarmPipelines();
 
 	for ( i = 0; i < 256; i++ ) {
 		mb_gammaRamp[i][0] = mb_gammaRamp[i][1] = mb_gammaRamp[i][2] = i;
@@ -1312,6 +1625,11 @@ void mbShutdown( void )
 		mb_lastCommitted = nil;
 	}
 
+	// everything has completed: the last query results and readbacks (screenshots taken right before a quit)
+	MB_HarvestQueries( UINT64_MAX );
+	MB_ProcessReadbacks( UINT64_MAX );
+
+	MB_SavePipelineCache();
 	MB_StopDrawableAcquisition();
 
 	// drop the latency records of this window's frames (their presented handlers may never run)
@@ -1330,10 +1648,12 @@ void mbShutdown( void )
 			(double)mb_statDrawableWait * tb.numer / tb.denom / 1e6 / mb_statFrames,
 			(double)mb_statSlotWait * tb.numer / tb.denom / 1e6 / mb_statFrames );
 		ri.Printf( PRINT_ALL, "Metal: per frame %.1f draws, %.2f passes, %.2f clear quads, %.1f KB ring; "
-			"%d pipelines, %llu texture copies (in use), %d ring growths\n",
+			"%d pipelines (%d from the cache; %.2f ms to create, slowest %.2f ms), %llu texture copies (in use), %d ring growths\n",
 			(double)mb_statDraws / mb_statFrames, (double)mb_statPasses / mb_statFrames,
 			(double)mb_statClearQuads / mb_statFrames, (double)mb_statRingBytes / mb_statFrames / 1024.0,
-			mb_statPipelines, (unsigned long long)mb_statOrphans, mb_statRingGrowths );
+			mb_statPipelines, mb_statPipelinesCached, (double)mb_statPipelineTime * tb.numer / tb.denom / 1e6,
+			(double)mb_statPipelineMax * tb.numer / tb.denom / 1e6,
+			(unsigned long long)mb_statOrphans, mb_statRingGrowths );
 		if ( mb_statGPUFrames ) {
 			ri.Printf( PRINT_ALL, "Metal: frame command buffer: %.3f ms GPU time; from commit: %.3f ms to GPU start, %.3f ms to completion (%d frames)\n",
 				(double)mb_statGPUTime / 1e6 / mb_statGPUFrames, (double)mb_statGPULatency / 1e6 / mb_statGPUFrames,
@@ -1642,9 +1962,22 @@ void mbEndFrame( void )
 		}
 	}
 
-	mb_frameSerial++;
-	MB_SelectRing( (int)( mb_frameSerial % mb_framesInFlight ) );
-	MB_ReleaseRetired( mb_frameEvent.signaledValue );
+	// The frame whose slot the next frame reuses has completed: copy its query results out before the slot's
+	// buffer is reused, and hand finished readbacks to their callbacks (here, before the next frame's input
+	// sampling; nothing waited for them).
+	{
+		uint64_t completed = mb_frameEvent.signaledValue;
+
+		MB_HarvestQueries( completed );
+		if ( mb_queryKeep > 0 ) {
+			mb_queryKeep--;
+		}
+		mb_frameSerial++;
+		mb_depthValid = qfalse;		// a new frame starts with depth/stencil cleared, even after a readback
+		MB_SelectRing( (int)( mb_frameSerial % mb_framesInFlight ) );
+		MB_ReleaseRetired( completed );
+		MB_ProcessReadbacks( completed );
+	}
 }
 
 /*
@@ -3385,67 +3718,324 @@ READBACK
 =============================================================
 */
 
-void mbReadPixels( int x, int y, int width, int height, int format, int type, void *pixels )
+/*
+** MB_ReadbackStart
+**
+** Makes the scene target hold everything recorded so far and ends the pass, so a blit can read it. The frame
+** continues in a new pass that loads color and depth/stencil.
+*/
+static qboolean MB_ReadbackStart( int format )
 {
-	int components;
+	if ( !mb_sceneColor ) {
+		return qfalse;
+	}
+	if ( mb_pendingClear || ( format == MB_STENCIL_INDEX ? !mb_depthValid : !mb_sceneColorValid ) ) {
+		MB_BeginPass();		// apply the clears (or define the contents) before reading
+	}
+	MB_EndPass( qtrue );
+	MB_BeginCommandBuffer();
+	return qtrue;
+}
+
+/*
+** mbReadPixelsAsync
+**
+** GL1 reads back with glReadPixels, which waits for the GPU. Here the copy is a blit in this frame's command
+** buffer, and the callback runs once the frame has completed (MB_ProcessReadbacks).
+*/
+qboolean mbReadPixelsAsync( int x, int y, int width, int height, int format, mbReadbackFunc_t done, void *arg )
+{
+	mbReadback_t *r;
+	NSUInteger bpp = format == MB_STENCIL_INDEX ? 1 : 4;
+
+	if ( ( format != MB_RGB && format != MB_RGBA && format != MB_STENCIL_INDEX ) || width <= 0 || height <= 0
+		|| x < 0 || y < 0 || x + width > mb_width || y + height > mb_height ) {
+		return qfalse;
+	}
+	if ( mb_numReadbacks == MB_MAX_READBACKS ) {
+		ri.Printf( PRINT_WARNING, "Metal: too many readbacks in flight\n" );
+		return qfalse;
+	}
+	if ( !MB_ReadbackStart( format ) ) {
+		return qfalse;
+	}
+
+	@autoreleasepool {
+		id<MTLBuffer> buffer = [mb_device newBufferWithLength:(NSUInteger)width * height * bpp
+			options:MTLResourceStorageModeShared];
+		id<MTLBlitCommandEncoder> blit;
+
+		if ( !buffer ) {
+			return qfalse;
+		}
+		buffer.label = @"readback";
+
+		// GL rows are bottom-up, Metal rows top-down (flipped when the pixels are handed out)
+		blit = [mb_cmd blitCommandEncoder];
+		[blit copyFromTexture:format == MB_STENCIL_INDEX ? mb_sceneDepth : mb_sceneColor sourceSlice:0 sourceLevel:0
+			sourceOrigin:MTLOriginMake( x, mb_height - y - height, 0 ) sourceSize:MTLSizeMake( width, height, 1 )
+			toBuffer:buffer destinationOffset:0 destinationBytesPerRow:width * bpp destinationBytesPerImage:width * height * bpp
+			options:format == MB_STENCIL_INDEX ? MTLBlitOptionStencilFromDepthStencil : MTLBlitOptionNone];
+		[blit endEncoding];
+
+		r = &mb_readbacks[mb_numReadbacks++];
+		r->buffer = (__bridge_retained void *)buffer;
+	}
+	r->serial = mb_frameSerial;
+	r->width = width;
+	r->height = height;
+	r->format = format;
+	r->done = done;
+	r->arg = arg;
+	return qtrue;
+}
+
+/*
+** MB_DeliverReadback
+**
+** The pixels as GL returns them (rows bottom row first, tightly packed), then the callback.
+*/
+static void MB_DeliverReadback( mbReadback_t *r )
+{
+	id<MTLBuffer> buffer = (__bridge_transfer id<MTLBuffer>)r->buffer;
+	int srcBpp = r->format == MB_STENCIL_INDEX ? 1 : 4;
+	int dstBpp = r->format == MB_RGB ? 3 : srcBpp;
+	size_t size = (size_t)r->width * r->height * dstBpp;
+	const byte *src;
+	byte *dst;
 	int row, col;
 
-	switch ( format ) {
-	case MB_RGBA:
-		components = 4;
-		break;
-	case MB_RGB:
-		components = 3;
-		break;
-	default:
-		components = 1;
-		break;
-	}
-	if ( type == MB_FLOAT ) {
-		components *= sizeof( float );
-	}
-
-	if ( ( format != MB_RGB && format != MB_RGBA ) || !mb_sceneColor
-		|| x < 0 || y < 0 || x + width > mb_width || y + height > mb_height ) {
-		// depth/stencil readback: Phase 3
-		memset( pixels, 0, (size_t)width * height * components );
-		return;
-	}
-
-	// Synchronous copy of the scene target with everything drawn so far (screenshots and video frames only,
-	// never in the normal frame path; Phase 3 makes it asynchronous). GL rows are bottom-up, Metal rows top-down.
-	@autoreleasepool {
-		id<MTLBuffer> buffer;
-		id<MTLCommandBuffer> cmd;
-		id<MTLBlitCommandEncoder> blit;
-		const byte *src;
-		byte *dst;
-
-		MB_FlushAndWait();
-
-		buffer = [mb_device newBufferWithLength:(NSUInteger)width * height * 4 options:MTLResourceStorageModeShared];
-		cmd = [mb_queue commandBuffer];
-		blit = [cmd blitCommandEncoder];
-		[blit copyFromTexture:mb_sceneColor sourceSlice:0 sourceLevel:0
-			sourceOrigin:MTLOriginMake( x, mb_height - y - height, 0 ) sourceSize:MTLSizeMake( width, height, 1 )
-			toBuffer:buffer destinationOffset:0 destinationBytesPerRow:width * 4 destinationBytesPerImage:width * height * 4];
-		[blit endEncoding];
-		[cmd commit];
-		[cmd waitUntilCompleted];
-
-		dst = pixels;
-		for ( row = 0; row < height; row++ ) {
-			src = (const byte *)buffer.contents + (size_t)( height - 1 - row ) * width * 4;
-			for ( col = 0; col < width; col++, src += 4, dst += components ) {
-				dst[0] = src[0];
-				dst[1] = src[1];
-				dst[2] = src[2];
-				if ( components == 4 ) {
-					dst[3] = src[3];
-				}
-			}
+	r->buffer = NULL;
+	if ( size > mb_readbackPixelsSize ) {
+		free( mb_readbackPixels );
+		mb_readbackPixels = malloc( size );
+		mb_readbackPixelsSize = mb_readbackPixels ? size : 0;
+		if ( !mb_readbackPixels ) {
+			return;
 		}
 	}
+
+	dst = mb_readbackPixels;
+	for ( row = 0; row < r->height; row++ ) {
+		src = (const byte *)buffer.contents + (size_t)( r->height - 1 - row ) * r->width * srcBpp;
+		if ( dstBpp == srcBpp ) {
+			memcpy( dst, src, (size_t)r->width * srcBpp );
+			dst += (size_t)r->width * srcBpp;
+			continue;
+		}
+		for ( col = 0; col < r->width; col++, src += 4, dst += 3 ) {
+			dst[0] = src[0];
+			dst[1] = src[1];
+			dst[2] = src[2];
+		}
+	}
+
+	r->done( mb_readbackPixels, r->width, r->height, r->arg );
+}
+
+/*
+** MB_ProcessReadbacks
+**
+** Hands the readbacks of completed frames to their callbacks, oldest first.
+*/
+static void MB_ProcessReadbacks( uint64_t completed )
+{
+	mbReadback_t ready[MB_MAX_READBACKS];
+	int i, kept, numReady;
+
+	for ( i = kept = numReady = 0; i < mb_numReadbacks; i++ ) {
+		if ( mb_readbacks[i].serial <= completed ) {
+			ready[numReady++] = mb_readbacks[i];
+		} else {
+			mb_readbacks[kept++] = mb_readbacks[i];
+		}
+	}
+	mb_numReadbacks = kept;
+
+	// after the list is updated: a callback may start a readback of its own
+	for ( i = 0; i < numReady; i++ ) {
+		MB_DeliverReadback( &ready[i] );
+	}
+}
+
+/*
+** mbFlushReadbacks
+**
+** Submits what this frame recorded so far, waits for it and for the frames in flight, and runs the callbacks
+** of every pending readback (vid_restart, map changes, quit, and synchronous reads).
+*/
+void mbFlushReadbacks( void )
+{
+	if ( !mb_numReadbacks ) {
+		return;
+	}
+	if ( mb_frameSerial > 1 && mb_frameEvent.signaledValue < mb_frameSerial - 1 ) {
+		[mb_frameEvent waitUntilSignaledValue:mb_frameSerial - 1 timeoutMS:2000];
+	}
+	MB_FlushAndWait();
+	MB_ProcessReadbacks( UINT64_MAX );
+}
+
+typedef struct {
+	byte	*pixels;
+	int		bpp;
+} mbReadCopy_t;
+
+static void MB_CopyReadback( byte *pixels, int width, int height, void *arg )
+{
+	mbReadCopy_t *copy = arg;
+
+	memcpy( copy->pixels, pixels, (size_t)width * height * copy->bpp );
+}
+
+/*
+** mbReadPixels
+**
+** A synchronous read (video frames only, never in the normal frame path): the async readback, then a wait.
+*/
+void mbReadPixels( int x, int y, int width, int height, int format, int type, void *pixels )
+{
+	mbReadCopy_t copy;
+
+	copy.pixels = pixels;
+	copy.bpp = format == MB_RGBA ? 4 : ( format == MB_RGB ? 3 : 1 );
+	if ( type == MB_FLOAT ) {
+		copy.bpp *= sizeof( float );
+	}
+
+	if ( type != MB_UNSIGNED_BYTE || ( format != MB_RGB && format != MB_RGBA )
+		|| !mbReadPixelsAsync( x, y, width, height, format, MB_CopyReadback, &copy ) ) {
+		memset( pixels, 0, (size_t)width * height * copy.bpp );
+		return;
+	}
+	mbFlushReadbacks();
+}
+
+/*
+** MB_HarvestQueries
+**
+** Copies the results of completed frames out of their slots' visibility buffers and zeroes the counters used
+** (the buffers accumulate).
+*/
+static void MB_HarvestQueries( uint64_t completed )
+{
+	int slot, i;
+
+	for ( slot = 0; slot < MB_MAX_FRAMES; slot++ ) {
+		uint64_t serial = mb_querySerial[slot];
+		mbQueryResults_t *r;
+		uint64_t *counts;
+
+		if ( !serial || serial > completed ) {
+			continue;
+		}
+		r = &mb_queryResults[serial % MB_QUERY_HISTORY];
+		counts = mb_queryBuffers[slot].contents;
+		r->serial = serial;
+		r->count = mb_queryCount[slot];
+		for ( i = 0; i < r->count; i++ ) {
+			r->passed[i] = counts[i] != 0;
+		}
+		memset( counts, 0, (size_t)r->count * sizeof( *counts ) );
+		mb_querySerial[slot] = 0;
+		mb_queryCount[slot] = 0;
+	}
+}
+
+/*
+** mbDepthQuery
+**
+** GL1 reads the depth under each flare with glReadPixels (a full GPU sync per flare). Here a point at the
+** pixel's center is depth-tested in the scene pass, counted by the visibility result buffer.
+*/
+int mbDepthQuery( int x, int y, float depth )
+{
+	int slot = mb_frameSlot;
+	int index;
+	float position[4];
+
+	if ( !mb_queryPipeline || !mb_sceneColor || x < 0 || y < 0 || x >= mb_width || y >= mb_height ) {
+		return 0;
+	}
+
+	if ( mb_querySerial[slot] != mb_frameSerial ) {
+		// the slot was harvested at the end of the frame that used it last
+		mb_querySerial[slot] = mb_frameSerial;
+		mb_queryCount[slot] = 0;
+	}
+	index = mb_queryCount[slot];
+	if ( index == MB_MAX_QUERIES ) {
+		return 0;
+	}
+	if ( !mb_queryBuffers[slot] ) {
+		mb_queryBuffers[slot] = [mb_device newBufferWithLength:MB_MAX_QUERIES * sizeof( uint64_t ) options:MTLResourceStorageModeShared];
+		if ( !mb_queryBuffers[slot] ) {
+			return 0;
+		}
+		mb_queryBuffers[slot].label = @"depth queries";
+		memset( mb_queryBuffers[slot].contents, 0, MB_MAX_QUERIES * sizeof( uint64_t ) );
+	}
+
+	// the pass needs the visibility buffer: a pass begun without it is ended (once; later passes get it)
+	mb_queryKeep = MB_QUERY_KEEP;
+	if ( mb_enc && !mb_encQueries ) {
+		MB_EndPass( qtrue );
+	}
+	if ( !MB_BeginPass() || !mb_encQueries ) {
+		return 0;
+	}
+
+	// GL window coordinates (origin bottom-left) to Metal's normalized device coordinates
+	position[0] = ( x + 0.5f ) * 2.0f / mb_width - 1.0f;
+	position[1] = ( y + 0.5f ) * 2.0f / mb_height - 1.0f;
+	position[2] = depth < 0.0f ? 0.0f : ( depth > 1.0f ? 1.0f : depth );
+	position[3] = 1.0f;
+
+	[mb_enc setRenderPipelineState:mb_queryPipeline];
+	[mb_enc setDepthStencilState:MB_OBJ( MB_DepthStencilState( 1 | ( (uint64_t)MTLCompareFunctionLess << 1 ) ) )];
+	[mb_enc setViewport:(MTLViewport){ 0.0, 0.0, mb_width, mb_height, 0.0, 1.0 }];
+	[mb_enc setScissorRect:(MTLScissorRect){ 0, 0, (NSUInteger)mb_width, (NSUInteger)mb_height }];
+	[mb_enc setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+	[mb_enc setVertexBytes:position length:sizeof( position ) atIndex:1];
+	[mb_enc setVisibilityResultMode:MTLVisibilityResultModeCounting offset:(NSUInteger)index * sizeof( uint64_t )];
+	[mb_enc drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:1];
+	[mb_enc setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
+	mb_statDraws++;
+
+	// the draw state must be set again
+	mb_encPipelineKey = 0xffffffff;
+	mb_encDepthStencil = NULL;
+	mb_dirty |= MB_DIRTY_VIEWPORT | MB_DIRTY_SCISSOR | MB_DIRTY_RASTER | MB_DIRTY_DEPTHSTENCIL | MB_DIRTY_PIPELINE;
+
+	mb_queryCount[slot]++;
+	return ( MB_QUERY_TAG( mb_frameSerial ) << 8 ) | index;
+}
+
+/*
+** mbDepthQueryResult
+*/
+int mbDepthQueryResult( int handle )
+{
+	int tag = (int)( (unsigned int)handle >> 8 );
+	int index = handle & 255;
+	int i;
+
+	if ( !tag ) {
+		return -2;
+	}
+	for ( i = 0; i < MB_QUERY_HISTORY; i++ ) {
+		const mbQueryResults_t *r = &mb_queryResults[i];
+
+		if ( r->serial && MB_QUERY_TAG( r->serial ) == tag ) {
+			return index < r->count ? r->passed[index] : -2;
+		}
+	}
+	for ( i = 0; i < MB_MAX_FRAMES; i++ ) {
+		if ( mb_querySerial[i] && MB_QUERY_TAG( mb_querySerial[i] ) == tag ) {
+			return -1;		// still in flight
+		}
+	}
+	return -2;
 }
 
 // RE_DrawBackground_DrawPixels only, and GL1 leaves the DrawBackground export NULL
