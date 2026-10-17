@@ -140,8 +140,12 @@ below are done.
   period, the old limiter's up to 83 µs above its whole milliseconds); the
   median time from a frame's input read to its present is the same or
   shorter at every cap with both renderers, the polled last millisecond of
-  the wait costs 0.4 to 0.7 ms of a core per frame (see Performance, Frame
-  limiter)
+  the wait costs 0.4 to 0.7 ms of a core per frame. Caps that divide 1000
+  (125, 250, 500) start frames on the tick of the millisecond clock, as the
+  old limiter did, so every frame there is the same whole milliseconds of
+  game time (one usercmd): with the deadline in microseconds anywhere in
+  the millisecond, up to half of the frames at 250 were 3 and 5 ms (see
+  Performance, Frame limiter)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -191,7 +195,8 @@ client's default `cl_renderer` (`vulkan` when `BUILD_RENDERER_VULKAN` is on:
 `Sys_Microseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
 the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
 in `code/qcommon/net_ip.c`, their declarations in `code/qcommon/qcommon.h`:
-`com_maxfps` caps in microseconds, see Performance, Frame limiter).
+`com_maxfps` caps in microseconds, those that divide 1000 on the
+millisecond tick, see Performance, Frame limiter).
 
 ## Build and run
 
@@ -1889,7 +1894,9 @@ Now a cap is a deadline in microseconds (`Sys_Microseconds`:
 `CLOCK_MONOTONIC`, `QueryPerformanceCounter` on Windows) that advances by
 exactly one period (1000000 / cap, rounded up so that the rate never
 exceeds the cap; a cap of 1000 or more has no deadline, only the
-millisecond below, like uncapped). A frame late by less than a period is
+millisecond below, like uncapped; a cap that divides 1000 has its deadline
+in whole milliseconds since the change described at the end of this part,
+Caps that divide 1000). A frame late by less than a period is
 made up by the next one; after a later one the deadline starts again from
 now (no burst of frames to catch up). As before, a frame also
 waits until `Sys_Milliseconds` has passed the previous frame's start
@@ -2070,6 +2077,128 @@ running):
   A dedicated server (`omohaaded`, `dm/mohdm1`) runs 20.00 and 40.00 frames
   a second at `sv_fps` 20 and 40 with both binaries, its intervals 49.82 to
   50.16 ms instead of 49.36 to 50.64.
+
+Caps that divide 1000 (2026-10-17, a second change): the deadline in
+microseconds started frames wherever in the millisecond it happened to be
+(set at startup and again after every frame late by more than a period),
+but the game time of a frame is whole milliseconds: `com_frameTime -
+lastTime`, `com_frameTime` read from `Sys_Milliseconds` in `Com_EventLoop`
+right after `IN_Frame`. From the wait's end to that read takes 7 to 14 µs
+(median; 99th percentile 11 to 47 µs, a tail of up to 0.9 ms). When the
+deadline sat that close before a tick, some reads fell in the next
+millisecond and frames alternated 3 and 5 ms at a cap of 250 instead of
+4. Every frame is a usercmd, a step of the player's movement (pmove:
+`cmd.serverTime` minus the previous one). The old limiter started frames
+on the tick. Measured with a temporary build (not committed) that logged
+every frame's msec before `Com_ModifyMsec`, without `fixedtime`, 1920x1080,
+Vulkan: a local game (`dm/mohdm1`, free for all with 8 bots, the view
+turning) and the `o2match` demo, 5 runs of 60 s per cap and binary, every
+run a new deadline phase. The frames that started on time but whose
+`com_frameTime` fell in another millisecond than one period after the
+previous frame's, and in parentheses the frames late by more than half a
+millisecond and their catch-up (bursts of 6 to 8 ms frames, one per
+binary in the demo at different moments: the machine, not the limiter):
+
+| | frames per binary | old limiter | 413c50d1 | now |
+| --- | --- | --- | --- | --- |
+| local game, cap 125 | 37490 | 0 (0) | 0 (4) | 0 (0) |
+| local game, cap 250 | 74990 | 0 (6) | 0 (18) | 0 (2) |
+| local game, cap 500 | 149990 | 0 (9) | 36, in 4 of 5 runs (32) | 0 (6) |
+| `o2match`, cap 125 | 37490 | 0 (0) | 4, in 1 run (28) | 0 (0) |
+| `o2match`, cap 250 | 74990 | 0 (0) | 0 (0) | 0 (43) |
+| `o2match`, cap 500 | 149990 | 0 (58) | 18, in 1 run (0) | 0 (0) |
+
+The runs of 413c50d1 with such frames had their deadline 794 to 963 µs
+after the tick. None of its ten runs at 250 drew a phase close enough;
+with the deadline moved to a chosen phase (the same build, the local game,
+cap 250, 20 s each, frames of 3 or 5 ms out of 5000):
+
+| deadline after the tick (µs) | 500 | 900 | 950 | 970 | 980 | 984 | 986 | 988 | 990 | 992 | 994 | 997 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| frames of 3 or 5 ms | 0 | 18 | 18 | 4 | 26 | 130 | 242 | 554 | 2533 | 442 | 0 | 0 |
+
+With the phase drawn by chance, about one start (or frame late by more
+than a period) in a hundred got a phase where 3 to 51 % of the frames
+were 3 and 5 ms, and about one in ten one with a pair every few seconds.
+The old limiter also let a frame after a late one last 0 ms (`bias`; 7
+such frames in its runs at 500).
+
+Now a cap that divides 1000 (`Com_Frame`: 125, 200, 250, 500 and the
+lower ones, also for `com_maxfpsUnfocused` and `com_maxfpsMinimized`)
+keeps the deadline in whole milliseconds of `Sys_Milliseconds`: it
+advances by 1000 / cap, the same rule starts it again after a frame late
+by more than a period, and the frame starts when that clock ticks
+(`minMsec` up to the deadline).
+Caps that don't divide 1000 keep the deadline in microseconds; their 6 and
+7 ms frames at 144 are what the cap asks for. The wait (`Com_FrameWait`)
+still sleeps until 1 ms before the frame and polls the rest: it knows when
+`Sys_Milliseconds` (`gettimeofday`) will tick from the last tick it saw
+while polling, since `Sys_Microseconds` (`CLOCK_MONOTONIC`) runs at the
+same rate and the tick is whole milliseconds later. If the millisecond
+clock disagrees by more than 50 µs (the clock was set, a suspend), it
+waits once like the old limiter, asleep for the whole milliseconds but one
+and polling the last, and sees a tick again. Not on Windows, where
+`timeGetTime` follows the timer interrupts: there it always waits the old
+way. That old way alone, the first version measured, starts frames on the
+tick too but polls 0 to 1 ms instead of 1 ms, and like the old limiter it
+lengthened the input to present time by 0.02 to 0.05 ms at every cap with
+both renderers (the core clocks down, see above).
+
+Results (idle machine, other processes 1.4 CPUs at most; `perf.py
+--binaries <old>,<413c50d1>,<the old way alone>,<this build> --caps
+125,250,500 --seconds 10 --preload libinlat.so --framelog DIR`, 1920x1080,
+medians of 3 interleaved runs; input to present and frame starts as in the
+first results, in ms; CPU of the game process):
+
+| view, cap | renderer | input to present, median: old, 413c50d1, old way alone, now | input to present, p99: 413c50d1, now | frame starts p99: old, 413c50d1, now | CPU: old, 413c50d1, old way alone, now |
+| --- | --- | --- | --- | --- | --- |
+| `o2match`, 125 | GL1 | 0.904, 0.862, 0.884, 0.883 | 2.076, 2.035 | 8.059, 8.003, 8.003 | 0.27, 0.33, 0.27, 0.33 |
+| | Vulkan | 0.742, 0.680, 0.724, 0.670 | 1.425, 1.346 | 8.053, 8.003, 8.003 | 0.16, 0.24, 0.17, 0.24 |
+| `o2match`, 250 | GL1 | 0.777, 0.726, 0.788, 0.751 | 1.447, 1.584 | 4.054, 4.002, 4.002 | 0.46, 0.59, 0.47, 0.60 |
+| | Vulkan | 0.634, 0.575, 0.615, 0.589 | 1.161, 1.088 | 4.040, 4.002, 4.003 | 0.27, 0.44, 0.28, 0.44 |
+| `o2match`, 500 | GL1 | 0.670, 0.666, 0.662, 0.657 | 1.599, 1.619 | 2.053, 2.002, 2.002 | 0.79, 1.09, 0.81, 1.09 |
+| | Vulkan | 0.511, 0.488, 0.509, 0.497 | 0.963, 1.006 | 2.013, 2.001, 2.001 | 0.52, 0.81, 0.54, 0.82 |
+| `obj_team2` yard, 125 | GL1 | 0.860, 0.829, 0.854, 0.831 | 1.723, 1.557 | 8.063, 8.003, 8.003 | 0.25, 0.31, 0.25, 0.30 |
+| | Vulkan | 0.720, 0.692, 0.726, 0.682 | 1.390, 1.292 | 8.050, 8.003, 8.003 | 0.15, 0.24, 0.16, 0.24 |
+| `obj_team2` yard, 250 | GL1 | 0.686, 0.647, 0.694, 0.643 | 1.116, 1.035 | 4.053, 4.002, 4.002 | 0.36, 0.54, 0.37, 0.53 |
+| | Vulkan | 0.591, 0.555, 0.594, 0.547 | 0.950, 0.947 | 4.019, 4.002, 4.002 | 0.26, 0.43, 0.27, 0.42 |
+| `obj_team2` yard, 500 | GL1 | 0.552, 0.522, 0.548, 0.537 | 0.867, 0.903 | 2.020, 2.002, 2.002 | 0.62, 0.97, 0.64, 0.98 |
+| | Vulkan | 0.465, 0.454, 0.457, 0.435 | 0.723, 0.775 | 2.002, 2.002, 2.001 | 0.51, 0.78, 0.52, 0.78 |
+
+- Every frame at a cap that divides 1000 is now 1000 / cap ms of game
+  time but for the frames late by more than a period and their catch-up,
+  as with the old limiter (the table above); the frames start on the tick
+  plus 7 to 11 µs (median) to the read.
+- Input to present: the medians are within 0.025 ms of 413c50d1's either
+  way and shorter than the old limiter's everywhere (by 0.013 to 0.072
+  ms); a second batch of 5 runs of `o2match` gave 0.880 against 0.891 ms
+  (GL1, 125), 0.744 against 0.736 (GL1, 250), 0.694 against 0.683
+  (Vulkan, 125) and 0.578 against 0.568 (Vulkan, 250), the runs
+  overlapping. In `o2match` at 250 the medians were 0.008 to 0.025 ms
+  higher in both batches, in the yard with Vulkan 0.008 to 0.019 lower.
+  The 99th percentile: in the yard the same or lower; in `o2match` with
+  Vulkan about the same (1.088 against 1.066 ms at 250, the
+  median of 8 runs each, 1.042 to 1.526 against 1.008 to 1.225; 0.971 to
+  1.044 against 0.955 to 0.972 at 500), with GL1 about 0.08 ms higher at
+  250 in both batches (1.513 to 1.636 in 8 runs against 1.412 to 1.544),
+  where the old limiter and the old way alone, which also start frames on
+  the tick, gave 1.591 to 1.903 and 1.562 to 1.659. Not explained: the
+  phase of the frames against the kernel's 1000 Hz timer tick is fixed
+  when they start on the wall clock's millisecond and drawn by chance with
+  a deadline in microseconds (not tested).
+- Frame starts and CPU: those of 413c50d1 (the polled millisecond is
+  kept).
+- The usercmd's step also moves with the client's clock adjustment, which
+  this doesn't change: on every snapshot `CL_AdjustTimeDelta` moves
+  `cl.serverTimeDelta` by 1 ms, or -2 ms after extrapolated frames
+  (Quake 3's code), so in the local game 6000 of the 74990 usercmds at 250
+  are 5 or 2 ms with every binary (none in demos, which don't adjust).
+- The deterministic views give the same frames to the bit with
+  413c50d1 and with this build, at `run.sh`'s cap of 60 and at 50, which
+  divides 1000: `dm/mohdm1`, `obj/obj_team2`, `mohdm1_dlight`,
+  `menus.txt` and `mp_mohdm1` with Vulkan and `dm/mohdm1` with GL1 (66
+  comparisons). A dedicated server runs 20.00 and 40.00 frames a second at
+  `sv_fps` 20 and 40 as with 413c50d1 (its wait doesn't use the tick).
 
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
@@ -3003,7 +3132,17 @@ Done:
     tools gained `perf.py --binaries`, `--caps`, `--seconds`, `--preload`
     and the game's CPU use and core, `libinlat.so` (input read to present,
     either renderer), its files in `framelog.py`, and `MOH_BIN` in
-    `run.sh`.
+    `run.sh`. Then caps that divide 1000 went back to starting frames on
+    the tick of `Sys_Milliseconds` (a deadline in whole milliseconds; the
+    wait knows the tick from the last one it saw and still polls the last
+    millisecond): with the deadline in microseconds anywhere in the
+    millisecond, the read of `com_frameTime` after the input sometimes fell
+    in the next one, up to half of the frames 3 and 5 ms at 250 depending
+    on the phase. Measured per frame with a temporary logging build, in a
+    local game and a demo without `fixedtime`: every frame 1000 / cap ms
+    again but for late frames, input to present and CPU those of the
+    deadline in microseconds; the old way alone of waiting for the tick
+    cost 0.02 to 0.05 ms of input to present.
 
 Remaining:
 
@@ -3072,7 +3211,14 @@ Remaining:
   display, untested with a VRR display. Untested on Windows (whole
   millisecond sleeps, the last 2 ms polled). The polled millisecond costs
   0.4 to 0.7 ms of a core per frame; on this CPU sleeping through it cost
-  up to 0.03 ms of input to present at 144 (lower clocks).
+  up to 0.03 ms of input to present at 144 (lower clocks). Caps that
+  divide 1000 start on the millisecond tick again: GL1's 99th percentile
+  of input to present in `o2match` at 250 is then about 0.08 ms higher
+  than with a deadline anywhere in the millisecond (the old limiter's
+  level), Vulkan's about the same; not explained. The usercmd's step still
+  moves by 1 or -2 ms on every snapshot (`CL_AdjustTimeDelta`, Quake 3's
+  clock drift: 8 % of the usercmds at 250 in a local game), whatever the
+  limiter.
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
   forests most batches still go through the CPU because of them: in
   `m6l1a`, `m3l3`, `dm/mohdm3` and `obj/obj_team2` a surface of the tree

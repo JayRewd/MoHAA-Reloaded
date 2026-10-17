@@ -2246,7 +2246,11 @@ polling the network. Sleeps end late, by up to 0.9 ms on a Ryzen 7 8700GE
 when the core reached its deepest idle state; shorter sleeps instead of the
 polling used less CPU but let the core clock down, and the frame's work
 (input read to present) took longer. The millisecond clock is waited for in
-whole milliseconds, its last one polled (when it ticks is not known).
+whole milliseconds, its last one polled (when it ticks is not known), or,
+with onTick, from the last tick seen while polling: Sys_Milliseconds and
+Sys_Microseconds run at the same rate, so it ticks whole milliseconds after
+it, and its last COM_POLL_US are polled like the deadline's (not on
+Windows, where Sys_Milliseconds follows the timer interrupts).
 =================
 */
 #ifdef _WIN32
@@ -2255,9 +2259,11 @@ whole milliseconds, its last one polled (when it ticks is not known).
 #define COM_POLL_US		1000
 #endif
 
-static void Com_FrameWait( int minMsec, int64_t deadlineUs )
+static void Com_FrameWait( int minMsec, int64_t deadlineUs, qboolean onTick )
 {
-	int64_t	sleepUs;
+	static int		tickMsec;	// the last tick of Sys_Milliseconds seen while polling
+	static int64_t	tickUs;		// and when, 0: none
+	int64_t	sleepUs, msecUs;
 	int		timeVal, timeValSV;
 
 	do {
@@ -2267,8 +2273,22 @@ static void Com_FrameWait( int minMsec, int64_t deadlineUs )
 #endif
 
 		timeVal = Com_TimeVal( minMsec );
-		if ( sleepUs < ( timeVal - 1 ) * 1000LL ) {
-			sleepUs = ( timeVal - 1 ) * 1000LL;
+		msecUs = ( timeVal - 1 ) * 1000LL;
+#ifndef _WIN32
+		if ( onTick && timeVal && tickUs ) {
+			// whole milliseconds after the last tick seen, which must be timeVal
+			// - 1 to timeVal ms away (50 us for the poll that saw it); else the
+			// clock was set: wait as without onTick until a tick is seen again
+			int64_t tickInUs = tickUs + ( com_frameTime + minMsec - tickMsec ) * 1000LL - Sys_Microseconds();
+			if ( tickInUs > msecUs - 50 && tickInUs <= msecUs + 1050 ) {
+				msecUs = tickInUs - COM_POLL_US;
+			} else {
+				tickUs = 0;
+			}
+		}
+#endif
+		if ( sleepUs < msecUs ) {
+			sleepUs = msecUs;
 		}
 
 		if ( com_sv_running->integer ) {
@@ -2282,6 +2302,10 @@ static void Com_FrameWait( int minMsec, int64_t deadlineUs )
 			sleepUs = 0;
 		}
 		NET_SleepUs( sleepUs );
+		if ( !sleepUs && timeVal && !Com_TimeVal( minMsec ) ) {
+			tickMsec = com_frameTime + minMsec;
+			tickUs = Sys_Microseconds();
+		}
 	} while ( Com_TimeVal( minMsec ) || Sys_Microseconds() < deadlineUs );
 }
 
@@ -2295,8 +2319,9 @@ void Com_Frame( void ) {
 	int		msec, minMsec;
 	static int	lastTime = 0;
 	static int64_t	nextFrameUs;	// deadline of the frame start
+	static int	nextFrameMs;	// the same in whole milliseconds, caps that divide 1000
 	int64_t	periodUs, nowUs;
-	int		maxfps;
+	int		periodMs, nowMs, maxfps;
 
 	int		timeBeforeFirstEvents;
 	int		timeBeforeServer;
@@ -2354,6 +2379,7 @@ void Com_Frame( void ) {
     // a dedicated server's frame, and the period of a client's frame rate cap
     minMsec = 1;
     periodUs = 0;
+    periodMs = 0;
     if (!com_timedemo->integer)
     {
         if (com_dedicated->integer)
@@ -2369,7 +2395,12 @@ void Com_Frame( void ) {
 
             // 1000 and more: minMsec alone, as uncapped
             if (maxfps > 0 && maxfps < 1000)
-                periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
+            {
+                if (1000 % maxfps == 0)
+                    periodMs = 1000 / maxfps;
+                else
+                    periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
+            }
         }
     }
 
@@ -2382,7 +2413,25 @@ void Com_Frame( void ) {
     if (nowUs - nextFrameUs > periodUs)
         nextFrameUs = nowUs;
 
-    Com_FrameWait(minMsec, nextFrameUs);
+    // Caps that divide 1000 keep the deadline in whole milliseconds of
+    // Sys_Milliseconds, the clock of com_frameTime, and frames start when it
+    // ticks (the wait polls the millisecond before): every frame is then
+    // 1000 / cap ms of game time, one usercmd, as with the old limiter. A
+    // deadline in microseconds sits anywhere in the millisecond, and near
+    // its end the microseconds from the start to com_frameTime's read put
+    // some reads in the next one: 3 and 5 ms frames instead of 4 at 250.
+    // Same rule after a late frame.
+    if (periodMs)
+    {
+        nowMs = Sys_Milliseconds();
+        nextFrameMs += periodMs;
+        if (nowMs - nextFrameMs > periodMs)
+            nextFrameMs = nowMs;
+        if (minMsec < nextFrameMs - com_frameTime)
+            minMsec = nextFrameMs - com_frameTime;
+    }
+
+    Com_FrameWait(minMsec, nextFrameUs, periodMs != 0);
 
     IN_Frame();
 
