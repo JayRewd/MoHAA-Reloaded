@@ -360,7 +360,7 @@ void RB_BeginSurface( shader_t *shader ) {
 	tess.xstages = shader->unfoggedStages;
 	tess.numPasses = shader->numUnfoggedPasses;
 	tess.currentStageIteratorFunc = shader->optimalStageIteratorFunc;
-
+	tess.numSkinJobs = 0;
 }
 
 /*
@@ -1616,12 +1616,22 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 {
 	shaderCommands_t *input;
 	shader_t		*shader;
+	int				skin;
 
 	input = &tess;
 
 	shader = input->shader;
 
-	if (backEnd.currentSphere->TessFunction && r_drawspherelights->integer)
+	//
+	// GPU skinning of the skeletal surfaces RB_SkelMesh left to it: 2 = with the lighting, 1 = the colors below
+	//
+	skin = RB_SkinBegin();
+
+	if (skin == 2)
+	{
+		// the colors come from the GPU as well
+	}
+	else if (backEnd.currentSphere->TessFunction && r_drawspherelights->integer)
 	{
 		//
 		// compute colors using the sphere function
@@ -1678,6 +1688,9 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
 	R_State( tess.xstages[0]->stateBits );
 	R_DrawElements( input->numIndexes, input->indexes );
+	if ( skin ) {
+		mbSkinEnd();
+	}
 
 	// 
 	// now do any dynamic lighting needed
@@ -1812,6 +1825,12 @@ void RB_EndSurface( void ) {
 		tess.xyz[SHADER_MAX_VERTEXES - 1][0] = 0;
 	}
 
+	// surfaces left to GPU skinning: only the vertex-lit iterator skins them, the rest needs the vertexes here
+	if ( tess.numSkinJobs && ( tess.currentStageIteratorFunc != RB_StageIteratorVertexLitTextureUnfogged
+		|| tess.shader == tr.shadowShader || ( r_developer->integer && ( r_showtris->integer || r_shownormals->integer ) ) ) ) {
+		RB_SkinMaterialize();
+	}
+
 	if ( tess.shader == tr.shadowShader ) {
 		RB_ComputeShadowVolume();
 		return;
@@ -1850,6 +1869,7 @@ void RB_EndSurface( void ) {
 
 	// clear shader so we can tell we don't have any unclosed surfaces
 	tess.numIndexes = 0;
+	tess.numSkinJobs = 0;
 
 	MTLimp_LogComment( "----------\n" );
 }

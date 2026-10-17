@@ -237,6 +237,7 @@ static id<MTLRenderPipelineState>	mb_queryPipeline;
 static void MB_HarvestQueries( uint64_t completed );
 static void MB_ProcessReadbacks( uint64_t completed );
 static void *MB_Pipeline( uint32_t key );
+static void MB_SkinUniforms( void );
 
 /*
 =============================================================
@@ -340,7 +341,8 @@ typedef struct {
 	uint32_t	stride[4];
 	uint32_t	posSize;
 	uint32_t	colorFloat;
-	uint32_t	pad[2];
+	uint32_t	skin;
+	uint32_t	pad;
 } mbVSUniforms_t;
 
 typedef struct {
@@ -364,6 +366,35 @@ static void			*mb_encTexture[MB_MAX_UNITS], *mb_encSampler[MB_MAX_UNITS];
 static __unsafe_unretained id<MTLBuffer>	mb_encRing;
 static uint32_t		mb_texMask;							// units sampled by the current draw
 static uint32_t		mb_texFlags;						// MB_FS_RGB* of the current draw
+
+// GPU skinning (mbSkin*, tr_mtl_stage.metal mb_skin_vs)
+#define MB_SKIN_BUFFER_SIZE	( 4 * 1024 * 1024 )			// to start with; doubled when full
+#define MB_SKIN_BUFFER_MAX	( 256 * 1024 * 1024 )
+#define MB_SKIN_COPIES		64
+
+typedef struct {
+	uint32_t	firstVertex, numVertexes;
+	uint32_t	surface, boneMap;
+	uint32_t	bones, morphs;
+	float		scale;
+	uint32_t	pad;
+} mbSkinJobUniforms_t;									// MbSkinJob
+
+typedef struct {
+	const void	*data;
+	int			bytes;
+	uint32_t	offset;
+} mbSkinCopy_t;
+
+static id<MTLFunction>		mb_skinVS;
+static id<MTLBuffer>		mb_skinBuffer;				// the static data; replaced by a bigger copy when full
+static NSUInteger			mb_skinUsed;
+static __unsafe_unretained id<MTLBuffer>	mb_encSkin;		// what the encoder has at vertex buffer 2
+static const mbSkinDraw_t	*mb_skinDraw;				// between mbSkinBegin and mbSkinEnd
+static mbSkinCopy_t			mb_skinCopies[MB_SKIN_COPIES];	// the scene's bone and morph copies in the ring
+static int					mb_numSkinCopies;
+static uint64_t				mb_skinCopySerial;
+static unsigned				mb_skinCopyGeneration, mb_skinCopyScene;
 
 /*
 =============================================================
@@ -672,6 +703,7 @@ static void MB_InvalidateEncoderState( void )
 	mb_encPipelineKey = 0xffffffff;
 	mb_encDepthStencil = NULL;
 	mb_encRing = nil;
+	mb_encSkin = nil;
 	for ( i = 0; i < MB_MAX_UNITS; i++ ) {
 		mb_encTexture[i] = NULL;
 		mb_encSampler[i] = NULL;
@@ -1046,8 +1078,9 @@ static id<MTLFunction> MB_StageFragmentFunction( uint32_t texMask, qboolean alph
 }
 
 // key bits: 0-1 texture units, 2 alpha test, 3 blend, 4-7 src factor, 8-11 dst factor, 12-15 color write
-// mask (MTLColorWriteMask >> 0, alpha never set), 16 clear pipeline
+// mask (MTLColorWriteMask >> 0, alpha never set), 16 clear pipeline, 17 skinning vertex shader
 #define MB_PIPE_CLEAR		( 1u << 16 )
+#define MB_PIPE_SKIN		( 1u << 17 )
 
 static uint32_t MB_PipelineKey( void )
 {
@@ -1060,6 +1093,9 @@ static uint32_t MB_PipelineKey( void )
 		key |= ( 1u << 3 ) | ( (uint32_t)mb_srcBlend << 4 ) | ( (uint32_t)mb_dstBlend << 8 );
 	}
 	key |= mb_colorMask << 12;
+	if ( mb_skinDraw ) {
+		key |= MB_PIPE_SKIN;
+	}
 	return key;
 }
 
@@ -1076,8 +1112,8 @@ static void *MB_CreatePipeline( uint32_t key )
 		desc.vertexFunction = mb_clearVS;
 		desc.fragmentFunction = mb_clearFS;
 	} else {
-		desc.label = @"stage";
-		desc.vertexFunction = mb_stageVS;
+		desc.label = ( key & MB_PIPE_SKIN ) ? @"skin" : @"stage";
+		desc.vertexFunction = ( key & MB_PIPE_SKIN ) ? mb_skinVS : mb_stageVS;
 		desc.fragmentFunction = MB_StageFragmentFunction( key & 3, ( key >> 2 ) & 1 );
 		if ( !desc.fragmentFunction ) {
 			return NULL;
@@ -1321,6 +1357,7 @@ static qboolean MB_CreatePipelines( void )
 			mb_library = nil;
 			return qfalse;
 		}
+		mb_skinVS = [mb_library newFunctionWithName:@"mb_skin_vs"];	// GPU skinning is off without it
 	}
 
 	if ( !mb_queryPipeline ) {
@@ -2584,6 +2621,10 @@ static void MB_BindVertices( void )
 		[mb_enc setVertexBuffer:mb_ring offset:0 atIndex:0];
 		mb_encRing = mb_ring;
 	}
+	if ( mb_skinDraw && mb_encSkin != mb_skinBuffer ) {
+		[mb_enc setVertexBuffer:mb_skinBuffer offset:0 atIndex:2];
+		mb_encSkin = mb_skinBuffer;
+	}
 	[mb_enc setVertexBytes:&mb_vsu length:sizeof( mb_vsu ) atIndex:1];
 	mb_statDraws++;
 }
@@ -3380,9 +3421,10 @@ static byte *MB_StreamArrays( int numVertexes, NSUInteger extraBytes, uint32_t *
 	unsigned generation;
 	int i;
 
-	arrays[0] = &mb_vertexArray;
-	arrays[1] = ( mb_colorArray.enabled && mb_colorArray.pointer ) ? &mb_colorArray : NULL;
-	arrays[2] = ( ( mb_texMask & 1 ) && mb_units[0].texCoords.enabled && mb_units[0].texCoords.pointer ) ? &mb_units[0].texCoords : NULL;
+	// skinning computes the positions, texcoord 0 and (with lights) the colors
+	arrays[0] = mb_skinDraw ? NULL : &mb_vertexArray;
+	arrays[1] = ( mb_colorArray.enabled && mb_colorArray.pointer && !( mb_skinDraw && mb_skinDraw->numLights >= 0 ) ) ? &mb_colorArray : NULL;
+	arrays[2] = ( ( mb_texMask & 1 ) && mb_units[0].texCoords.enabled && mb_units[0].texCoords.pointer && !mb_skinDraw ) ? &mb_units[0].texCoords : NULL;
 	arrays[3] = ( ( mb_texMask & 2 ) && mb_units[1].texCoords.enabled && mb_units[1].texCoords.pointer ) ? &mb_units[1].texCoords : NULL;
 
 	for ( ;; ) {
@@ -3458,12 +3500,169 @@ void mbDrawElements( int mode, int count, int type, const void *indices )
 		return;
 	}
 
-	indexDst = MB_StreamArrays( numVertexes, (NSUInteger)count * 4, &indexOffset );
+	for ( ;; ) {
+		unsigned generation = mb_ringGeneration;
+
+		if ( mb_skinDraw ) {
+			MB_SkinUniforms();
+		}
+		indexDst = MB_StreamArrays( numVertexes, (NSUInteger)count * 4, &indexOffset );
+		if ( !mb_skinDraw || generation == mb_ringGeneration ) {
+			break;
+		}
+		// the ring grew after the skinning uniforms were copied: copy them again
+	}
 	memcpy( indexDst, indices, (size_t)count * 4 );
 
 	MB_BindVertices();
 	[mb_enc drawIndexedPrimitives:MB_PrimitiveType( mode ) indexCount:count indexType:MTLIndexTypeUInt32
 		indexBuffer:mb_ring indexBufferOffset:indexOffset];
+}
+
+/*
+=============================================================
+
+GPU SKINNING
+
+=============================================================
+*/
+
+int mbSkinStatic( const void *data, int bytes )
+{
+	NSUInteger start = ( mb_skinUsed + 15 ) & ~(NSUInteger)15;
+
+	if ( !mb_device || !mb_skinVS || bytes <= 0 || ( bytes & 3 ) ) {
+		return -1;
+	}
+	if ( !mb_skinBuffer || start + bytes > mb_skinBuffer.length ) {
+		NSUInteger size = mb_skinBuffer ? mb_skinBuffer.length * 2 : MB_SKIN_BUFFER_SIZE;
+		id<MTLBuffer> buffer;
+
+		while ( size < start + bytes ) {
+			size *= 2;
+		}
+		if ( size > MB_SKIN_BUFFER_MAX ) {
+			return -1;
+		}
+		buffer = [mb_device newBufferWithLength:size options:MTLResourceStorageModeShared | MTLResourceHazardTrackingModeUntracked];
+		if ( !buffer ) {
+			return -1;
+		}
+		buffer.label = @"skinning data";
+		if ( mb_skinBuffer ) {
+			// draws already recorded keep the old buffer until their frames are done
+			memcpy( buffer.contents, mb_skinBuffer.contents, mb_skinUsed );
+			MB_Retire( mb_skinBuffer );
+		}
+		mb_skinBuffer = buffer;
+	}
+
+	memcpy( (byte *)mb_skinBuffer.contents + start, data, (size_t)bytes );
+	mb_skinUsed = start + (NSUInteger)bytes;
+	return (int)( start / 4 );
+}
+
+void mbSkinReset( void )
+{
+	MB_Retire( mb_skinBuffer );
+	mb_skinBuffer = nil;
+	mb_skinUsed = 0;
+}
+
+qboolean mbSkinBegin( const mbSkinDraw_t *draw )
+{
+	if ( !mb_skinBuffer || !mb_skinVS || draw->numJobs < 1 || draw->numJobs > MB_SKIN_MAX_JOBS
+		|| draw->numLights < -1 || draw->numLights > MB_SKIN_MAX_LIGHTS ) {
+		return qfalse;
+	}
+	mb_skinDraw = draw;
+	mb_dirty |= MB_DIRTY_PIPELINE;
+	return qtrue;
+}
+
+void mbSkinEnd( void )
+{
+	mb_skinDraw = NULL;
+	mb_dirty |= MB_DIRTY_PIPELINE;
+}
+
+// the scene's copy of a skinning input in the ring
+static uint32_t MB_SkinCopy( const void *data, int bytes )
+{
+	uint32_t offset;
+	int i;
+
+	for ( i = 0; i < mb_numSkinCopies; i++ ) {
+		if ( mb_skinCopies[i].data == data && mb_skinCopies[i].bytes == bytes ) {
+			return mb_skinCopies[i].offset;
+		}
+	}
+	memcpy( MB_RingAlloc( (NSUInteger)bytes, &offset ), data, (size_t)bytes );
+	if ( mb_numSkinCopies < MB_SKIN_COPIES ) {
+		mb_skinCopies[mb_numSkinCopies].data = data;
+		mb_skinCopies[mb_numSkinCopies].bytes = bytes;
+		mb_skinCopies[mb_numSkinCopies].offset = offset;
+		mb_numSkinCopies++;
+	}
+	return offset;
+}
+
+/*
+** MB_SkinUniforms
+**
+** The draw's MbSkinUniforms in the ring: the header, the jobs, the lights. The bones and morph weights are
+** copied once per scene.
+*/
+static void MB_SkinUniforms( void )
+{
+	const mbSkinDraw_t *draw = mb_skinDraw;
+	int numLights = draw->numLights > 0 ? draw->numLights : 0;
+	NSUInteger lightBytes = (NSUInteger)numLights * 60;	// reallightinfo_t
+	mbSkinJobUniforms_t *jobs;
+	uint32_t *header;
+	uint32_t offset;
+	int i;
+
+	for ( ;; ) {
+		unsigned generation;
+
+		if ( mb_skinCopySerial != mb_frameSerial || mb_skinCopyGeneration != mb_ringGeneration || mb_skinCopyScene != draw->scene ) {
+			mb_numSkinCopies = 0;
+			mb_skinCopySerial = mb_frameSerial;
+			mb_skinCopyGeneration = mb_ringGeneration;
+			mb_skinCopyScene = draw->scene;
+		}
+		generation = mb_ringGeneration;
+
+		header = (uint32_t *)MB_RingAlloc( 16 + sizeof( *jobs ) * (NSUInteger)draw->numJobs + lightBytes, &offset );
+		header[0] = (uint32_t)draw->numJobs;
+		header[1] = (uint32_t)draw->numLights;
+		memcpy( &header[2], draw->ambient, 4 );
+		header[3] = 0;
+
+		jobs = (mbSkinJobUniforms_t *)( header + 4 );
+		for ( i = 0; i < draw->numJobs; i++ ) {
+			const mbSkinJob_t *job = &draw->jobs[i];
+
+			jobs[i].firstVertex = (uint32_t)job->firstVertex;
+			jobs[i].numVertexes = (uint32_t)job->numVertexes;
+			jobs[i].surface = (uint32_t)job->surface;
+			jobs[i].boneMap = job->boneMap >= 0 ? (uint32_t)job->boneMap : 0xffffffffu;
+			jobs[i].bones = MB_SkinCopy( job->bones, job->numBones * 64 );		// skelBoneCache_t
+			jobs[i].morphs = job->morphs ? MB_SkinCopy( job->morphs, job->numMorphs * 4 ) : 0xffffffffu;
+			jobs[i].scale = job->scale;
+			jobs[i].pad = 0;
+		}
+		if ( lightBytes ) {
+			memcpy( jobs + draw->numJobs, draw->lights, lightBytes );
+		}
+
+		if ( generation == mb_ringGeneration ) {
+			break;
+		}
+		// the ring grew: everything copied before is in the old buffer
+	}
+	mb_vsu.skin = offset;
 }
 
 /*

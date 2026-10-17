@@ -118,6 +118,8 @@ void RE_FreeModels(void)
 
         R_FreeModel(&tr.models[hModel]);
     }
+
+    R_SkinReset();
 }
 
 /*
@@ -1016,188 +1018,46 @@ inline static void SkelWeightMorphGetXyz(skelWeight_t *weight, skelBoneCache_t *
 
 /*
 =============
-RB_SkelMesh
+RB_SkelMeshVertexes
+
+The CPU skinning of RB_SkelMesh: positions, normals and texcoords of the first render_count vertexes of the
+surface, into tess from baseVertex. Also used for the surfaces left to the GPU when the CPU needs their
+vertexes after all (RB_SkinMaterialize).
 =============
 */
-void RB_SkelMesh(skelSurfaceGame_t *sf)
+static void RB_SkelMeshVertexes(
+    skelSurfaceGame_t *sf, skelHeaderGame_t *skelmodel, int mesh, trRefEntity_t *ent, int baseVertex, int render_count
+)
 {
-    unsigned int       baseIndex, baseVertex;
-    unsigned int       render_count;
-    unsigned int       indexes;
-    float             *outXyz;
-    vec4_t            *outNormal;
-    skelIndex_t       *triangles;
-    skelIndex_t       *collapse_map;
-    skeletorVertex_t  *newVerts;
-    skeletorMorph_t   *morph;
-    skelWeight_t      *weight;
-    int                vertNum;
-    int                morphNum;
-    int                weightNum;
-    skelBoneCache_t   *bones;
-    skelBoneCache_t   *bone;
-    int               *morphs;
-    int               *morphcache;
-    float              scale;
-    dtiki_t           *tiki;
-    int                mesh;
-    int                surf;
-    int                i;
-    skelHeaderGame_t  *skelmodel;
-    skelSurfaceGame_t *psurface;
-    qboolean           bFound;
-    short              collapse[TIKI_MAX_VERTEXES];
+    float            *outXyz;
+    vec4_t           *outNormal;
+    skeletorVertex_t *newVerts;
+    skeletorMorph_t  *morph;
+    skelWeight_t     *weight;
+    int               vertNum;
+    int               morphNum;
+    int               weightNum;
+    skelBoneCache_t  *bones;
+    skelBoneCache_t  *bone;
+    int              *morphs;
+    int              *morphcache;
+    float             scale;
+    dtiki_t          *tiki;
 
-    if (!r_drawentitypoly->integer) {
-        return;
-    }
-
-    tiki = backEnd.currentEntity->e.tiki;
-
-    scale = tiki->load_scale * backEnd.currentEntity->e.scale;
-
-    //
-    // get the mesh associated with the surface
-    //
-    bFound = qfalse;
-    for (mesh = 0; mesh < tiki->numMeshes; mesh++) {
-        skelmodel = ri.TIKI_GetSkel(tiki->mesh[mesh]);
-        psurface  = skelmodel->pSurfaces;
-
-        // find the surface
-        for (surf = 0; surf < skelmodel->numSurfaces; surf++) {
-            if (psurface == sf) {
-                bFound = qtrue;
-                break;
-            }
-            psurface = psurface->pNext;
-        }
-
-        if (bFound) {
-            break;
-        }
-    }
-
-    assert(bFound);
-
-    //
-    // Process LOD
-    //
-    if (skelmodel->pLOD) {
-        float lod_val;
-        int   renderfx;
-
-        lod_val  = backEnd.currentEntity->lodpercentage[0];
-        renderfx = backEnd.currentEntity->e.renderfx;
-
-        if (sf->numVerts > 3) {
-            skelIndex_t *collapseIndex;
-            int          mid, low, high;
-            int          lod_cutoff;
-
-            if (lod_tool->integer && !strcmp(backEnd.currentEntity->e.tiki->a->name, lod_tikiname->string)
-                && mesh == lod_mesh->integer) {
-                lod_cutoff = GetToolLodCutoff(skelmodel, backEnd.currentEntity->lodpercentage[0]);
-            } else {
-                lod_cutoff = GetLodCutoff(skelmodel, backEnd.currentEntity->lodpercentage[0], renderfx);
-            }
-
-            collapseIndex = sf->pCollapseIndex;
-            if (collapseIndex[2] < lod_cutoff) {
-                return;
-            }
-
-            low = mid = 3;
-            high      = sf->numVerts;
-            while (high >= low) {
-                mid = (low + high) >> 1;
-                if (collapseIndex[mid] < lod_cutoff) {
-                    high = mid - 1;
-                    if (collapseIndex[mid - 1] >= lod_cutoff) {
-                        break;
-                    }
-                } else {
-                    mid++;
-                    low = mid;
-                    if (high == mid || collapseIndex[mid] < lod_cutoff) {
-                        break;
-                    }
-                }
-            }
-
-            render_count = mid;
-        } else {
-            render_count = sf->numVerts;
-        }
-
-        if (!render_count) {
-            return;
-        }
-    } else {
-        render_count = sf->numVerts;
-    }
-
-    indexes = sf->numTriangles * 3;
-    RB_CHECKOVERFLOW(render_count, indexes);
-
-    collapse_map = sf->pCollapse;
-    triangles    = sf->pTriangles;
-    baseIndex    = tess.numIndexes;
-    baseVertex   = tess.numVertexes;
-    tess.numVertexes += render_count;
+    tiki  = ent->e.tiki;
+    scale = tiki->load_scale * ent->e.scale;
 
     outXyz    = tess.xyz[baseVertex];
     outNormal = &tess.normal[baseVertex];
     newVerts  = sf->pVerts;
 
-    if (render_count == sf->numVerts) {
-        for (i = 0; i < indexes; i++) {
-            tess.indexes[baseIndex + i] = baseVertex + triangles[i];
-        }
-
-        entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
-        tess.numIndexes += indexes;
-    } else {
-        assert(sf->numVerts < TIKI_MAX_VERTEXES);
-
-        for (i = 0; i < render_count; i++) {
-            collapse[i] = i;
-        }
-
-        for (i = render_count; i < sf->numVerts; i++) {
-            collapse[i] = collapse[collapse_map[i]];
-        }
-
-        for (i = 0; i < indexes; i += 3) {
-            // read once: the index stores could alias the model's triangle list, which forced reloads after each store
-            const int c0 = collapse[triangles[i]];
-            const int c1 = collapse[triangles[i + 1]];
-            const int c2 = collapse[triangles[i + 2]];
-
-            assert(c0 < sf->numVerts);
-            assert(c1 < sf->numVerts);
-            assert(c2 < sf->numVerts);
-
-            if (c0 == c1 || c1 == c2 || c2 == c0) {
-                break;
-            }
-
-            tess.indexes[baseIndex + i]     = baseVertex + c0;
-            tess.indexes[baseIndex + i + 1] = baseVertex + c1;
-            tess.indexes[baseIndex + i + 2] = baseVertex + c2;
-        }
-
-        entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
-        tess.numIndexes += i;
-    }
-
     //
     // just copy the vertexes
     //
-    bones  = &TIKI_Skel_Bones[backEnd.currentEntity->e.bonestart];
-    morphs = &skeletorMorphCache[backEnd.currentEntity->e.morphstart];
+    bones  = &TIKI_Skel_Bones[ent->e.bonestart];
+    morphs = &skeletorMorphCache[ent->e.morphstart];
 
-    if (backEnd.currentEntity->e.hasMorph) {
+    if (ent->e.hasMorph) {
         if (mesh > 0) {
             for (vertNum = 0; vertNum < render_count; vertNum++) {
                 vec3_t normal;
@@ -1400,6 +1260,542 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
             }
         }
     }
+}
+
+/*
+=============================================================
+
+GPU SKINNING
+
+A vertex-lit skeletal surface (RB_StageIteratorVertexLitTextureUnfogged, nearly every character surface) is
+skinned and lit by the vertex shader (tr_mtl.h mbSkin*, tr_mtl_stage.metal mb_skin_vs): RB_SkelMesh still
+builds the indexes, but leaves the vertexes to the GPU as a job of the batch. The shader computes the same
+bits as RB_SkelMeshVertexes and RB_Light_Real. Whatever needs the vertexes on the CPU after all (another color
+function, dlights, the debug views) gets them from RB_SkinMaterialize.
+
+The surfaces' vertex records and the (tiki, mesh) bone maps are copied to the GPU once, until the models are
+freed (R_SkinReset).
+
+=============================================================
+*/
+
+#define SKIN_SURFACES 4096 // power of two
+#define SKIN_BONEMAPS 1024 // power of two
+
+typedef struct {
+    const skelSurfaceGame_t *surface; // NULL: empty slot
+    const void              *verts;   // sf->pVerts and numVerts when it was copied
+    int                      numVerts;
+    int                      handle;   // mbSkinStatic handle, -1: CPU only
+    int                      maxBone;  // largest weight bone index
+    int                      maxMorph; // largest morph index, -1: no morphs
+} skinCopySurface_t;
+
+typedef struct {
+    const dtiki_t          *tiki; // NULL: empty slot
+    const skelHeaderGame_t *skelmodel;
+    int                     mesh;
+    int                     handle; // mbSkinStatic handle, -1: CPU only
+    int                     numBones;
+} skinCopyBoneMap_t;
+
+static skinCopySurface_t skinSurfaces[SKIN_SURFACES];
+static skinCopyBoneMap_t skinBoneMaps[SKIN_BONEMAPS];
+
+static unsigned R_SkinHash(const void *p)
+{
+    return (unsigned)(((uintptr_t)p >> 4) * 2654435761u);
+}
+
+/*
+=============
+R_SkinReset
+
+The models are freed (or the renderer restarts): forget every surface copied to the GPU.
+=============
+*/
+void R_SkinReset(void)
+{
+    memset(skinSurfaces, 0, sizeof(skinSurfaces));
+    memset(skinBoneMaps, 0, sizeof(skinBoneMaps));
+    mbSkinReset();
+}
+
+/*
+=============
+R_SkinCopySurface
+
+The surface's vertex records to the GPU: one word per vertex (the word offset of its record), then the records.
+=============
+*/
+static void R_SkinCopySurface(skinCopySurface_t *s, const skelSurfaceGame_t *sf)
+{
+    const byte *rec;
+    uint32_t   *data;
+    int         words, bytes;
+    int         i, j;
+
+    s->surface  = sf;
+    s->verts    = sf->pVerts;
+    s->numVerts = sf->numVerts;
+    s->handle   = -1;
+    s->maxBone  = -1;
+    s->maxMorph = -1;
+
+    if (sf->numVerts <= 0 || sf->numVerts > TIKI_MAX_VERTEXES) {
+        return;
+    }
+
+    // the records, checked: every vertex has a weight, no index is negative
+    rec   = (const byte *)sf->pVerts;
+    words = 0;
+    for (i = 0; i < sf->numVerts; i++) {
+        const skeletorVertex_t *v       = (const skeletorVertex_t *)rec;
+        const skeletorMorph_t  *morphs  = (const skeletorMorph_t *)(rec + sizeof(skeletorVertex_t));
+        const skelWeight_t     *weights = (const skelWeight_t *)(morphs + v->numMorphs);
+
+        if (v->numWeights < 1 || v->numWeights > 256 || v->numMorphs < 0 || v->numMorphs > 256) {
+            return;
+        }
+        for (j = 0; j < v->numMorphs; j++) {
+            if (morphs[j].morphIndex < 0) {
+                return;
+            }
+            s->maxMorph = Q_max(s->maxMorph, morphs[j].morphIndex);
+        }
+        for (j = 0; j < v->numWeights; j++) {
+            if (weights[j].boneIndex < 0) {
+                return;
+            }
+            s->maxBone = Q_max(s->maxBone, weights[j].boneIndex);
+        }
+
+        bytes = sizeof(skeletorVertex_t) + sizeof(skeletorMorph_t) * v->numMorphs + sizeof(skelWeight_t) * v->numWeights;
+        rec += bytes;
+        words += bytes / 4;
+    }
+
+    bytes = (sf->numVerts + words) * 4;
+    data  = (uint32_t *)ri.Hunk_AllocateTempMemory(bytes);
+
+    rec   = (const byte *)sf->pVerts;
+    words = sf->numVerts;
+    for (i = 0; i < sf->numVerts; i++) {
+        const skeletorVertex_t *v = (const skeletorVertex_t *)rec;
+
+        data[i] = words;
+        words += (sizeof(skeletorVertex_t) + sizeof(skeletorMorph_t) * v->numMorphs + sizeof(skelWeight_t) * v->numWeights) / 4;
+        rec += sizeof(skeletorVertex_t) + sizeof(skeletorMorph_t) * v->numMorphs + sizeof(skelWeight_t) * v->numWeights;
+    }
+    memcpy(data + sf->numVerts, sf->pVerts, (words - sf->numVerts) * 4);
+
+    s->handle = mbSkinStatic(data, bytes);
+    ri.Hunk_FreeTempMemory(data);
+}
+
+static const skinCopySurface_t *R_SkinSurface(const skelSurfaceGame_t *sf)
+{
+    unsigned i = R_SkinHash(sf) & (SKIN_SURFACES - 1);
+    int      n;
+
+    for (n = 0; n < SKIN_SURFACES; n++, i = (i + 1) & (SKIN_SURFACES - 1)) {
+        skinCopySurface_t *s = &skinSurfaces[i];
+
+        if (s->surface == sf) {
+            if (s->verts != sf->pVerts || s->numVerts != sf->numVerts) {
+                R_SkinCopySurface(s, sf); // another surface at the same address
+            }
+            return s;
+        }
+        if (!s->surface) {
+            R_SkinCopySurface(s, sf);
+            return s;
+        }
+    }
+    return NULL;
+}
+
+/*
+=============
+R_SkinBoneMap
+
+The bone of every weight bone index of a mesh > 0 (RB_SkelMeshVertexes looks it up per weight).
+=============
+*/
+static const skinCopyBoneMap_t *R_SkinBoneMap(dtiki_t *tiki, int mesh, skelHeaderGame_t *skelmodel)
+{
+    unsigned i = (R_SkinHash(tiki) + mesh) & (SKIN_BONEMAPS - 1);
+    int      n, b;
+
+    for (n = 0; n < SKIN_BONEMAPS; n++, i = (i + 1) & (SKIN_BONEMAPS - 1)) {
+        skinCopyBoneMap_t *m = &skinBoneMaps[i];
+
+        if (m->tiki == tiki && m->mesh == mesh && m->skelmodel == skelmodel) {
+            return m;
+        }
+        if (!m->tiki) {
+            int  numChannels = ri.TIKI_GetNumChannels(tiki);
+            int *map;
+
+            m->tiki      = tiki;
+            m->skelmodel = skelmodel;
+            m->mesh      = mesh;
+            m->handle    = -1;
+            m->numBones  = skelmodel->numBones;
+            if (m->numBones <= 0) {
+                return m;
+            }
+
+            map = (int *)ri.Hunk_AllocateTempMemory(m->numBones * sizeof(int));
+            for (b = 0; b < m->numBones; b++) {
+                map[b] = ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[b].channel);
+                if (map[b] < 0 || map[b] >= numChannels) {
+                    break;
+                }
+            }
+            if (b == m->numBones) {
+                m->handle = mbSkinStatic(map, m->numBones * sizeof(int));
+            }
+            ri.Hunk_FreeTempMemory(map);
+            return m;
+        }
+    }
+    return NULL;
+}
+
+/*
+=============
+RB_SkinDefer
+
+RB_SkelMesh built the indexes of the surface's first render_count vertexes from baseVertex: leave the vertexes
+to the GPU if it can do them.
+=============
+*/
+static qboolean RB_SkinDefer(skelSurfaceGame_t *sf, skelHeaderGame_t *skelmodel, int mesh, int baseVertex, int render_count)
+{
+    trRefEntity_t       *ent  = backEnd.currentEntity;
+    dtiki_t             *tiki = ent->e.tiki;
+    const skinCopySurface_t *s;
+    const skinCopyBoneMap_t *map = NULL;
+    mbSkinJob_t         *job;
+    int                  numBones;
+
+    if (!r_metalSkinning->integer || tess.currentStageIteratorFunc != RB_StageIteratorVertexLitTextureUnfogged
+        || (r_primitives->integer != 0 && r_primitives->integer != 2)
+        || (r_developer->integer && (r_showtris->integer || r_shownormals->integer))) {
+        return qfalse;
+    }
+
+    // only while the jobs hold every vertex of the batch
+    if (tess.numSkinJobs == MB_SKIN_MAX_JOBS
+        || baseVertex
+               != (tess.numSkinJobs ? tess.skinDraw[tess.numSkinJobs - 1].firstVertex
+                                          + tess.skinDraw[tess.numSkinJobs - 1].numVertexes
+                                    : 0)) {
+        return qfalse;
+    }
+
+    s = R_SkinSurface(sf);
+    if (!s || s->handle < 0) {
+        return qfalse;
+    }
+
+    // the bones (and morph weights) the CPU would read
+    numBones = ri.TIKI_GetNumChannels(tiki);
+    if (ent->e.bonestart < 0 || numBones <= 0 || ent->e.bonestart + numBones > MAX_SKELBONES) {
+        return qfalse;
+    }
+    if (mesh > 0) {
+        map = R_SkinBoneMap(tiki, mesh, skelmodel);
+        if (!map || map->handle < 0 || s->maxBone >= map->numBones) {
+            return qfalse;
+        }
+    } else if (s->maxBone >= numBones) {
+        return qfalse;
+    }
+    if (ent->e.hasMorph && (ent->e.morphstart < 0 || ent->e.morphstart + Q_max(s->maxMorph, 0) >= MAX_SKELMORPH)) {
+        return qfalse;
+    }
+
+    job              = &tess.skinDraw[tess.numSkinJobs];
+    job->firstVertex = baseVertex;
+    job->numVertexes = render_count;
+    job->surface     = s->handle;
+    job->boneMap     = map ? map->handle : -1;
+    job->bones       = &TIKI_Skel_Bones[ent->e.bonestart];
+    job->numBones    = numBones;
+    if (ent->e.hasMorph) {
+        job->morphs    = &skeletorMorphCache[ent->e.morphstart];
+        job->numMorphs = Q_max(s->maxMorph, 0) + 1;
+    } else {
+        job->morphs    = NULL;
+        job->numMorphs = 0;
+    }
+    job->scale = tiki->load_scale * ent->e.scale;
+
+    tess.skinJobs[tess.numSkinJobs].surface   = sf;
+    tess.skinJobs[tess.numSkinJobs].skelmodel = skelmodel;
+    tess.skinJobs[tess.numSkinJobs].mesh      = mesh;
+    tess.skinJobs[tess.numSkinJobs].entity    = ent;
+    tess.numSkinJobs++;
+    return qtrue;
+}
+
+/*
+=============
+RB_SkinMaterialize
+
+The CPU vertexes of the batch's deferred surfaces after all.
+=============
+*/
+void RB_SkinMaterialize(void)
+{
+    int i;
+
+    for (i = 0; i < tess.numSkinJobs; i++) {
+        RB_SkelMeshVertexes(
+            tess.skinJobs[i].surface,
+            tess.skinJobs[i].skelmodel,
+            tess.skinJobs[i].mesh,
+            tess.skinJobs[i].entity,
+            tess.skinDraw[i].firstVertex,
+            tess.skinDraw[i].numVertexes
+        );
+    }
+    tess.numSkinJobs = 0;
+}
+
+/*
+=============
+RB_SkinBegin
+
+For RB_StageIteratorVertexLitTextureUnfogged, before the colors: 0 = no GPU skinning (the vertexes are on the
+CPU), 1 = GPU skinning, the colors from the CPU (they don't depend on the vertexes), 2 = GPU skinning and
+lighting (the sphere's lights, RB_Light_Real). Unless 0, the caller ends with mbSkinEnd after its draw.
+=============
+*/
+int RB_SkinBegin(void)
+{
+    static mbSkinDraw_t draw;
+    sphereor_t         *sphere = backEnd.currentSphere;
+    int                 last, i;
+
+    if (!tess.numSkinJobs) {
+        return 0;
+    }
+
+    last = tess.numSkinJobs - 1;
+    if (tess.skinDraw[last].firstVertex + tess.skinDraw[last].numVertexes != tess.numVertexes || tess.dlightBits
+        || (r_primitives->integer != 0 && r_primitives->integer != 2)) {
+        RB_SkinMaterialize();
+        return 0;
+    }
+
+    draw.numJobs   = tess.numSkinJobs;
+    draw.jobs      = tess.skinDraw;
+    draw.numLights = -1;
+    draw.lights    = NULL;
+    draw.scene     = backEnd.viewParms.frameSceneNum;
+    memset(draw.ambient, 0, sizeof(draw.ambient));
+
+    if (sphere->TessFunction && r_drawspherelights->integer) {
+        if (sphere->TessFunction == RB_Light_Real && !sphere->bUsesCubeMap && sphere->numRealLights >= 0
+            && sphere->numRealLights <= MB_SKIN_MAX_LIGHTS) {
+            for (i = 0; i < sphere->numRealLights; i++) {
+                if (sphere->light[i].eType < LIGHT_POINT || sphere->light[i].eType > LIGHT_SPOT_FAST) {
+                    break;
+                }
+            }
+            if (i < sphere->numRealLights) {
+                RB_SkinMaterialize();
+                return 0;
+            }
+            draw.numLights = sphere->numRealLights;
+            draw.lights    = sphere->light;
+            memcpy(draw.ambient, sphere->ambient.level, sizeof(draw.ambient));
+        } else if (sphere->TessFunction != RB_Light_Fullbright && sphere->TessFunction != RB_CalcLightGridColor) {
+            RB_SkinMaterialize();
+            return 0;
+        }
+    } else if (backEnd.currentStaticModel) {
+        RB_SkinMaterialize();
+        return 0;
+    }
+
+    if (!mbSkinBegin(&draw)) {
+        RB_SkinMaterialize();
+        return 0;
+    }
+    return draw.numLights >= 0 ? 2 : 1;
+}
+
+/*
+=============
+RB_SkelMesh
+=============
+*/
+void RB_SkelMesh(skelSurfaceGame_t *sf)
+{
+    unsigned int       baseIndex, baseVertex;
+    unsigned int       render_count;
+    unsigned int       indexes;
+    skelIndex_t       *triangles;
+    skelIndex_t       *collapse_map;
+    dtiki_t           *tiki;
+    int                mesh;
+    int                surf;
+    int                i;
+    skelHeaderGame_t  *skelmodel;
+    skelSurfaceGame_t *psurface;
+    qboolean           bFound;
+    short              collapse[TIKI_MAX_VERTEXES];
+
+    if (!r_drawentitypoly->integer) {
+        return;
+    }
+
+    tiki = backEnd.currentEntity->e.tiki;
+
+    //
+    // get the mesh associated with the surface
+    //
+    bFound = qfalse;
+    for (mesh = 0; mesh < tiki->numMeshes; mesh++) {
+        skelmodel = ri.TIKI_GetSkel(tiki->mesh[mesh]);
+        psurface  = skelmodel->pSurfaces;
+
+        // find the surface
+        for (surf = 0; surf < skelmodel->numSurfaces; surf++) {
+            if (psurface == sf) {
+                bFound = qtrue;
+                break;
+            }
+            psurface = psurface->pNext;
+        }
+
+        if (bFound) {
+            break;
+        }
+    }
+
+    assert(bFound);
+
+    //
+    // Process LOD
+    //
+    if (skelmodel->pLOD) {
+        float lod_val;
+        int   renderfx;
+
+        lod_val  = backEnd.currentEntity->lodpercentage[0];
+        renderfx = backEnd.currentEntity->e.renderfx;
+
+        if (sf->numVerts > 3) {
+            skelIndex_t *collapseIndex;
+            int          mid, low, high;
+            int          lod_cutoff;
+
+            if (lod_tool->integer && !strcmp(backEnd.currentEntity->e.tiki->a->name, lod_tikiname->string)
+                && mesh == lod_mesh->integer) {
+                lod_cutoff = GetToolLodCutoff(skelmodel, backEnd.currentEntity->lodpercentage[0]);
+            } else {
+                lod_cutoff = GetLodCutoff(skelmodel, backEnd.currentEntity->lodpercentage[0], renderfx);
+            }
+
+            collapseIndex = sf->pCollapseIndex;
+            if (collapseIndex[2] < lod_cutoff) {
+                return;
+            }
+
+            low = mid = 3;
+            high      = sf->numVerts;
+            while (high >= low) {
+                mid = (low + high) >> 1;
+                if (collapseIndex[mid] < lod_cutoff) {
+                    high = mid - 1;
+                    if (collapseIndex[mid - 1] >= lod_cutoff) {
+                        break;
+                    }
+                } else {
+                    mid++;
+                    low = mid;
+                    if (high == mid || collapseIndex[mid] < lod_cutoff) {
+                        break;
+                    }
+                }
+            }
+
+            render_count = mid;
+        } else {
+            render_count = sf->numVerts;
+        }
+
+        if (!render_count) {
+            return;
+        }
+    } else {
+        render_count = sf->numVerts;
+    }
+
+    indexes = sf->numTriangles * 3;
+    RB_CHECKOVERFLOW(render_count, indexes);
+    if (tess.numSkinJobs == MB_SKIN_MAX_JOBS) {
+        // one draw skins at most MB_SKIN_MAX_JOBS surfaces on the GPU
+        RB_EndSurface();
+        RB_BeginSurface(tess.shader);
+    }
+
+    collapse_map = sf->pCollapse;
+    triangles    = sf->pTriangles;
+    baseIndex    = tess.numIndexes;
+    baseVertex   = tess.numVertexes;
+    tess.numVertexes += render_count;
+
+    if (render_count == sf->numVerts) {
+        for (i = 0; i < indexes; i++) {
+            tess.indexes[baseIndex + i] = baseVertex + triangles[i];
+        }
+
+        entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
+        tess.numIndexes += indexes;
+    } else {
+        assert(sf->numVerts < TIKI_MAX_VERTEXES);
+
+        for (i = 0; i < render_count; i++) {
+            collapse[i] = i;
+        }
+
+        for (i = render_count; i < sf->numVerts; i++) {
+            collapse[i] = collapse[collapse_map[i]];
+        }
+
+        for (i = 0; i < indexes; i += 3) {
+            // read once: the index stores could alias the model's triangle list, which forced reloads after each store
+            const int c0 = collapse[triangles[i]];
+            const int c1 = collapse[triangles[i + 1]];
+            const int c2 = collapse[triangles[i + 2]];
+
+            assert(c0 < sf->numVerts);
+            assert(c1 < sf->numVerts);
+            assert(c2 < sf->numVerts);
+
+            if (c0 == c1 || c1 == c2 || c2 == c0) {
+                break;
+            }
+
+            tess.indexes[baseIndex + i]     = baseVertex + c0;
+            tess.indexes[baseIndex + i + 1] = baseVertex + c1;
+            tess.indexes[baseIndex + i + 2] = baseVertex + c2;
+        }
+
+        entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
+        tess.numIndexes += i;
+    }
+
+    if (RB_SkinDefer(sf, skelmodel, mesh, baseVertex, render_count)) {
+        return;
+    }
+    RB_SkelMeshVertexes(sf, skelmodel, mesh, backEnd.currentEntity, baseVertex, render_count);
 
 #if 0
 	if( backEnd.currentEntity->e.staticModelIndex ) {

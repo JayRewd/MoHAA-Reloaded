@@ -294,6 +294,49 @@ void	mbDrawElements( int mode, int count, int type, const void *indices );
 void	mbArrayElement( int i );
 
 //
+// GPU skinning of skeletal (TIKI) surfaces. Static data (a surface's vertex records, a mesh's bone map) is copied
+// once into a GPU buffer; a draw made between mbSkinBegin and mbSkinEnd then computes positions, texcoord 0 and,
+// with lights, the colors in the vertex shader (tr_mtl_stage.metal mb_skin_vs) instead of reading the vertex,
+// texcoord 0 and color arrays. The shader repeats the CPU's arithmetic operation for operation (RB_SkelMesh,
+// RB_Light_Real), so it gives the same bits.
+//
+// Vertex records as the model holds them: skeletorVertex_t, then its morphs (skeletorMorph_t), then its weights
+// (skelWeight_t); a surface's static data is one word per vertex (that vertex's record, in words from the start
+// of the data) followed by the records. Lights are reallightinfo_t, bones skelBoneCache_t.
+//
+#define MB_SKIN_MAX_JOBS	16
+#define MB_SKIN_MAX_LIGHTS	32
+
+int		mbSkinStatic( const void *data, int bytes );	// -> handle >= 0 (a word offset), -1 if it doesn't fit
+void	mbSkinReset( void );					// every handle is dropped (the models were freed)
+
+typedef struct {
+	int				firstVertex;	// the draw's vertex index of the surface's vertex 0; jobs are in vertex order
+	int				numVertexes;
+	int				surface;		// mbSkinStatic handle of the vertex records
+	int				boneMap;		// mbSkinStatic handle of a weight bone -> bone table (meshes > 0), -1: none
+	const void		*bones;			// numBones skelBoneCache_t, read at the draw
+	int				numBones;
+	const int		*morphs;		// numMorphs morph weights, NULL: the entity has no morphs
+	int				numMorphs;
+	float			scale;
+} mbSkinJob_t;
+
+typedef struct {
+	int					numJobs;	// 1..MB_SKIN_MAX_JOBS
+	const mbSkinJob_t	*jobs;
+	int					numLights;	// 0..MB_SKIN_MAX_LIGHTS sphere lights, or -1: colors from the color array
+	const void			*lights;	// numLights reallightinfo_t
+	byte				ambient[4];
+	unsigned			scene;		// bones and morphs are copied once per scene: same scene and pointer = same data
+} mbSkinDraw_t;
+
+// The mbDrawElements calls until mbSkinEnd are skinned (nothing else may be drawn in between); the descriptor and
+// what it points to are read at each of them. qfalse: GPU skinning is unavailable, nothing changed.
+qboolean	mbSkinBegin( const mbSkinDraw_t *draw );
+void		mbSkinEnd( void );
+
+//
 // immediate mode (debug views, sky, flares, shadows, 2D boxes and lines)
 //
 void	mbBegin( int mode );

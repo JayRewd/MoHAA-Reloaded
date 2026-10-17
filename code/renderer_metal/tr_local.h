@@ -1459,6 +1459,7 @@ extern	cvar_t	*r_drawstaticdecals;
 extern	cvar_t	*r_drawterrain;
 extern	cvar_t	*r_drawsprites;
 extern	cvar_t	*r_drawspherelights;
+extern	cvar_t	*r_metalSkinning;
 extern	cvar_t	*r_drawworld;			// disable/enable world rendering
 extern	cvar_t	*r_speeds;				// various levels of information display
 extern  cvar_t	*r_detailTextures;		// enables/disables detail texturing stages
@@ -1869,6 +1870,14 @@ typedef struct stageVars
 	vec2_t		texcoords[NUM_TEXTURE_BUNDLES][SHADER_MAX_VERTEXES];
 } stageVars_t;
 
+// a skeletal surface whose vertexes RB_SkelMesh left to the GPU (tr_model.cpp, GPU skinning)
+typedef struct {
+	skelSurfaceGame_t			*surface;
+	struct skelHeaderGame_s		*skelmodel;
+	int							mesh;
+	trRefEntity_t				*entity;
+} skinJob_t;
+
 typedef struct shaderCommands_s 
 {
 	glIndex_t	indexes[SHADER_MAX_INDEXES] Q_ALIGN(16);
@@ -1898,6 +1907,11 @@ typedef struct shaderCommands_s
 	shaderStage_t	**xstages;
     qboolean no_global_fog;
     qboolean vertexColorValid;
+
+	// GPU skinning: the deferred surfaces, in vertex order from vertex 0 (RB_SkelMesh)
+	int			numSkinJobs;
+	skinJob_t	skinJobs[MB_SKIN_MAX_JOBS];
+	mbSkinJob_t	skinDraw[MB_SKIN_MAX_JOBS];
 } shaderCommands_t;
 
 extern	shaderCommands_t	tess;
@@ -2207,6 +2221,9 @@ void RE_ForceUpdatePose(refEntity_t* model);
 void RE_SetFrameNumber(int frameNumber);
 void R_UpdatePoseInternal(refEntity_t* model);
 void RB_SkelMesh(skelSurfaceGame_t* sf);
+void RB_SkinMaterialize(void);
+int RB_SkinBegin(void);
+void R_SkinReset(void);
 void RB_StaticMesh(staticSurface_t* staticSurf);
 void RB_Static_BuildDLights();
 void R_InfoStaticModels_f(void);

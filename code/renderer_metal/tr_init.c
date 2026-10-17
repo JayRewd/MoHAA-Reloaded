@@ -69,6 +69,7 @@ cvar_t	*r_drawstaticdecals;
 cvar_t	*r_drawterrain;
 cvar_t	*r_drawsprites;
 cvar_t	*r_drawspherelights;
+cvar_t	*r_metalSkinning;
 cvar_t	*r_drawworld;
 cvar_t	*r_speeds;
 cvar_t	*r_fullbright;
@@ -1392,6 +1393,7 @@ void R_Register( void )
 	r_drawterrain = ri.Cvar_Get("r_drawterrain", "1", CVAR_CHEAT);
 	r_drawsprites = ri.Cvar_Get("r_drawsprites", "1", CVAR_CHEAT);
 	r_drawspherelights = ri.Cvar_Get("r_drawspherelights", "1", CVAR_CHEAT);
+	r_metalSkinning = ri.Cvar_Get("r_metalSkinning", "1", 0);	// skeletal models skinned and lit by the GPU (0: by the CPU)
 	r_staticlod = ri.Cvar_Get("r_staticlod", "1", CVAR_CHEAT);
 	r_lodscale = ri.Cvar_Get("r_lodscale", "1.1", CVAR_ARCHIVE);
 	r_lodcap = ri.Cvar_Get("r_lodcap", "1.0", CVAR_ARCHIVE);
@@ -1657,6 +1659,7 @@ void RE_Shutdown( qboolean destroyWindow ) {
 		R_IssuePendingRenderCommands();
 		mbFlushReadbacks();		// write the screenshots still in flight (one right before a quit or vid_restart)
 		R_DeleteTextures();
+		R_SkinReset();
 	}
 
 	// shut down the window and the backend
@@ -1690,6 +1693,7 @@ void RE_BeginRegistration(glconfig_t* glconfigOut) {
 	//scr_initialized = 0;
 
 	R_IssuePendingRenderCommands();
+	R_SkinReset();
 
 	R_LevelMarksFree();
 	R_TerrainFree();

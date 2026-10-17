@@ -13,7 +13,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
 | 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d (the user's look, online smoke test) waits until the user is back |
 | 4 | Delete OpenGL entirely | **Done** (session 9, before 3d: the user was away). GL1 lives on only as the `gl` reference flavor (an export of c9dddadd) for screenshot and bench comparisons |
-| 5 | Performance and input latency | **In progress:** 5a (session 10, the user away: the renderer's own frame cost) |
+| 5 | Performance and input latency | **In progress:** 5a (sessions 10–11, the user away: the renderer's own frame cost; session 11: GPU skinning, 0.29 → 0.23 ms work) |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
 | 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | Not started |
 
@@ -393,6 +393,12 @@ Added in session 9 (Phase 4, OpenGL deleted):
   - until Phase 6: the vendored SDL2 headers (the `SDL_GL_*` API), and recastnavigation's vendored CI files; until Phase 7: `emscripten.cmake` (WebGL flags).
 - **SDL2 itself still contains its (unused) GL backend:** `libSDL2-2.0.0.dylib` doesn't link OpenGL, but imports `NSOpenGLContext` and would `dlopen` libGL if a GL context were requested (we never request one). It goes with SDL in Phase 6. It is also still a universal (x86_64 + arm64) binary: Phase 7.
 
+
+Added in session 11 (Phase 5a, GPU skinning; the user away, so the conservative choices):
+- **GPU skinning runs in the vertex shader, not in a compute pass.** A compute pass would have to run before the scene pass, but the jobs are only known while the pass is open. Ending and restarting the pass costs a tile store and load. A separate command buffer per frame costs a commit, and doing the work in the previous frame adds latency. In the vertex shader there is no extra pass, encoder, barrier or command buffer, and the batching stays as it was. The cost is that the position and lighting arithmetic must match the CPU's exactly in another shader, which `-fpreserve-invariance` (already on) and the safe-math `MB_Skin` make hold. The A/B build checks every vertex output (Phase 5, session 11).
+- **Bit-identical or not at all:** the GPU path covers only what it reproduces exactly: vertex-lit skeletal surfaces lit by `RB_Light_Real` without the cube map, or by a color function that doesn't read the vertexes. Everything else is materialized on the CPU with the old loops, so the CPU path is still the reference. `r_metalSkinning 0` (not archived) turns the GPU path off.
+- **The static skinning data is keyed by surface pointer** (renderer-side hash tables, `tr_model.cpp`), checked against `pVerts`/`numVerts`. It is dropped with the models: `RE_FreeModels`, `RE_BeginRegistration`, `RE_Shutdown`. Nothing in the shared TIKI structs changed (`tiki_shared.h` is used by the game modules).
+
 ---
 
 ## 4. Architecture of renderer_metal
@@ -709,7 +715,7 @@ Plan (session 1):
   - `grep -rniE "qgl|opengl|SDL_GL_|GL_[A-Z0-9_]+|glimp" code cmake` finds nothing except documented exceptions (struct/cvar names kept for compatibility).
   - The build passes, the bench is unchanged, and `otool -L`/`nm` show no OpenGL.
 
-### Phase 5: Performance and input latency. **Status: in progress (5a: session 10, 2026-10-17).**
+### Phase 5: Performance and input latency. **Status: in progress (5a: sessions 10–11, 2026-10-17).**
 Session 10 result (5a, the renderer's own frame cost; the user away, so nothing that changes frame pacing, usercmd timing or gameplay feel):
 - **Before/after tool:** `port/build.sh metalref` builds the last commit (or `METAL_REF=<ref>`) from a `git archive` export into `build.noindex/metalref-install`, so `port/bench.sh run metalref` / `OMM_FLAVOR=metalref port/shot.sh …` give the "before" in the same sitting as the work tree's "after".
 - **Every change so far is bit-identical by construction** (same expressions in the same order per vertex: clang's `-ffp-contract=on` fuses `a + b*c` per expression in the front end, so restructured loops round the same), and checked with a temporary A/B build that runs the old and the new code on every surface and compares the bytes (not committed). The fixed views are then compared against the saved Metal baseline (`build.noindex/shots/base-s9/`, session 9's final shots) as well as GL1: only the views that vary from run to run differ.
@@ -729,6 +735,49 @@ Session 10 result (5a, the renderer's own frame cost; the user away, so nothing 
 - **Change 1: `RB_Light_Real` goes light by light** (`tr_sphere_shade.cpp`, the multi-light case). The light is copied to a local, the `switch` runs once per light, and each light loops over all vertexes into a static per-vertex accumulator; the directional term is branch-free (`fDot = fDot > 0 ? fDot : 0`) and clang vectorizes it 4 vertices wide (`ld4` normals, `fmaxnm`, `fmla`, `st3`). Each vertex still adds its lights in the original order with the same expressions: **bit-identical** (A/B build: 0 of 83 MB of colors differ over the whole bench, 0 on m2l1). Bench, same sitting, screen unlocked: before (metalref) **0.410 / 0.412 / 0.412** and 0.426 / 0.417 ms work, after **0.319 / 0.327 / 0.328** and 0.332 / 0.329 ms (**−0.09 ms, −22%**); GL1 in the sitting 0.921 / 0.917 / 0.910. Fixed views: identical to the Metal baseline except the run-to-run ones (dm6 view 8's weapon-bar highlight, dm5's snow, dm6fx's firing and grenade views 4–7, m2l1 view 0's 0–17 pixels, see Gotchas); against GL1 the same numbers as session 9 (dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437; dm5 1746 / 1358 / 781 / 680; dm6fx 0 / 4 / 605; m2l1 4254 / 753; dm4 843 / 1694 / 323 / 521; obj3 11389 / 16 / 14151).
 - **Change 2: the LOD index remap in `RB_SkelMesh` reads each collapsed index once** (`tr_model.cpp`). The index stores could alias the model's triangle list (`-fno-strict-aliasing`), so the loop reloaded the triangle and collapse entries after every store; the instruction-level profile put ~25% of `RB_SkelMesh` in the LOD remap. Same values, same order: exact. Bench, same sitting, **screen locked** (the user's machine locked during this sitting): before (metalref at 59b313d6) 0.296 / 0.293 / 0.295 and 0.295 / 0.291 / 0.295 ms, after 0.291 / 0.292 / 0.289 and 0.290 / 0.293 / 0.292 (**−0.003 ms**, 1%: small but consistent over 6 runs each). A later sitting, screen unlocked and the machine busier (GL1 0.953 / 0.960 / 0.957, 5% slower than in the morning), can't resolve it: metalref 0.334 / 0.335 / 0.344, metal 0.344 / 0.338 / 0.334. Fixed views: identical to the Metal baseline except the run-to-run views; against GL1 dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437, dm6fx 0 / 4 / 605, m2l1 4258 / 753, dm4 843 / 1694 / 323 / 521, obj3 11389 / 16 / 14151.
 - **Tools added:** `port/build.sh metalref` (above) and `port/shot.sh savebase <dir>` / `port/shot.sh regress <dir>`: the six fixed views on Metal only, diffed against GL1 per view and against a saved Metal baseline capture by capture (`regress base-s9` = against session 9's final Metal shots).
+
+Session 11 result (5a continued, the user away): **skinning and sphere lighting of skeletal models on the GPU**, bit-identical to the CPU.
+- **What the bench draws** (temporary counters, then reverted): ~68 skeletal surfaces in ~45 batches and ~8500 vertices per frame. 95.5% of the vertices go through the vertex-lit fast path (`RB_StageIteratorVertexLitTextureUnfogged`), and 99.6% of those are lit by `RB_Light_Real` without the cube map. 64% are on entities with morphs, 29% on meshes > 0, and 29% of the batches hold several surfaces. No dlights, and LOD collapse on 95% of the vertices. At most 72 bones per model and 820 vertices per surface. So the GPU path has to cover morphs, meshes > 0 and merged batches; the other 4.5% (multi-stage shaders, generic iterator) stay on the CPU.
+- **Design** (§3.2 "GPU skinning"):
+  - `mb_skin_vs` in `tr_mtl_stage.metal` computes what `RB_SkelMesh` and `RB_Light_Real` computed, then continues exactly as `mb_stage_vs`. The fragment shader, the pipelines' other state and the draw order are unchanged.
+  - `RB_SkelMesh` still does the LOD and builds the indices, but leaves the vertexes to the GPU as a job of the batch.
+  - The vertex-lit iterator hands the jobs and the sphere's lights to `mbSkinBegin`; positions, texcoord 0 and colors are no longer copied into the ring.
+  - Whatever needs the CPU vertexes after all (a cube-map sphere, another color function, dlights, `r_showtris`/`r_shownormals`, the shadow shader, `r_primitives 1/3`, any other iterator) gets them from `RB_SkinMaterialize`, which runs the old loops (now `RB_SkelMeshVertexes`, moved verbatim).
+  - Static data (copied once, `mbSkinStatic`): each surface's vertex records, verbatim, behind one word per vertex giving the offset of its record; and a bone map per (tiki, mesh > 0), replacing `TIKI_GetLocalChannel` per weight.
+  - Per draw (in the ring): the jobs, the lights (`reallightinfo_t` verbatim) and the ambient. Each entity's bones (`skelBoneCache_t`) and morph weights are copied once per scene.
+  - `r_metalSkinning 0` turns it off (the CPU path, for comparisons).
+- **Exactness by construction:**
+  - `MB_Skin` runs in safe math (`#pragma METAL fp math_mode(safe)`: the AIR has no fast-math flags and no `fmuladd`; checked in the IR).
+  - Each `a*b + c` that clang fuses on the CPU (`-ffp-contract=on`: one fma per C expression, the left product of `a*b + c*d`, compound `+=` included, checked in clang's IR) is an explicit `fma()` in the same order.
+  - The divisions are `precise::divide`.
+  - The colors get arm64's float → int conversion (toward zero, NaN → 0, saturating) and the int clamp with wrapping addition.
+  - The single-light, multi-light and no-light cases keep their different alpha and rounding.
+- **Verified with an A/B build** (`port/skinab.sh`, kept as a tool; the patch is `port/skinab_patch.py`, never applied to the tree). Every GPU-skinned batch is drawn the GPU way and then the CPU way. Both vertex shaders capture their outputs per vertex, and after each frame the backend compares them bit for bit: clip position, color, texcoords, eye z, clip distance. It also compares the GPU's skinned positions, lit colors and unquantized light sums with the CPU's.
+  - Whole bench: 99,506 batches, 19.6 M vertices (19.1 M captured, 19.07 M GPU-lit, 18.0 M light sums). **0 differences in every field.**
+  - Same on dm6fx (2.07 M vertices), m2l1 (single-player, 0.98 M), obj3 (0.63 M, mostly single-light), Spearhead `shot_sh` (1.1 M) and Breakthrough `shot_bt` (1.25 M). dm4 and dm5 show no skeletal model.
+  - The harness does see differences: a dot product associated the other way gave 31 colors off by one level in 19 M (a mistake that rounds only once is that rare after quantization, which is why the light sums are compared too).
+- **Bench**, same sitting, **screen locked** the whole time:
+  | Build | ms work per frame |
+  |---|---|
+  | metalref (aa3dc22e) | 0.288 / 0.289 / 0.290, again 0.294 / 0.290 / 0.290 |
+  | metal (GPU skinning) | **0.231 / 0.228 / 0.226**, again 0.228 / 0.229 / 0.230 |
+  | metal with `r_metalSkinning 0` (the CPU path) | 0.293 / 0.292 / 0.291 (metalref right after: 0.290 / 0.290) |
+  | GL1 | 0.778 / 0.780 / 0.772 |
+  - **−0.061 ms per frame (−21%).**
+  - An unlocked single run earlier in the session gave 0.234 (the lock state then wasn't checked).
+  - GPU (`port/bench.sh trace`, same sitting): 0.087 ms per game frame vs metalref's 0.083, at 8.7% utilization. The skinning costs the GPU ~4 µs per frame.
+  - The first run with a new build creates the skin pipelines (max frame 28 ms once); the pipeline cache covers them from then on.
+- **Fixed views** (`port/shot.sh regress base-s9`, with GPU skinning on): identical to the Metal baseline except the views that vary from run to run (dm6 view 8's weapon bar, 1998 px; dm5's snow; dm6fx views 4–7, firing; m2l1 view 0, 11 px). dm6fx view 2, the soldier close-up, is identical. Against GL1, the same numbers as sessions 9–10: dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437, dm6fx 0 / 4 / 605, m2l1 4253 / 753, dm4 843 / 1694 / 323 / 521, obj3 11389 / 16 / 14151.
+- **Where the frame goes now** (`sample` of the looped timedemo, ~13,700 frames; `sample` inflates the frame to ~0.28 ms), ms per frame:
+  | Where | ms/frame |
+  |---|---|
+  | backend `RB_ExecuteRenderCommands` | 0.092 |
+  | of it: draw submission (`RB_EndSurface` and the iterators, incl. `mbDrawElements` 0.019 and `MB_PrepareDraw` 0.012) | 0.054 |
+  | of it: `RB_SkelMesh` (LOD + indices only now) | 0.011 |
+  | of it: `RB_SurfaceFace` 0.010, `RB_StaticMesh` 0.007, `RB_Sphere_SetupEntity` 0.005, what's left of `RB_Light_Real` 0.001 | |
+  | front end `R_RenderView` (world 0.023, skeletal surfaces incl. animation 0.011) | 0.043 |
+  | `mbEndFrame` | 0.0045 |
+  | cgame and the rest of the client frame | the rest |
 
 Plan (session 1):
 - Latency work from §4b (frames-in-flight tuning, GCMouse raw input, the client timing redesign: precise pacing by default + the optional decoupled command/render mode + the percentile cap suggestion + low-latency vsync, activity/QoS/Game Mode, audio latency), measured with the latency probe.
@@ -760,17 +809,23 @@ Plan (session 1):
 
 ## 6. Next session
 
-**Session 11: Phase 5a continued, without the user unless they are back** ("Phase 5a, next" below). The user asked on 2026-10-17 that these sessions run without them: don't ask them anything and don't wait for them; take the conservative choice where a decision would need them, record it here, and move on. Don't start anything that needs the user's OK (the list is below). **If the user is back, do slice 3d first** ("What 3d needs" below). Start with CLAUDE.md, then this section, then the Phase 5 "Session 10 result".
-- The screen may lock while the user is away. Benchmark anyway: the before and after builds (and GL1 when needed) in the same sitting, and record whether the screen was locked (session 10: Metal 0.29 ms locked vs 0.325 unlocked). Fixed-view screenshots work on a locked screen. The user may use the machine at times: compare numbers only within one sitting.
+**Session 12: Phase 5a continued, without the user unless they are back** ("Phase 5a, next" below). The user asked on 2026-10-17 that these sessions run without them: don't ask them anything and don't wait for them; take the conservative choice where a decision would need them, record it here, and move on. Don't start anything that needs the user's OK (the list is below). **If the user is back, do slice 3d first** ("What 3d needs" below). Start with CLAUDE.md, then this section, then the Phase 5 "Session 11 result".
+- The screen may lock while the user is away. Benchmark anyway: the before and after builds (and GL1 when needed) in the same sitting, and record whether the screen was locked (`ioreg -n Root -d1 -a | grep -A1 CGSSessionScreenIsLocked`; session 11's whole sitting was locked: Metal 0.23 ms, GL1 0.78). Fixed-view screenshots work on a locked screen. The user may use the machine at times: compare numbers only within one sitting.
 
-Where things stand (end of session 10):
-- **Phase 4 is done and pushed;** Phase 3 stays open until 3d. Phase 5 started (5a); **nothing of Phase 5 is pushed yet** (push at the end of the phase).
-- **Phase 5a so far** (Phase 5 "Session 10 result"): profile first (GPU 0.10 ms/frame, the frame is CPU-bound), then two bit-identical CPU changes: `RB_Light_Real` light by light (−0.09 ms, commit 59b313d6) and the LOD index remap in `RB_SkelMesh` without aliasing reloads (−0.003 ms, the next commit). **Bench: Metal 0.32–0.34 ms work unlocked (0.29 locked) vs 0.41 at the start; GL1 0.91–0.96 in the same sittings.** Fixed views unchanged.
-- **Before/after tool:** `port/build.sh metalref` builds the last commit (`METAL_REF=<ref>` for another) next to the work tree's build: `port/bench.sh run metalref 3` vs `port/bench.sh run metal 3`. Rebuild it after every commit (a full ~40 s build: the export gets new timestamps).
-- **Fixed-view regression check:** `port/shot.sh regress base-s9` runs the six views on Metal only and diffs them against GL1 (session 9's GL1 shots, still in `build.noindex/shots/`) and, capture by capture, against the saved Metal baseline `build.noindex/shots/base-s9/` (session 9's final Metal shots). ~8 min, in the background, one game at a time. GL1 doesn't change: rerun its side (`port/shot.sh fixed opengl1 <name> <cfg>`) only after deleting the shots. A change that is meant to change pixels needs a new baseline (`port/shot.sh savebase <dir>`) once it is accepted.
+Where things stand (end of session 11):
+- **Phase 4 is done and pushed;** Phase 3 stays open until 3d. **Nothing of Phase 5 is pushed yet** (push at the end of the phase).
+- **Phase 5a so far** (Phase 5 "Session 10 result", "Session 11 result"). Every change is bit-identical:
+  - `RB_Light_Real` light by light (−0.09 ms);
+  - the LOD remap without aliasing reloads (−0.003 ms);
+  - **GPU skinning and sphere lighting of skeletal models** (session 11, −0.061 ms: 0.29 → 0.23 ms work with the screen locked).
+- **Bench now:** Metal **0.23 ms** work per frame locked (unlocked not measured in a quiet sitting; session 10's unlocked runs were ~0.035 ms slower than locked), GL1 0.78 locked. GPU 0.087 ms per frame. **The Phase 5 target of ≤ 0.25 ms is met with the screen locked; confirm it unlocked** when a sitting allows (bench metal and gl unlocked, same sitting).
+- **Tools:**
+  - `port/build.sh metalref` builds the last commit (`METAL_REF=<ref>` for another) for the "before" of a bench. Rebuild it after every commit.
+  - `port/shot.sh regress base-s9` runs the six fixed views against GL1 and the saved Metal baseline (~8 min, one game at a time).
+  - **`port/skinab.sh`** builds the GPU-skinning A/B flavor (`metalab`): `port/bench.sh run metalab 1`, then `grep SKINAB build.noindex/bench/metalab-1.log | tail -1`. Every "differ" count must be 0. Rerun it after any change to `mb_skin_vs`/`MB_Skin`, `RB_SkelMesh`/`RB_SkelMeshVertexes`, `RB_Light_Real` or the sphere code, and after upstream merges touching them. When code it patches has changed, `skinab_patch.py` asserts on the stale anchor: update the anchor.
 - **GL1 = the `gl` reference flavor** (`port/build.sh gl`, c9dddadd). Rebuild it after deleting `build.noindex/`.
 - **For the user** (still not told in a session report; say it in 3d): play in fullscreen or borderless fullscreen (`r_fullscreen 1` + `r_noborder 1`), not in a window: ~2 ms pump → present vs 2.4–13 ms windowed (§2).
-- Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
+- Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`. GPU skinning: `tr_model.cpp` ("GPU SKINNING"), `tr_shade.c` (vertex-lit iterator, `RB_EndSurface`), `tr_mtl.m` ("GPU SKINNING"), `tr_mtl_stage.metal` (`mb_skin_vs`).
 
 What 3d needs (when the user is back; both steps need the user, so ask early):
 1. **The user's look.** Show the fixed views side by side (GL1 | Metal | diff): `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first (`port/build.sh gl` first if `build.noindex/gl-install` is missing). Ask the user to play a few minutes in borderless fullscreen and say whether anything looks or feels wrong. Metal is the only renderer now.
@@ -778,16 +833,27 @@ What 3d needs (when the user is back; both steps need the user, so ask early):
 3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and push `metal` to origin (CLAUDE.md: the user said yes to pushing at the end of every phase).
 
 Phase 5a, next (if the user is still away): the renderer's own frame cost, one change at a time (Phase 5 rules).
-- **Where the frame goes now** (after change 1, `sample` of the looped timedemo, ms per frame; the bench reads ~0.325 unprofiled): skinning `RB_SkelMesh` 0.043; front end `R_RenderView` 0.043 (world 0.02, skeletal surfaces 0.013 incl. skeleton animation, sort 0.008); cgame ~0.04 (game code, not ours); Metal driver (AGX + IOGPU + objc) ~0.025; what's left of `RB_Light_Real` 0.016; ring copies ~0.01; `RB_SurfaceFace` 0.009; `RB_Sphere_SetupEntity` (sun traces) 0.008; `RB_StaticMesh` 0.006; 2D/UI ~0.02; the render pass begin ~0.006. Micro-changes can't reach the 0.25 ms target from here (each is ≤ 0.005 ms).
-- **Next: skinning and sphere lighting on the GPU for skeletal models** (the Phase 5 candidate "GPU skinning"), worth ~0.06 ms (`RB_SkelMesh` + `RB_Light_Real` + their ring copies). Design notes from session 10:
-  - Only for surfaces whose stages need nothing from the skinned `tess.xyz`/`tess.normal` on the CPU: no deforms, no `tcGen environment`, no CPU dlights/fog on them, no stencil shadows, not `r_showtris`/`r_shownormals`. Check the bench models' shaders first (the soldiers are one vertex-lit stage, `RB_StageIteratorVertexLitTextureUnfogged`). Everything else keeps the CPU path.
-  - The skeletal vertex records are variable length (weights and morphs per vertex): repack each surface once at load into fixed GPU buffers (per-vertex first-weight index + count, a weight array, morph targets); upload the entity's bone cache (`TIKI_Skel_Bones`, 16 floats per bone) and morph weights per draw into the ring. The LOD index remap stays on the CPU (it builds the index list).
-  - **Bit-identical, or it isn't done:** positions feed depth (z-fighting against GL1 changed with tiny rounding differences in session 4). In MSL use `#pragma METAL fp math_mode(safe)` (no fast-math reassociation) and explicit `fma()` in the order clang's `-ffp-contract=on` produces on the CPU (it fuses the left multiply of `a*b + c*d` first: `DotProduct(x,y)` = fma(x2, y2, fma(x0, y0, x1*y1)); `v + b*s` = fma(b, s, v)), `precise::divide` for the lighting divisions, and the same (int) truncation and clamp as the CPU before the color is used. Verify with a temporary A/B that reads the GPU results back (a compute pass into a buffer) and compares them with the CPU's over the whole bench, as session 10 did on the CPU.
-  - Lighting on the GPU means passing the sphere's lights (≤ `MAX_REAL_LIGHTS`, type, color, direction/origin, spot constants) and ambient per draw; the cube-map variant (`bUsesCubeMap`) can stay on the CPU unless the bench uses it (it doesn't).
-- Smaller exact items, each ≤ 0.005 ms (do them only with a measured gain): a per-mesh bone → local channel table in `RB_SkelMesh` for `mesh > 0` (it calls `ri.TIKI_GetLocalChannel` per weight); copy texcoord units 0 and 1 once when they point into the same `tess.texCoords` array (`MB_StreamArrays`); the 2D text path (`R_DrawString_sgl`, immediate mode); the omaha world culls (§4b, "exact world culls").
-- Also open: fewer draws/passes (driver ~0.025 ms), static world geometry in GPU-resident buffers (`RB_SurfaceFace` + its copies, ~0.015 ms), the ~0.3 ms commit → GPU start gap (latency, §2 session 5).
-- Every change: before/after bench in one sitting (`metalref` vs `metal`), the six fixed views unchanged against the Metal baseline and GL1, the build passing and `port/glcheck.sh` clean; record it in Phase 5. Commit per change. Push `metal` only when Phase 5 is done.
+- **Where the frame goes now:** the profile table at the end of Phase 5 "Session 11 result".
+  - Backend 0.092 ms per frame under `sample`, of which draw submission is 0.054: the iterators, `MB_PrepareDraw`, `MB_StreamArrays`/ring copies, `mbDrawElements` and the AGX driver.
+  - Front end `R_RenderView` 0.043; `RB_SkelMesh` 0.011 (now just LOD and indices); `RB_SurfaceFace` 0.010; `RB_StaticMesh` 0.007; `RB_Sphere_SetupEntity` 0.005; cgame (not ours).
+- **Candidates, measure first (`sample` + the Phase 5 rules):**
+  1. **Draw submission:** per draw, `MB_PrepareDraw` re-checks every piece of state and `mbDrawElements` copies the index list into the ring (~45 skeletal draws + the world per frame).
+     - Look for redundant encoder calls: `setVertexBytes` of the full 176-byte `MbVSUniforms` on every draw, the fragment uniforms, the depth-stencil and pipeline lookups.
+     - Look at what an instruments/`sample` hot spot inside the AGX driver points to.
+     - Any change must keep the rendering bit-identical; fixed views against `base-s9`.
+  2. **GPU-resident static geometry:** world faces (`RB_SurfaceFace` + its ring copies) and static models (`RB_StaticMesh`, precomputed vertex colors) in buffers uploaded once at load, the way session 11 did the skeletal records. Same exactness rules: only what reproduces the CPU's bits (the world's tcMod/deforms/fog stages stay on the CPU).
+  3. The 4.5% of skeletal vertices in the generic iterator (multi-stage shaders): only if a measurement shows they matter.
+  4. Smaller exact items (≤ 0.005 ms each, only with a measured gain): copying texcoord units 0 and 1 once when they share `tess.texCoords` (`MB_StreamArrays`); the 2D text path (`R_DrawString_sgl`); the omaha world culls (§4b).
+- Phase 5 "Done when" also lists p99 frame time vs GL1, input → present latency vs the Phase 2 numbers, and the fixed views. The latency work in §4b mostly changes frame pacing or needs the user (below); `port/latency.sh` takes over the mouse and refuses a locked screen. So with the user away, latency stays measured-only.
+- Every change: before/after bench in one sitting (`metalref` vs `metal`), the six fixed views unchanged against the Metal baseline and GL1, the build passing and `port/glcheck.sh` clean. Record it in Phase 5 and commit per change. Push `metal` only when Phase 5 is done.
 - **Needs the user first, so not in 5a:** the engine frame floor / µs-precise pacing (usercmd timing), the decoupled command/render mode (the user tests it online), Game Mode / QoS experiments that change gameplay feel, and Phase 6 (confirm before starting).
+
+Gotchas found in session 11:
+- **`pgrep -f '<pattern>'` in a wait loop matches the loop's own shell** (its command line contains the pattern), so the loop never ends. Wait on a PID, a log line, or `pgrep -x openmohaa` instead. Three such stuck waiters from earlier sessions (`until ! pgrep -f "shot.sh regress"…`, `…"prof/pairs.sh"…`) are still running on the machine: harmless `sleep 3` loops, left alone, not ours to kill.
+- **Metal's "safe" math mode still contracts within an expression** (front-end `fmuladd`, like clang's `-ffp-contract=on`). So `(a.x*b.x + a.y*b.y) + a.z*b.z` compiles to the same fma chain as the explicit `fma()`s. To change the rounding, change the association. MSL `uint3` in a struct is 16-byte aligned; the A/B capture struct uses `uint[3]`.
+- **Vertex functions that write a device buffer** ("writable resources in non-void vertex function") are a warning, an error under the shader build's `-Werror`: `skinab.sh` drops `-Werror` in its scratch copy only.
+- **`skinSurface_t` already exists** in `tr_local.h` (Q3 skins); the GPU-skinning tables are `skinCopySurface_t`/`skinCopyBoneMap_t`.
+- **`TIKI_Skel_Bones` is reset per `RE_RenderScene`** (`TIKI_Reset_Caches`), so the same pointer holds other bones in the next scene: the backend's bone copies are keyed by `backEnd.viewParms.frameSceneNum` (`mbSkinDraw_t.scene`).
 
 Gotchas found in session 10:
 - **m2l1 view 0 varies by 0–17 pixels from run to run** with the same binary (the unchanged build against itself: 1 and 17 pixels). Rerun before reading a small m2l1 difference as a change. dm6 view 8 (weapon-bar highlight), dm5 (snow) and dm6fx views 4–7 (firing, grenades) vary as before.
