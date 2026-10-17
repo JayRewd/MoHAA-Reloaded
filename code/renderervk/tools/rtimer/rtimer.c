@@ -16,7 +16,19 @@
  *   rtimer: <frames> frames, ms per frame: interval <mean>, renderer <mean>
  *     <median> <p99>, scene <mean> <median>, endframe <mean> <median> <p99>,
  *     beginframe <mean>, interval <median> <p99> <max> <standard deviation>,
- *     2d <mean>, load <ms>
+ *     2d <mean>, load <ms>, interval p99.9 <ms>
+ *
+ * and, when the environment variable RTIMER_FRAMES names a file, writes
+ * every frame to it (microseconds): its start, its interval (to the next
+ * BeginFrame) and the time in BeginFrame, RenderScene, the 2D exports,
+ * EndFrame and the registration exports, the rest of the time from
+ * BeginFrame to EndFrame (cgame: the UI and cgame) and from EndFrame's
+ * return to the next BeginFrame (engine: sound, the frame limiter's sleep,
+ * events, the local server's frame). These are the first columns of the
+ * Vulkan renderer's frame log (r_vkFrameLog, vk_framelog.c), measured the
+ * same way; tools/framelog.py reads both. The header gives the
+ * CLOCK_MONOTONIC time of the first frame, the clock of libstacks.so's
+ * samples (framelog.py --stacks puts them into frames).
  *
  * "renderer" is the sum: the time the main thread spends in the renderer
  * (front end in RenderScene, back end in EndFrame and the 2D calls, driver
@@ -43,8 +55,10 @@
 #define MAX_FRAMES	200000
 
 typedef struct {
-	float	interval;	// since the previous BeginFrame
-	float	begin, scene, end, twoD;
+	double	start;		// BeginFrame, since the first frame recorded
+	float	interval;	// to the next BeginFrame
+	float	begin, scene, end, twoD, load;
+	float	engine;		// from EndFrame's return to the next BeginFrame, registration left out
 } rtFrame_t;
 
 static refimport_t	rt_ri;
@@ -56,9 +70,14 @@ static cvar_t		*rt_record;
 static rtFrame_t	*rt_frames;
 static int			rt_numFrames;
 static int			rt_recording;
-static double		rt_lastBegin;
+static int			rt_inFrame;		// rt_cur holds a frame begun
+static double		rt_curStart;	// its BeginFrame
+static double		rt_lastEnd;		// EndFrame's return
+static double		rt_exportsAtEnd;	// rt_cur's time in the exports then
+static double		rt_firstStart;	// BeginFrame of the first frame recorded
 static rtFrame_t	rt_cur;
 static double		rt_load;		// ms in the registration exports
+static int			rt_depth;		// wrapped exports being run (see RT_TIME)
 
 static double RT_Now( void ) {
 	struct timespec ts;
@@ -67,10 +86,39 @@ static double RT_Now( void ) {
 	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
 }
 
+static float rt_p999;	// 99.9th percentile of the last RT_Stats
+
 static int RT_Compare( const void *a, const void *b ) {
 	float fa = *(const float *)a, fb = *(const float *)b;
 
 	return fa < fb ? -1 : fa > fb;
+}
+
+static double RT_Exports( const rtFrame_t *f ) {
+	return f->begin + f->scene + f->end + f->twoD + f->load;
+}
+
+static void RT_WriteFrames( void ) {
+	const char *path = getenv( "RTIMER_FRAMES" );
+	FILE *f;
+	int i;
+
+	if ( !path || !*path || !( f = fopen( path, "w" ) ) ) {
+		return;
+	}
+	fprintf( f, "# rtimer frames 1: %d frames (code/renderervk/tools/rtimer/rtimer.c)\n", rt_numFrames );
+	// libstacks.so's samples have the same clock (tools/framelog.py --stacks)
+	fprintf( f, "# clock %.3f: CLOCK_MONOTONIC ms at the start of frame 0\n", rt_firstStart );
+	fprintf( f, "# columns, microseconds: frame start interval begin scene 2d end load cgame engine\n" );
+	for ( i = 0; i < rt_numFrames; i++ ) {
+		const rtFrame_t *r = &rt_frames[i];
+		double cgame = r->interval - RT_Exports( r ) - r->engine;
+
+		fprintf( f, "%d %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f\n", i, r->start * 1000, r->interval * 1000.0,
+			r->begin * 1000.0, r->scene * 1000.0, r->twoD * 1000.0, r->end * 1000.0, r->load * 1000.0,
+			( cgame > 0 ? cgame : 0 ) * 1000.0, r->engine * 1000.0 );
+	}
+	fclose( f );
 }
 
 static void RT_Stats( size_t offset, float *mean, float *median, float *p99, float *max, float *stddev ) {
@@ -88,18 +136,21 @@ static void RT_Stats( size_t offset, float *mean, float *median, float *p99, flo
 	*median = v[rt_numFrames / 2];
 	*p99 = v[rt_numFrames * 99 / 100];
 	*max = v[rt_numFrames - 1];
+	rt_p999 = v[rt_numFrames * 999 / 1000];
 	*stddev = sqrt( Q_max( sum2 / rt_numFrames - *mean * *mean, 0 ) );
 	free( v );
 }
 
 static void RT_Report( void ) {
-	float m[6], med[6], p99[6], max[6], sd[6];
+	float m[6], med[6], p99[6], max[6], sd[6], p999;
 	int i;
 
 	if ( !rt_numFrames ) {
 		return;
 	}
+	RT_WriteFrames();
 	RT_Stats( offsetof( rtFrame_t, interval ), &m[0], &med[0], &p99[0], &max[0], &sd[0] );
+	p999 = rt_p999;
 	RT_Stats( offsetof( rtFrame_t, scene ), &m[1], &med[1], &p99[1], &max[1], &sd[1] );
 	RT_Stats( offsetof( rtFrame_t, end ), &m[2], &med[2], &p99[2], &max[2], &sd[2] );
 	RT_Stats( offsetof( rtFrame_t, begin ), &m[3], &med[3], &p99[3], &max[3], &sd[3] );
@@ -111,9 +162,9 @@ static void RT_Report( void ) {
 	RT_Stats( offsetof( rtFrame_t, begin ), &m[4], &med[4], &p99[4], &max[4], &sd[4] );
 
 	rt_ri.Printf( PRINT_ALL, "rtimer: %d frames, ms per frame: interval %.4f, renderer %.4f %.4f %.4f, scene %.4f %.4f, endframe %.4f %.4f %.4f, beginframe %.4f,"
-		" interval %.4f %.4f %.4f %.4f, 2d %.4f, load %.1f\n",
+		" interval %.4f %.4f %.4f %.4f, 2d %.4f, load %.1f, interval p99.9 %.4f\n",
 		rt_numFrames, m[0], m[4], med[4], p99[4], m[1], med[1], m[2], med[2], p99[2], m[3], med[0], p99[0], max[0], sd[0],
-		m[5], rt_load );
+		m[5], rt_load, p999 );
 	rt_numFrames = 0;
 }
 
@@ -130,9 +181,20 @@ static void RT_Shutdown( qboolean destroyWindow ) {
 static void RT_BeginFrame( stereoFrame_t stereoFrame ) {
 	double t0 = RT_Now(), t1;
 
-	// the frame that just ended
-	if ( rt_recording && rt_numFrames < MAX_FRAMES ) {
-		rt_frames[rt_numFrames++] = rt_cur;
+	// the frame that just ended; registration between frames (map loads)
+	// isn't engine time
+	if ( rt_inFrame ) {
+		double engine = t0 - rt_lastEnd - ( RT_Exports( &rt_cur ) - rt_exportsAtEnd );
+
+		rt_cur.interval = t0 - rt_curStart;
+		rt_cur.engine = engine > 0 ? engine : 0;
+		if ( rt_recording && rt_numFrames < MAX_FRAMES ) {
+			if ( !rt_numFrames ) {
+				rt_firstStart = rt_curStart;
+			}
+			rt_cur.start = rt_curStart - rt_firstStart;
+			rt_frames[rt_numFrames++] = rt_cur;
+		}
 	}
 	if ( !rt_record ) {
 		rt_record = rt_ri.Cvar_Get( "rt_record", "0", 0 );
@@ -145,30 +207,55 @@ static void RT_BeginFrame( stereoFrame_t stereoFrame ) {
 	rt_recording = rt_record->integer != 0;
 
 	memset( &rt_cur, 0, sizeof( rt_cur ) );
-	rt_cur.interval = t0 - rt_lastBegin;
-	rt_lastBegin = t0;
+	rt_curStart = t0;
+	rt_inFrame = 1;
 
+	// not nested in anything; an error that jumped out of an export left
+	// rt_depth behind
+	rt_depth = 1;
 	rt_real.BeginFrame( stereoFrame );
+	rt_depth = 0;
 	t1 = RT_Now();
 	rt_cur.begin += t1 - t0;
 }
 
-static void RT_RenderScene( const refdef_t *fd ) {
-	double t0 = RT_Now();
+// times call into rt_cur.field unless it runs inside another wrapped
+// export: the registration exports call the engine's TIKI code, which
+// registers shaders through the exports again, and nested time would count
+// twice
+#define RT_TIME( field, call ) { \
+	if ( rt_depth++ ) { \
+		call; \
+	} else { \
+		double t0 = RT_Now(); \
+		call; \
+		t0 = RT_Now() - t0; \
+		rt_cur.field += t0; \
+		RT_LOAD_TOTAL_##field( t0 ) \
+	} \
+	rt_depth--; \
+}
+#define RT_LOAD_TOTAL_scene( t )
+#define RT_LOAD_TOTAL_twoD( t )
+#define RT_LOAD_TOTAL_load( t ) rt_load += t;
 
-	rt_real.RenderScene( fd );
-	rt_cur.scene += RT_Now() - t0;
+static void RT_RenderScene( const refdef_t *fd ) {
+	RT_TIME( scene, rt_real.RenderScene( fd ) )
 }
 
 static void RT_EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	double t0 = RT_Now();
 
+	rt_depth++;
 	rt_real.EndFrame( frontEndMsec, backEndMsec );
-	rt_cur.end += RT_Now() - t0;
+	rt_depth--;
+	rt_lastEnd = RT_Now();
+	rt_cur.end += rt_lastEnd - t0;
+	rt_exportsAtEnd = RT_Exports( &rt_cur );
 }
 
 // the 2D exports: time added to rt_cur.twoD
-#define RT_2D( call ) { double t0 = RT_Now(); call; rt_cur.twoD += RT_Now() - t0; }
+#define RT_2D( call ) RT_TIME( twoD, call )
 static void RT_Set2DWindow( int x, int y, int w, int h, float left, float right, float bottom, float top, float n, float f ) {
 	RT_2D( rt_real.Set2DWindow( x, y, w, h, left, right, bottom, top, n, f ) )
 }
@@ -210,8 +297,8 @@ static void RT_DrawStretchRaw( int x, int y, int w, int h, int cols, int rows, i
 }
 
 // the registration exports: time added to rt_load
-#define RT_LOAD( type, call ) { double t0 = RT_Now(); type r = call; rt_load += RT_Now() - t0; return r; }
-#define RT_LOAD_VOID( call ) { double t0 = RT_Now(); call; rt_load += RT_Now() - t0; }
+#define RT_LOAD( type, call ) { type r; RT_TIME( load, r = call ) return r; }
+#define RT_LOAD_VOID( call ) RT_TIME( load, call )
 static void RT_BeginRegistration( glconfig_t *config ) {
 	RT_LOAD_VOID( rt_real.BeginRegistration( config ) )
 }
@@ -318,6 +405,8 @@ Q_EXPORT refexport_t *QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	rt_export.LoadFont = RT_LoadFont;
 	rt_record = NULL;
 	rt_recording = 0;
+	rt_inFrame = 0;
+	rt_depth = 0;
 	rt_numFrames = 0;
 	rt_load = 0;
 	return &rt_export;

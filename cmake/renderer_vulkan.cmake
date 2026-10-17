@@ -56,6 +56,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_vis.cpp
     ${SOURCE_DIR}/renderervk/tr_world.c
     ${SOURCE_DIR}/renderervk/vk.c
+    ${SOURCE_DIR}/renderervk/vk_framelog.c
     ${SOURCE_DIR}/renderervk/vk_image.c
     ${SOURCE_DIR}/renderervk/vk_instance.c
     ${SOURCE_DIR}/renderervk/vk_pipeline.c

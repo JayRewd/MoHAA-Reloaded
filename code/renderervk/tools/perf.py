@@ -27,12 +27,32 @@ options:
                     libstacks.so (tools/rtimer/stacks.c) and write each
                     run to PREFIX_<view>_<size>_<renderer>_<run>.txt, with
                     the measured window; tools/stacks.py sums them up
+  --framelog DIR    keep every measured frame: renderer_timed.so's frames
+                    (RTIMER_FRAMES) in DIR/<view>_<size>_<renderer>_<run>.rt.txt
+                    and, for the renderers of --vklog, the Vulkan renderer's
+                    frame log (r_vkFrameLog 1, vkframelog) in ...vk.txt;
+                    tools/framelog.py reads them. The summary then gives
+                    the frame time percentiles. With libglts.so in
+                    LD_PRELOAD, GL1's GPU time per frame goes to ...gl.txt
+  --vklog A,B       renderers run with r_vkFrameLog 1 (with --framelog); its
+                    wrappers cost about 15 us per frame, so give it a copy
+                    of renderer_vulkan.so under another name and compare
+                    the times of the copy without it
+  --speeds          com_speeds 1 during the measured frames even with
+                    renderer_timed.so (its per-frame console line costs
+                    time; without renderer_timed.so it is always on)
 
 A list file has one view per line: `name map x y z pitch yaw roll [sp]`,
 or `views <view list> [shot ...]`: the shots of a view list (the path is
 relative to the list file; all its shots when none is named), each with
 the list's map and the `set` commands before it in the list (spawned
-models, lights), run after loading and before the camera moves.
+models, lights), run after loading and before the camera moves; or
+`demo name file [frames]`: moving content, the demo `file` (a .dm_8 or a
+.dm3 of the original game, relative to the list file or absolute; linked
+into MOH_HOMEPATH/main/demos) played with `fixedtime 16`, so frame k shows
+the same moment of the demo in every run and with every renderer,
+measured from its first frame after loading for `frames` frames (default
+--frames; each frame is 16 ms of the demo).
 
 Each measurement loads the map in a new game (devmap, or spdevmap) with
 `fixedtime 16`, puts the camera at the position like a view list `shot`,
@@ -41,10 +61,10 @@ waits 2 s of game time, then lets N frames run with the frame rate uncapped
 clock time they take. `wait` counts game milliseconds and every frame
 advances the game by 16 ms, so `wait 16*N` is exactly N frames. The console
 output is read from stdout: the two `echo` markers are timestamped here, and
-the `com_speeds 1` lines in between give the average front end (rf) and
-back end (bk) milliseconds the engine measured (whole milliseconds per
-frame, so only the averages mean something). The game keeps running during
-the measurement (AI, particles).
+without renderer_timed.so (or with --speeds), the `com_speeds 1` lines in
+between give the average front end (rf) and back end (bk) milliseconds the
+engine measured (whole milliseconds per frame, so only the averages mean
+something). The game keeps running during the measurement (AI, particles).
 
 With renderer_timed.so in MOH_BINDIR (tools/rtimer/build.sh) the game
 runs `cl_renderer timed`, which loads renderer_<renderer>.so and measures
@@ -85,6 +105,7 @@ import json
 import os
 import pty
 import re
+import shlex
 import shutil
 import signal
 import statistics
@@ -107,11 +128,22 @@ GPU_BUSY = sorted(glob.glob("/sys/class/drm/card*/device/gpu_busy_percent"))
 
 
 class View:
-    def __init__(self, name, map, x, y, z, pitch, yaw, roll, sp=False, setup=()):
+    def __init__(self, name, map, x, y, z, pitch, yaw, roll, sp=False, setup=(), demo=None, frames=None):
         self.name, self.map, self.sp = name, map, sp
         self.pos = (x, y, z)
         self.angles = (pitch, yaw, roll)
         self.setup = list(setup)  # console commands run before the camera moves
+        self.demo = demo  # demo file: moving content (see the docstring)
+        self.frames = frames  # frames measured, None for --frames
+
+
+def demo_view(name, path, frames=None):
+    return View(name, None, 0, 0, 0, 0, 0, 0, demo=os.path.abspath(path), frames=int(frames) if frames else None)
+
+
+def demo_link(view):
+    """the demo's name under main/demos of the homepath (a .dm3 plays as .dm_8)"""
+    return "perf_" + re.sub(r"[^A-Za-z0-9_]", "_", view.name)
 
 
 def list_views(path, shots):
@@ -140,14 +172,30 @@ def cfg_name(view):
     return "perf_" + re.sub(r"[^A-Za-z0-9_]", "_", view.name) + ".cfg"
 
 
-def write_cfg(view, frames, commands=()):
-    cfg = ["set thereisnomonkey 1", "set fixedtime 16",
-           f"{'spdevmap' if view.sp else 'devmap'} {view.map}", "wait 3000", "finishloadingscreen", "wait 1000",
-           "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0", *view.setup,
-           "tele %s %s %s" % view.pos, "face %s %s %s" % view.angles, *commands,
-           "vkinfo", "echo perf_ready", "wait 2000",
-           "com_speeds 1", "vkinfo", "echo perf_start", "set rt_record 1", f"wait {16 * frames}", "set rt_record 0",
-           "vkinfo", "echo perf_end", "com_speeds 0", "wait 100", "quit"]
+def write_cfg(view, frames, commands=(), speeds=True, framelog=False):
+    frames = view.frames or frames
+    start = (["com_speeds 1"] if speeds else []) + ["vkinfo", "echo perf_start", "set rt_record 1"] \
+        + (["vkframelog clear"] if framelog else [])
+    # the frame log is written after perf_end (the same frame: no wait between)
+    end = ["set rt_record 0", "vkinfo", "echo perf_end"] + (["vkframelog perf_frames.txt"] if framelog else []) \
+        + (["com_speeds 0"] if speeds else []) + ["wait 100", "quit"]
+    if view.demo:
+        # loading is done when `demo` returns; the measurement starts with
+        # the next frame
+        demos = os.path.join(HOMEPATH, "main", "demos")
+        os.makedirs(demos, exist_ok=True)
+        link = os.path.join(demos, demo_link(view) + ".dm_8")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(view.demo, link)
+        cfg = ["set fixedtime 16", f"demo {demo_link(view)}", *commands, "vkinfo", "echo perf_ready",
+               *start, f"wait {16 * frames}", *end]
+    else:
+        cfg = ["set thereisnomonkey 1", "set fixedtime 16",
+               f"{'spdevmap' if view.sp else 'devmap'} {view.map}", "wait 3000", "finishloadingscreen", "wait 1000",
+               "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0", *view.setup,
+               "tele %s %s %s" % view.pos, "face %s %s %s" % view.angles, *commands,
+               "vkinfo", "echo perf_ready", "wait 2000", *start, f"wait {16 * frames}", *end]
     os.makedirs(os.path.join(HOMEPATH, "main"), exist_ok=True)
     with open(os.path.join(HOMEPATH, "main", cfg_name(view)), "w") as f:
         f.write("\n".join(cfg) + "\n")
@@ -272,10 +320,11 @@ def parse_vkinfo(line):
 
 RTIMER = re.compile(r"rtimer: (\d+) frames, ms per frame: interval ([\d.]+), renderer ([\d.]+) ([\d.]+) ([\d.]+), "
                     r"scene ([\d.]+) ([\d.]+), endframe ([\d.]+) ([\d.]+) ([\d.]+), beginframe ([\d.]+)"
-                    r"(?:, interval ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+))?(?:, 2d ([\d.]+), load ([\d.]+))?")
+                    r"(?:, interval ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+))?(?:, 2d ([\d.]+), load ([\d.]+))?"
+                    r"(?:, interval p99.9 ([\d.]+))?")
 
 
-def run(renderer, view, extra, pauser, cold, stacks=None):
+def run(renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=False):
     for d in ("configs", "save"):
         shutil.rmtree(os.path.join(HOMEPATH, "main", d), ignore_errors=True)
     if cold:
@@ -283,10 +332,17 @@ def run(renderer, view, extra, pauser, cold, stacks=None):
             os.remove(os.path.join(HOMEPATH, "main", "vkpipelines.cache"))
         except OSError:
             pass
+    vkframes = os.path.join(HOMEPATH, "main", "perf_frames.txt")
+    if os.path.exists(vkframes):
+        os.remove(vkframes)
     env = dict(os.environ)
     if stacks:
         env["LD_PRELOAD"] = os.path.join(BINDIR, "libstacks.so")
         env["STACKS_OUT"] = stacks
+    if framelog:
+        env["RTIMER_FRAMES"] = framelog + ".rt.txt"
+        # GL1's GPU time per frame when libglts.so is preloaded (tools/rtimer/glts.c)
+        env["GLTS_FRAMES"] = framelog + ".gl.txt"
     if TIMED:
         # renderer_timed.so (tools/rtimer) loads renderer_<renderer>.so
         env["MOH_TIMED_RENDERER"] = renderer
@@ -295,6 +351,8 @@ def run(renderer, view, extra, pauser, cold, stacks=None):
            "+set", "s_volume", "0", "+set", "s_musicvolume", "0", "+set", "s_ambientvolume", "0",
            "+set", "in_nograb", "1", "+set", "in_mouse", "0", "+set", "ui_gmbox", "0",
            "+set", "com_maxfps", "0", "+set", "r_swapInterval", "0", "+set", "r_vkValidation", "0"]
+    if framelog and vklog:
+        cmd += ["+set", "r_vkFrameLog", "1"]
     cmd += extra + ["+exec", cfg_name(view)]
     # a terminal makes the game's stdout line buffered, so the markers are
     # read when they are printed (a pipe would be block buffered)
@@ -335,6 +393,8 @@ def run(renderer, view, extra, pauser, cold, stacks=None):
                                  interval_max=float(v[13]), interval_sd=float(v[14]))
                 if v[15] is not None:
                     timed.update(twod=float(v[15]), load=float(v[16]))
+                if v[17] is not None:
+                    timed.update(interval_p999=float(v[17]))
             elif start is not None and end is None:
                 m = re.match(r"frame:\s*\d+ all:\s*\d+ sv:\s*-?\d+ ev:\s*-?\d+ cl:\s*-?\d+ gm:\s*\d+ rf:\s*(\d+) bk:\s*(\d+)", line)
                 if m:
@@ -354,6 +414,8 @@ def run(renderer, view, extra, pauser, cold, stacks=None):
     if stacks and os.path.exists(stacks):
         with open(stacks, "a") as f:
             f.write(f"window {int(start * 1e9)} {int(end * 1e9)}\n")
+    if framelog and os.path.exists(vkframes):
+        shutil.move(vkframes, framelog + ".vk.txt")
     secs = end - start
     busy = (cpu1[0] - cpu0[0]) / max(cpu1[1] - cpu0[1], 1) * CPUS
     others = busy - (game1 - game0) / HZ / secs
@@ -362,6 +424,25 @@ def run(renderer, view, extra, pauser, cold, stacks=None):
     frames = vkinfo[2] if len(vkinfo) == 3 else None
     return {"secs": secs, "rf": rf / max(n, 1), "bk": bk / max(n, 1), "n": n, "others": others,
             "gpu": gpuBusy, "mhz": mhz, "timed": timed, "vkload": load, "vkframes": frames}
+
+
+def frame_dist(path):
+    """percentiles of the frame times (ms) in a renderer_timed.so frame file"""
+    try:
+        with open(path) as f:
+            # the last frame holds the commands that ended the measurement
+            v = sorted([int(line.split()[2]) / 1000 for line in f if line[:1].isdigit()][:-1])
+    except OSError:
+        return None
+    if len(v) < 2:
+        return None
+    q = lambda p: v[min(int(len(v) * p), len(v) - 1)]
+    return {"frames": len(v), "mean": sum(v) / len(v), "median": q(0.5), "p99": q(0.99), "p999": q(0.999), "max": v[-1]}
+
+
+def dist_text(d):
+    return (f"ms: median {d['median']:.3f} p99 {d['p99']:.3f} ({1000 / d['p99']:.0f} fps) p99.9 {d['p999']:.3f}"
+            f" ({1000 / d['p999']:.0f} fps) max {d['max']:.3f}, mean {d['mean']:.3f} ({1000 / d['mean']:.0f} fps), {d['frames']:.0f} frames")
 
 
 def per_frame(vk, key, scale=1.0):
@@ -400,6 +481,9 @@ def main():
     ap.add_argument("--pause", default="")
     ap.add_argument("--cold", action="store_true")
     ap.add_argument("--stacks")
+    ap.add_argument("--framelog")
+    ap.add_argument("--vklog", default="")
+    ap.add_argument("--speeds", action="store_true")
     ap.add_argument("--json")
     ap.add_argument("--exec", default="", help="console commands run at the view, ';' separated")
     args = ap.parse_args(argv)
@@ -411,6 +495,9 @@ def main():
                 w = line.split("#", 1)[0].split()
                 if w and w[0] == "views":
                     views += list_views(os.path.join(os.path.dirname(args.list), w[1]), w[2:])
+                elif w and w[0] == "demo":
+                    w = shlex.split(line, comments=True)  # the file name may be quoted
+                    views.append(demo_view(w[1], os.path.join(os.path.dirname(args.list), os.path.expanduser(w[2])), *w[3:4]))
                 elif w:
                     views.append(View(*w[:8], sp=len(w) > 8 and w[8] == "sp"))
     if args.view:
@@ -422,8 +509,11 @@ def main():
     renderers = args.renderers.split(",")
     sizes = [parse_size(s) for s in args.sizes.split(",")]
     pauser = Pauser([int(p) for p in args.pause.split(",") if p])
+    speeds = args.speeds or not TIMED
+    if args.framelog:
+        os.makedirs(args.framelog, exist_ok=True)
     for v in views:
-        write_cfg(v, args.frames, [c.strip() for c in args.exec.split(';') if c.strip()])
+        write_cfg(v, args.frames, [c.strip() for c in args.exec.split(';') if c.strip()], speeds, bool(args.framelog))
 
     # SIGTERM runs the finally blocks too, so paused processes are continued
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(1))
@@ -435,14 +525,17 @@ def main():
                 for k in range(len(renderers)):
                     r = renderers[(i + k) % len(renderers)]
                     load = os.getloadavg()[0]
-                    stacks = (f"{args.stacks}_{re.sub(r'[^A-Za-z0-9_]', '_', v.name)}_{size[0]}x{size[1]}_{r}_{i + 1}.txt"
-                              if args.stacks else None)
-                    res = run(r, v, size_args(size) + extra, pauser, args.cold, stacks)
+                    tag = f"{re.sub(r'[^A-Za-z0-9_]', '_', v.name)}_{size[0]}x{size[1]}_{r}_{i + 1}"
+                    stacks = f"{args.stacks}_{tag}.txt" if args.stacks else None
+                    framelog = os.path.join(args.framelog, tag) if args.framelog else None
+                    res = run(r, v, size_args(size) + extra, pauser, args.cold, stacks, framelog, r in args.vklog.split(","))
                     if res is None:
                         continue
                     res.update(run=i, view=v.name, size="%dx%d" % size, renderer=r, load=load)
+                    if framelog:
+                        res["dist"] = frame_dist(framelog + ".rt.txt")
                     results.append(res)
-                    ms = 1000 * res["secs"] / args.frames
+                    ms = 1000 * res["secs"] / (v.frames or args.frames)
                     t, vk, vl = res["timed"], res["vkframes"], res["vkload"]
                     print(f"run {i + 1} {v.name:15s} {res['size']:9s} {r:8s} {ms:6.3f} ms/frame ({1000 / ms:6.1f} fps)"
                           + (f"  renderer {t['renderer']:6.3f} (scene {t['scene']:6.3f} 2d {t.get('twod', 0):6.3f} end {t['endframe']:6.3f})"
@@ -458,6 +551,8 @@ def main():
                              f" {vl['allocations']} allocations {vl['allocationUs'] / 1000:.0f} ms" if vl else "")
                           + f"  others {res['others']:4.1f} CPUs, load {load:5.2f}"
                           + ("  WARNING: busy machine" if res["others"] > BUSY else ""), flush=True)
+                    if res.get("dist"):
+                        print("      frame time " + dist_text(res["dist"]), flush=True)
                     if args.json:
                         with open(args.json, "w") as f:
                             json.dump({"frames": args.frames, "extra": extra, "results": results}, f, indent=1)
@@ -472,7 +567,7 @@ def main():
                 rs = [x for x in results if x["view"] == v.name and x["size"] == "%dx%d" % size and x["renderer"] == r]
                 if not rs:
                     continue
-                ms = [1000 * x["secs"] / args.frames for x in rs]
+                ms = [1000 * x["secs"] / (v.frames or args.frames) for x in rs]
                 med = statistics.median(ms)
                 line = f"{v.name:15s} {'%dx%d' % size:9s} {r:8s} {med:6.3f} ({min(ms):.3f}-{max(ms):.3f}) {1000 / med:6.1f} fps"
                 ts = [x["timed"] for x in rs if x["timed"]]
@@ -496,6 +591,9 @@ def main():
                     line += (f"  gpu frame {statistics.median(gpu_ms(x, 'gpuFrameUs') for x in vks):5.3f}"
                              f" copy {statistics.median(gpu_ms(x, 'gpuPresentUs') for x in vks):5.3f}")
                 print(line + f"  others {max(x['others'] for x in rs):4.1f} CPUs max, n={len(rs)}")
+                ds = [x["dist"] for x in rs if x.get("dist")]
+                if ds:
+                    print(" " * 34 + "frame time medians " + dist_text({k: statistics.median(d[k] for d in ds) for k in ds[0]}))
 
 
 if __name__ == "__main__":

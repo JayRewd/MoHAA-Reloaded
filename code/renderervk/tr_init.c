@@ -2024,5 +2024,5 @@ refexport_t *GetRefAPI ( int apiVersion, refimport_t *rimp ) {
 
 	re.Set2DInitialShaderTime = Set2DInitialShaderTime;
 
-	return &re;
+	return VK_FrameLogExports( &re );
 }

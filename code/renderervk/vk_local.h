@@ -313,8 +313,11 @@ typedef struct {
 	uint64_t	pipelines;			// pipelines created
 	uint64_t	allocations;		// vkAllocateMemory calls
 	uint64_t	depthTargets;		// depth images replaced to become readable or not (VK_UpdateDepthTarget)
+	uint64_t	swapchains;			// swapchains created (VK_CreateSwapchain)
+	uint64_t	vertexGrowth;		// bytes of the frame vertex buffers created when one was full (VK_VertexAlloc)
 	// microseconds spent in
-	uint64_t	waitUs;				// waits for frame fences
+	uint64_t	waitUs;				// waits for frame fences, mid-frame flushes included
+	uint64_t	flushUs;			// waits of the mid-frame flushes (VK_FlushAndWait)
 	uint64_t	submitUs;			// vkQueueSubmit
 	uint64_t	acquireUs;			// vkAcquireNextImageKHR, in a frame (before presenting it)
 	uint64_t	acquireAheadUs;		// vkAcquireNextImageKHR right after a present, for the next frame
@@ -441,6 +444,7 @@ typedef struct {
 	uint64_t			acquireWaitSerial[VK_ACQUIRE_SEMAPHORES];	// frame whose submission waited for it, 0 for none
 	int					nextAcquireSemaphore;
 	uint64_t			frameStartUs;	// when the frame being recorded started
+	uint64_t			lastPresentUs;	// when vkQueuePresentKHR was last called (vk_framelog.c)
 	uint64_t			frameSerial;	// incremented when a frame starts, the first frame is 1
 	qboolean			uploadCmdRecording;
 	qboolean			renderPassActive;
@@ -506,6 +510,10 @@ void		VK_FinishUploads( VkCommandBuffer cmd, qboolean upload );
 void		VK_FreeMemoryRange( int block, VkDeviceSize offset, VkDeviceSize size );
 void		VK_MemoryBlockInfo( int *numBlocks, VkDeviceSize *size, VkDeviceSize *used );
 void		*VK_StagingAlloc( VkDeviceSize size, VkDeviceSize alignment, VkBuffer *buffer, VkDeviceSize *offset );
+
+// vk_framelog.c
+extern qboolean	vk_frameLog;	// r_vkFrameLog: the frame log records
+void		VK_FrameLogGpu( uint64_t serial, uint64_t mainStart, uint64_t mainEnd, uint64_t frameEnd, uint64_t mask, double usPerTick );
 
 // vk_pipeline.c
 typedef struct {

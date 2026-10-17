@@ -463,6 +463,11 @@ void		vk_queue_depth_reads( int count, const int *xy, unsigned int *ids );
 // for that many frames; after that, and after vid_restart, the id is lost.
 depthReadStatus_t vk_get_depth_read( unsigned int id, float *depth );
 
+// the frame log (vk_framelog.c, r_vkFrameLog): called by GetRefAPI with the
+// renderer's exports, returns them, or wrappers that time them when
+// r_vkFrameLog is set
+refexport_t	*VK_FrameLogExports( refexport_t *real );
+
 #ifdef __cplusplus
 }
 #endif

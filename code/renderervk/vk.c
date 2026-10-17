@@ -475,6 +475,9 @@ static void VK_CollectTimestamps( vkFrame_t *frame ) {
 	vk.stats.gpuPresentUs += ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_PRESENT_START] ) & mask ) * scale;
 	vk.stats.gpuFrameUs += ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_MAIN_START] ) & mask ) * scale;
 	vk.stats.gpuFrames++;
+	if ( vk_frameLog ) {
+		VK_FrameLogGpu( frame->serial, ts[VK_TS_MAIN_START], ts[VK_TS_MAIN_END], ts[VK_TS_PRESENT_END], mask, scale );
+	}
 }
 
 static void VK_WriteTimestamp( VkCommandBuffer cmd, VkPipelineStageFlagBits stage, int query ) {
@@ -837,7 +840,9 @@ void VK_FlushAndWait( void ) {
 	VK_SubmitFrameCommands( vk.frame->fence, VK_NULL_HANDLE, qfalse );
 	start = VK_Microseconds();
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frame->fence, VK_TRUE, UINT64_MAX ) );
-	vk.stats.waitUs += VK_Microseconds() - start;
+	start = VK_Microseconds() - start;
+	vk.stats.waitUs += start;
+	vk.stats.flushUs += start;
 	vk.stats.flushes++;
 
 	// the GPU is idle: everything waiting for destruction can go, and the
@@ -874,6 +879,7 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 
 	start = VK_Microseconds();
 	vk.stats.frameToPresentUs += start - vk.frameStartUs;
+	vk.lastPresentUs = start;
 	result = qvkQueuePresentKHR( vk.queue, &presentInfo );
 	vk.stats.presentUs += VK_Microseconds() - start;
 	vk.heldImage = qfalse;
@@ -1885,11 +1891,13 @@ static void VK_Info_f( void ) {
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
 	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu skinDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
-		" waitUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu allocationUs=%llu textureUs=%llu"
+		" swapchains=%llu vertexGrowth=%llu"
+		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu allocationUs=%llu textureUs=%llu"
 		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
 		VK_DELTA( staticDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
-		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( waitUs ), VK_DELTA( submitUs ),
+		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( swapchains ), VK_DELTA( vertexGrowth ),
+		VK_DELTA( waitUs ), VK_DELTA( flushUs ), VK_DELTA( submitUs ),
 		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
 		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ) );
 #undef VK_DELTA
@@ -2539,6 +2547,7 @@ static byte *VK_VertexAlloc( VkDeviceSize size, VkBuffer *buffer, VkDeviceSize *
 		VK_CreateBuffer( &frame->vertexBuffer, newSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 		ri.Printf( PRINT_DEVELOPER, "Vulkan: vertex buffer grown to %d KB\n", (int)( newSize / 1024 ) );
+		vk.stats.vertexGrowth += newSize;
 		start = 0;
 	}
 

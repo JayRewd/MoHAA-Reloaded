@@ -835,6 +835,7 @@ void VK_CreateSwapchain( void ) {
 	}
 
 	VK_CHECK( qvkCreateSwapchainKHR( vk.device, &createInfo, NULL, &vk.swapchain ) );
+	vk.stats.swapchains++;
 
 	if ( oldSwapchain ) {
 		qvkDestroySwapchainKHR( vk.device, oldSwapchain, NULL );

@@ -20,7 +20,13 @@
  * "period" is the GPU's time per frame (the frame time when the GPU
  * limits). Run perf.py with it in LD_PRELOAD and GLTS_OUT set: the Vulkan
  * renderer doesn't call these functions, and the lines are in the order of
- * the GL1 runs. Build with tools/rtimer/build.sh.
+ * the GL1 runs. With GLTS_FRAMES=file it also writes every frame with a 3D
+ * view since startup to that file (microseconds; the frames perf.py
+ * measures are the last ones but 6), the counterpart of the GPU columns of
+ * the Vulkan renderer's frame log (r_vkFrameLog): "period", from one
+ * frame's "before the swap" stamp to the next, is the GPU's frame to frame
+ * time, like the differences of its gpu_end. Build with
+ * tools/rtimer/build.sh.
  */
 
 #define _GNU_SOURCE
@@ -157,12 +163,20 @@ void *SDL_GL_GetProcAddress( const char *name ) {
 }
 
 __attribute__((destructor)) static void report( void ) {
-	const char *out = getenv( "GLTS_OUT" );
+	const char *out = getenv( "GLTS_OUT" ), *frames = getenv( "GLTS_FRAMES" );
 	double sum[5] = { 0 };
 	long a, b, i, n;
 	int k;
 	FILE *f;
 
+	if ( frames && *frames && ( f = fopen( frames, "w" ) ) ) {
+		fprintf( f, "# glts frames 1: %ld frames with a 3D view, the last 6 after the measurement (tools/rtimer/glts.c)\n", numFrames );
+		fprintf( f, "# columns, microseconds: frame pre clear draw swap period\n" );
+		for ( i = 0; i < numFrames; i++ ) {
+			fprintf( f, "%ld %.0f %.0f %.0f %.0f %.0f\n", i, seg[i][0], seg[i][1], seg[i][2], seg[i][3], seg[i][4] );
+		}
+		fclose( f );
+	}
 	if ( !out || numFrames < 20 ) {
 		return;
 	}

@@ -122,6 +122,15 @@ below are done.
   `dm/mohdm3` overview (0.6 % slower), with the same frames (see
   Performance, GPU time at 3840x2160). What is left is RADV not
   compressing textures
+- frame spikes (2026-10-16 night): a frame log (`r_vkFrameLog`,
+  `vkframelog`, off by default and free when off) records every frame's
+  time, its parts and what the backend did, for a tester to send; demos
+  of real matches played frame by frame compare both renderers on moving
+  content. In two `obj` matches Vulkan's 99th and 99.9th percentiles are
+  lower than GL1's at every size (1920x1080: 1.18 and 1.56 ms against
+  1.92 and 2.65, 1.95 and 2.69 against 2.71 and 3.52), and the causes of
+  the slow frames are ranked in Plan, Remaining (see Performance, Frame
+  spikes)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -137,6 +146,7 @@ below are done.
 | `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file |
+| `vk_framelog.c` | the frame log (`r_vkFrameLog`, `vkframelog`): the per-frame exports timed, the backend's counters and GPU time of every frame, the dump (see Performance, Frame spikes) |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
 | `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces, the frame data of each entity, the skinned batches (see Implementation notes) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
@@ -200,6 +210,7 @@ Cvars of the backend:
 | `r_ext_multisample` (latched, shared with GL1) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
+| `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 
 The console command `vkinfo` prints the backend's counters since its last
 call: frames, render passes, submissions, mid-frame flushes, draws,
@@ -207,12 +218,21 @@ pipeline and descriptor set binds, bytes copied into vertex and staging
 buffers, uploads ordered with draws, textures, pipelines and device memory
 allocations created (with the microseconds spent creating them), depth
 images replaced to become readable or not (see Implementation notes,
-Render target), time spent waiting for frame fences, in `vkQueueSubmit`, `vkAcquireNextImageKHR`
+Render target), swapchains created, bytes of frame vertex buffers created
+because one was full, time spent waiting for frame fences (`waitUs`, with
+the waits of mid-frame flushes, which `flushUs` also counts), in `vkQueueSubmit`, `vkAcquireNextImageKHR`
 (before a present and right after one) and `vkQueuePresentKHR`, from the
 start of a frame's recording to its present, and the GPU time of the frames
 from timestamps (main command buffer, copy to the swapchain image, whole
 frame); then the device memory objects, memory blocks and pipelines that
 exist and whether the depth image is readable. `tools/perf.py` reads it.
+
+With `r_vkFrameLog 1` (latched: on the command line, or set it and
+`vid_restart`), `vkframelog [file]` writes every frame recorded since the
+last `vkframelog` (at most the last 131072) to `fs_homepath/main/<file>`
+(default `vkframes.txt`) and prints the frame time percentiles and the
+slowest frames with what happened in them; `vkframelog clear` drops them.
+See Performance, Frame spikes, for what is in the file and how to send one.
 
 The pipeline cache is saved as `vkpipelines.cache` in `fs_homepath/main` at
 shutdown and `vid_restart` (when it grew) and given to the driver at
@@ -380,10 +400,18 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   script contains a keyword (`polygonoffset`, `alphafunc`, `nextbundle`,
   ...; terrain patches included), to pick views.
 - `perf.py`: frame time and renderer time of views with both renderers,
-  uncapped, in interleaved runs (see Performance); `rtimer/` builds the
+  uncapped, in interleaved runs (see Performance), also of demos played
+  frame by frame (`demo` lines, `views/perf_demo.txt`) and with every
+  frame kept (`--framelog`); `rtimer/` builds the
   `renderer_timed.so` wrapper it uses, `libstacks.so`, a stack sampler
   whose output `stacks.py` sums up, and `libglts.so`, GPU timestamps of
   GL1's frames (see Performance, GPU time at 3840x2160).
+- `framelog.py`: frame time percentiles and the causes of the slow frames
+  from the Vulkan renderer's frame log (`r_vkFrameLog`, `vkframelog`) or
+  `renderer_timed.so`'s frame files, a `perf.py --framelog` directory as a
+  whole (GL1 against Vulkan frame by frame, an SVG of the distributions),
+  and the stack samples of the slow frames (see Performance, Frame
+  spikes).
 - `soldiers.py`: writes a view list of a multiplayer scene, soldier models
   around the camera and muzzle flash lights (see Test content).
 - `summary.py`: the worst view's numbers of several lists after
@@ -1585,7 +1613,244 @@ Multisampling matches GL1's (`r_ext_multisample 4` with both): in the
 without multisampling; each renderer changes the same ~4 % of the pixels
 (edges, max 112) when it is turned on.
 
-## Backend contract
+Frame spikes (2026-10-16 night): what makes the slowest frames (the
+99th and 99.9th percentiles of the frame time, the maximum), measured
+before changing anything. A tester (NVIDIA RTX 4070 Ti, Linux/Wayland)
+judges by these percentiles; the medians and means of the tables above
+don't show them, and fixed views (`perf.py`'s usual views) hide what only
+happens when things move: effects, players, sounds, models and textures
+loaded on first use, pipelines created on first use.
+
+The frame log of the Vulkan renderer records every frame with what
+happened in it. Off by default; `r_vkFrameLog` is latched, so:
+
+```sh
+./openmohaa +set r_vkFrameLog 1 ...        # or in the console: r_vkFrameLog 1; vid_restart
+```
+
+then, in the console, `vkframelog clear` before what should be measured
+(a match, a demo) and `vkframelog name.txt` after it (or only
+`vkframelog`, which writes `vkframes.txt`): the file is written to
+`<fs_homepath>/main/` (the game's writable directory: the console's
+`path` command lists it first) and holds at most the last 131072 frames (`r_vkFrameLog 500000` keeps
+more; 140 bytes per frame). The console shows the percentiles and the
+slowest frames; the file is what to send. Its header has the device,
+driver, present mode, size and these percentiles; then one line per
+frame, in microseconds:
+
+| columns | |
+| --- | --- |
+| `frame start interval` | index, start (since the log started), frame time: from this `BeginFrame` to the next |
+| `begin scene 2d end load` | main thread time in `BeginFrame`, `RenderScene` (the front end), the 2D calls (in OpenMoHAA the queued render commands run there: the 3D view's back end, and the fence wait at the start of the frame), `EndFrame` (submission, present, the acquire of the next image) and the registration calls (models, shaders, skins, fonts loaded during the frame) |
+| `cgame engine` | the rest of the frame: `cgame` from `BeginFrame` to `EndFrame` outside of the renderer's calls (the UI and cgame building the scene), `engine` from `EndFrame`'s return to the next `BeginFrame` (sound mixing, the frame limiter's sleep, input and network events, the local server's game frame, the client's packets) |
+| `present_at` | when `vkQueuePresentKHR` was called (differences: present to present) |
+| `fence flush submit acquire acquire_ahead present` | waits for the frame fence and for mid-frame flushes, `vkQueueSubmit`, `vkAcquireNextImageKHR` before the present (normally 0) and right after it, `vkQueuePresentKHR` |
+| `gpu gpu_start gpu_end` | GPU time of the main command buffer, and when it started and ended on the GPU (since the first timestamp; 0: none): `gpu_end` differences are the GPU's frame to frame time, `gpu_start` minus the previous `gpu_end` the GPU's idle time |
+| `draws render_passes submits vertex_bytes staging_bytes` | per frame |
+| `pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains` | what was created in the frame and the time it took: pipelines, texture storages, device memory, mid-frame flushes, a frame vertex buffer replaced by a larger one (its size), the depth image replaced, a swapchain created |
+
+`tools/framelog.py file` prints the distributions and the causes of the
+slow frames (below). The log changes nothing of what the frames do or
+draw (the same submissions, presents and acquires, in the same order) and
+costs nothing when off: `GetRefAPI` returns the exports themselves then.
+While it is on, its timing costs about 15 µs per frame on this machine
+(two clock reads around each of the HUD's ~300 2D calls).
+
+The same split of the frame for GL1: `renderer_timed.so` (`rtimer.c`)
+writes every frame it measures to `$RTIMER_FRAMES` with the first columns
+of the log, measured the same way, and `libglts.so` (`glts.c`) writes GL1's
+GPU timestamps of every frame to `$GLTS_FRAMES`. `perf.py --framelog DIR`
+keeps them for every run (and the Vulkan log for the renderers named by
+`--vklog`), `framelog.py --batch DIR` compares them.
+
+Engine time: the renderer only sees its own calls, so what isn't in them
+is split by where it happens, `cgame` inside the frame and `engine`
+between frames, without touching the engine. Within a frame below the
+1000 frames per second limit, `engine` also holds the frame limiter's
+sleep (`Com_Frame` waits for the next whole millisecond). For the details
+of slow frames, `framelog.py --stacks samples.txt frames.rt.txt` puts the
+stack samples of `libstacks.so` (`perf.py --stacks` in the same run;
+both use `CLOCK_MONOTONIC`) into the frames of `renderer_timed.so`'s file
+and lists the functions by their share of the slow frames' samples.
+
+Moving content that both renderers can replay: demos. The client plays
+`.dm_8` demos (`demo name`), and the original game's `.dm3` demos (protocol
+8, the same format) through a `.dm_8` link. With `fixedtime 16` every
+frame advances the demo by 16 ms whatever the frame took, so frame k shows
+the same moment in every run and with both renderers (the same frames to
+compare one by one), like a timedemo that interpolates between snapshots.
+`views/perf_demo.txt` lists two matches recorded by original game clients
+(files of the dev machine): `o2match` (`obj/obj_team2`, 256 s, the
+recorder's own view, 52 kills) and `o4match` (`obj/obj_team4`, 246 s, 23
+kills), 15000 frames each (240 s of the match) from the first frame after
+loading. Bots (`sv_maxbots`, `addbot`) move and shoot but are random from
+run to run (the game seeds `rand()` with the clock); they are a way to
+record a demo, not to measure.
+
+Results (2026-10-16 night, idle machine: others 1.6 CPUs at most but in
+one GL1 run of the static views, 2.1, my analysis running beside it;
+medians of 3 interleaved runs; frame time from `renderer_timed.so`, ms;
+Vulkan without the frame log, whose runs gave the same within the run to
+run spread). The demos, 15000 frames each, warm caches (the pipeline cache
+file and Mesa's shader cache filled by earlier runs, as on a second
+play):
+
+| demo | size | renderer | mean (fps) | median | p99 (fps) | p99.9 (fps) | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 640x480 | GL1 | 1.050 (952) | 1.000 | 1.736 (576) | 2.258 (443) | 25.7 |
+| | | Vulkan | 1.003 (997) | 1.000 | 1.039 (963) | 1.442 (693) | 20.9 |
+| | 1920x1080 | GL1 | 1.075 (930) | 1.000 | 1.920 (521) | 2.646 (378) | 25.8 |
+| | | Vulkan | 1.003 (997) | 1.000 | 1.175 (851) | 1.560 (641) | 21.3 |
+| | 3840x2160 | GL1 | 1.416 (706) | 1.243 | 3.122 (320) | 3.810 (262) | 26.3 |
+| | | Vulkan | 1.329 (753) | 1.130 | 3.068 (326) | 3.690 (271) | 23.3 |
+| `o4match` | 640x480 | GL1 | 1.385 (722) | 1.348 | 2.336 (428) | 3.289 (304) | 31.1 |
+| | | Vulkan | 1.037 (965) | 1.002 | 1.415 (707) | 1.821 (549) | 27.6 |
+| | 1920x1080 | GL1 | 1.532 (653) | 1.513 | 2.706 (370) | 3.518 (284) | 31.6 |
+| | | Vulkan | 1.168 (856) | 1.081 | 1.953 (512) | 2.693 (371) | 28.1 |
+| | 3840x2160 | GL1 | 2.368 (422) | 2.273 | 3.999 (250) | 5.091 (196) | 32.3 |
+| | | Vulkan | 2.241 (446) | 2.167 | 3.671 (272) | 4.950 (202) | 30.5 |
+
+(1.000 is the 1000 frames per second limit of `Com_Frame`; the tester's
+client has none, ours puts the median of the lighter frames there.) In the
+matches Vulkan's 99th and 99.9th percentiles are lower than GL1's at every
+size, by 0.6 to 0.9 ms at 640x480 and 1920x1080 (where GL1's CPU time per
+frame limits) and 0.1 to 0.3 ms at 3840x2160 (where the GPU does), and so
+is the maximum.
+
+What makes the slow frames slow. The demo's frames are the same moments
+in every run, so each frame's median over the 3 runs is what the content
+costs, and a run's frame minus that median is noise of that run (the
+system, the driver, the clock): `framelog.py --batch` splits them. The
+noise is lower with Vulkan in every demo and size (99.9th percentile of a
+frame's excess over its median: 0.13 against 0.65 ms at 640x480 in
+`o2match`, 0.90 to 1.20 against 1.44 ms at 1920x1080 in `o4match`, 1.70 to
+1.86 against 2.26 at 3840x2160). The content's slow frames (the medians
+above their 99th percentile), split into parts that don't overlap, each
+part's excess over its median summed (Vulkan's frame log; at 1920x1080 from
+a run of the fixed log, see below):
+
+| demo, size | front end (`scene`) | back end | cgame | registration (`load`) | fence wait | engine | pipelines |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` 1920x1080 | 19 % | 20 % | 21 % | 28 % | 6 % | 4 % | 1 % |
+| `o4match` 1920x1080 | 38 % | 27 % | 15 % | 13 % | 0 | 5 % | 0 |
+| `o2match` 3840x2160 | 10 % | 10 % | 10 % | 15 % | 53 % | 0 | 0 |
+| `o4match` 3840x2160 | 19 % | 14 % | 10 % | 15 % | 37 % | 5 % | 0 |
+
+(The logger of these batch runs timed nested registration calls twice;
+fixed, the 1920x1080 rows come from the run with the stack samples below,
+the 3840x2160 ones are as measured, their `load` share a little high.)
+
+- The heavier moments of the match (more players, effects, sprites and
+  terrain in view: the front end, the back end and cgame) make most of the
+  99th percentile with both renderers; Vulkan's are smaller (GL1's front end
+  and back end cost more per frame). At 3840x2160 it is the GPU: the fence
+  wait of the frames whose drawing takes the GPU longer (the main pass
+  takes 1.12 ms in the median `o2match` frame and 2.96 ms at its 99th
+  percentile).
+- Registration in the middle of the match makes the largest frames (21 to
+  31 ms, the maximum of both renderers, GL1's larger). The stack samples
+  of `libstacks.so`, put into the frames (`framelog.py --stacks`, one run
+  per renderer at 1920x1080), show what: a configstring announces a model
+  (a player's model or weapon, `CG_ProcessConfigString`,
+  `RegisterServerModel`), cgame caches its resources (`CacheResource`)
+  and its shaders load their images from the pk3s (`R_FindShader`,
+  `LoadTGA`/`LoadJPG`, the zlib inflate, `R_MipMap`), 22 textures and 6.7
+  MB in the worst frame of `o2match`; the file system's case correction
+  (`FS_CorrectCase`, `opendir`/`readdir` of the directories) is part of
+  it. Code shared by both renderers.
+- The skin data of GPU skinning (Vulkan only): a skeletal model's first
+  draw builds and uploads its skin data (`R_SkinAddSurface`,
+  `R_SkinThresholds`, 429 KB for a player model), 0.6 ms more than GL1 in
+  that frame (`o2match` frame 142, every run), once per model and map.
+- `engine` in `o4match`'s round changes (frames 4451, 7055, 11008, 13483:
+  +1.2 ms, with +1.4 ms of cgame): a new soundtrack is loaded and decoded
+  on the main thread (`MUSIC_NewSoundtrack`, `S_CodecLoad`, MP3 decoding,
+  even with the music volume at 0) along with large configstrings.
+- Pipelines: with warm caches the same ones are created in every run (a
+  process creates its pipelines on first use, the caches make that cheap):
+  19 or 38 in the first frames after the load and 11 or 20 in 10 or 11
+  frames of the match, 0.6 to 1.5 ms in all.
+
+Cold caches (the first play after an install or a driver update: no
+`vkpipelines.cache`, `MESA_SHADER_CACHE_DISABLE=true` for both renderers,
+`perf.py --cold`), 1920x1080, medians of 3:
+
+| demo | renderer | mean (fps) | p99 (fps) | p99.9 (fps) | max | warm p99.9, max |
+| --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | GL1 | 1.073 (932) | 1.941 (515) | 2.684 (373) | 25.3 | 2.646, 25.8 |
+| | Vulkan | 1.007 (993) | 1.191 (840) | 2.088 (479) | 33.3 | 1.560, 21.3 |
+| `o4match` | GL1 | 1.548 (646) | 2.737 (365) | 3.756 (266) | 31.8 | 3.518, 31.6 |
+| | Vulkan | 1.157 (864) | 1.893 (528) | 3.516 (284) | 58.1 | 2.693, 28.1 |
+
+Besides the 7 pipelines of the loading (11 ms), Vulkan creates 17 to 38
+pipelines in the first frames after the load (25 to 52 ms: the 58 ms
+frame of `o4match`) and 11 to 22 more during the match, in 10 to 12
+frames, 1.6 to 2.4 ms each and up to 7 ms in one frame; the pipelines are
+then 30 to 34 % of the content's slow frames, and Vulkan's 99.9th
+percentile comes near GL1's. GL1's changes by 0.04 to 0.24 ms.
+
+Fixed views (no movement, 5000 frames, medians of 3; the GPU's frame to
+frame time: Vulkan's `gpu_end` differences from the frame log, GL1's from
+`libglts.so` in 2 runs of their own):
+
+| view | size | renderer | median | p99 | p99.9 | max | GPU frame to frame p99, p99.9 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 1920x1080 | GL1 | 0.999 | 1.195 | 1.627 | 1.925 | |
+| | | Vulkan | 0.999 | 1.117 | 1.183 | 1.221 | |
+| | 3840x2160 | GL1 | 1.757 | 2.107 | 2.455 | 2.807 | 1.942 to 1.958, 2.306 to 2.703 |
+| | | Vulkan | 1.701 | 2.500 | 2.885 | 3.579 | 1.862, 1.928 |
+| `dm/mohdm3` overview | 1920x1080 | GL1 | 0.999 | 1.395 | 1.845 | 3.385 | |
+| | | Vulkan | 0.999 | 1.069 | 1.146 | 1.269 | |
+| | 3840x2160 | GL1 | 2.457 | 2.798 | 3.275 | 3.682 | 2.707, 2.881 to 3.407 |
+| | | Vulkan | 2.476 | 3.019 | 3.484 | 3.667 | 2.701, 2.872 |
+| `pm1_front` | 1920x1080 | GL1 | 1.848 | 2.876 | 3.345 | 3.778 | |
+| | | Vulkan | 1.250 | 1.737 | 2.059 | 2.619 | |
+| | 3840x2160 | GL1 | 4.020 | 4.690 | 5.333 | 5.897 | 5.325, 5.967 (1 run) |
+| | | Vulkan | 3.931 | 5.039 | 5.628 | 6.126 | 4.192, 4.345 |
+
+The build with the frame log and the build before it, logger off, give
+the same frame times (0.002 ms at most between their medians, renderer
+time within 0.013 ms); with the log on the renderer time is up to 0.02 ms
+higher at 640x480 and 1920x1080 and the same within the noise at
+3840x2160. Without `com_speeds 1` (perf.py no longer prints it when
+`renderer_timed.so` measures), the spread of the 3840x2160 views is about
+what the earlier runs with it gave (the overview's 99th percentile 3.02 to
+3.20 ms against 3.24 then, GL1 2.80 against 2.86).
+
+At 3840x2160, where the GPU limits, Vulkan's frame times spread more than
+GL1's (99th percentile 0.2 to 0.4 ms higher) but the GPU finishes its
+frames as evenly as GL1's or more (the GPU frame to frame times above):
+what reaches the screen is as even, the spread is in when the main thread
+starts its frames. Two causes, from the frame log:
+
+- Where the wait is. Vulkan waits for the fence of frame N-2 at the start
+  of frame N's back end, which in OpenMoHAA is the first UI widget's
+  `set2D()` (`UIWidget::Display` runs the queued `RB_DrawBuffer`), before
+  `View3D::Draw` runs cgame and `RenderScene`. Time those take beyond
+  their median lengthens that frame and shortens the next frame's wait (a
+  long interval, then a short one). GL1 waits in its swap, after the
+  frame's work, which absorbs it in the same frame. The slow frames of the
+  fixed views keep a fence wait near its median (1.6 ms in the overview)
+  and add front end, back end and engine time above their medians.
+- `vkAcquireNextImageKHR` right after the present waits 0.6 to 1 ms in 4 %
+  of the yard's frames (215 of 4998; 12 in the overview), when the X
+  server (Xwayland) has not released an image yet; the fence wait is that
+  much shorter in those frames.
+
+In the moving demos the GPU's load changes from frame to frame and
+Vulkan's 99th percentile is still below GL1's at 3840x2160.
+
+Checks of the log itself: against the build before it (`run.sh`,
+`tgadiff.py`, 640x480), `dm/mohdm1`, `obj/obj_team2`, `mohdm1_dlight` and
+`mp_mohdm1` (17 views) give the same frames to the bit with
+`r_vkFrameLog` 0 and 1; no validation message in these runs
+(`r_vkValidation 1`), nor with synchronization validation on
+`mohdm1_dlight` with the log on, nor in a demo played with the log on
+through `vkframelog`, `vid_restart` (the log starts again), `vkframelog`
+twice (the second has no frames), `vkframelog clear` and `vkframelog`;
+`renderer_vulkan.so` still imports no GL or Vulkan symbol and exports
+only `GetRefAPI`.
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -2219,6 +2484,20 @@ selects the sample count (see Implementation notes).
   copy to the swapchain image (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`), read without
   waiting when the frame slot is reused; times on the CPU use
   `SDL_GetPerformanceCounter`.
+- **Frame log** (`vk_framelog.c`, `r_vkFrameLog`). When the cvar is set as
+  the renderer starts, `GetRefAPI` returns wrappers of the exports that run
+  every frame (the ones `tools/rtimer/rtimer.c` wraps, timed the same way)
+  instead of the exports; otherwise it returns them unchanged, and the only
+  trace of the log is one test of `vk_frameLog` per frame in
+  `VK_CollectTimestamps`. Each frame's record is filled at `EndFrame` from
+  the difference of `vkStats_t` since the previous `EndFrame` (so the fence
+  wait at the start of the frame, in the first 2D call, and the acquire
+  after the present are in it) and completed at the next `BeginFrame` (its
+  interval, the engine's time after it); the GPU timestamps come two frames
+  later, when the slot is reused (`VK_FrameLogGpu`, matched by frame
+  serial). Nothing of the frames, submissions, presents or acquires
+  changes; the wrappers cost about 15 µs per frame (two clock reads around
+  each of the ~300 2D calls of the HUD) while the log is on.
 - **Shutdown and `vid_restart`.** `vk_shutdown` waits for the device and
   destroys everything, including the instance; `vid_restart` recreates the
   window, so the backend starts from scratch.
@@ -2483,7 +2762,71 @@ Done:
     % slower). The frames are the same to the bit. What is left is
     RADV's choice not to compress textures (see Remaining).
 
+11. Frame spikes, measurement only (2026-10-16 night, see Performance,
+    Frame spikes): the frame log (`vk_framelog.c`, `r_vkFrameLog`,
+    `vkframelog`), per-frame files of `renderer_timed.so` and `libglts.so`
+    for GL1, demos in `perf.py` (`views/perf_demo.txt`) and
+    `tools/framelog.py`. The causes it found are the first entries of
+    Remaining.
+
 Remaining:
+
+- What makes the slow frames, in order (see Performance, Frame spikes;
+  frame times in two matches played back, 1920x1080 unless named):
+  1. Registration in the middle of a match: a model announced by a
+     configstring (`CG_ProcessConfigString`, cgame's `CacheResource`)
+     loads its shaders' images from the pk3s, zlib, TGA/JPEG decoding,
+     `R_MipMap` on the CPU, the file system's case correction
+     (`FS_CorrectCase`): the largest frames of both renderers (21 to 31
+     ms) and 13 to 28 % of the slow frames' excess. Shared with GL1;
+     precaching the players' models and weapons at map load (cgame or the
+     engine), or making image loading cheaper (mipmaps by the GPU with
+     `vkCmdBlitImage`, fewer directory scans), would remove most of it. In
+     the renderer alone: a skeletal model's skin data (GPU skinning) is
+     built and uploaded at its first draw, 0.6 ms more than GL1 in that
+     frame, once per model and map; it can be built at registration.
+  2. Pipelines on first use, with cold caches only (the first play after
+     an install or a driver update): 39 to 49 pipelines after the load,
+     25 to 52 ms in the first frames and 1.6 to 2.4 ms each for the 11 to
+     22 that come during the match: the 99.9th percentile 0.5 to 0.8 ms
+     higher, the maximum 33 to 58 ms. With warm caches the same pipelines
+     cost 0.6 to 1.5 ms in all. Creating the map's pipelines at load time
+     (its shaders' stages and the states the back end can give them) would
+     remove both; it matters for the first play, and more where pipelines
+     compile more slowly than on RADV.
+  3. The busier moments of a match on the CPU: front end, back end and
+     cgame are 60 to 80 % of the slow frames' excess at 1920x1080,
+     Vulkan's smaller than GL1's. In the stack samples of
+     `o4match`'s slow frames the world traversal (`R_RecursiveWorldNode`,
+     `R_AddWorldSurfaces`, 15.7 % of their samples against 11.3 % of all
+     frames' samples) leads, then the terrain re-split every frame
+     (`RB_DrawTerrainTris`, `R_DoTriSplitting`, 8.6 % against 6.2 %),
+     `vk_draw` (7.5 %) and cgame's entities (`CG_AddPacketEntities`, 7 %);
+     `RB_SkelMesh`'s mesh search and the sky clipping are about 1 % each.
+     So per-face view culling of world faces is worth it, the terrain is a
+     new candidate, and the other two exact items little for the spikes.
+  4. CPU-side frame pacing where the GPU limits (3840x2160 fixed views):
+     Vulkan's frame times spread more than GL1's (99th percentile 0.2 to
+     0.4 ms higher) while the GPU finishes its frames as evenly as GL1's:
+     the fence wait comes before cgame and the front end in the frame
+     (the first UI widget's `set2D()` runs `RB_DrawBuffer`), so their
+     noise isn't absorbed in the same frame as with GL1's wait in the
+     swap; and the acquire after the present waits 0.6 to 1 ms in up to 4
+     % of the frames under Xwayland. Starting the backend's frame (and its
+     wait) at the frame's first recorded command instead of in
+     `RB_DrawBuffer` would put the wait after the CPU work like GL1's,
+     with the same latency (the frame is still submitted when the GPU
+     frees its slot): to be tried and measured, with the input to present
+     time checked. Tools that report frame times from the CPU's side
+     (present to present) see this spread; what is displayed is even.
+  5. The engine: at round changes a soundtrack is loaded and decoded on
+     the main thread (`MUSIC_NewSoundtrack`, `S_CodecLoad`, MP3 decoding,
+     with the music volume at 0 too) with large configstrings: 1.2 ms
+     more engine and 1.4 ms more cgame time in each of 4 frames of
+     `o4match`; outside the renderer.
+  6. Where the GPU limits, the GPU-heavy moments (the fence wait is 37 to
+     53 % of the slow frames at 3840x2160): GPU time, see the texture
+     compression item below.
 
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
   forests most batches still go through the CPU because of them: in
