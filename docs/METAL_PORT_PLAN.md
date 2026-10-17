@@ -223,7 +223,23 @@ mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_Send
     - c3294f8c: µs frame deadline, `com_maxfps` above 1000.
     - 82cb483d: `cl_cmdfps` separate command clock. Our version adds a never-sent "virtual in-progress command" predicted to *now* instead of its cgame display lerp (which shows position up to one command interval in the past), needs no cgame changes, and allows 250 or 125 cmd/s.
     - 92810e4c: learned-oversleep µs sleeping (adopt); the present-anchored PresentGuard spin (skip: it waits between input sampling and present); `cl_lowLatencyInput` late mouse (redo as a view-only GCMouse read in part 2); `fpsbench set` (skip).
-    - omaha 1c2c8754: CPU cost cuts in cgame + GL1 front end, review pending.
+    - omaha 1c2c8754 (CPU cost cuts in cgame + GL1 front end; hand-port only, it depends on fork-only code). Adopt in Phase 5, each with a screenshot diff:
+      - the exact world culls: flat PVS leaf list, 8-leaf group culls, per-face bounding spheres, early mark rejects;
+      - the lightmap-atlas idea, done as an `MTLTexture` 2D array (no bleed, unlike its atlas without gutters);
+      - a skeletal mesh-index table built at model load and the exact morph-weight check;
+      - the two exact dlight micro-optimisations;
+      - the exact cgame caches: tag indices (with an `iTagNum >= 0` guard), event interning, the temporary-mark clip cache, `CG_FootstepByTag`.
+
+      Skip:
+      - cross-entity world-space batching: wrong for env-map/`dot`/heightFade/specular stages, and wrong grid lighting per batch;
+      - its skeletal caches: crash risk with nested views, and the normal skip ignores deforms;
+      - in-place dlights;
+      - the GL VBO path;
+      - the smoke lighting cache: ignores dlights;
+      - tempmodel sleep: freezes animated tempmodels;
+      - the savegame-format change and the partial memset.
+
+      Phase 2b keeps GL1's code verbatim.
     - Full notes: `/Users/pstn/Library/Application Support/Claude/side-session-notes/local_7a338994-81bf-4051-a8d3-93d0ff81e9c9/friend-commits-review.md`. Copy the conclusions into this plan when Phase 5 starts.
   - `NSActivityLatencyCritical` / QoS / Game Mode measured on and off;
   - **audio latency:** openal-soft period/refresh (`ALC_REFRESH`, period size) tuned and measured (footsteps matter online).
