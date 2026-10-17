@@ -11,8 +11,8 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); next 3d (session 9: the user's look, online smoke test, push) |
-| 4 | Delete OpenGL entirely | Not started |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d (the user's look, online smoke test) waits until the user is back; Phase 4 goes first (session 9) |
+| 4 | Delete OpenGL entirely | **Next** (session 9, before 3d: the user is away) |
 | 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
 | 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | Not started |
@@ -707,7 +707,13 @@ Session 6 result (3a, display modes):
 
 ## 6. Next session
 
-**Session 9 = Phase 3, slice 3d: the user's look, an online smoke test, then push.** Start with CLAUDE.md, then the Phase 3 bullets and results (sessions 8, 7, 6) and §3.2 "Added in session 8".
+**Session 9 = Phase 4: delete OpenGL entirely** (the Phase 4 bullets). **Changed 2026-10-17:** the user is away for the day and asked for a next session that doesn't need them. Slice 3d needs the user, so it waits until they're back: do it in the first session after their return ("What 3d needs" below). Start with CLAUDE.md, then the Phase 4 bullets, "Where things stand" below, and §3.2 "Added in session 8".
+
+Phase 4 notes (session 8):
+- **Keep a GL1 reference before deleting it.** 3d (the user's look) and Phase 5 ("the fixed views show no visual change") still compare against GL1. Add a reference flavor to `port/build.sh` that builds the last commit before the deletion from an export in build.noindex/ (`git archive`, never a second checkout of the repo). Make `port/shot.sh pair` take its GL1 side from that install (it runs both renderers from one install today, switched by `cl_renderer`), and `port/bench.sh run gl` too. Check that the reference reproduces today's numbers (dm6: 1454 / 135 / 496 / 2533 / …).
+- `cl_renderer` stays accepted but is ignored: an old config with `cl_renderer opengl1` must still start Metal. Keep the `glconfig_t` layout and the GL-named cvar values (`r_textureMode GL_…`).
+- Split it if it's big (e.g. 4a: remove the GL renderers, `sdl_glimp.c`/`sdl_gamma.c`, the cmake options, link the renderer statically; 4b: the grep-clean pass of GL names). Stop at a coherent point and say where.
+- At the end of Phase 4, with the build and bench passing, push `metal` (CLAUDE.md). That also publishes 3a–3c; Phase 3 stays open until 3d.
 
 Where things stand (end of session 8):
 - **Phase 3c is done** (commit on `metal`, not pushed: 3a, 3b and 3c go out together at the end of Phase 3). What it did:
@@ -718,12 +724,10 @@ Where things stand (end of session 8):
 - **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen (`r_fullscreen 1` + `r_noborder 1`). Borderless at the desktop resolution has the same latency as exclusive fullscreen, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b), which is always composited.
 - Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
-What 3d needs (both steps need the user, so ask early, with `AskUserQuestion` or in the report):
+What 3d needs (after Phase 4, when the user is back; both steps need the user, so ask early, with `AskUserQuestion` or in the report):
 1. **The user's look.** Show the fixed views side by side (GL1 | Metal | diff): `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first. Ask the user to play a few minutes with `cl_renderer metal` in borderless fullscreen and say whether anything looks or feels wrong.
 2. **Online smoke test on a real server** (Phase 3 "done when"): connect, play a few minutes, no errors, no desync. Connecting to a server is outward-facing: ask the user which server (one of theirs, or a public one they pick) and get their OK before connecting. Check the console log for errors and the `r_metalPresentStats` line at quit.
-3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and **push `metal` to origin** (CLAUDE.md: the user said yes to pushing at the end of every phase). Then Phase 4 (delete OpenGL) is next; that's session 10.
-
-If the user can't do 1–2 in session 9, don't wait idle: record it in the plan, and ask whether to push 3a–3c anyway and start Phase 4 (it removes GL1, the reference the fixed views compare against, so keep `build.noindex/shots` GL1 captures, or a GL1 build, for later checks).
+3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and push `metal` to origin (CLAUDE.md: the user said yes to pushing at the end of every phase).
 
 Gotchas found in session 8:
 - **The Bash tool runs zsh:** `for p in "a b" …; do cmd $p; done` passes "a b" as one argument; use `${=p}`.
