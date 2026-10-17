@@ -13,29 +13,8 @@ set(RENDERER_COMMON_SOURCES
 	${SOURCE_DIR}/tiki/tiki_mesh.cpp
 )
 
-set(SDL_RENDERER_SOURCES
-    ${SOURCE_DIR}/sdl/sdl_gamma.c
-    ${SOURCE_DIR}/sdl/sdl_glimp.c
-)
-
-set(DYNAMIC_RENDERER_SOURCES
-    ${SOURCE_DIR}/renderercommon/tr_subs.c
-    ${SOURCE_DIR}/qcommon/q_shared.c
-    ${SOURCE_DIR}/qcommon/q_math.c
-    ${SOURCE_DIR}/corepp/str.cpp
-)
-
 if(USE_FREETYPE)
     list(APPEND RENDERER_DEFINITIONS BUILD_FREETYPE)
-endif()
-
-if(USE_RENDERER_DLOPEN)
-    list(APPEND RENDERER_DEFINITIONS USE_RENDERER_DLOPEN)
-    list(APPEND RENDERER_DEFINITIONS REF_DLL=1)
-elseif(BUILD_RENDERER_GL1 AND BUILD_RENDERER_GL2)
-    message(FATAL_ERROR "Multiple static renderers enabled; choose one")
-elseif(NOT BUILD_RENDERER_GL1 AND NOT BUILD_RENDERER_GL2 AND NOT BUILD_RENDERER_METAL)
-    message(FATAL_ERROR "Zero static renderers enabled; choose one")
 endif()
 
 list(APPEND RENDERER_LIBRARIES ${COMMON_LIBRARIES})

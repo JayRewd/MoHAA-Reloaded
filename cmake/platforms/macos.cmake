@@ -12,7 +12,6 @@ list(APPEND SYSTEM_PLATFORM_SOURCES ${SOURCE_DIR}/sys/sys_osx.m)
 
 list(APPEND COMMON_LIBRARIES "-framework Cocoa")
 list(APPEND CLIENT_LIBRARIES "-framework IOKit")
-list(APPEND RENDERER_LIBRARIES "-framework OpenGL")
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
 set(CMAKE_OSX_ARCHITECTURES arm64)
@@ -61,25 +60,6 @@ function(finish_macos_app)
     add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${RESOURCES_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy ${MACOS_ICON_PATH} ${RESOURCES_DIR})
-
-    if(USE_RENDERER_DLOPEN)
-        set(MACOS_APP_BINARY_DIR ${CLIENT_BINARY}.app/Contents/MacOS)
-
-        if(BUILD_RENDERER_GL1)
-            set_output_dirs(${RENDERER_GL1_BINARY} SUBDIRECTORY ${MACOS_APP_BINARY_DIR})
-            add_dependencies(${CLIENT_BINARY} ${RENDERER_GL1_BINARY})
-        endif()
-
-        if(BUILD_RENDERER_GL2)
-            set_output_dirs(${RENDERER_GL2_BINARY} SUBDIRECTORY ${MACOS_APP_BINARY_DIR})
-            add_dependencies(${CLIENT_BINARY} ${RENDERER_GL2_BINARY})
-        endif()
-
-        if(BUILD_RENDERER_METAL)
-            set_output_dirs(${RENDERER_METAL_BINARY} SUBDIRECTORY ${MACOS_APP_BINARY_DIR})
-            add_dependencies(${CLIENT_BINARY} ${RENDERER_METAL_BINARY})
-        endif()
-    endif()
 endfunction()
 
 if(NOT "$ENV{APPLE_CERTIFICATE_ID}" STREQUAL "")

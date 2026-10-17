@@ -1,7 +1,7 @@
-# Native Metal renderer (macOS on Apple Silicon). A copy of renderergl1 whose GL calls go to a Metal backend
-# (code/renderer_metal/tr_mtl.h). Built as renderer_metal.dylib next to renderer_opengl1 (cl_renderer metal).
+# Native Metal renderer (macOS on Apple Silicon), the only renderer: linked into the client (client.cmake).
+# A copy of upstream's GL1 renderer whose GL calls go to a Metal backend (code/renderer_metal/tr_mtl.h).
 
-if(NOT BUILD_CLIENT OR NOT BUILD_RENDERER_METAL)
+if(NOT BUILD_CLIENT)
     return()
 endif()
 
@@ -57,7 +57,7 @@ set(RENDERER_METAL_SHADERS
 )
 
 # Offline shader compilation with the Metal Toolchain (mounted read-only by port/env.sh's omm_mount_metal),
-# embedded in the dylib as a C array.
+# embedded in the binary as a C array.
 if(DEFINED ENV{OMM_METAL_BIN})
     set(METAL_TOOLCHAIN_BIN_DEFAULT $ENV{OMM_METAL_BIN})
 else()
@@ -82,37 +82,16 @@ add_custom_command(
     COMMENT "Compiling Metal shaders"
     VERBATIM)
 
-set(RENDERER_METAL_BASENAME renderer_metal)
-set(RENDERER_METAL_BINARY ${RENDERER_METAL_BASENAME})
-
 list(APPEND RENDERER_METAL_BINARY_SOURCES
     ${RENDERER_COMMON_SOURCES}
     ${RENDERER_METAL_SOURCES}
     ${RENDERER_LIBRARY_SOURCES}
     ${RENDERER_METAL_METALLIB_HEADER})
 
-# No OpenGL: drop the framework the platform file adds for the GL renderers.
-set(RENDERER_METAL_LIBRARIES ${RENDERER_LIBRARIES})
-list(REMOVE_ITEM RENDERER_METAL_LIBRARIES "-framework OpenGL")
-list(APPEND RENDERER_METAL_LIBRARIES "-framework Metal" "-framework QuartzCore")
+list(APPEND RENDERER_INCLUDE_DIRS ${RENDERER_METAL_GENERATED_DIR})
+list(APPEND RENDERER_LIBRARIES "-framework Metal" "-framework QuartzCore")
 
 set_source_files_properties(
     ${RENDERER_METAL_DIR}/tr_mtl.m
     ${SOURCE_DIR}/sdl/sdl_mtlimp.m
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-
-if(USE_RENDERER_DLOPEN)
-    list(APPEND RENDERER_METAL_BINARY_SOURCES ${DYNAMIC_RENDERER_SOURCES})
-
-    add_library(${RENDERER_METAL_BINARY} SHARED ${RENDERER_METAL_BINARY_SOURCES})
-
-    target_link_libraries(      ${RENDERER_METAL_BINARY} PRIVATE ${RENDERER_METAL_LIBRARIES})
-    target_include_directories( ${RENDERER_METAL_BINARY} PRIVATE ${RENDERER_INCLUDE_DIRS} ${RENDERER_METAL_GENERATED_DIR})
-    target_compile_definitions( ${RENDERER_METAL_BINARY} PRIVATE ${RENDERER_DEFINITIONS} RENDERER_METAL)
-    target_compile_options(     ${RENDERER_METAL_BINARY} PRIVATE ${RENDERER_COMPILE_OPTIONS})
-    target_link_options(        ${RENDERER_METAL_BINARY} PRIVATE ${RENDERER_LINK_OPTIONS})
-
-    set_output_dirs(${RENDERER_METAL_BINARY})
-
-    INSTALL(TARGETS ${RENDERER_METAL_BINARY} DESTINATION ${INSTALL_LIBDIR_FULL})
-endif()

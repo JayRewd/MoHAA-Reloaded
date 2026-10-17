@@ -40,9 +40,7 @@ extern "C" {
 
 #include <climits>
 
-#ifdef USE_RENDERER_DLOPEN
 cvar_t* cl_renderer;
-#endif
 
 cvar_t	*cl_nodelta;
 cvar_t	*cl_debugMove;
@@ -3236,6 +3234,9 @@ void CL_InitRef( void ) {
 	{
 		Com_Error(ERR_FATAL, "Can't load symbol GetRefAPI: '%s'",  Sys_LibraryError());
 	}
+#else
+	// the Metal renderer is linked in; cl_renderer is kept for old configs (e.g. "opengl1") and ignored
+	cl_renderer = Cvar_Get("cl_renderer", "metal", CVAR_ROM);
 #endif
 
 	ri.Cmd_AddCommand = Cmd_AddCommand;

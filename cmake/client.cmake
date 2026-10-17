@@ -79,10 +79,6 @@ if(BUILD_STANDALONE)
     list(APPEND CLIENT_DEFINITIONS STANDALONE)
 endif()
 
-if(USE_RENDERER_DLOPEN)
-    list(APPEND CLIENT_DEFINITIONS USE_RENDERER_DLOPEN)
-endif()
-
 if(USE_HTTP)
     list(APPEND CLIENT_DEFINITIONS USE_HTTP)
 endif()
@@ -118,17 +114,13 @@ target_link_options(            ${CLIENT_BINARY} PRIVATE ${CLIENT_LINK_OPTIONS})
 
 set_output_dirs(${CLIENT_BINARY})
 
-if(NOT USE_RENDERER_DLOPEN)
-    target_sources(${CLIENT_BINARY} PRIVATE
-        # These are never simultaneously populated
-        ${RENDERER_GL1_BINARY_SOURCES}
-        ${RENDERER_GL2_BINARY_SOURCES})
+# The renderer (Metal, the only one) is linked into the client
+target_sources(${CLIENT_BINARY} PRIVATE ${RENDERER_METAL_BINARY_SOURCES})
 
-    target_include_directories( ${CLIENT_BINARY} PRIVATE ${RENDERER_INCLUDE_DIRS})
-    target_compile_definitions( ${CLIENT_BINARY} PRIVATE ${RENDERER_DEFINITIONS})
-    target_compile_options(     ${CLIENT_BINARY} PRIVATE ${RENDERER_COMPILE_OPTIONS})
-    target_link_libraries(      ${CLIENT_BINARY} PRIVATE ${RENDERER_LIBRARIES})
-endif()
+target_include_directories( ${CLIENT_BINARY} PRIVATE ${RENDERER_INCLUDE_DIRS})
+target_compile_definitions( ${CLIENT_BINARY} PRIVATE ${RENDERER_DEFINITIONS})
+target_compile_options(     ${CLIENT_BINARY} PRIVATE ${RENDERER_COMPILE_OPTIONS})
+target_link_libraries(      ${CLIENT_BINARY} PRIVATE ${RENDERER_LIBRARIES})
 
 foreach(LIBRARY IN LISTS CLIENT_DEPLOY_LIBRARIES)
     add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD

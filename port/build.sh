@@ -9,7 +9,7 @@
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
-FLAVOR="${1:-gl}"
+FLAVOR="${1:-metal}"
 shift || true
 
 BUILD_DIR="$OMM_BUILD/$FLAVOR"
@@ -32,7 +32,7 @@ case "$FLAVOR" in
 		fi
 		export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
 		FLAVOR_ARGS=() ;;
-	metal) omm_mount_metal; FLAVOR_ARGS=(-DBUILD_RENDERER_METAL=ON) ;;
+	metal) omm_mount_metal; FLAVOR_ARGS=() ;;
 	*) echo "build.sh: unknown flavor '$FLAVOR'" >&2; exit 1 ;;
 esac
 

@@ -24,9 +24,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "../qcommon/q_shared.h"
 #include "../renderercommon/tr_public.h"
-#ifndef RENDERER_METAL
-#include "qgl.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,7 +53,7 @@ typedef struct image_s {
 	char		imgName[MAX_QPATH];		// game path, including extension
 	int			width, height;				// source image
 	int			uploadWidth, uploadHeight;	// after power of two and picmip but not including clamp to MAX_TEXTURE_SIZE
-	unsigned int	texnum;				// texture name (GL binding or Metal backend handle)
+	unsigned int	texnum;				// Metal backend texture handle
 
 	int			frameUsed;			// for texture usage in frame statistics
 
