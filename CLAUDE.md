@@ -41,6 +41,7 @@ port/bench.sh run metal 3 +set cl_renderer metal   # the same on Metal (extra en
 port/bench.sh trace gl             # one traced timedemo: GPU utilization and GPU ms per frame
 port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1), into build.noindex/shots
 port/shot.sh diff menu             # per-pixel difference GL1 vs Metal for every screenshot pair of that name
+port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): both renderers + per-view diffs
 ```
 
 New flavors (e.g. `metal`) are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.

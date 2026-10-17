@@ -9,8 +9,8 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | Phase | What | Status |
 |---|---|---|
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
-| 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check is open: display not connected) |
-| 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **In progress:** 2a done (session 3); next 2b. The 4K@2× HiDPI check is still open (display not connected) |
+| 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
+| 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **In progress:** 2a done (session 3), 2b done (session 4); next 2c (the latency probe), then the push |
 | 3 | Full feature parity + screenshot-compare harness + online smoke test | Not started |
 | 4 | Delete OpenGL entirely | Not started |
 | 5 | Performance and input latency | Not started |
@@ -119,6 +119,17 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
   - **2.1× less work per frame than GL1, under the Phase 2 target (≤ 0.45 ms).** fps is pinned at the engine's 1 ms floor.
   - CPU profile (`sample`, 8 s of real-time demo playback): 74% `select` + 7.6% `mach_absolute_time` = the engine's frame limiter polling. Of the busy time: renderer front end ≈ 9% of all samples (`RB_SkelMesh` 2.7%, `RB_Light_Real` 1.9%, `RB_SurfaceFace` 0.8%), Metal driver (AGX + IOGPU) ≈ 2%, ring copies (`memmove`) 0.9%, the backend's own functions ≈ 0.2%. GL1 spent ~65% of its busy time in Apple's GL driver.
   - Two measured traps, both fixed (see §3.2 "Added in session 3"): with the present in the frame's command buffer, completion came only at the display's next refresh while the screen was locked (runs 1 and 3 ran at 239 fps, 3.2 ms/frame waiting for a frame slot); and completed handlers arrived ~1.3 ms after the GPU had finished (0.97 ms work). Frame completion now comes from an `MTLSharedEvent`.
+- **Metal, Phase 2b** (session 4, 2026-10-17, **screen unlocked**: `CGSSessionScreenIsLocked` absent before and after). Same sitting, `port/bench.sh run gl 3` and `port/bench.sh run metal 3 +set cl_renderer metal +set r_metalPresentStats 1`, then one run each with `+set r_swapInterval 1`:
+
+  | Config | fps | **work ms/frame** | notes |
+  |---|---|---|---|
+  | GL1 `r_primitives 2` | 902.2 / 938.2 / 943.4 | **0.955 / 0.887 / 0.884** | |
+  | Metal (2 frames in flight, 2 drawables) | 999.2 / 997.9 / 997.5 | **0.393 / 0.396 / 0.389** | GPU 0.12 ms/frame; 58 draws, 1 pass, 143 KB ring per frame; 12 pipelines; ~40% of frames get a drawable (the compositor shows ~240/s), the rest skip their present without waiting; every presented frame was shown |
+  | GL1, `r_swapInterval 1` | 239.5 | (4.173: includes the vsync wait) | |
+  | Metal, `r_swapInterval 1` | 237.0 | (4.218: includes the vsync wait) | 3.47 ms/frame waiting in `nextDrawable`, at the end of the frame (§4b rule 1); every frame presented and shown |
+
+  - **2.3× less work per frame than GL1 with the compositor running**, under the Phase 2 target (≤ 0.45 ms). Metal's 0.39 ms vs 0.36 ms on a locked screen (session 3) is the cost of really getting and presenting drawables.
+  - 4K@2× (U4323QE, `+set r_displayIndex 1`, 1280×720-point window): Metal draws 2560×1440 pixels, GPU 1.2 ms/frame (not benchmarked; the display runs at 60 Hz). GL1 renders the same window at 1280×720 and lets macOS upscale it.
 - **What this means for Metal:** with frames in flight (no per-frame wait), one render pass per frame where possible, and no driver state validation, the frame cost should approach max(CPU, GPU) instead of their sum. **Phase 2 target: work ≤ 0.45 ms/frame (≥2× GL1 `r_primitives 2`) on this bench. Phase 5 stretch: ≤ 0.25 ms.** Beyond ~1000 fps the visible fps stays capped by the engine's 1 ms frame floor (see Phase 5).
 
 ---
@@ -161,7 +172,13 @@ Added in session 3 (Phase 2a):
 - **No destination alpha:** the scene target's alpha is never written and stays 1 (GL1's 24-bit color buffer: `GL_DST_ALPHA` = 1).
 - **Clears:** a full-target clear before the pass begins becomes the pass's load action; any other clear (scissored, color-masked, after drawing) is a triangle through the clear pipeline, honoring the write masks like glClear. Depth/stencil start cleared each frame and are stored only when the pass is interrupted (readback); `MTLStoreActionUnknown` decides at the end.
 - **`MB_COMBINE4_NV` keeps the unit's previous texenv**, as on Apple's GL (no `GL_NV_texture_env_combine4`: GL1's call fails with GL_INVALID_ENUM there).
-- GL conventions as planned: clip z remapped on the CPU (mvp = remap · P · MV), viewport/scissor flipped, CCW front faces, depth range → viewport znear/zfar, polygon offset → `setDepthBias(units, factor)`, the clip plane converted to object space per draw and written to `[[clip_distance]]`, `[[position, invariant]]` (`-fpreserve-invariance`) for multi-pass `GLS_DEPTHFUNC_EQUAL`. Fog: GL linear fog on the per-fragment |eye z| (Phase 3 checks it against GL1). Not emulated: line width, line stipple, points, flat shading (only debug/editor views and a disabled GL1 path use them).
+- GL conventions as planned: clip z remapped (session 4: in the vertex shader after mvp = P · MV, see below), viewport/scissor flipped, CCW front faces, depth range → viewport znear/zfar, polygon offset → `setDepthBias(units, factor)`, the clip plane converted to object space per draw and written to `[[clip_distance]]`, `[[position, invariant]]` (`-fpreserve-invariance`) for multi-pass `GLS_DEPTHFUNC_EQUAL`. Fog: GL linear fog on the per-fragment |eye z| (Phase 3 checks it against GL1). Not emulated: line width, line stipple, points, flat shading (only debug/editor views and a disabled GL1 path use them).
+
+Added in session 4 (Phase 2b):
+- **Clip z is remapped in the vertex shader** (`z' = (z + w) / 2` after `mvp · v`, with mvp = P · MV on the CPU), not folded into the matrix: that rounded depth differently from GL1 on Apple's GL and changed z-fighting where models touch the world (a spawned soldier on a floor: 281 → 1 pixels different). Computing `P · (MV · v)` in the shader instead matched GL1 worse everywhere, so Apple's GL premultiplies like we do.
+- **Hidden surface removal stays on.** Opaque pipelines have no `discard`, so the GPU's HSR resolves exact depth ties between triangles of one draw in its own way, while GL1 on Apple's GL behaves like a pipeline that can discard (in-order `LEQUAL`). Models with coincident faces (static models, the view weapon, stitched terrain) therefore differ from GL1 by a few levels in up to ~2500 edge pixels of a 1280×720 view. Proven: drawing every triangle as its own draw, or a `discard` in every pipeline, matched GL1 to 2–24 pixels per view. Not worth the GPU cost (and HSR is part of why Metal's GPU time is low); invisible by eye.
+- **`screenshot` reads the previous frame on Metal** (the scene target before this frame's first draw). GL1 on macOS reads the back buffer after the swap, which holds the frame from two frames back (measured with `r_znear` toggled per frame). Metal is not changed to imitate that; the fixed-view harness compensates (three captures per view, best GL1 match).
+- **`SwipePoint` and `DrawBackground` stay NULL, as in GL1.** `re.DrawBackground` has no caller anywhere. `cgi.R_SwipePoint` is called unguarded by cgame's swipe rendering (`cg_swipe.cpp`), which tempmodels with a `trail` reach: the only retail one is the grenade explosion's debris (`models/fx/fx_grenade_explosion.tik`, `trail "fireswipe2" tag_p1 tag_p2 0.8`). Upstream's `RE_SwipePoint` is also broken (it writes `swipes[numswipes - 1]` without ever incrementing `numswipes`: index -1), so exporting it would trade a NULL call for memory corruption. Not verified at run time yet (a grenade couldn't be thrown from a cfg); Phase 3 throws one, and if GL1 crashes there too, it's an upstream bug to fix in both renderers' front ends with the user's OK.
 
 ---
 
@@ -273,7 +290,7 @@ Each phase can take several sessions (slices). One session = one phase or slice 
 ### Phase 0: Survey, baseline, plan, decisions. **Status: done (session 1, 2026-10-16).**
 Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedemo work metric, decisions (§3), CLAUDE.md, this plan.
 
-### Phase 1: Build plumbing, Metal window layer, renderer_metal skeleton. **Status: done (session 2, 2026-10-16), except the 4K@2× HiDPI check (display not connected; carried into Phase 2a).**
+### Phase 1: Build plumbing, Metal window layer, renderer_metal skeleton. **Status: done (session 2, 2026-10-16); the 4K@2× HiDPI check was carried over and done in session 4 (rendering passes; HiDPI input not exercised).**
 Session 2 result:
 - `cmake/platforms/macos.cmake` arm64 + 26.0. `cmake/renderer_metal.cmake` (`BUILD_RENDERER_METAL`, default OFF): `renderer_metal.dylib` in `openmohaa.app/Contents/MacOS` next to `renderer_opengl1.dylib`; Metal + QuartzCore, no OpenGL; `-fobjc-arc` for the two `.m` files; hidden visibility (only `GetRefAPI` exported). jpeg/freetype/renderer_common guards widened.
 - `cmake/utils/metallib.cmake`: the custom command compiles `code/renderer_metal/shaders/*.metal` with `$OMM_METAL_BIN/metal -std=metal4.0 -target air64-apple-macos26.0 -O3 -Wall -Werror` (module cache inside the build dir), links with `metallib`, and embeds the result as a C array (`xxd -i` → `build.noindex/metal/renderer_metal/tr_mtl_metallib.h`). It fails with "Mount the Metal Toolchain first: source port/env.sh && omm_mount_metal" when the toolchain isn't mounted. `port/build.sh metal` mounts it itself. Shader so far: `tr_mtl_final.metal` (fullscreen triangle, texel read of the scene target, gamma ramp).
@@ -299,7 +316,22 @@ Session 2 result:
   - The menu loop runs (invisible), and `+map dm/mohdm6` loads and runs without crashes. `vid_restart`, fullscreen toggle and quit work.
   - `cl_renderer opengl1` still works, and the GL1 bench is re-recorded for the arm64-only build (expected unchanged).
 
-### Phase 2: Core draw path. **Status: in progress. 2a done (session 3, 2026-10-17); next 2b.**
+### Phase 2: Core draw path. **Status: in progress. 2a done (session 3), 2b done (session 4, 2026-10-17); next 2c.**
+Session 4 result (2b):
+- **Fixed 3D views** (`port/shots/shot_dm6.cfg`: 9 views; `shot_dm5.cfg`: 4 views; run with `port/shot.sh pair <name> <cfg>`, which runs both renderers and diffs every view; `fixed` runs one renderer, `views` re-diffs). How they work:
+  - `+set g_gametype 0 +set thereisnomonkey 1 +devmap <map> +set fixedtime 10` (from the cfg's `// args:` line). `thereisnomonkey 1` is what unlocks the cheat commands (without it the game resets `cheats` to 0 at the first cheat command: that's why session 3's `tele` did nothing). `fixedtime 10` makes every frame advance game time by exactly 10 ms, so the frames are identical in every run: **both renderers are bit-for-bit deterministic run to run.**
+  - `noclip`, `tele x y z`, `face pitch yaw roll` (3 floats; pitch < 0 looks up); `spawn models/human/allied_airborne_soldier.tik` puts a skinned model 40 units in front of the player; the view model needs noclip **off** plus `wuss` and `use models/weapons/thompsonsmg.tik`.
+  - Three captures per view one frame apart; Metal's middle capture is compared with the best of GL1's three (GL1's frame age is printed: 2 in every run so far).
+- **Result** (pixels of 921600 differing; >8 levels in brackets): mohdm6 views: courtyard + sky 1454 (12), courtyard 90° 135 (2), roofs + sky 496 (4), sandbags 2533 (111), courtyard 270° 1404 (16), indoor light + lockers 152 (9), ceiling bulb 117 (41), spawned soldier 1 (1), view weapon (Thompson + arms) indoors 2411 (3, of which ~1980 are the weapon bar's highlight, which also differs between two Metal runs: real-time clock). mohdm5 (fog farplane 1800, terrain, snow): 1732 (9), 1337 (49), 749 (8), 558 (3). By eye: identical.
+  - Where the rest comes from (measured): almost all of it is HSR tie-breaking on coincident faces (§3.2 "Added in session 4"): with `r_drawstaticmodels 0` mohdm6 drops to 0–135 pixels per view and the sandbag view to exactly 0; with a `discard` in every pipeline mohdm6 drops to 2–24 pixels except the ceiling bulb (116: thin cage wires; not alpha-test rounding, not explained, 41 pixels > 8). mohdm5 without static models keeps 550–880 pixels off by 1–2 (not the fog blend formula; probably terrain LoD stitching, i.e. ties again; not chased further).
+  - Ruled out along the way, each by a measurement: texture filtering (every `r_textureMode` gives the same), mouse input (`in_mouse 0`), vertex submission and lock snapshots (copying every draw, per-triangle index rotation), `P · (MV · v)`.
+- **Fixed:** the clip-z remap moved into the vertex shader (§3.2).
+- **Exports:** `SwipePoint`/`DrawBackground` stay NULL like GL1 (§3.2).
+- **Bench, unlocked screen:** §2 "Metal, Phase 2b": Metal 0.39 ms vs GL1 0.88–0.96 ms work; `r_swapInterval 1` runs at 237–240 fps on both.
+- **HiDPI (4K@2×, `r_displayIndex 1`): pass for rendering:** drawable and screenshots 2560×1440, HUD scaled like at 720p (`port/shots/shot_hidpi.cfg`). Input on a 2× display (the HiDPI gotchas in §6) was not exercised: needs a person at the mouse.
+- **Found, not ours: most maps crash the game when loaded locally.** `devmap`/`map` of dm/mohdm1–4 and mohdm7, obj/obj_team1–3 and m2l1 (also in FFA with `sv_maxclients 8`, and from a cfg after the menu) crash in `SimpleEntity::SetOrigin` (NULL `this`, from a map script setter at `Level::ServerSpawned`), with both renderers and with the upstream GL build (`port/build.sh gl`). Only mohdm6 and mohdm5 load. So the views for portal sky (m2l1), objective maps and more terrain (`shot_dm4.cfg`, `shot_obj3.cfg`, `shot_m2l1.cfg`) are written but can't run yet. Game code: investigate separately; any fix needs the user's OK (hard rules).
+- **Not covered by the views yet:** portal sky, mirrors, marks/decals (mohdm6 has no `.dcl`; bullet marks need shooting), swipes, sprites/flares, dlights, polygon-offset decals, mirrored cull. Phase 3's fixed view list takes them once maps load.
+
 Session 3 result (2a):
 - `tr_mtl.m` is a real backend: GL state tracking with dirty bits; pipeline/depth-stencil/sampler caches; the frame ring (8 MB per slot to start, grows if a frame needs more); lazy command buffer and scene pass, so drawing and clearing work at any point of the frame; textures (uploads, mips, BC formats, samplers per texture, in-use replacement, deferred destruction); client-array and immediate-mode draws; partial clears; readback after the frame's work so far. New `shaders/tr_mtl_stage.metal`. `r_metalPresentStats 1` also prints draws, passes, clear quads and ring KB per frame, pipelines created, in-use texture copies, and the frame command buffer's GPU time and commit-to-GPU/completion latency. Decisions: §3.2 "Added in session 3". Numbers: §2 "Metal, Phase 2a".
 - `cmake/utils/metallib.cmake` now splits the shader list (it only ever saw one file) and compiles with `-fpreserve-invariance`.
@@ -327,7 +359,7 @@ Session 3 result (2a):
 - Spearhead/Breakthrough (`com_target_game 1/2`), the `MTLBinaryArchive` pipeline cache.
 - Fullscreen and borderless fullscreen hitting direct-to-display, Info.plist Game Mode keys (§4b rules 4–5).
 - **Done when:**
-  - `port/compare.sh` (new: deterministic views via devmap + fixedtime + tele/face + pause, GL1 vs Metal screenshots, per-pixel diff) shows no visible differences on a fixed view list (stock DM + objective + SP maps with sky portals, fog, mirrors, terrain), and the user confirms the look.
+  - The fixed-view harness (`port/shot.sh pair`, session 4: devmap + fixedtime + tele/face, GL1 vs Metal screenshots, per-pixel diff) shows no visible differences on a fixed view list (stock DM + objective + SP maps with sky portals, fog, mirrors, terrain), and the user confirms the look.
   - Online smoke test on a real server (connect, play a few minutes, no errors or desync).
   - Bench recorded.
 
@@ -354,7 +386,7 @@ Session 3 result (2a):
   - Metal 4 (argument tables, residency sets, `MTL4CommandQueue`) where measured.
   - Frame pacing (present timing / CAMetalDisplayLink).
 - Engine frame floor: `Com_Frame` pads frames to 1 ms with an integer-ms clock, which caps fps near 1000. Making it µs-precise changes how `com_maxfps` behaves online (frame pacing feeds usercmd timing and movement feel), so **ask the user before touching it**.
-- **Done when:** the bench work time is ≤ 0.25 ms/frame or the remaining cost is documented as engine-side, p99 frame time is lower than GL1, input→present latency is measured lower than the Phase 2 numbers (and as low as the display mode allows), and `compare.sh` shows no visual change.
+- **Done when:** the bench work time is ≤ 0.25 ms/frame or the remaining cost is documented as engine-side, p99 frame time is lower than GL1, input→present latency is measured lower than the Phase 2 numbers (and as low as the display mode allows), and the fixed views (`port/shot.sh pair`) show no visual change.
 
 ### Phase 6: Native AppKit/GameController (replace SDL2). **Status: not started.**
 - Measure input latency SDL vs native first, and confirm with the user before starting.
@@ -373,30 +405,28 @@ Session 3 result (2a):
 
 ## 6. Next session
 
-**Session 4 = Phase 2, slice 2b** (the 3D path verified against GL1, then the gaps). Start with CLAUDE.md, then this file's §3.2 (including "Added in session 3"), §4, §4b, Phase 2 (session 3's result) and §2 "Metal, Phase 2a".
+**Session 5 = Phase 2, slice 2c** (the latency probe), which completes Phase 2; then push `metal`. Start with CLAUDE.md, then this file's §4b (the latency chain and rules), §3.2 (including "Added in session 3" and "Added in session 4"), Phase 2 (sessions 3 and 4) and §2 "Metal, Phase 2b".
 
-Where things stand (end of session 3):
-- 2a is done and committed on `metal` (not pushed: Phase 2 isn't finished). The Metal backend draws everything the front end issues: menus, console, HUD and the 3D world already render and match GL1 closely in the views tested. Bench: Metal 0.36 ms work vs GL1 0.76 ms in the same sitting (screen locked).
-- Run Metal with `port/run.sh metal +set cl_renderer metal`. Compare with GL1 using `port/shot.sh <metal|opengl1> <name> <cfg> [args]` and `port/shot.sh diff <name>`; cfgs live in `port/shots/` (`shot_menu.cfg`, `shot_console.cfg`, `shot_view.cfg`; usage in the script header). `r_metalPresentStats 1` prints the backend's per-frame counters at shutdown.
-- All backend code is `code/renderer_metal/tr_mtl.m` (+ `shaders/tr_mtl_stage.metal`); the front end is still verbatim GL1 apart from the qgl → mb rename.
+Where things stand (end of session 4):
+- 2a and 2b are done and committed on `metal` (not pushed: Phase 2 isn't finished). The 3D path matches GL1 in fixed views to a few hundred pixels per 1280×720 view, all explained (§3.2 "Added in session 4"); bench with the screen unlocked: Metal 0.39 ms vs GL1 0.88–0.96 ms work per frame; HiDPI at 2× renders at full resolution.
+- Fixed views: `port/shot.sh pair dm6 shot_dm6.cfg` and `pair dm5 shot_dm5.cfg` (about a minute each); per-view images and diffs land in `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.png`. Run both after any backend change: today's numbers are in Phase 2's session 4 result, so a regression shows up as a jump.
+- All backend code is still `code/renderer_metal/tr_mtl.m` + `shaders/tr_mtl_stage.metal`; the front end is verbatim GL1 apart from the qgl → mb rename.
 
-Do next, in order (Phase 2b):
-1. **Deterministic 3D views.** Extend `port/shots/` so several fixed views per map can be compared: the single-player spawn works (`shot_view.cfg`, needs `finishloadingscreen`), but `tele x y z` / `face p y r` typed in a cfg did not move the player (find the right syntax or command: vector arguments, `cmd tele`, or a spawn-point/`setviewpos`-like route; `coord` prints the position). Add `fixedtime`-style determinism if MOHAA has it, `pause` before `screenshot`. Views: dm/mohdm6 outdoors with sky, terrain, an objective map, a map with fog, entities in view (bots or a script-spawned model).
-2. Fix what the views show. Known so far: a few edge pixels on a static model differ (CPU-computed mvp vs GL's P·(MV·v) rounding, or the z remap; check whether it matters); the light-bulb glow differs between runs (time-based: confirm with two GL1 runs). Also check: weapon view model (depth range hack), sky box and portal sky, sprites, marks/decals, swipes, terrain, dlights (bench reports in-use texture copies: the dlight lightmap path), entity sphere lighting, polygon offset decals, cull on mirrored views.
-3. GL1 leaves the `SwipePoint`/`DrawBackground` exports NULL: find out how the client copes, then match or fix deliberately and note it here.
-4. 2c: the `cl_latencyStats` latency probe (§4b).
-5. Bench Metal and GL1 in the same sitting **with the screen unlocked** (session 3's numbers are from a locked screen), and with `r_swapInterval 1` once. Record in §2. Then push `metal` at the end of Phase 2.
-6. The 4K@2× HiDPI check when the U4323QE is connected (`+set r_displayIndex 1`), including the HiDPI input gotchas below.
+Do next, in order:
+1. **2c: `cl_latencyStats 1`** (§4b, Phase 2 plan): per frame, the time from the newest mouse event folded into the usercmd (mach time stamped where SDL events are pumped, µs) to the frame's real present time (`addPresentedHandler` → `presentedTime`), plus input → commit; p50/p95/p99 over N frames, printed periodically and at shutdown. GL1 gets only input → `SwapBuffers` return (a lower bound; say so in the output). Keep the client-side part small (it touches `client/` and `sdl/sdl_input.c`: a timestamp and a refimport/refexport addition only if needed, additively). It must not change frame pacing or usercmd timing. Measuring needs real mouse movement: ask the user to move the mouse during a run, or find an honest synthetic input (e.g. a CGEvent-posted mouse move is still a real HID-path event; say which). Record windowed and fullscreen numbers on the 240 Hz display in §2, screen unlocked.
+2. With 2c done, Phase 2 is complete: build, bench (§2 command lines), fixed views, update the status lines, commit, `git push origin metal`.
+3. Then Phase 3 starts in its own session (never roll into it): its fixed view list needs maps that load (see the crash below), plus a grenade throw for the swipe check (§3.2 "Added in session 4").
 
-Gotchas found in session 3:
-- **The screen was locked for the whole session** (`ioreg -n Root -d1 -a | grep -A1 CGSSessionScreenIsLocked`). Then nothing is composited: `presentedTime` is 0 (r_metalPresentStats shows 0 shown), `nextDrawable` rarely returns (most frames skip their present), and GL1's swap gets cheaper (0.76 instead of ~0.93 ms work). Check the lock state before benchmarking or measuring latency.
-- **Never pace frames on completed handlers:** they arrived ~1.3 ms after the GPU had finished; with `presentDrawable:` in the same command buffer and a locked screen, only at the next refresh (the game loop fell to 239 fps). Frame completion is read from `mb_frameEvent` (`MTLSharedEvent`).
-- The game itself runs `exec menu.cfg` at startup: never name a test cfg like a game cfg (`port/shots/` uses a `shot_` prefix).
-- `wait N` counts real milliseconds, also in a timedemo, so a timedemo can't be screenshotted at a fixed frame. Use devmap views.
-- `g_gametype 0 +devmap <map>` stops at a "Continue" loading screen: `finishloadingscreen` dismisses it. The console opens at startup with `+set ui_console 1 +set cl_playintro 0` (there is no `toggleconsole`; `devcon` toggles the developer console).
-- The main menu's ceiling fan is animated, so menu screenshots differ there between any two runs.
-- `cmake/utils/metallib.cmake` gets the shader list joined with `|` (a `;` would split the `-D` argument).
-- Session 2's gotchas still apply: the renderer's `vid_restart` is queued after pending cfg commands; `screencapture` has no permission (use the in-game `screenshot`); a fullscreen `vid_restart` takes seconds; HiDPI (2× displays, untested): with `r_allowResize 1`, `sdl_input.c`'s `SDL_WINDOWEVENT_RESIZED` compares points with pixels and would `vid_restart` repeatedly, relative mouse deltas are in points while the UI cursor is in pixels, and `SDL_WarpMouseInWindow(vidWidth / 2, ...)` expects points; `R_ArrayElementDiscrete` passes units 0/1 (handled); maps with a sky never clear color (handled: the scene target loads).
+Gotchas found in session 4:
+- **The Bash tool runs zsh: `$VAR` holding several args is not word-split** (`port/shot.sh … $A` passes one argument; the game then took everything as one cvar value and never loaded the map). Use arrays (`"${A[@]}"`), `${=A}`, or `$(…)`.
+- **`wait N` continues after N/msec − 1 frames:** `Cbuf_Execute` subtracts the frame's msec right after the wait command, so with `fixedtime 10` `wait 10` doesn't wait and `wait 20` is exactly one frame; a bare `wait` may not even cross a frame (there are two `Cbuf_Execute` calls per frame).
+- **Several `screenshot`s in one frame all write the last file name** (GL1's `R_TakeScreenshot` keeps the name in a static buffer).
+- **`r_drawworld 0` does nothing** in this renderer (both). `r_znear` changes the view the next frame (useful for frame-timing probes).
+- Cheats need `+set thereisnomonkey 1`; `noclip` hides the view model; positions outside the playable area show leftovers of earlier frames in both renderers (no clear): pick views inside the map.
+- The weapon bar highlight in the HUD runs on a real-time clock: it differs between runs even with `fixedtime`.
+- Most maps crash the game when loaded locally (both renderers and upstream GL, `SimpleEntity::SetOrigin` from a map script); only mohdm6 and mohdm5 load (Phase 2's session 4 result).
+- Session 3's gotchas still apply: check `ioreg -n Root -d1 -a | grep -A1 CGSSessionScreenIsLocked` before benchmarking or measuring latency (session 4 ran unlocked); never pace frames on completed handlers; never name a test cfg like a game cfg (`port/shots/` uses `shot_`); `g_gametype 0 +devmap` needs `finishloadingscreen`; `cmake/utils/metallib.cmake` gets the shader list joined with `|`.
+- Session 2's gotchas still apply: the renderer's `vid_restart` is queued after pending cfg commands; `screencapture` has no permission (use the in-game `screenshot`); a fullscreen `vid_restart` takes seconds; HiDPI input on 2× displays is untested (with `r_allowResize 1`, `sdl_input.c`'s `SDL_WINDOWEVENT_RESIZED` compares points with pixels and would `vid_restart` repeatedly, relative mouse deltas are in points while the UI cursor is in pixels, and `SDL_WarpMouseInWindow(vidWidth / 2, ...)` expects points).
 - Session 1 gotchas still apply: stale PID files block on an "Abnormal Exit" dialog (`run.sh` cleans them); `xctrace --launch` is unreliable; don't edit a running bash script; upstream's `.gitignore` `build*` rule; `s_initsound 0` crashes; the upstream launchers don't work on macOS; use `sv_maxclients` ≥ 2 for scripted map loads; `glconfig_t` is ABI; overbright depends on fullscreen + hardware gamma in GL1.
 
-Open bugs: none known. Untested: HiDPI on a 2× display, DDS/BC texture uploads (no tested map loads a .dds), `r_swapInterval 1` on Metal since 2a, cinematics (`RE_StretchRaw`).
+Open bugs: none known in the renderer. Outside it: the local map-load crash above (game code, upstream). Untested: HiDPI input, DDS/BC uploads (no map that loads uses a .dds), cinematics (`RE_StretchRaw`), swipes at run time.

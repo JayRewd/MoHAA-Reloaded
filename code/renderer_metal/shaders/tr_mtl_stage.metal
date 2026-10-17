@@ -10,6 +10,11 @@
 // are sampled, and whether the shader can discard (alpha test; a discard in every pipeline would cost hidden
 // surface removal on opaque surfaces). Texenv modes, the alpha function and fog are uniform branches, so the
 // number of pipelines (and first-use compiles) stays small.
+// Measured side effect: hidden surface removal breaks exact depth ties between triangles of one draw
+// differently from GL1 on Apple's GL (which behaves like a pipeline that can discard). So models with
+// coincident faces (static models, the view weapon, stitched terrain) differ from GL1 by a few levels in up
+// to ~2500 edge pixels of a 1280x720 view. With a discard in every pipeline the fixed views (port/shots)
+// matched GL1 to 2-24 pixels; not worth the GPU cost.
 //
 // Keep the structs in sync with tr_mtl.m.
 
@@ -24,7 +29,7 @@ constant bool mb_tex1 = ( mb_texMask & 2u ) != 0u;
 
 struct MbVSUniforms
 {
-	float4x4	mvp;			// clip z already remapped to Metal's [0, w]
+	float4x4	mvp;			// projection * modelview (GL clip space)
 	float4		clipPlane;		// object space; (0,0,0,1) when the clip plane is off
 	float4		eyeZ;			// modelview row 2: eye-space z = dot(eyeZ, position)
 	float4		color;			// constant color when the color array is off
@@ -116,6 +121,7 @@ vertex MbStageOut mb_stage_vs( uint vid [[vertex_id]],
 	out.tc1 = u.stride.w ? float2( *(device const packed_float2 *)( ring + u.offset.w + vid * u.stride.w ) ) : u.texCoord.zw;
 
 	out.position = u.mvp * pos;
+	out.position.z = ( out.position.z + out.position.w ) * 0.5f;	// GL clip z [-w, w] -> Metal [0, w]
 	out.eyeZ = dot( u.eyeZ, pos );
 	out.clip[0] = dot( u.clipPlane, pos );
 	return out;

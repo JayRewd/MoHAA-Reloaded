@@ -1862,20 +1862,17 @@ void mbPopMatrix( void )
 /*
 ** MB_UpdateTransform
 **
-** mvp = remap * projection * modelview, with remap taking GL clip z [-w, w] to Metal's [0, w]. The clip
-** plane goes to object space so the shader needs one dot product.
+** mvp = projection * modelview; the shader takes GL clip z [-w, w] to Metal's [0, w] after the multiply.
+** Folding the remap into the matrix rounds depth differently from GL1 on Apple's GL, so z-fighting where
+** models touch the world came out differently (the fixed views: 281 pixels -> 1 on a model standing on a floor).
+** The clip plane goes to object space so the shader needs one dot product.
 */
 static void MB_UpdateTransform( void )
 {
 	const float *mv = mb_modelview[mb_modelviewDepth];
-	float proj[16];
 	int c;
 
-	memcpy( proj, mb_projection[mb_projectionDepth], sizeof( proj ) );
-	for ( c = 0; c < 4; c++ ) {
-		proj[c * 4 + 2] = 0.5f * ( proj[c * 4 + 2] + proj[c * 4 + 3] );
-	}
-	MB_MultiplyMatrix( proj, mv, mb_vsu.mvp );
+	MB_MultiplyMatrix( mb_projection[mb_projectionDepth], mv, mb_vsu.mvp );
 
 	mb_vsu.eyeZ[0] = mv[2];
 	mb_vsu.eyeZ[1] = mv[6];
