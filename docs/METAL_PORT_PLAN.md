@@ -117,6 +117,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
 4. **Shaders: offline .metallib.** CMake compiles the hand-written `.metal` files into one metallib at build time with the read-only mounted Metal Toolchain. At run time an `MTLBinaryArchive` pipeline cache avoids compile hitches.
 5. **Push: yes.** Push `metal` to origin at the end of every phase (recorded in CLAUDE.md).
 6. **Lowest input latency and overhead** (asked by the user after the plan was written): a standing requirement next to the Goal. See §4b.
+7. **Client timing redesign: both parts approved** (2026-10-16): precise frame pacing as the default, and an optional mode with separate command and render clocks that the user tests online before it can become the default. Planned for Phase 5 (§4b). No VRR work (the user isn't interested).
 
 ### 3.2 Technical decisions (session 1; revisit only with a reason, tell the user if one changes)
 - **renderer_metal starts as a copy of renderergl1** (`code/renderer_metal/`, front end unchanged), with every qgl call replaced by a small GL-free backend API (`tr_mtl.h`, C) that mirrors GL1's state model, as in the Vulkan port. Keeps visual parity, keeps upstream renderer fixes portable (by hand, file for file), and lets GL1 run side by side for A/B until Phase 4. GL-isms are removed later where it pays (Phase 5).
@@ -200,7 +201,10 @@ mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_Send
 - **Phase 5 (performance and latency):**
   - tune frames in flight / drawable count with the probe;
   - **raw mouse input via GCMouse** (GameController framework: unaccelerated HID deltas from a high-frequency handler, accumulated off the main thread and read at `IN_Frame`), usable while SDL still owns the window. Pulled ahead of Phase 6 because it's the biggest input-path win; verify first whether SDL's relative mode on macOS applies pointer acceleration;
-  - µs-precise frame limiter (sleep with `mach_wait_until`, then a short spin) for exact `com_maxfps` pacing with low jitter. **User OK needed** (rule 7);
+  - **Client timing redesign (approved by the user 2026-10-16, both parts):**
+    1. **Precise pacing, the default.** A µs-precise frame limiter (sleep with `mach_wait_until`, then a short spin for the last ~100 µs) so `com_maxfps` is hit exactly with no oversleep jitter: 250 → every frame 4.000 ms. Commands, `serverTime` and `msec` stay whole milliseconds, so the server sees the same stream as before, only more regular. First measure today's jitter (frame-time histogram at `com_maxfps 250`), then compare.
+    2. **Decoupled command and render clocks, an optional mode** (cvar, off by default until the user has tested it online). Usercmds are created on their own exact integer-ms schedule (e.g. every 4 ms, a packet every 2nd command = 125/s), independent of rendering. Rendering runs at any rate (uncapped or any cap, not just divisors of 1000), and every rendered frame uses the newest mouse input for the view. Touches `client/cl_input.cpp` (`CL_CreateCmd`/`CL_SendCmd`/`CL_ReadyToSendPacket`), `cl_cgame.cpp` timing, and cgame prediction of the in-progress command. **Must prove** with packet/command histograms that the server receives a stream identical to a steady 250 fps / 125 packet client (same command lengths, same packet spacing, same bundling) before the user tests it online.
+    The user isn't interested in VRR, so no VRR-specific work.
   - `NSActivityLatencyCritical` / QoS / Game Mode measured on and off;
   - **audio latency:** openal-soft period/refresh (`ALC_REFRESH`, period size) tuned and measured (footsteps matter online).
 - **Phase 6:** native AppKit input replaces SDL entirely (keyboard events, text input, window); compare with the probe.
@@ -264,7 +268,7 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
   - The build passes, the bench is unchanged, and `otool -L`/`nm` show no OpenGL.
 
 ### Phase 5: Performance and input latency. **Status: not started.**
-- Latency work from §4b (frames-in-flight tuning, GCMouse raw input, precise limiter with the user's OK, activity/QoS/Game Mode, audio latency), measured with the latency probe.
+- Latency work from §4b (frames-in-flight tuning, GCMouse raw input, the client timing redesign: precise pacing by default + the optional decoupled command/render mode, activity/QoS/Game Mode, audio latency), measured with the latency probe.
 - Measure first (bench + `trace` + `sample`/Time Profiler), one change at a time, each recorded here with before/after numbers. Candidates:
   - Static world geometry in GPU-resident buffers (no per-frame re-tessellation/copy).
   - Batching by shader+lightmap; sort keys to minimize PSO/state changes; fewer render passes.
