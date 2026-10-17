@@ -13,7 +13,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
 | 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d (the user's look, online smoke test) waits until the user is back |
 | 4 | Delete OpenGL entirely | **Done** (session 9, before 3d: the user was away). GL1 lives on only as the `gl` reference flavor (an export of c9dddadd) for screenshot and bench comparisons |
-| 5 | Performance and input latency | Not started |
+| 5 | Performance and input latency | **In progress:** 5a (session 10, the user away: the renderer's own frame cost) |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
 | 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | Not started |
 
@@ -709,7 +709,24 @@ Plan (session 1):
   - `grep -rniE "qgl|opengl|SDL_GL_|GL_[A-Z0-9_]+|glimp" code cmake` finds nothing except documented exceptions (struct/cvar names kept for compatibility).
   - The build passes, the bench is unchanged, and `otool -L`/`nm` show no OpenGL.
 
-### Phase 5: Performance and input latency. **Status: not started.**
+### Phase 5: Performance and input latency. **Status: in progress (5a: session 10, 2026-10-17).**
+Session 10 result (5a, the renderer's own frame cost; the user away, so nothing that changes frame pacing, usercmd timing or gameplay feel):
+- **Before/after tool:** `port/build.sh metalref` builds the last commit (or `METAL_REF=<ref>`) from a `git archive` export into `build.noindex/metalref-install`, so `port/bench.sh run metalref` / `OMM_FLAVOR=metalref port/shot.sh …` give the "before" in the same sitting as the work tree's "after".
+- **Every change so far is bit-identical by construction** (same expressions in the same order per vertex: clang's `-ffp-contract=on` fuses `a + b*c` per expression in the front end, so restructured loops round the same), and checked with a temporary A/B build that runs the old and the new code on every surface and compares the bytes (not committed). The fixed views are then compared against the saved Metal baseline (`build.noindex/shots/base-s9/`, session 9's final shots) as well as GL1: only the views that vary from run to run differ.
+- **Profile before any change** (screen unlocked; bench GL1 0.896 / 0.887 / 0.895, Metal 0.402 / 0.418 / 0.419 ms work):
+  - GPU (`port/bench.sh trace metal`): 0.099 ms GPU per game frame, 9.9% utilization. **The frame is CPU-bound.**
+  - CPU (`sample` of the main thread over a looping timedemo, 20 s ≈ 13700 frames, demo reloads left out; xctrace Time Profiler gives the same ranking, but can't unwind through cgame.dylib, so its shares are skewed). ms per frame under `sample` (it inflates the bench's 0.41 to ~0.45):
+    | Where | ms/frame |
+    |---|---|
+    | `RB_Light_Real` (per-vertex sphere lighting of models, CPU) | **0.112** |
+    | `RB_SkelMesh` (CPU skinning + the LOD index remap) | 0.056 |
+    | front end `R_RenderView` (world 0.027, skeletal surfaces 0.014, sort 0.009) | 0.051 |
+    | cgame (not renderer code) | 0.041 |
+    | Metal driver (AGX + IOGPU + objc) | 0.037 |
+    | ring copies and other `memmove` | 0.024 |
+    | `RB_SurfaceFace` 0.011, `RB_Sphere_SetupEntity` (sun traces) 0.010, `RB_StaticMesh` 0.007, UI/2D ~0.02 | |
+  - `RB_Light_Real` per frame: ~45 calls, ~9000 vertices, ~40000 vertex × light terms, 95% of them directional lights (the sphere's lights folded to directions), 4.5 lights per vertex on average. The vertex-by-vertex loop with a `switch` per light and a data-dependent branch per term, built with `-fno-strict-aliasing` (every byte store forces the light data to be reloaded), cost ~3 ns per term.
+- **Change 1: `RB_Light_Real` goes light by light** (`tr_sphere_shade.cpp`, the multi-light case). The light is copied to a local, the `switch` runs once per light, and each light loops over all vertexes into a static per-vertex accumulator; the directional term is branch-free (`fDot = fDot > 0 ? fDot : 0`) and clang vectorizes it 4 vertices wide (`ld4` normals, `fmaxnm`, `fmla`, `st3`). Each vertex still adds its lights in the original order with the same expressions: **bit-identical** (A/B build: 0 of 83 MB of colors differ over the whole bench, 0 on m2l1). Bench, same sitting, screen unlocked: before (metalref) **0.410 / 0.412 / 0.412** and 0.426 / 0.417 ms work, after **0.319 / 0.327 / 0.328** and 0.332 / 0.329 ms (**−0.09 ms, −22%**); GL1 in the sitting 0.921 / 0.917 / 0.910. Fixed views: identical to the Metal baseline except the run-to-run ones (dm6 view 8's weapon-bar highlight, dm5's snow, dm6fx's firing and grenade views 4–7, m2l1 view 0's 0–17 pixels, see Gotchas); against GL1 the same numbers as session 9 (dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437; dm5 1746 / 1358 / 781 / 680; dm6fx 0 / 4 / 605; m2l1 4254 / 753; dm4 843 / 1694 / 323 / 521; obj3 11389 / 16 / 14151).
 - Latency work from §4b (frames-in-flight tuning, GCMouse raw input, the client timing redesign: precise pacing by default + the optional decoupled command/render mode + the percentile cap suggestion + low-latency vsync, activity/QoS/Game Mode, audio latency), measured with the latency probe.
 - Measure first (bench + `trace` + `sample`/Time Profiler), one change at a time, each recorded here with before/after numbers. Candidates:
   - Static world geometry in GPU-resident buffers (no per-frame re-tessellation/copy).

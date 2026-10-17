@@ -415,66 +415,93 @@ void RB_Light_Real(unsigned char *colors)
     }
 
     if (backEnd.currentSphere->numRealLights != 1) {
-        normal = (float *)tess.normal;
-        xyz    = (float *)tess.xyz;
+        //
+        // Light by light over all vertexes, not vertex by vertex: the light type is switched on once per light,
+        // and directional lights (nearly all of them) add their term without a branch, so the loop vectorizes.
+        // Every vertex still adds its lights in the same order with the same expressions, so the colors are
+        // bit-identical to the vertex-by-vertex loop. The light is copied first: stores can't alias it then.
+        //
+        static vec3_t   lightColors[SHADER_MAX_VERTEXES];
+        const int       numVertexes = tess.numVertexes;
+        const int       numLights   = backEnd.currentSphere->numRealLights;
+        reallightinfo_t light;
+        int             ambient[3];
 
-        for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
-            colorout[0] = colorout[1] = colorout[2] = 0;
+        memset(lightColors, 0, sizeof(lightColors[0]) * numVertexes);
 
-            for (j = 0; j < backEnd.currentSphere->numRealLights; j++) {
-                float fDistSquared;
-                float fProjSquared;
-                float fMaxIntensity;
+        for (j = 0; j < numLights; j++) {
+            light = backEnd.currentSphere->light[j];
 
-                pLight = &backEnd.currentSphere->light[j];
+            normal = (float *)tess.normal;
+            xyz    = (float *)tess.xyz;
 
-                switch (pLight->eType) {
-                case LIGHT_DIRECTIONAL:
-                    fDot = DotProduct(pLight->vDirection, normal);
+            switch (light.eType) {
+            case LIGHT_DIRECTIONAL:
+                for (i = 0; i < numVertexes; i++, normal += 4) {
+                    fDot = DotProduct(light.vDirection, normal);
+                    fDot = fDot > 0 ? fDot : 0;
+                    VectorMA(lightColors[i], fDot, light.color, lightColors[i]);
+                }
+                break;
+            case LIGHT_SPOT:
+                for (i = 0; i < numVertexes; i++, xyz += 4, normal += 4) {
+                    float fDistSquared;
+                    float fProjSquared;
+                    float fMaxIntensity;
+
+                    fDot = DotProduct(light.vDirection, normal);
                     if (fDot > 0) {
-                        VectorMA(colorout, fDot, pLight->color, colorout);
-                    }
-                    break;
-                case LIGHT_SPOT:
-                    fDot = DotProduct(pLight->vDirection, normal);
-                    if (fDot > 0) {
-                        VectorSubtract(pLight->vOrigin, xyz, v);
+                        VectorSubtract(light.vOrigin, xyz, v);
 
-                        fProjSquared  = Square(DotProduct(v, pLight->vDirection));
+                        fProjSquared  = Square(DotProduct(v, light.vDirection));
                         fDistSquared  = VectorLengthSquared(v);
-                        fMaxIntensity = (pLight->fSpotConst - fDistSquared / fProjSquared) * pLight->fSpotScale;
+                        fMaxIntensity = (light.fSpotConst - fDistSquared / fProjSquared) * light.fSpotScale;
                         if (fMaxIntensity > 0) {
                             fDot /= fDistSquared;
                             if (fMaxIntensity < 1) {
                                 fDot *= fMaxIntensity;
                             }
 
-                            VectorMA(colorout, fDot, pLight->color, colorout);
+                            VectorMA(lightColors[i], fDot, light.color, lightColors[i]);
                         }
                     }
-                    break;
-                case LIGHT_SPOT_FAST:
-                    fDot = DotProduct(pLight->vDirection, normal);
+                }
+                break;
+            case LIGHT_SPOT_FAST:
+                for (i = 0; i < numVertexes; i++, xyz += 4, normal += 4) {
+                    float fDistSquared;
+
+                    fDot = DotProduct(light.vDirection, normal);
                     if (fDot > 0) {
-                        VectorSubtract(pLight->vOrigin, xyz, v);
+                        VectorSubtract(light.vOrigin, xyz, v);
                         fDistSquared = VectorLengthSquared(v);
-                        VectorMA(colorout, fDot / fDistSquared, pLight->color, colorout);
+                        VectorMA(lightColors[i], fDot / fDistSquared, light.color, lightColors[i]);
                     }
-                    break;
-                case LIGHT_POINT:
-                    VectorSubtract(pLight->vOrigin, xyz, v);
+                }
+                break;
+            case LIGHT_POINT:
+                for (i = 0; i < numVertexes; i++, xyz += 4, normal += 4) {
+                    float fDistSquared;
+
+                    VectorSubtract(light.vOrigin, xyz, v);
                     fDot = DotProduct(v, normal);
                     if (fDot > 0) {
                         fDistSquared = VectorLengthSquared(v);
-                        VectorMA(colorout, fDot / fDistSquared, pLight->color, colorout);
+                        VectorMA(lightColors[i], fDot / fDistSquared, light.color, lightColors[i]);
                     }
-                    break;
                 }
+                break;
             }
+        }
 
-            color[0] = Q_clamp_int((int)colorout[0] + backEnd.currentSphere->ambient.level[0], 0, 255);
-            color[1] = Q_clamp_int((int)colorout[1] + backEnd.currentSphere->ambient.level[1], 0, 255);
-            color[2] = Q_clamp_int((int)colorout[2] + backEnd.currentSphere->ambient.level[2], 0, 255);
+        ambient[0] = backEnd.currentSphere->ambient.level[0];
+        ambient[1] = backEnd.currentSphere->ambient.level[1];
+        ambient[2] = backEnd.currentSphere->ambient.level[2];
+
+        for (i = 0; i < numVertexes; i++, color += 4) {
+            color[0] = Q_clamp_int((int)lightColors[i][0] + ambient[0], 0, 255);
+            color[1] = Q_clamp_int((int)lightColors[i][1] + ambient[1], 0, 255);
+            color[2] = Q_clamp_int((int)lightColors[i][2] + ambient[2], 0, 255);
             color[3] = 0xff;
         }
     } else {
