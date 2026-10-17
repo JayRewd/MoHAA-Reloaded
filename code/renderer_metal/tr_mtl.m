@@ -396,6 +396,13 @@ static int					mb_numSkinCopies;
 static uint64_t				mb_skinCopySerial;
 static unsigned				mb_skinCopyGeneration, mb_skinCopyScene;
 
+// static vertex data (mbStatic*: the world's faces)
+#define MB_STATIC_BUFFER_SIZE	( 1024 * 1024 )			// to start with; doubled when full
+#define MB_STATIC_BUFFER_MAX	( 256 * 1024 * 1024 )
+static id<MTLBuffer>		mb_staticBuffer;			// replaced by a bigger copy when full
+static NSUInteger			mb_staticUsed;
+static qboolean				mb_staticArrays;			// array pointers are offsets into mb_staticBuffer
+
 /*
 =============================================================
 
@@ -1705,6 +1712,10 @@ void mbShutdown( void )
 	mb_statGPUFrames = 0;
 	mb_statRingGrowths = 0;
 
+	mb_staticBuffer = nil;
+	mb_staticUsed = 0;
+	mb_staticArrays = qfalse;
+
 	// everything has completed: release the deferred objects and the textures
 	MB_ReleaseRetired( UINT64_MAX );
 	for ( i = 0; i < mb_numPooled; i++ ) {
@@ -2614,12 +2625,13 @@ static qboolean MB_PrepareDraw( void )
 	return qtrue;
 }
 
-// after the vertices were copied (the ring may have grown since MB_PrepareDraw)
-static void MB_BindVertices( void )
+// after the vertices were copied (the ring may have grown since MB_PrepareDraw); streams: the buffer the
+// stream offsets point into (the ring, or the static buffer)
+static void MB_BindVertices( id<MTLBuffer> streams )
 {
-	if ( mb_encRing != mb_ring ) {
-		[mb_enc setVertexBuffer:mb_ring offset:0 atIndex:0];
-		mb_encRing = mb_ring;
+	if ( mb_encRing != streams ) {
+		[mb_enc setVertexBuffer:streams offset:0 atIndex:0];
+		mb_encRing = streams;
 	}
 	if ( mb_skinDraw && mb_encSkin != mb_skinBuffer ) {
 		[mb_enc setVertexBuffer:mb_skinBuffer offset:0 atIndex:2];
@@ -3470,6 +3482,40 @@ static byte *MB_StreamArrays( int numVertexes, NSUInteger extraBytes, uint32_t *
 	return base + total;
 }
 
+/*
+** MB_DrawStaticElements
+**
+** mbDrawElements with the arrays in the static buffer: only the indices are copied.
+*/
+static void MB_DrawStaticElements( int mode, int count, const void *indices )
+{
+	const mbArray_t *arrays[4];
+	uint32_t indexOffset;
+	int i;
+
+	arrays[0] = &mb_vertexArray;
+	arrays[1] = ( mb_colorArray.enabled && mb_colorArray.pointer ) ? &mb_colorArray : NULL;
+	arrays[2] = ( ( mb_texMask & 1 ) && mb_units[0].texCoords.enabled && mb_units[0].texCoords.pointer ) ? &mb_units[0].texCoords : NULL;
+	arrays[3] = ( ( mb_texMask & 2 ) && mb_units[1].texCoords.enabled && mb_units[1].texCoords.pointer ) ? &mb_units[1].texCoords : NULL;
+
+	for ( i = 0; i < 4; i++ ) {
+		if ( arrays[i] ) {
+			mb_vsu.offset[i] = (uint32_t)(uintptr_t)arrays[i]->pointer;
+			mb_vsu.stride[i] = arrays[i]->stride;
+		} else {
+			mb_vsu.stride[i] = 0;
+		}
+	}
+	mb_vsu.posSize = mb_vertexArray.size;
+	mb_vsu.colorFloat = mb_colorArray.type == MB_FLOAT;
+
+	memcpy( MB_RingAlloc( (NSUInteger)count * 4, &indexOffset ), indices, (size_t)count * 4 );
+
+	MB_BindVertices( mb_staticBuffer );
+	[mb_enc drawIndexedPrimitives:MB_PrimitiveType( mode ) indexCount:count indexType:MTLIndexTypeUInt32
+		indexBuffer:mb_ring indexBufferOffset:indexOffset];
+}
+
 void mbDrawElements( int mode, int count, int type, const void *indices )
 {
 	int numVertexes, i;
@@ -3480,6 +3526,10 @@ void mbDrawElements( int mode, int count, int type, const void *indices )
 		return;
 	}
 	if ( !MB_PrepareDraw() ) {
+		return;
+	}
+	if ( mb_staticArrays ) {
+		MB_DrawStaticElements( mode, count, indices );
 		return;
 	}
 
@@ -3514,9 +3564,70 @@ void mbDrawElements( int mode, int count, int type, const void *indices )
 	}
 	memcpy( indexDst, indices, (size_t)count * 4 );
 
-	MB_BindVertices();
+	MB_BindVertices( mb_ring );
 	[mb_enc drawIndexedPrimitives:MB_PrimitiveType( mode ) indexCount:count indexType:MTLIndexTypeUInt32
 		indexBuffer:mb_ring indexBufferOffset:indexOffset];
+}
+
+/*
+=============================================================
+
+STATIC VERTEX DATA
+
+=============================================================
+*/
+
+int mbStaticData( const void *data, int bytes )
+{
+	// offset 0 stays unused: an array pointer of 0 would read as no array
+	NSUInteger start = ( ( mb_staticUsed ? mb_staticUsed : 16 ) + 15 ) & ~(NSUInteger)15;
+
+	if ( !mb_device || bytes <= 0 ) {
+		return -1;
+	}
+	if ( !mb_staticBuffer || start + bytes > mb_staticBuffer.length ) {
+		NSUInteger size = mb_staticBuffer ? mb_staticBuffer.length * 2 : MB_STATIC_BUFFER_SIZE;
+		id<MTLBuffer> buffer;
+
+		while ( size < start + bytes ) {
+			size *= 2;
+		}
+		if ( size > MB_STATIC_BUFFER_MAX ) {
+			return -1;
+		}
+		buffer = [mb_device newBufferWithLength:size options:MTLResourceStorageModeShared | MTLResourceHazardTrackingModeUntracked];
+		if ( !buffer ) {
+			return -1;
+		}
+		buffer.label = @"static vertex data";
+		if ( mb_staticBuffer ) {
+			// draws already recorded keep the old buffer until their frames are done
+			memcpy( buffer.contents, mb_staticBuffer.contents, mb_staticUsed );
+			MB_Retire( mb_staticBuffer );
+		}
+		mb_staticBuffer = buffer;
+	}
+
+	memcpy( (byte *)mb_staticBuffer.contents + start, data, (size_t)bytes );
+	mb_staticUsed = start + (NSUInteger)bytes;
+	return (int)start;
+}
+
+void mbStaticReset( void )
+{
+	MB_Retire( mb_staticBuffer );
+	mb_staticBuffer = nil;
+	mb_staticUsed = 0;
+	mb_staticArrays = qfalse;
+}
+
+qboolean mbStaticArrays( qboolean on )
+{
+	if ( on && !mb_staticBuffer ) {
+		return qfalse;
+	}
+	mb_staticArrays = on ? qtrue : qfalse;
+	return qtrue;
 }
 
 /*
@@ -3813,7 +3924,7 @@ void mbEnd( void )
 	mb_vsu.posSize = 4;
 	mb_vsu.colorFloat = 1;
 
-	MB_BindVertices();
+	MB_BindVertices( mb_ring );
 	if ( numIndexes ) {
 		[mb_enc drawIndexedPrimitives:prim indexCount:numIndexes indexType:MTLIndexTypeUInt32
 			indexBuffer:mb_ring indexBufferOffset:offset + (NSUInteger)n * sizeof( mbImmVertex_t )];

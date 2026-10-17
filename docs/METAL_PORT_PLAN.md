@@ -399,6 +399,12 @@ Added in session 11 (Phase 5a, GPU skinning; the user away, so the conservative 
 - **Bit-identical or not at all:** the GPU path covers only what it reproduces exactly: vertex-lit skeletal surfaces lit by `RB_Light_Real` without the cube map, or by a color function that doesn't read the vertexes. Everything else is materialized on the CPU with the old loops, so the CPU path is still the reference. `r_metalSkinning 0` (not archived) turns the GPU path off.
 - **The static skinning data is keyed by surface pointer** (renderer-side hash tables, `tr_model.cpp`), checked against `pVerts`/`numVerts`. It is dropped with the models: `RE_FreeModels`, `RE_BeginRegistration`, `RE_Shutdown`. Nothing in the shared TIKI structs changed (`tiki_shared.h` is used by the game modules).
 
+Added in session 12 (Phase 5a, GPU-resident world faces; the user away):
+- **Static vertex data works like a bound GL vertex buffer object** (`tr_mtl.h` `mbStaticData`/`mbStaticReset`/`mbStaticArrays`): while `mbStaticArrays( qtrue )` is on, the array pointers are byte offsets into one static `MTLBuffer` and the indexes count vertexes from there, so `mbDrawElements` copies only the indexes and binds the static buffer at vertex index 0. The shader (`mb_stage_vs`) is unchanged: it already reads every stream by offset and stride.
+- **The world's faces are uploaded verbatim** at the end of `RE_LoadWorldMap` (`R_UploadStaticFaces`): each face's `VERTEXSIZE` floats per vertex, as `ParseFace` left them (nothing changes them later), plus a 255 color per vertex. The lightmapped iterator's constant color (`tess.constantColor255`) is that block, not a constant: the shader reads the same bytes the same way, and no GL "current color" state changes.
+- **Same pattern as GPU skinning:** `RB_SurfaceFace` leaves the vertexes of a lightmapped batch in the buffer as jobs (it still writes the indexes, counted from the world's first face, and reserves the tess vertexes), and `RB_FaceMaterialize` fills them in and rewrites the indexes when anything needs them on the CPU after all: another iterator, a batch that isn't only static faces, dlights (`dlightBits` or a `dlightMap`), `r_primitives 1/3`, the debug views. The CPU path stays the reference.
+- `srfSurfaceFace_t` (renderer-private) got a `staticVertex` field, `world_t` the two offsets; the static data goes with the world (`R_StaticReset` in `RE_BeginRegistration` and `RE_Shutdown`). `r_metalStaticWorld` (not archived): 1 on, 0 off, 2 records the jobs and then always materializes them (tests `RB_FaceMaterialize`).
+
 ---
 
 ## 4. Architecture of renderer_metal
@@ -778,6 +784,20 @@ Session 11 result (5a continued, the user away): **skinning and sphere lighting 
   | front end `R_RenderView` (world 0.023, skeletal surfaces incl. animation 0.011) | 0.043 |
   | `mbEndFrame` | 0.0045 |
   | cgame and the rest of the client frame | the rest |
+
+Session 12 result (5a continued, the user away): **GPU-resident world faces**, bit-identical.
+- **Unlocked sitting first** (screen unlocked the whole session): Metal 0.307 (first run) / 0.260 / 0.236 and 0.241 / 0.234 / 0.248 ms work, GL1 0.905 / 0.891 / 0.909. **The ≤ 0.25 ms target holds unlocked too,** narrowly; unlocked runs scatter ±0.01 ms.
+- **Profile** (`sample`, looped timedemo, unlocked; 1093 samples in the backend of ~2400 frame-work samples): of the backend,
+  - draw submission (`RB_EndSurface` and below) ~45%: the AGX driver's per-draw state emission in `drawIndexedPrimitives` ~15% (fragment arguments, uniform loads, texture residency, scissor), the ring copies (`memmove`) ~7%, `MB_PrepareDraw`'s own checks small;
+  - per-frame fixed costs ~21%: `MB_BeginPass` (the command buffer and the scene encoder, at the first draw) 10%, `mbEndFrame` (commit, the final pass's encoder, present, the frame-slot wait) 11%;
+  - `RB_SkelMesh` 11%, `RB_SurfaceFace` 10%, `RB_Sphere_SetupEntity` 7%, `RB_StaticMesh` 6%, terrain 3%, the sky ~6%.
+  - ~58 draws and 94 KB of ring copies per frame (averaged over all frames, loading included). A world vertex cost 52 bytes of ring copies per draw: xyz, the constant 255 color array, and texcoord units 0 and 1 copied separately out of the one interleaved `tess.texCoords`, on top of `RB_SurfaceFace`'s copy into the tess.
+- **Tried and dropped: the vertex uniforms through the ring** (`setVertexBufferOffset` instead of a 176-byte `setVertexBytes` per draw): metalref 0.250 / 0.236 / 0.242 / 0.250 / 0.241 / 0.249, with it 0.247 / 0.245 / 0.246 / 0.248 / 0.247 / 0.246. No gain; reverted.
+- **Change: world faces drawn from a static vertex buffer** (§3.2 "Added in session 12"). Ring copies 93.7 → 68.5 KB per frame, same 58 draws.
+  - Bench, same sitting, screen unlocked: metalref (a5c035b8) **0.251 / 0.254 / 0.251** and 0.254 / 0.253 / 0.253, metal **0.243 / 0.247 / 0.239** and 0.245 / 0.243 / 0.249 ms work (**−0.008 ms, −3%**; every metal run below every metalref run); GL1 0.930 / 0.896 / 0.925.
+  - GPU (`port/bench.sh trace`, same sitting): metalref 0.098 / 0.104, metal 0.100 / 0.100 ms per game frame: unchanged (this sitting's GPU numbers run ~0.01 ms above session 11's).
+  - Fixed views (`port/shot.sh regress base-s9`, and again with `+set r_metalStaticWorld 2`, the materialize path): identical to the Metal baseline except the views that vary from run to run (dm6 view 8, 1998 px; dm5's snow, 28–64 px per capture; dm6fx views 4–7; m2l1 view 0, 10–17 px). Against GL1 the same numbers as sessions 9–11: dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437, dm6fx 0 / 4 / 605, m2l1 4253–4259 / 753, dm4 843 / 1694 / 323 / 521, obj3 11389 / 16 / 14151.
+  - `port/shot.sh regress <dir> [engine args…]` now passes the args to every Metal run.
 
 Plan (session 1):
 - Latency work from §4b (frames-in-flight tuning, GCMouse raw input, the client timing redesign: precise pacing by default + the optional decoupled command/render mode + the percentile cap suggestion + low-latency vsync, activity/QoS/Game Mode, audio latency), measured with the latency probe.

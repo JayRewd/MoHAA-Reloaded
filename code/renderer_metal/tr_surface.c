@@ -372,18 +372,120 @@ void RB_SurfaceBeam( void )
 
 /*
 ==============
+RB_SurfaceFaceVertexes
+
+The face's vertexes in the tess from firstVertex.
+==============
+*/
+static void RB_SurfaceFaceVertexes( srfSurfaceFace_t *surf, int firstVertex, int dlightBits ) {
+	int			i;
+	qboolean	needsNormal;
+	float		*v;
+	float		*normal;
+	int			ndx;
+	int			numPoints;
+
+	numPoints = surf->numPoints;
+
+	needsNormal = qfalse;
+	if (tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights) {
+		needsNormal = qtrue;
+	}
+
+	v = surf->points[0];
+
+	ndx = firstVertex;
+
+	if (needsNormal) {
+		normal = surf->plane.normal;
+		for ( i = 0, ndx = firstVertex; i < numPoints; i++, ndx++ ) {
+			VectorCopy( normal, tess.normal[ndx] );
+		}
+	}
+
+	if (tess.dlightMap)
+	{
+		for (i = 0, v = surf->points[0], ndx = firstVertex; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
+			VectorCopy(v, tess.xyz[ndx]);
+			tess.texCoords[ndx][0][0] = v[3];
+			tess.texCoords[ndx][0][1] = v[4];
+			tess.texCoords[ndx][1][0] = v[5] + surf->lightmapOffset[0];
+			tess.texCoords[ndx][1][1] = v[6] + surf->lightmapOffset[1];
+			*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
+			tess.vertexDlightBits[ndx] = dlightBits;
+		}
+	}
+	else
+	{
+		for (i = 0, v = surf->points[0], ndx = firstVertex; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
+			VectorCopy(v, tess.xyz[ndx]);
+			tess.texCoords[ndx][0][0] = v[3];
+			tess.texCoords[ndx][0][1] = v[4];
+			tess.texCoords[ndx][1][0] = v[5];
+			tess.texCoords[ndx][1][1] = v[6];
+			*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
+			tess.vertexDlightBits[ndx] = dlightBits;
+		}
+	}
+}
+
+/*
+==============
+RB_FaceStatic
+
+Whether the face's vertexes can stay in the static vertex buffer: only for the lightmapped iterator (it reads
+nothing else of them), and only while the faces left there hold every vertex of the batch. Anything that
+needs them on the CPU after all gets them from RB_FaceMaterialize.
+==============
+*/
+static qboolean RB_FaceStatic( const srfSurfaceFace_t *surf ) {
+	const faceJob_t	*last;
+
+	if ( !r_metalStaticWorld->integer || surf->staticVertex < 0 || !tr.world || tr.world->staticFaces <= 0
+		|| tess.currentStageIteratorFunc != RB_StageIteratorLightmappedMultitextureUnfogged || tess.dlightMap
+		|| ( r_primitives->integer != 0 && r_primitives->integer != 2 )
+		|| ( r_developer->integer && ( r_showtris->integer || r_shownormals->integer ) ) ) {
+		return qfalse;
+	}
+	if ( !tess.numFaceJobs ) {
+		return tess.numVertexes == 0;
+	}
+	last = &tess.faceJobs[tess.numFaceJobs - 1];
+	return tess.numFaceJobs < MAX_FACE_JOBS && tess.numVertexes == last->firstVertex + last->surface->numPoints;
+}
+
+/*
+==============
+RB_FaceMaterialize
+
+The CPU vertexes and indexes of the batch's static faces after all.
+==============
+*/
+void RB_FaceMaterialize( void ) {
+	const faceJob_t	*job;
+	unsigned		*indices, *tessIndexes;
+	int				i, j;
+
+	for ( j = 0, job = tess.faceJobs; j < tess.numFaceJobs; j++, job++ ) {
+		indices = ( unsigned * ) ( ( ( char  * ) job->surface ) + job->surface->ofsIndices );
+		tessIndexes = tess.indexes + job->firstIndex;
+		for ( i = job->surface->numIndices-1 ; i >= 0  ; i-- ) {
+			tessIndexes[i] = indices[i] + job->firstVertex;
+		}
+		RB_SurfaceFaceVertexes( job->surface, job->firstVertex, job->surface->dlightBits[backEnd.smpFrame] );
+	}
+	tess.numFaceJobs = 0;
+}
+
+/*
+==============
 RB_SurfaceFace
 ==============
 */
 void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	int			i;
-	qboolean	needsNormal;
 	unsigned	*indices, *tessIndexes;
-	float		*v;
-	float		*normal;
-	int			ndx;
 	int			Bob;
-	int			numPoints;
 	int			dlightBits;
 
 	RB_CHECKOVERFLOW( surf->numPoints, surf->numIndices );
@@ -399,55 +501,32 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 
 	Bob = tess.numVertexes;
 	tessIndexes = tess.indexes + tess.numIndexes;
+
+	if ( RB_FaceStatic( surf ) ) {
+		// the vertexes stay in the static buffer: the indexes count from the world's first face there, and
+		// the tess vertexes are only reserved
+		faceJob_t	*job = &tess.faceJobs[tess.numFaceJobs++];
+		int			base = surf->staticVertex;
+
+		for ( i = surf->numIndices-1 ; i >= 0  ; i-- ) {
+			tessIndexes[i] = indices[i] + base;
+		}
+		job->surface = surf;
+		job->firstVertex = Bob;
+		job->firstIndex = tess.numIndexes;
+
+		tess.numIndexes += surf->numIndices;
+		tess.numVertexes += surf->numPoints;
+		return;
+	}
+
 	for ( i = surf->numIndices-1 ; i >= 0  ; i-- ) {
 		tessIndexes[i] = indices[i] + Bob;
 	}
 
 	tess.numIndexes += surf->numIndices;
 
-	numPoints = surf->numPoints;
-
-	needsNormal = qfalse;
-	if (tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights) {
-		needsNormal = qtrue;
-	}
-
-	v = surf->points[0];
-
-	ndx = tess.numVertexes;
-
-	if (needsNormal) {
-		normal = surf->plane.normal;
-		for ( i = 0, ndx = tess.numVertexes; i < numPoints; i++, ndx++ ) {
-			VectorCopy( normal, tess.normal[ndx] );
-		}
-	}
-
-	if (tess.dlightMap)
-	{
-		for (i = 0, v = surf->points[0], ndx = tess.numVertexes; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
-			VectorCopy(v, tess.xyz[ndx]);
-			tess.texCoords[ndx][0][0] = v[3];
-			tess.texCoords[ndx][0][1] = v[4];
-			tess.texCoords[ndx][1][0] = v[5] + surf->lightmapOffset[0];
-			tess.texCoords[ndx][1][1] = v[6] + surf->lightmapOffset[1];
-			*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
-			tess.vertexDlightBits[ndx] = dlightBits;
-		}
-	}
-	else
-	{
-		for (i = 0, v = surf->points[0], ndx = tess.numVertexes; i < numPoints; i++, v += VERTEXSIZE, ndx++) {
-			VectorCopy(v, tess.xyz[ndx]);
-			tess.texCoords[ndx][0][0] = v[3];
-			tess.texCoords[ndx][0][1] = v[4];
-			tess.texCoords[ndx][1][0] = v[5];
-			tess.texCoords[ndx][1][1] = v[6];
-			*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
-			tess.vertexDlightBits[ndx] = dlightBits;
-		}
-	}
-
+	RB_SurfaceFaceVertexes( surf, tess.numVertexes, dlightBits );
 
 	tess.numVertexes += surf->numPoints;
 }

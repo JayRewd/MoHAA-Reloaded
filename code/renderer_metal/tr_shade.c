@@ -361,6 +361,7 @@ void RB_BeginSurface( shader_t *shader ) {
 	tess.numPasses = shader->numUnfoggedPasses;
 	tess.currentStageIteratorFunc = shader->optimalStageIteratorFunc;
 	tess.numSkinJobs = 0;
+	tess.numFaceJobs = 0;
 }
 
 /*
@@ -1710,8 +1711,33 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 
 void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	shaderCommands_t *input;
+	const void		*xyz, *colors, *st0, *st1;
+	int				stride;
+	qboolean		staticFaces;
 
 	input = &tess;
+
+	//
+	// world faces left in the static vertex buffer (RB_SurfaceFace): the arrays are offsets there, the face
+	// records and a 255 per vertex for the constant color
+	//
+	staticFaces = tess.numFaceJobs && mbStaticArrays( qtrue );
+	if ( staticFaces ) {
+		xyz = (const void *)(intptr_t)tr.world->staticFaces;
+		colors = (const void *)(intptr_t)tr.world->staticWhite;
+		st0 = (const void *)(intptr_t)( tr.world->staticFaces + 3 * sizeof( float ) );
+		st1 = (const void *)(intptr_t)( tr.world->staticFaces + 5 * sizeof( float ) );
+		stride = VERTEXSIZE * sizeof( float );
+	} else {
+		if ( tess.numFaceJobs ) {
+			RB_FaceMaterialize();
+		}
+		xyz = input->xyz;
+		colors = tess.constantColor255;
+		st0 = tess.texCoords[0][0];
+		st1 = tess.texCoords[0][1];
+		stride = 16;
+	}
 
 	//
 	// log this call
@@ -1731,7 +1757,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	// set color, pointers, and lock
 	//
 	R_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
-	mbVertexPointer( 3, MB_FLOAT, 16, input->xyz );
+	mbVertexPointer( 3, MB_FLOAT, stride, xyz );
 
 #ifdef REPLACE_MODE
 	mbDisableClientState( MB_COLOR_ARRAY );
@@ -1739,7 +1765,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	mbShadeModel( MB_FLAT );
 #else
 	mbEnableClientState( MB_COLOR_ARRAY );
-	mbColorPointer( 4, MB_UNSIGNED_BYTE, 0, tess.constantColor255 );
+	mbColorPointer( 4, MB_UNSIGNED_BYTE, 0, colors );
 #endif
 
 	//
@@ -1749,7 +1775,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 
 	mbEnableClientState( MB_TEXTURE_COORD_ARRAY );
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
-	mbTexCoordPointer( 2, MB_FLOAT, 16, tess.texCoords[0][0] );
+	mbTexCoordPointer( 2, MB_FLOAT, stride, st0 );
 
 	//
 	// configure second stage
@@ -1767,7 +1793,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 		R_BindAnimatedImage(&tess.xstages[0]->bundle[1]);
 	}
 	mbEnableClientState( MB_TEXTURE_COORD_ARRAY );
-	mbTexCoordPointer( 2, MB_FLOAT, 16, tess.texCoords[0][1] );
+	mbTexCoordPointer( 2, MB_FLOAT, stride, st1 );
 
 	//
 	// lock arrays
@@ -1776,6 +1802,9 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	MTLimp_LogComment( "glLockArraysEXT\n" );
 
 	R_DrawElements( input->numIndexes, input->indexes );
+	if ( staticFaces ) {
+		mbStaticArrays( qfalse );
+	}
 
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0
@@ -1831,6 +1860,20 @@ void RB_EndSurface( void ) {
 		RB_SkinMaterialize();
 	}
 
+	// world faces left in the static vertex buffer: drawn from there by the lightmapped iterator if they are the
+	// whole batch and nothing else reads the vertexes (dlights, the debug views, r_primitives 1/3)
+	if ( tess.numFaceJobs ) {
+		const faceJob_t *last = &tess.faceJobs[tess.numFaceJobs - 1];
+
+		if ( tess.currentStageIteratorFunc != RB_StageIteratorLightmappedMultitextureUnfogged || tess.shader == tr.shadowShader
+			|| last->firstVertex + last->surface->numPoints != tess.numVertexes || tess.dlightBits || tess.dlightMap
+			|| r_metalStaticWorld->integer == 2
+			|| ( r_primitives->integer != 0 && r_primitives->integer != 2 )
+			|| ( r_developer->integer && ( r_showtris->integer || r_shownormals->integer ) ) ) {
+			RB_FaceMaterialize();
+		}
+	}
+
 	if ( tess.shader == tr.shadowShader ) {
 		RB_ComputeShadowVolume();
 		return;
@@ -1870,6 +1913,7 @@ void RB_EndSurface( void ) {
 	// clear shader so we can tell we don't have any unclosed surfaces
 	tess.numIndexes = 0;
 	tess.numSkinJobs = 0;
+	tess.numFaceJobs = 0;
 
 	MTLimp_LogComment( "----------\n" );
 }

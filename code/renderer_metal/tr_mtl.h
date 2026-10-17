@@ -294,6 +294,17 @@ void	mbDrawElements( int mode, int count, int type, const void *indices );
 void	mbArrayElement( int i );
 
 //
+// Static vertex data (the world's faces): copied once into a GPU buffer and kept until mbStaticReset. While
+// mbStaticArrays( qtrue ) is in effect, the pointers given to mbVertexPointer, mbColorPointer and mbTexCoordPointer
+// are byte offsets into that buffer (like arrays in a bound GL vertex buffer object) and the indices of
+// mbDrawElements count vertexes from there, so a draw copies only its indices. mbArrayElement and the immediate
+// mode don't read the static buffer.
+//
+int			mbStaticData( const void *data, int bytes );	// -> byte offset (> 0, 16-byte aligned), -1 if it doesn't fit
+void		mbStaticReset( void );						// every offset is dropped (the world was freed)
+qboolean	mbStaticArrays( qboolean on );				// qfalse: there is no static data, nothing changed
+
+//
 // GPU skinning of skeletal (TIKI) surfaces. Static data (a surface's vertex records, a mesh's bone map) is copied
 // once into a GPU buffer; a draw made between mbSkinBegin and mbSkinEnd then computes positions, texcoord 0 and,
 // with lights, the colors in the vertex shader (tr_mtl_stage.metal mb_skin_vs) instead of reading the vertex,

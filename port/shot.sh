@@ -15,7 +15,7 @@
 #   port/shot.sh views <name>  the per-view diffs again (after re-running one renderer with `fixed`)
 #   port/shot.sh savebase [dir]   keep the current Metal captures of the six fixed views (dm6 dm5 dm6fx m2l1 dm4 obj3)
 #                              in build.noindex/shots/<dir> (default base) as the baseline for regress
-#   port/shot.sh regress [dir]    the six fixed views on Metal only: per-view diffs against GL1, and every capture
+#   port/shot.sh regress [dir] [engine args...]   the six fixed views on Metal only: per-view diffs against GL1, and every capture
 #                              against the saved Metal baseline (for changes meant to be pixel-identical; ~8 min)
 # Examples:
 #   port/shot.sh metal menu shot_menu.cfg && port/shot.sh opengl1 menu shot_menu.cfg && port/shot.sh diff menu
@@ -80,10 +80,12 @@ if [ "${1:-}" = regress ]; then
 	# The six fixed views on Metal only (GL1's side never changes), diffed against GL1 per view and, capture by
 	# capture, against a saved Metal baseline: after a change meant to be pixel-identical, only the views that vary
 	# from run to run differ (dm6 view 8, dm5's snow, dm6fx views 4-7, m2l1 view 0 by up to ~17 pixels).
+	# Engine args after the baseline dir go to every Metal run (e.g. +set r_metalStaticWorld 2).
 	BASE="$OUT/${2:-base}"
+	EXTRA=("${@:3}")
 	for p in "dm6 shot_dm6.cfg" "dm5 shot_dm5.cfg" "dm6fx shot_dm6fx.cfg" "m2l1 shot_m2l1.cfg" "dm4 shot_dm4.cfg" "obj3 shot_obj3.cfg"; do
 		set -- $p
-		"$0" fixed metal "$1" "$2"
+		"$0" fixed metal "$1" "$2" ${EXTRA[@]+"${EXTRA[@]}"}
 		"$0" views "$1"
 		for f in "$OUT/$1"-metal-*.tga; do
 			printf 'vs %s %s: ' "${BASE##*/}" "$(basename "$f" .tga)"

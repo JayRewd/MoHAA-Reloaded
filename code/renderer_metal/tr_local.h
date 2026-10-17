@@ -842,6 +842,8 @@ typedef struct {
     vec3_t		lmVecs[2];
     vec3_t		lmInverseVecs[2];
 
+	int			staticVertex;	// its first vertex in the world's static vertex data (R_UploadStaticFaces), -1: none
+
 	// triangle definitions (no normals at points)
 	int			numPoints;
 	int			numIndices;
@@ -1124,6 +1126,11 @@ typedef struct {
 
 	byte		*novis;			// clusterBytes of 0xff
 	byte		*lighting;
+
+	// the faces' vertexes in the static vertex buffer (mbStaticData offsets, > 0; 0: not there):
+	// VERTEXSIZE floats per vertex, then a 255 color per vertex (R_UploadStaticFaces)
+	int			staticFaces;
+	int			staticWhite;
 } world_t;
 
 //======================================================================
@@ -1460,6 +1467,7 @@ extern	cvar_t	*r_drawterrain;
 extern	cvar_t	*r_drawsprites;
 extern	cvar_t	*r_drawspherelights;
 extern	cvar_t	*r_metalSkinning;
+extern	cvar_t	*r_metalStaticWorld;
 extern	cvar_t	*r_drawworld;			// disable/enable world rendering
 extern	cvar_t	*r_speeds;				// various levels of information display
 extern  cvar_t	*r_detailTextures;		// enables/disables detail texturing stages
@@ -1878,6 +1886,15 @@ typedef struct {
 	trRefEntity_t				*entity;
 } skinJob_t;
 
+// a world face whose vertexes RB_SurfaceFace left in the static vertex buffer (tr_surface.c)
+typedef struct {
+	srfSurfaceFace_t	*surface;
+	int					firstVertex;	// the tess vertexes it holds a place for
+	int					firstIndex;
+} faceJob_t;
+
+#define MAX_FACE_JOBS	( SHADER_MAX_VERTEXES / 3 )
+
 typedef struct shaderCommands_s 
 {
 	glIndex_t	indexes[SHADER_MAX_INDEXES] Q_ALIGN(16);
@@ -1912,6 +1929,11 @@ typedef struct shaderCommands_s
 	int			numSkinJobs;
 	skinJob_t	skinJobs[MB_SKIN_MAX_JOBS];
 	mbSkinJob_t	skinDraw[MB_SKIN_MAX_JOBS];
+
+	// GPU-resident world faces: the surfaces drawn from the static vertex buffer, in vertex order from vertex 0
+	// (RB_SurfaceFace; their indexes count from the start of the world's faces there)
+	int			numFaceJobs;
+	faceJob_t	faceJobs[MAX_FACE_JOBS];
 } shaderCommands_t;
 
 extern	shaderCommands_t	tess;
@@ -2224,6 +2246,9 @@ void RB_SkelMesh(skelSurfaceGame_t* sf);
 void RB_SkinMaterialize(void);
 int RB_SkinBegin(void);
 void R_SkinReset(void);
+
+void RB_FaceMaterialize( void );
+void R_StaticReset( void );
 void RB_StaticMesh(staticSurface_t* staticSurf);
 void RB_Static_BuildDLights();
 void R_InfoStaticModels_f(void);

@@ -643,6 +643,7 @@ static void ParseFace( dsurface_t *ds, drawVert_t *verts, msurface_t *surf, int 
 
     cv = ri.Hunk_Alloc( sfaceSize, h_dontcare );
     cv->surfaceType = SF_FACE;
+    cv->staticVertex = -1;
     cv->numPoints = numPoints;
     cv->numIndices = numIndexes;
     cv->ofsIndices = ofsIndexes;
@@ -2236,6 +2237,76 @@ void R_FreeLump(gamelump_t* lump)
 
 /*
 =================
+R_UploadStaticFaces
+
+The world's faces as they are (VERTEXSIZE floats per vertex) in the static vertex buffer, followed by a 255
+color per vertex (the lightmapped iterator's constant color): RB_SurfaceFace leaves their vertexes there.
+=================
+*/
+static void R_UploadStaticFaces( void ) {
+    srfSurfaceFace_t	*face;
+    byte				*data;
+    int					numVerts, bytes, offset;
+    int					i;
+
+    mbStaticReset();
+    s_worldData.staticFaces = 0;
+    s_worldData.staticWhite = 0;
+
+    numVerts = 0;
+    for ( i = 0; i < s_worldData.numsurfaces; i++ ) {
+        if ( *s_worldData.surfaces[i].data == SF_FACE ) {
+            numVerts += ( ( srfSurfaceFace_t * )s_worldData.surfaces[i].data )->numPoints;
+        }
+    }
+    if ( !numVerts ) {
+        return;
+    }
+
+    bytes = numVerts * ( VERTEXSIZE * sizeof( float ) + 4 );
+    data = ri.Hunk_AllocateTempMemory( bytes );
+
+    numVerts = 0;
+    for ( i = 0; i < s_worldData.numsurfaces; i++ ) {
+        if ( *s_worldData.surfaces[i].data == SF_FACE ) {
+            face = ( srfSurfaceFace_t * )s_worldData.surfaces[i].data;
+            face->staticVertex = numVerts;
+            Com_Memcpy( data + numVerts * VERTEXSIZE * sizeof( float ), face->points, face->numPoints * VERTEXSIZE * sizeof( float ) );
+            numVerts += face->numPoints;
+        }
+    }
+    Com_Memset( data + numVerts * VERTEXSIZE * sizeof( float ), 255, numVerts * 4 );
+
+    offset = mbStaticData( data, bytes );
+    ri.Hunk_FreeTempMemory( data );
+
+    if ( offset <= 0 ) {
+        for ( i = 0; i < s_worldData.numsurfaces; i++ ) {
+            if ( *s_worldData.surfaces[i].data == SF_FACE ) {
+                ( ( srfSurfaceFace_t * )s_worldData.surfaces[i].data )->staticVertex = -1;
+            }
+        }
+        return;
+    }
+    s_worldData.staticFaces = offset;
+    s_worldData.staticWhite = offset + numVerts * VERTEXSIZE * sizeof( float );
+}
+
+/*
+=================
+R_StaticReset
+
+The static vertex data goes with the world (RE_BeginRegistration clears the hunk).
+=================
+*/
+void R_StaticReset( void ) {
+    mbStaticReset();
+    s_worldData.staticFaces = 0;
+    s_worldData.staticWhite = 0;
+}
+
+/*
+=================
 RE_LoadWorldMap
 
 Called directly from cgame
@@ -2428,6 +2499,8 @@ void RE_LoadWorldMap( const char *name ) {
         g_nStaticModels = 0;
         g_nStaticModelIndices = 0;
     }
+
+    R_UploadStaticFaces();
 
     // only set tr.world now that we know the entire level has loaded properly
     tr.world = &s_worldData;
