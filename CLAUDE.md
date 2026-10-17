@@ -33,6 +33,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 ```bash
 source port/env.sh                 # every shell, first
 port/build.sh metal                # the game: Metal only, the renderer linked in (mounts the Metal Toolchain itself) -> build.noindex/metal-install (~40 s, arm64)
+port/build.sh metalref             # the Metal game at the last commit (METAL_REF=<ref> for another), the "before" of a before/after bench: port/bench.sh run metalref 3
 port/build.sh gl                   # the GL1 reference: the last commit with GL1 (c9dddadd), built from a git archive export -> build.noindex/gl-install
 port/run.sh metal +map dm/mohdm6   # run against the retail data; extra args are engine args (port/run.sh gl = the GL1 reference)
 port/bench.sh run metal 3          # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs (extra engine args after the run count)
@@ -41,6 +42,7 @@ port/bench.sh trace metal          # one traced timedemo: GPU utilization and GP
 port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1 = the GL1 reference), into build.noindex/shots
 port/shot.sh diff menu             # per-pixel difference GL1 vs Metal for every screenshot pair of that name
 port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): GL1 reference + Metal, per-view diffs
+port/shot.sh regress base-s9       # the six fixed views on Metal only: vs GL1 per view and vs a saved Metal baseline (port/shot.sh savebase <dir>)
 port/latency.sh metal win-250 20   # cl_latencyStats in dm/mohdm6 with 20 s of synthetic mouse (takes the mouse!); TRACE=1 checks it against the display
 port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
 ```
