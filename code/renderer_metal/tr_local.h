@@ -991,6 +991,7 @@ typedef struct cStaticModelUnpacked_s {
     float cull_radius;
     int iGridLighting;
     float lodpercentage[2];
+    qboolean staticVerts;   // its vertexes are in the world's static vertex data (R_UploadStaticModels)
 } cStaticModelUnpacked_t;
 
 extern	void (*rb_surfaceTable[SF_NUM_SURFACE_TYPES])(void *);
@@ -1131,7 +1132,16 @@ typedef struct {
 	// VERTEXSIZE floats per vertex, then a 255 color per vertex (R_UploadStaticFaces)
 	int			staticFaces;
 	int			staticWhite;
+	// the static models' vertexes there: a staticModelVert_t per static model color (R_UploadStaticModels)
+	int			staticModelVerts;
 } world_t;
+
+// a static model vertex in the static vertex buffer: what RB_StaticMesh and the vertex-lit iterator read of it
+typedef struct {
+	float		xyz[3];
+	float		st[2];
+	byte		color[4];
+} staticModelVert_t;
 
 //======================================================================
 
@@ -1886,14 +1896,19 @@ typedef struct {
 	trRefEntity_t				*entity;
 } skinJob_t;
 
-// a world face whose vertexes RB_SurfaceFace left in the static vertex buffer (tr_surface.c)
+// a surface whose vertexes are left in the static vertex buffer (RB_SurfaceFace, RB_StaticMesh); its indexes count
+// from staticBase there
 typedef struct {
-	srfSurfaceFace_t	*surface;
-	int					firstVertex;	// the tess vertexes it holds a place for
-	int					firstIndex;
-} faceJob_t;
+	void					*surface;		// srfSurfaceFace_t or staticSurface_t
+	cStaticModelUnpacked_t	*staticModel;	// the static model of a staticSurface_t, NULL for a face
+	int						firstVertex;	// the tess vertexes it holds a place for
+	int						numVertexes;
+	int						firstIndex;
+	int						numIndexes;
+	int						staticBase;
+} staticJob_t;
 
-#define MAX_FACE_JOBS	( SHADER_MAX_VERTEXES / 3 )
+#define MAX_STATIC_JOBS	( SHADER_MAX_VERTEXES / 3 )
 
 typedef struct shaderCommands_s 
 {
@@ -1930,10 +1945,10 @@ typedef struct shaderCommands_s
 	skinJob_t	skinJobs[MB_SKIN_MAX_JOBS];
 	mbSkinJob_t	skinDraw[MB_SKIN_MAX_JOBS];
 
-	// GPU-resident world faces: the surfaces drawn from the static vertex buffer, in vertex order from vertex 0
-	// (RB_SurfaceFace; their indexes count from the start of the world's faces there)
-	int			numFaceJobs;
-	faceJob_t	faceJobs[MAX_FACE_JOBS];
+	// GPU-resident static geometry: the surfaces drawn from the static vertex buffer, in vertex order from vertex 0;
+	// all faces (the lightmapped iterator) or all static model surfaces (the vertex-lit iterator)
+	int			numStaticJobs;
+	staticJob_t	staticJobs[MAX_STATIC_JOBS];
 } shaderCommands_t;
 
 extern	shaderCommands_t	tess;
@@ -2247,9 +2262,13 @@ void RB_SkinMaterialize(void);
 int RB_SkinBegin(void);
 void R_SkinReset(void);
 
-void RB_FaceMaterialize( void );
+qboolean RB_StaticJobsCover( void );
+qboolean RB_StaticGenericShader( void );
+void RB_StaticMaterialize( void );
 void R_StaticReset( void );
 void RB_StaticMesh(staticSurface_t* staticSurf);
+void RB_StaticMeshVertexes(staticSurface_t *staticSurf, cStaticModelUnpacked_t *staticModel, int baseVertex, int render_count);
+void R_UploadStaticModels(void);
 void RB_Static_BuildDLights();
 void R_InfoStaticModels_f(void);
 void R_PrintInfoStaticModels();

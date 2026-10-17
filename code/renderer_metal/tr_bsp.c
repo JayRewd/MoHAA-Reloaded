@@ -2252,6 +2252,7 @@ static void R_UploadStaticFaces( void ) {
     mbStaticReset();
     s_worldData.staticFaces = 0;
     s_worldData.staticWhite = 0;
+    s_worldData.staticModelVerts = 0;
 
     numVerts = 0;
     for ( i = 0; i < s_worldData.numsurfaces; i++ ) {
@@ -2303,6 +2304,7 @@ void R_StaticReset( void ) {
     mbStaticReset();
     s_worldData.staticFaces = 0;
     s_worldData.staticWhite = 0;
+    s_worldData.staticModelVerts = 0;
 }
 
 /*

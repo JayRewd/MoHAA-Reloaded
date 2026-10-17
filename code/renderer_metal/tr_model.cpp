@@ -1857,6 +1857,32 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
 RB_StaticMesh
 =============
 */
+/*
+=============
+RB_StaticMeshBase
+
+The static vertex buffer index of the surface's first vertex, if RB_StaticMesh can leave its vertexes there: only
+for the vertex-lit iterator or a generic one-stage shader that reads them as they are (RB_StaticGenericShader),
+and only while the surfaces left there hold every vertex of the batch (the iterator decides about the colors).
+-1: on the CPU.
+=============
+*/
+static int RB_StaticMeshBase(const staticSurface_t *staticSurf)
+{
+    const cStaticModelUnpacked_t *sm = backEnd.currentStaticModel;
+
+    if (!r_metalStaticWorld->integer || !sm->staticVerts || !tr.world || tr.world->staticModelVerts <= 0
+        || !backEndData->staticModelData || backEndData->staticModelData != tr.world->staticModelData
+        || (tess.currentStageIteratorFunc != RB_StageIteratorVertexLitTextureUnfogged
+            && (tess.currentStageIteratorFunc != RB_StageIteratorGeneric || !RB_StaticGenericShader()))
+        || (r_primitives->integer != 0 && r_primitives->integer != 2)
+        || (r_developer->integer && (r_showtris->integer || r_shownormals->integer))
+        || tess.numStaticJobs >= MAX_STATIC_JOBS || !RB_StaticJobsCover()) {
+        return -1;
+    }
+    return sm->firstVertexData / sizeof(color4ub_t) + staticSurf->ofsStaticData;
+}
+
 void RB_StaticMesh(staticSurface_t *staticSurf)
 {
     int                i, j;
@@ -1869,6 +1895,7 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
     skelIndex_t       *triangles;
     int                indexes;
     int                baseIndex, baseVertex;
+    int                staticBase, indexBase;
     short              collapse[1000];
 
     if (!r_drawstaticmodelpoly->integer) {
@@ -1949,11 +1976,17 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
     triangles    = surf->pTriangles;
     baseIndex    = tess.numIndexes;
     baseVertex   = tess.numVertexes;
+
+    // GPU-resident: the vertexes stay in the static buffer, the indexes count from the surface's first vertex
+    // there, and the tess vertexes are only reserved (RB_StaticMaterialize fills them in if needed after all)
+    staticBase = RB_StaticMeshBase(staticSurf);
+    indexBase  = staticBase >= 0 ? staticBase : baseVertex;
+
     tess.numVertexes += render_count;
 
     if (render_count == surf->numVerts) {
         for (j = 0; j < indexes; j++) {
-            tess.indexes[baseIndex + j] = baseVertex + triangles[j];
+            tess.indexes[baseIndex + j] = indexBase + triangles[j];
         }
 
         staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += indexes;
@@ -1973,14 +2006,43 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
                 break;
             }
 
-            tess.indexes[baseIndex + j]     = baseVertex + collapse[triangles[j]];
-            tess.indexes[baseIndex + j + 1] = baseVertex + collapse[triangles[j + 1]];
-            tess.indexes[baseIndex + j + 2] = baseVertex + collapse[triangles[j + 2]];
+            tess.indexes[baseIndex + j]     = indexBase + collapse[triangles[j]];
+            tess.indexes[baseIndex + j + 1] = indexBase + collapse[triangles[j + 1]];
+            tess.indexes[baseIndex + j + 2] = indexBase + collapse[triangles[j + 2]];
         }
 
         staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += j;
         tess.numIndexes += j;
     }
+
+    if (staticBase >= 0) {
+        staticJob_t *job = &tess.staticJobs[tess.numStaticJobs++];
+
+        job->surface     = staticSurf;
+        job->staticModel = backEnd.currentStaticModel;
+        job->firstVertex = baseVertex;
+        job->numVertexes = render_count;
+        job->firstIndex  = baseIndex;
+        job->numIndexes  = tess.numIndexes - baseIndex;
+        job->staticBase  = staticBase;
+    } else {
+        RB_StaticMeshVertexes(staticSurf, backEnd.currentStaticModel, baseVertex, render_count);
+    }
+
+    tess.vertexColorValid = qtrue;
+}
+
+/*
+=============
+RB_StaticMeshVertexes
+
+The surface's first render_count vertexes in the tess from baseVertex.
+=============
+*/
+void RB_StaticMeshVertexes(staticSurface_t *staticSurf, cStaticModelUnpacked_t *staticModel, int baseVertex, int render_count)
+{
+    skelSurfaceGame_t *surf = staticSurf->surface;
+    int                i, j;
 
     for (j = 0; j < render_count; j++) {
         Vector4Copy(surf->pStaticXyz[j], tess.xyz[baseVertex + j]);
@@ -1993,7 +2055,7 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
 
     if (backEndData->staticModelData) {
         const size_t offset =
-            backEnd.currentStaticModel->firstVertexData + staticSurf->ofsStaticData * sizeof(color4ub_t);
+            staticModel->firstVertexData + staticSurf->ofsStaticData * sizeof(color4ub_t);
         assert(offset < tr.world->numStaticModelData * sizeof(color4ub_t));
         assert(offset + render_count * sizeof(color4ub_t) <= tr.world->numStaticModelData * sizeof(color4ub_t));
 
@@ -2013,8 +2075,6 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
             tess.vertexColors[baseVertex + i][3] = 0xFF;
         }
     }
-
-    tess.vertexColorValid = qtrue;
 }
 
 /*

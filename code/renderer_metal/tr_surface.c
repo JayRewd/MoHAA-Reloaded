@@ -431,50 +431,65 @@ static void RB_SurfaceFaceVertexes( srfSurfaceFace_t *surf, int firstVertex, int
 
 /*
 ==============
-RB_FaceStatic
+RB_StaticJobsCover
 
-Whether the face's vertexes can stay in the static vertex buffer: only for the lightmapped iterator (it reads
-nothing else of them), and only while the faces left there hold every vertex of the batch. Anything that
-needs them on the CPU after all gets them from RB_FaceMaterialize.
+Whether the surfaces left in the static vertex buffer hold every vertex of the batch so far (they can only be
+drawn from there together).
 ==============
 */
-static qboolean RB_FaceStatic( const srfSurfaceFace_t *surf ) {
-	const faceJob_t	*last;
+qboolean RB_StaticJobsCover( void ) {
+	const staticJob_t	*last;
 
-	if ( !r_metalStaticWorld->integer || surf->staticVertex < 0 || !tr.world || tr.world->staticFaces <= 0
-		|| tess.currentStageIteratorFunc != RB_StageIteratorLightmappedMultitextureUnfogged || tess.dlightMap
-		|| ( r_primitives->integer != 0 && r_primitives->integer != 2 )
-		|| ( r_developer->integer && ( r_showtris->integer || r_shownormals->integer ) ) ) {
-		return qfalse;
-	}
-	if ( !tess.numFaceJobs ) {
+	if ( !tess.numStaticJobs ) {
 		return tess.numVertexes == 0;
 	}
-	last = &tess.faceJobs[tess.numFaceJobs - 1];
-	return tess.numFaceJobs < MAX_FACE_JOBS && tess.numVertexes == last->firstVertex + last->surface->numPoints;
+	last = &tess.staticJobs[tess.numStaticJobs - 1];
+	return tess.numVertexes == last->firstVertex + last->numVertexes;
 }
 
 /*
 ==============
-RB_FaceMaterialize
+RB_StaticMaterialize
 
-The CPU vertexes and indexes of the batch's static faces after all.
+The CPU vertexes and indexes of the batch's surfaces left in the static vertex buffer after all.
 ==============
 */
-void RB_FaceMaterialize( void ) {
-	const faceJob_t	*job;
-	unsigned		*indices, *tessIndexes;
-	int				i, j;
+void RB_StaticMaterialize( void ) {
+	const staticJob_t	*job;
+	unsigned			*tessIndexes;
+	int					i, j;
 
-	for ( j = 0, job = tess.faceJobs; j < tess.numFaceJobs; j++, job++ ) {
-		indices = ( unsigned * ) ( ( ( char  * ) job->surface ) + job->surface->ofsIndices );
+	for ( j = 0, job = tess.staticJobs; j < tess.numStaticJobs; j++, job++ ) {
 		tessIndexes = tess.indexes + job->firstIndex;
-		for ( i = job->surface->numIndices-1 ; i >= 0  ; i-- ) {
-			tessIndexes[i] = indices[i] + job->firstVertex;
+		for ( i = 0; i < job->numIndexes; i++ ) {
+			tessIndexes[i] = tessIndexes[i] - job->staticBase + job->firstVertex;
 		}
-		RB_SurfaceFaceVertexes( job->surface, job->firstVertex, job->surface->dlightBits[backEnd.smpFrame] );
+		if ( job->staticModel ) {
+			RB_StaticMeshVertexes( job->surface, job->staticModel, job->firstVertex, job->numVertexes );
+		} else {
+			srfSurfaceFace_t *surf = job->surface;
+
+			RB_SurfaceFaceVertexes( surf, job->firstVertex, surf->dlightBits[backEnd.smpFrame] );
+		}
 	}
-	tess.numFaceJobs = 0;
+	tess.numStaticJobs = 0;
+}
+
+/*
+==============
+RB_FaceStatic
+
+Whether the face's vertexes can stay in the static vertex buffer: only for the lightmapped iterator (it reads
+nothing else of them), and only while the surfaces left there hold every vertex of the batch. Anything that
+needs them on the CPU after all gets them from RB_StaticMaterialize.
+==============
+*/
+static qboolean RB_FaceStatic( const srfSurfaceFace_t *surf ) {
+	return r_metalStaticWorld->integer && surf->staticVertex >= 0 && tr.world && tr.world->staticFaces > 0
+		&& tess.currentStageIteratorFunc == RB_StageIteratorLightmappedMultitextureUnfogged && !tess.dlightMap
+		&& ( r_primitives->integer == 0 || r_primitives->integer == 2 )
+		&& !( r_developer->integer && ( r_showtris->integer || r_shownormals->integer ) )
+		&& tess.numStaticJobs < MAX_STATIC_JOBS && RB_StaticJobsCover();
 }
 
 /*
@@ -505,15 +520,19 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	if ( RB_FaceStatic( surf ) ) {
 		// the vertexes stay in the static buffer: the indexes count from the world's first face there, and
 		// the tess vertexes are only reserved
-		faceJob_t	*job = &tess.faceJobs[tess.numFaceJobs++];
+		staticJob_t	*job = &tess.staticJobs[tess.numStaticJobs++];
 		int			base = surf->staticVertex;
 
 		for ( i = surf->numIndices-1 ; i >= 0  ; i-- ) {
 			tessIndexes[i] = indices[i] + base;
 		}
 		job->surface = surf;
+		job->staticModel = NULL;
 		job->firstVertex = Bob;
+		job->numVertexes = surf->numPoints;
 		job->firstIndex = tess.numIndexes;
+		job->numIndexes = surf->numIndices;
+		job->staticBase = base;
 
 		tess.numIndexes += surf->numIndices;
 		tess.numVertexes += surf->numPoints;

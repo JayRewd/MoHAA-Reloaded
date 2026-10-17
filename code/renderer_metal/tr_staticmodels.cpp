@@ -220,6 +220,145 @@ void R_InitStaticModels(void)
     tr.refdef.staticModels       = tr.world->staticModels;
     tr.refdef.numStaticModelData = tr.world->numStaticModelData;
     tr.refdef.staticModelData    = tr.world->staticModelData;
+
+    R_UploadStaticModels();
+}
+
+/*
+==============
+R_UploadStaticModels
+
+The static models' vertexes in the static vertex buffer, one staticModelVert_t per static model color (the
+index RB_StaticMesh reads the color at): RB_StaticMesh leaves their vertexes there. The surfaces are walked as
+R_AddStaticModelSurfaces walks them. A model whose colors are out of range or shared with another model, or
+not opaque (the vertex-lit iterator's alphaGen identity would change them), stays on the CPU.
+==============
+*/
+void R_UploadStaticModels(void)
+{
+    cStaticModelUnpacked_t *pSM;
+    staticModelVert_t      *verts;
+    byte                   *uses;
+    int                     numVerts, offset;
+    int                     i, j, l, mesh, ofs, first;
+
+    tr.world->staticModelVerts = 0;
+    for (i = 0; i < tr.world->numStaticModels; i++) {
+        tr.world->staticModels[i].staticVerts = qfalse;
+    }
+
+    numVerts = tr.world->numStaticModelData;
+    if (!numVerts || !tr.world->staticModelData) {
+        return;
+    }
+
+    verts = (staticModelVert_t *)ri.Hunk_AllocateTempMemory(numVerts * sizeof(staticModelVert_t) + numVerts);
+    uses  = (byte *)(verts + numVerts);
+    memset(verts, 0, numVerts * sizeof(staticModelVert_t) + numVerts);
+
+    // which models' colors are their own: count the users of each color
+    for (i = 0; i < tr.world->numStaticModels; i++) {
+        pSM = &tr.world->staticModels[i];
+        if (!pSM->tiki) {
+            continue;
+        }
+
+        pSM->staticVerts = qtrue;
+        first            = pSM->firstVertexData / sizeof(color4ub_t);
+        ofs              = 0;
+        for (mesh = 0; mesh < pSM->tiki->numMeshes; mesh++) {
+            skelHeaderGame_t  *skelmodel = ri.TIKI_GetSkel(pSM->tiki->mesh[mesh]);
+            skelSurfaceGame_t *surface;
+
+            if (!skelmodel) {
+                continue;
+            }
+
+            surface = skelmodel->pSurfaces;
+            for (j = 0; j < skelmodel->numSurfaces; j++, ofs += surface->numVerts, surface = surface->pNext) {
+                if (first < 0 || first + ofs + surface->numVerts > numVerts) {
+                    pSM->staticVerts = qfalse;
+                    continue;
+                }
+                for (l = 0; l < surface->numVerts; l++) {
+                    if (uses[first + ofs + l] < 255) {
+                        uses[first + ofs + l]++;
+                    }
+                }
+            }
+        }
+    }
+
+    // the models whose colors are all their own and opaque: their vertexes
+    for (i = 0; i < tr.world->numStaticModels; i++) {
+        pSM = &tr.world->staticModels[i];
+        if (!pSM->staticVerts) {
+            continue;
+        }
+
+        first = pSM->firstVertexData / sizeof(color4ub_t);
+        ofs   = 0;
+        for (mesh = 0; mesh < pSM->tiki->numMeshes && pSM->staticVerts; mesh++) {
+            skelHeaderGame_t  *skelmodel = ri.TIKI_GetSkel(pSM->tiki->mesh[mesh]);
+            skelSurfaceGame_t *surface;
+
+            if (!skelmodel) {
+                continue;
+            }
+
+            surface = skelmodel->pSurfaces;
+            for (j = 0; j < skelmodel->numSurfaces; j++, ofs += surface->numVerts, surface = surface->pNext) {
+                for (l = 0; l < surface->numVerts; l++) {
+                    const byte *color = &tr.world->staticModelData[(first + ofs + l) * sizeof(color4ub_t)];
+
+                    if (uses[first + ofs + l] != 1 || color[3] != 0xFF) {
+                        pSM->staticVerts = qfalse;
+                    }
+                }
+            }
+        }
+        if (!pSM->staticVerts) {
+            continue;
+        }
+
+        ofs = 0;
+        for (mesh = 0; mesh < pSM->tiki->numMeshes; mesh++) {
+            skelHeaderGame_t  *skelmodel = ri.TIKI_GetSkel(pSM->tiki->mesh[mesh]);
+            skelSurfaceGame_t *surface;
+
+            if (!skelmodel) {
+                continue;
+            }
+
+            surface = skelmodel->pSurfaces;
+            for (j = 0; j < skelmodel->numSurfaces; j++, ofs += surface->numVerts, surface = surface->pNext) {
+                if (!surface->pStaticXyz) {
+                    continue; // RB_StaticMesh draws nothing
+                }
+                for (l = 0; l < surface->numVerts; l++) {
+                    staticModelVert_t *v = &verts[first + ofs + l];
+
+                    v->xyz[0] = surface->pStaticXyz[l][0];
+                    v->xyz[1] = surface->pStaticXyz[l][1];
+                    v->xyz[2] = surface->pStaticXyz[l][2];
+                    v->st[0]  = surface->pStaticTexCoords[l][0][0];
+                    v->st[1]  = surface->pStaticTexCoords[l][0][1];
+                    memcpy(v->color, &tr.world->staticModelData[(first + ofs + l) * sizeof(color4ub_t)], 4);
+                }
+            }
+        }
+    }
+
+    offset = mbStaticData(verts, numVerts * sizeof(staticModelVert_t));
+    ri.Hunk_FreeTempMemory(verts);
+
+    if (offset <= 0) {
+        for (i = 0; i < tr.world->numStaticModels; i++) {
+            tr.world->staticModels[i].staticVerts = qfalse;
+        }
+        return;
+    }
+    tr.world->staticModelVerts = offset;
 }
 
 /*

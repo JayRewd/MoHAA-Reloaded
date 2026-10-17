@@ -203,6 +203,7 @@ SURFACE SHADERS
 
 shaderCommands_t	tess;
 static qboolean	setArraysOnce;
+static qboolean	setArraysStatic;	// the arrays are in the static vertex buffer (static models, RB_StaticMesh)
 
 /*
 =================
@@ -361,7 +362,7 @@ void RB_BeginSurface( shader_t *shader ) {
 	tess.numPasses = shader->numUnfoggedPasses;
 	tess.currentStageIteratorFunc = shader->optimalStageIteratorFunc;
 	tess.numSkinJobs = 0;
-	tess.numFaceJobs = 0;
+	tess.numStaticJobs = 0;
 }
 
 /*
@@ -1425,6 +1426,47 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 /*
 ** RB_IterateStagesGeneric
 */
+/*
+** RB_StaticColorsAsIs
+**
+** Whether ComputeColors gives a static model's colors as they are (tess.vertexColors, the static colors): rgbGen
+** vertex/exactVertex, or lightingSpherical/static when no dlight changes them, copy them as they are (with
+** identityLight 1), and alphaGen identity/vertex/skip keeps their alpha (always 255: R_LoadStaticModelData;
+** R_UploadStaticModels checks it).
+*/
+static qboolean RB_StaticColorsAsIs( const shaderStage_t *pStage )
+{
+	if ( !tess.vertexColorValid || tr.identityLight != 1.0 || !backEnd.currentStaticModel
+		|| ( pStage->alphaGen != AGEN_IDENTITY && pStage->alphaGen != AGEN_VERTEX && pStage->alphaGen != AGEN_SKIP ) ) {
+		return qfalse;
+	}
+	switch ( pStage->rgbGen ) {
+	case CGEN_EXACT_VERTEX:
+	case CGEN_VERTEX:
+		return qtrue;
+	case CGEN_LIGHTING_SPHERICAL:
+	case CGEN_STATIC:
+		return r_drawspherelights->integer && !backEnd.currentStaticModel->useSpecialLighting;
+	default:
+		return qfalse;
+	}
+}
+
+/*
+** RB_StaticGenericShader
+**
+** Whether RB_StageIteratorGeneric reads the batch's vertexes as they are: one stage, set once before the lock (no
+** multitexture), no deforms, the texcoords of tcGen texture without tcMods (the colors: RB_StaticColorsAsIs).
+*/
+qboolean RB_StaticGenericShader( void )
+{
+	const shaderStage_t *pStage = tess.xstages[0];
+
+	return tess.shader->numDeforms == 0 && tess.numPasses == 1 && pStage && !tess.xstages[1] && !pStage->multitextureEnv
+		&& !pStage->bundle[1].image[0] && pStage->bundle[0].tcGen == TCGEN_TEXTURE
+		&& ( !pStage->bundle[0].numTexMods || pStage->bundle[0].texMods[0].type == TMOD_NONE );
+}
+
 static void RB_IterateStagesGeneric( shaderCommands_t *input )
 {
 	int stage;
@@ -1445,8 +1487,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			continue;
 		}
 
-		ComputeTexCoords(pStage);
-		ComputeColors(pStage);
+		if (!setArraysStatic) {
+			ComputeTexCoords(pStage);
+			ComputeColors(pStage);
+		}
 
 		if (!setArraysOnce)
 		{
@@ -1511,8 +1555,35 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 void RB_StageIteratorGeneric( void )
 {
 	shaderCommands_t *input;
+	const void		*xyz, *colors, *st0;
+	int				stride, colorStride, stStride;
 
 	input = &tess;
+
+	//
+	// static model surfaces left in the static vertex buffer (RB_StaticMesh): drawn from there if the stage reads
+	// them as they are; the arrays are offsets there
+	//
+	setArraysStatic = qfalse;
+	if ( tess.numStaticJobs ) {
+		if ( RB_StaticGenericShader() && RB_StaticColorsAsIs( tess.xstages[0] ) && mbStaticArrays( qtrue ) ) {
+			setArraysStatic = qtrue;
+		} else {
+			RB_StaticMaterialize();
+		}
+	}
+	if ( setArraysStatic ) {
+		xyz = (const void *)(intptr_t)tr.world->staticModelVerts;
+		st0 = (const void *)(intptr_t)( tr.world->staticModelVerts + offsetof( staticModelVert_t, st ) );
+		colors = (const void *)(intptr_t)( tr.world->staticModelVerts + offsetof( staticModelVert_t, color ) );
+		stride = colorStride = stStride = sizeof( staticModelVert_t );
+	} else {
+		xyz = input->xyz;
+		st0 = tess.svars.texcoords[0];
+		colors = tess.svars.colors;
+		stride = 16;
+		colorStride = stStride = 0;
+	}
 
 	input->shaderTime = backEnd.refdef.floatTime;
 	if ((input->shader->flags & BUNDLE_ANIMATE_ONCE) != 0) {
@@ -1560,16 +1631,16 @@ void RB_StageIteratorGeneric( void )
 		setArraysOnce = qtrue;
 
 		mbEnableClientState(MB_COLOR_ARRAY);
-		mbColorPointer(4, MB_UNSIGNED_BYTE, 0, tess.svars.colors);
+		mbColorPointer(4, MB_UNSIGNED_BYTE, colorStride, colors);
 
 		mbEnableClientState(MB_TEXTURE_COORD_ARRAY);
-		mbTexCoordPointer(2, MB_FLOAT, 0, tess.svars.texcoords[0]);
+		mbTexCoordPointer(2, MB_FLOAT, stStride, st0);
 	}
 
 	//
 	// lock XYZ
 	//
-	mbVertexPointer (3, MB_FLOAT, 16, input->xyz);	// padded for SIMD
+	mbVertexPointer (3, MB_FLOAT, stride, xyz);	// padded for SIMD
 	mbLockArraysEXT(0, input->numVertexes);
 	MTLimp_LogComment( "glLockArraysEXT\n" );
 
@@ -1586,6 +1657,10 @@ void RB_StageIteratorGeneric( void )
 	// call shader function
 	//
 	RB_IterateStagesGeneric( input );
+	if ( setArraysStatic ) {
+		mbStaticArrays( qfalse );
+		setArraysStatic = qfalse;
+	}
 
 	// 
 	// now do any dynamic lighting needed
@@ -1618,6 +1693,9 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	shaderCommands_t *input;
 	shader_t		*shader;
 	int				skin;
+	const void		*xyz, *colors, *st0;
+	int				stride, colorStride;
+	qboolean		staticVerts;
 
 	input = &tess;
 
@@ -1627,6 +1705,32 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	// GPU skinning of the skeletal surfaces RB_SkelMesh left to it: 2 = with the lighting, 1 = the colors below
 	//
 	skin = RB_SkinBegin();
+
+	//
+	// static model surfaces left in the static vertex buffer (RB_StaticMesh): drawn from there if their colors
+	// are the static colors as they are (which are there too); the arrays are offsets there
+	//
+	staticVerts = qfalse;
+	if ( tess.numStaticJobs ) {
+		if ( !( backEnd.currentSphere->TessFunction && r_drawspherelights->integer ) && backEnd.currentStaticModel
+			&& RB_StaticColorsAsIs( input->xstages[0] ) && mbStaticArrays( qtrue ) ) {
+			staticVerts = qtrue;
+		} else {
+			RB_StaticMaterialize();
+		}
+	}
+	if ( staticVerts ) {
+		xyz = (const void *)(intptr_t)tr.world->staticModelVerts;
+		st0 = (const void *)(intptr_t)( tr.world->staticModelVerts + offsetof( staticModelVert_t, st ) );
+		colors = (const void *)(intptr_t)( tr.world->staticModelVerts + offsetof( staticModelVert_t, color ) );
+		stride = colorStride = sizeof( staticModelVert_t );
+	} else {
+		xyz = input->xyz;
+		st0 = tess.texCoords[0][0];
+		colors = tess.svars.colors;
+		stride = 16;
+		colorStride = 0;
+	}
 
 	if (skin == 2)
 	{
@@ -1644,7 +1748,9 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 		//
 		// compute colors
 		//
-		ComputeColors(input->xstages[0]);
+		if ( !staticVerts ) {
+			ComputeColors(input->xstages[0]);
+		}
 	}
 	else
 	{
@@ -1676,9 +1782,9 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	mbEnableClientState( MB_COLOR_ARRAY);
 	mbEnableClientState( MB_TEXTURE_COORD_ARRAY);
 
-	mbColorPointer( 4, MB_UNSIGNED_BYTE, 0, tess.svars.colors );
-	mbTexCoordPointer( 2, MB_FLOAT, 16, tess.texCoords[0][0] );
-	mbVertexPointer (3, MB_FLOAT, 16, input->xyz);
+	mbColorPointer( 4, MB_UNSIGNED_BYTE, colorStride, colors );
+	mbTexCoordPointer( 2, MB_FLOAT, stride, st0 );
+	mbVertexPointer (3, MB_FLOAT, stride, xyz);
 
 	mbLockArraysEXT(0, input->numVertexes);
 	MTLimp_LogComment( "glLockArraysEXT\n" );
@@ -1691,6 +1797,9 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	R_DrawElements( input->numIndexes, input->indexes );
 	if ( skin ) {
 		mbSkinEnd();
+	}
+	if ( staticVerts ) {
+		mbStaticArrays( qfalse );
 	}
 
 	// 
@@ -1721,7 +1830,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	// world faces left in the static vertex buffer (RB_SurfaceFace): the arrays are offsets there, the face
 	// records and a 255 per vertex for the constant color
 	//
-	staticFaces = tess.numFaceJobs && mbStaticArrays( qtrue );
+	staticFaces = tess.numStaticJobs && mbStaticArrays( qtrue );
 	if ( staticFaces ) {
 		xyz = (const void *)(intptr_t)tr.world->staticFaces;
 		colors = (const void *)(intptr_t)tr.world->staticWhite;
@@ -1729,8 +1838,8 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 		st1 = (const void *)(intptr_t)( tr.world->staticFaces + 5 * sizeof( float ) );
 		stride = VERTEXSIZE * sizeof( float );
 	} else {
-		if ( tess.numFaceJobs ) {
-			RB_FaceMaterialize();
+		if ( tess.numStaticJobs ) {
+			RB_StaticMaterialize();
 		}
 		xyz = input->xyz;
 		colors = tess.constantColor255;
@@ -1860,17 +1969,20 @@ void RB_EndSurface( void ) {
 		RB_SkinMaterialize();
 	}
 
-	// world faces left in the static vertex buffer: drawn from there by the lightmapped iterator if they are the
-	// whole batch and nothing else reads the vertexes (dlights, the debug views, r_primitives 1/3)
-	if ( tess.numFaceJobs ) {
-		const faceJob_t *last = &tess.faceJobs[tess.numFaceJobs - 1];
+	// surfaces left in the static vertex buffer: drawn from there by their iterator (the lightmapped one for world
+	// faces, the vertex-lit or generic one for static models) if they are the whole batch and nothing else reads the vertexes
+	// (dlights, the debug views, r_primitives 1/3)
+	if ( tess.numStaticJobs ) {
+		void ( *iterator )( void ) = tess.currentStageIteratorFunc;
+		qboolean iteratorOk = tess.staticJobs[0].staticModel
+			? iterator == RB_StageIteratorVertexLitTextureUnfogged || ( iterator == RB_StageIteratorGeneric && RB_StaticGenericShader() )
+			: iterator == RB_StageIteratorLightmappedMultitextureUnfogged;
 
-		if ( tess.currentStageIteratorFunc != RB_StageIteratorLightmappedMultitextureUnfogged || tess.shader == tr.shadowShader
-			|| last->firstVertex + last->surface->numPoints != tess.numVertexes || tess.dlightBits || tess.dlightMap
-			|| r_metalStaticWorld->integer == 2
+		if ( !iteratorOk || tess.shader == tr.shadowShader || !RB_StaticJobsCover()
+			|| tess.dlightBits || tess.dlightMap || r_metalStaticWorld->integer == 2
 			|| ( r_primitives->integer != 0 && r_primitives->integer != 2 )
 			|| ( r_developer->integer && ( r_showtris->integer || r_shownormals->integer ) ) ) {
-			RB_FaceMaterialize();
+			RB_StaticMaterialize();
 		}
 	}
 
@@ -1913,7 +2025,7 @@ void RB_EndSurface( void ) {
 	// clear shader so we can tell we don't have any unclosed surfaces
 	tess.numIndexes = 0;
 	tess.numSkinJobs = 0;
-	tess.numFaceJobs = 0;
+	tess.numStaticJobs = 0;
 
 	MTLimp_LogComment( "----------\n" );
 }
