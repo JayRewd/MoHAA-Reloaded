@@ -272,6 +272,7 @@ Gotchas found in session 1:
 - A killed game leaves `home.noindex/main/*.pid`, and the next launch blocks on a modal "Abnormal Exit" NSAlert. `run.sh` deletes stale PID files when no game runs. Never leave a game process running.
 - `xctrace record --launch` often leaves the game suspended at `_dyld_start` (state `T`). `bench.sh trace` therefore records all processes while `run.sh` starts the game normally.
 - Don't edit a bash script while it's running (bash reads scripts incrementally).
+- Upstream's `.gitignore` has `build*`, which silently ignores any new file whose name starts with "build" (e.g. `port/build.sh` needed a `!/port/build.sh` exception). Check `git status` / `git check-ignore -v` after adding files.
 - `s_initsound 0` crashes upstream; mute with `s_volume 0`.
 - The upstream launchers don't work on macOS.
 - `sv_maxclients 1` makes single-player-style "Continue" prompts block after map loads; use ≥ 2 for scripted runs.
