@@ -208,6 +208,10 @@ void		mbEndFrame( void );					// final pass into the drawable, present, commit, 
 const char	*mbRendererString( void );			// e.g. "Apple M4 (Metal)"
 int			mbMaxTextureSize( void );
 
+// the cl_latencyStats probe (re.LatencyTag/re.LatencyPoll, see renderercommon/tr_public.h)
+void		mbLatencyTag( int tag );
+qboolean	mbLatencyPoll( int *tag, long long *commitUsec, long long *gpuDoneUsec, long long *presentUsec );
+
 extern qboolean	mbMultitexture;				// GL_ARB_multitexture equivalent (r_ext_multitexture)
 
 //

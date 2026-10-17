@@ -10,8 +10,8 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 |---|---|---|
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
-| 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **In progress:** 2a done (session 3), 2b done (session 4); next 2c (the latency probe), then the push |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | Not started |
+| 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | Not started; next (session 6: slice 3a) |
 | 4 | Delete OpenGL entirely | Not started |
 | 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
@@ -130,6 +130,36 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
 
   - **2.3× less work per frame than GL1 with the compositor running**, under the Phase 2 target (≤ 0.45 ms). Metal's 0.39 ms vs 0.36 ms on a locked screen (session 3) is the cost of really getting and presenting drawables.
   - 4K@2× (U4323QE, `+set r_displayIndex 1`, 1280×720-point window): Metal draws 2560×1440 pixels, GPU 1.2 ms/frame (not benchmarked; the display runs at 60 Hz). GL1 renders the same window at 1280×720 and lets macOS upscale it.
+- **Metal, Phase 2c** (session 5, 2026-10-17, screen unlocked). Bench in the same sitting (`port/bench.sh run gl 3`, `port/bench.sh run metal 3 +set cl_renderer metal`): GL1 **1.082 / 1.087 / 1.091 ms** work (GL1 ran ~15% slower than in session 4 this sitting), Metal **0.412 / 0.403 / 0.397** and 0.397 / 0.398 ms. With the probe on (`+set cl_latencyStats 1`; a timedemo has no mouse input, but every frame is still tagged and recorded with both handlers): 0.409 / 0.400 / 0.401 / 0.400 ms (one run 0.462). **The probe costs nothing measurable.**
+- **Input → present latency** (session 5, `port/latency.sh`): dm/mohdm6 in single-player mode on a local server; 20 s of synthetic 1000 Hz mouse movement posted at the HID event tap (§3.2 "Added in session 5"); `com_maxfps 250` (the user's cap) unless noted; vsync off unless noted; 2 frames in flight, 2 drawables; the 240 Hz G2524H. Values in ms, p50 / p95 / p99.
+  - *pump* = when the frame's SDL event pump started (its input sample).
+  - *event* = the OS timestamp of the newest mouse event in that pump.
+  - *present* = the display swap that first shows the input (checked against Instruments, below).
+
+  | Mode | Frames with input | event → pump | pump → commit | pump → GPU done | **pump → present** | **event → present** |
+  |---|---|---|---|---|---|---|
+  | Metal, 1280×720 window, 250 fps | 4979 (96% shown by their own frame) | 0.98 / 1.92 / 2.05 | 0.31 / 0.46 / 0.55 | 0.75 / 1.24 / 1.38 | **10.02 / 12.16 / 12.35** | **10.90 / 13.19 / 13.40** |
+  | Metal, window, ~1000 fps (`com_maxfps 0`) | 13965 (32% own; 68% by a later frame, no drawable ready) | 0.57 / 1.51 / 1.67 | 0.29 / 0.43 / 0.50 | 0.62 / 0.94 / 1.16 | **5.07 / 8.91 / 10.98** | **5.72 / 9.60 / 11.65** |
+  | Metal, window, 250 fps, vsync on | 4741 (100% own) | 0.80 / 1.22 / 1.70 | 0.34 / 0.44 / 0.50 | 1.21 / 1.35 / 1.39 | **7.72 / 11.88 / 11.89** | **8.72 / 13.06 / 13.10** |
+  | Metal, 1920×1080 fullscreen, 250 fps | 4992 | 0.76 / 0.88 / 0.92 | 0.25 / 0.31 / 0.35 | 1.02 / 1.49 / 1.70 | not measurable (see below) | |
+  | Metal, fullscreen, ~1000 fps | 15846 (33% own) | 0.57 / 1.54 / 1.72 | 0.28 / 0.38 / 0.41 | 0.64 / 1.28 / 1.51 | 5.05 / 9.78 / 12.19 (upper bound, see below) | 5.93 / 10.38 / 12.73 |
+  | Metal, fullscreen, 250 fps, vsync on | 4739 (100% own) | 0.79 / 1.34 / 1.68 | 0.28 / 0.37 / 0.44 | 2.12 / 2.51 / 2.60 | **11.93 / 11.94 / 11.94** | **12.66 / 13.24 / 13.52** |
+  | GL1, window, 250 fps | 4988 | 1.07 / 1.37 / 2.07 | | | pump → EndFrame return (after glFinish + SwapBuffers; no present time, a lower bound): 0.68 / 1.35 / 1.60 | event → EndFrame return: 1.68 / 2.49 / 2.85 |
+  | GL1, fullscreen, 250 fps | 4945 | 0.50 / 1.51 / 1.67 | | | 0.56 / 0.87 / 1.29 (same lower bound) | 1.09 / 2.10 / 2.41 |
+
+  - **The probe's present times are real.** `TRACE=1 LATSTATS=2 port/latency.sh …` records Instruments' Metal System Trace during the run, and `port/display_trace.py` matches every present time the probe reported against the display's own swap log. Window: 1557 of 1561 present times fall within ±1 µs on a display swap that shows that very frame. Fullscreen at ~1000 fps: 2392 of 2396.
+  - **A composited window costs about two refreshes, in two modes.** At 250 fps, commit → present sits at either ~5 ms or ~9.7 ms (one 240 Hz refresh apart) for stretches of 0.5–5 s, then switches (the probe's time series; Instruments agrees). At ~1000 fps the median falls to 5.1 ms: only frames that find a ready drawable are presented, and they arrive just after the compositor released the previous drawable. Phase 5: find what selects the mode (present timing, drawable count, `CAMetalDisplayLink`).
+  - **Fullscreen is not direct-to-display, in either renderer.** Instruments: Metal's fullscreen layer "cannot go direct to display due to layer requires a potential offscreen render"; GL1's fullscreen surface isn't direct either. So fullscreen goes through the compositor like a window (Phase 3).
+  - **Fullscreen with vsync off: Core Animation's present feedback is wrong.** Share of presented drawables reported as never shown (presented-handler status 3; `presentedTime` 0):
+    - 98–99% at 250 fps;
+    - ~33% at ~1000 fps;
+    - almost all at 200 and 125 fps.
+
+    Yet Instruments shows the display swapping game frames 220–240 times a second. Where Core Animation does give a time, it's right. So the probe leaves its present lines out when more than half of the presented frames are reported as never shown (fullscreen 250 fps above). In fullscreen at ~1000 fps, pump → present is an upper bound: the input of a frame reported as never shown is credited to the next frame that has a time. Re-check once fullscreen goes direct.
+  - **Vsync on queues a frame.** Fullscreen at 250 fps with vsync: 11.9 ms, constant (2 drawables: each frame waits a refresh behind the one on screen). Window with vsync: 7.7 ms p50. With vsync on, the GPU also finishes 1.8 ms after the commit, against ~0.45 ms without vsync (not explained yet). Phase 5's low-latency vsync (1 frame in flight, `CAMetalDisplayLink`, just-in-time frame start) targets both.
+  - **Commit → GPU done takes 0.35–0.45 ms** for ~0.12 ms of GPU work: the GPU starts ~0.3 ms after the commit (session 3 measured the same). So Metal's GPU done (0.75 ms p50 in a window) lands where GL1's EndFrame returns (0.68 ms, after its glFinish), although Metal commits at 0.31 ms. The submission gap is a Phase 5 target.
+  - **event → pump** is the OS-side wait plus SDL's pump: ~0–2 ms for 1000 Hz events at 250 fps. The oldest and newest event of a pump are almost always the same: macOS coalesces mouse moves into one event per pump.
+  - Caveat: on the local server, `SV_Frame` (the 20 Hz game frame) runs between the input pump and the usercmd on about 1 frame in 12 at 250 fps. Online clients don't do that work, so it can only inflate pump → commit's p95/p99.
 - **What this means for Metal:** with frames in flight (no per-frame wait), one render pass per frame where possible, and no driver state validation, the frame cost should approach max(CPU, GPU) instead of their sum. **Phase 2 target: work ≤ 0.45 ms/frame (≥2× GL1 `r_primitives 2`) on this bench. Phase 5 stretch: ≤ 0.25 ms.** Beyond ~1000 fps the visible fps stays capped by the engine's 1 ms frame floor (see Phase 5).
 
 ---
@@ -179,6 +209,32 @@ Added in session 4 (Phase 2b):
 - **Hidden surface removal stays on.** Opaque pipelines have no `discard`, so the GPU's HSR resolves exact depth ties between triangles of one draw in its own way, while GL1 on Apple's GL behaves like a pipeline that can discard (in-order `LEQUAL`). Models with coincident faces (static models, the view weapon, stitched terrain) therefore differ from GL1 by a few levels in up to ~2500 edge pixels of a 1280×720 view. Proven: drawing every triangle as its own draw, or a `discard` in every pipeline, matched GL1 to 2–24 pixels per view. Not worth the GPU cost (and HSR is part of why Metal's GPU time is low); invisible by eye.
 - **`screenshot` reads the previous frame on Metal** (the scene target before this frame's first draw). GL1 on macOS reads the back buffer after the swap, which holds the frame from two frames back (measured with `r_znear` toggled per frame). Metal is not changed to imitate that; the fixed-view harness compensates (three captures per view, best GL1 match).
 - **`SwipePoint` and `DrawBackground` stay NULL, as in GL1.** `re.DrawBackground` has no caller anywhere. `cgi.R_SwipePoint` is called unguarded by cgame's swipe rendering (`cg_swipe.cpp`), which tempmodels with a `trail` reach: the only retail one is the grenade explosion's debris (`models/fx/fx_grenade_explosion.tik`, `trail "fireswipe2" tag_p1 tag_p2 0.8`). Upstream's `RE_SwipePoint` is also broken (it writes `swipes[numswipes - 1]` without ever incrementing `numswipes`: index -1), so exporting it would trade a NULL call for memory corruption. Not verified at run time yet (a grenade couldn't be thrown from a cfg); Phase 3 throws one, and if GL1 crashes there too, it's an upstream bug to fix in both renderers' front ends with the user's OK.
+
+Added in session 5 (Phase 2c, the latency probe):
+- **The client owns the statistics, the renderer only reports times.** The statistics live in `client/cl_latency.cpp`, renderer-independent: tagging, attribution, histograms (10 µs bins up to 40 ms), printing. The hooks outside it are one line each:
+  - `IN_ProcessEvents`: the pump starts;
+  - `CL_MouseEvent`: a delta from this pump went into `cl.mouseDx`;
+  - `CL_MouseMove`: the delta went into the usercmd and the view angles;
+  - around `re.EndFrame` in `SCR_SimpleUpdateScreen`;
+  - `CL_Init` / `CL_Shutdown`.
+
+  `cmake/client.cmake` lists the new file. Frame pacing and usercmd timing are untouched: nothing waits, and every hook is one branch while the probe is off.
+- **refexport: two entries appended,** `LatencyTag(tag)` before EndFrame and `LatencyPoll(&tag, &commit, &gpuDone, &present)`. `REF_API_VERSION` is unchanged: both renderers are built from this tree, and GL1's `GetRefAPI` memset leaves the entries NULL, so the client falls back to timing EndFrame's return (after glFinish and SwapBuffers).
+- **OS event times come from an `NSEvent` local monitor** (`sys/sys_osx.m`: `Sys_MouseEventMonitor`, `Sys_TakeMouseEventTimes`). SDL2 doesn't expose `NSEvent.timestamp`. The monitor runs inside SDL's pump on the main thread and is installed only while the probe is on.
+- **One clock everywhere:** microseconds on `mach_absolute_time` (`clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`). NSEvent timestamps, `presentedTime` and `GPUEndTime` are on the same host clock.
+- **Attribution:** an input becomes visible with the first frame at or after its own that is shown. The input of a frame that skipped its present (no drawable ready) or was dropped by the compositor waits for the next shown frame. Commit and GPU-done times come from the frame's own record.
+- **Renderer records** (`tr_mtl.m`):
+  - a ring of 256 records under an `os_unfair_lock`;
+  - the completed handler (`GPUEndTime`) and the presented handler (`presentedTime`) write only the record whose sequence number they hold;
+  - records are dropped at `mbShutdown`, and a handler that hasn't run after 1 s counts as "no time";
+  - work happens only for tagged frames, i.e. while the probe is on.
+
+  `presentUsec` is 0 when the frame wasn't presented (no drawable) and -1 when it was presented but Core Animation reports it as never shown.
+- **Synthetic input:** `port/mousemove.c` posts 1000 Hz `kCGEventMouseMoved` events (delta x ±2, direction flipped every 400 ms) at the HID event tap with `CGEventPost`. That needs the Accessibility permission, which this machine's session has (`CGPreflightPostEventAccess`). The events take the same WindowServer → app → SDL path as a real mouse; only the device, USB and HID driver are skipped. Their OS timestamp is their creation time; a real mouse adds its polling interval (1 ms at 1000 Hz) and the USB/HID path before that timestamp.
+- **Cvars:**
+  - `cl_latencyStats` is `CVAR_TEMP` (never archived);
+  - `cl_latencyStatsFrames` (1000) sets how often it prints;
+  - `cl_latencyStats 2` also logs every frame's raw times, which `port/display_trace.py` checks against the display.
 
 ---
 
@@ -246,9 +302,13 @@ mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_Send
 
 **Planned latency work, by phase:**
 - **Phase 1:** CAMetalLayer configured per rules 2–4 (drawable count, `displaySyncEnabled` from `r_swapInterval`, opaque layer, `presentsWithTransaction NO`); the wait-placement rule built into the frame loop from day one. *Done in session 2; drawables come from a helper thread with vsync off, see §3.2 "Drawable acquisition".*
-- **Phase 2:** **latency probe** `cl_latencyStats 1`. For each frame, the time from the newest mouse event folded into the usercmd (mach time stamped at pump time, µs) to the frame's real present time (`MTLDrawable addPresentedHandler` → `presentedTime`). Log p50/p95/p99 over N frames, plus input→commit. For GL1, only input→`SwapBuffers` return is available (a lower bound; documented). Record SDL+Metal numbers windowed and fullscreen in §2.
-- **Phase 3:** direct-to-display verified in fullscreen and borderless fullscreen; Info.plist Game Mode keys; latency numbers per display mode recorded.
+- **Phase 2:** **latency probe** `cl_latencyStats 1`. For each frame, the time from the newest mouse event folded into the usercmd (mach time stamped at pump time, µs) to the frame's real present time (`MTLDrawable addPresentedHandler` → `presentedTime`). Log p50/p95/p99 over N frames, plus input→commit. For GL1, only input→`SwapBuffers` return is available (a lower bound; documented). Record SDL+Metal numbers windowed and fullscreen in §2. *Done in session 5: §2 "Input → present latency" (numbers and the Instruments cross-check), §3.2 "Added in session 5" (design). It also reports GPU-done times and the OS event timestamps.*
+- **Phase 3:** direct-to-display verified in fullscreen and borderless fullscreen; Info.plist Game Mode keys; latency numbers per display mode recorded. *Session 5 found that neither renderer's fullscreen goes direct today ("layer requires a potential offscreen render" for Metal), and that Core Animation's present feedback is wrong in fullscreen with vsync off (§2).*
 - **Phase 5 (performance and latency):**
+  - targets the session 5 probe found (§2):
+    - the compositor's two latency modes in a window (~5 vs ~9.7 ms at 250 fps);
+    - the ~0.3 ms from commit to GPU start;
+    - the vsync queue (11.9 ms in fullscreen) and the late GPU finish with vsync on;
   - tune frames in flight / drawable count with the probe;
   - **raw mouse input via GCMouse** (GameController framework: unaccelerated HID deltas from a high-frequency handler, accumulated off the main thread and read at `IN_Frame`), usable while SDL still owns the window. Pulled ahead of Phase 6 because it's the biggest input-path win; verify first whether SDL's relative mode on macOS applies pointer acceleration;
   - **Client timing redesign (approved by the user 2026-10-16, both parts):**
@@ -333,7 +393,28 @@ Session 2 result:
   - The menu loop runs (invisible), and `+map dm/mohdm6` loads and runs without crashes. `vid_restart`, fullscreen toggle and quit work.
   - `cl_renderer opengl1` still works, and the GL1 bench is re-recorded for the arm64-only build (expected unchanged).
 
-### Phase 2: Core draw path. **Status: in progress. 2a done (session 3), 2b done (session 4, 2026-10-17); next 2c.**
+### Phase 2: Core draw path. **Status: done (2a session 3, 2b session 4, 2c session 5, 2026-10-17).**
+Session 5 result (2c):
+- **`cl_latencyStats 1`**: design in §3.2 "Added in session 5", numbers in §2 "Input → present latency". Output example: `cl_latencyStats, whole run: 4979 frames with mouse input, 4779 shown by their own frame, 200 by a later one; 0 lost, 0 stale`, then p50/p95/p99 lines for:
+  - newest event → pump;
+  - oldest event → pump;
+  - pump → commit;
+  - pump → GPU done;
+  - pump → present;
+  - newest event → present.
+
+  GL1 prints the EndFrame-return lower bound instead.
+- **New tools:**
+  - `port/latency.sh <renderer> <name> [seconds] [engine args]`: map, probe, synthetic mouse, results; `MOUSE=0`, `LATSTATS=2`, `TRACE=1`;
+  - `port/mousemove.c`;
+  - `port/display_trace.py`: what the display showed (swaps per display, direct-to-display or why not, presented-handler statuses), and the probe's present times matched against the display swaps.
+- **Done criteria:**
+  - **Build: pass,** no new warnings.
+  - **Bench: pass.** Metal 0.40 ms vs GL1 1.08 ms work (this sitting); the probe on changes nothing measurable.
+  - **Fixed views: unchanged.** `pair dm6`: 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 1979 pixels; only view 8 differs from session 4 (2411), the HUD weapon bar's real-time highlight. `pair dm5`: 1732 / 1337 / 749 / 558, identical.
+  - **Latency numbers windowed and fullscreen on the 240 Hz display: recorded,** with the fullscreen limits above.
+- Phase 2 is complete: the bench demo plays fully on Metal; the fixed views match GL1 by eye and by diff; Metal's work per frame is 0.39–0.41 ms against the 0.45 ms target; input → present numbers are recorded.
+
 Session 4 result (2b):
 - **Fixed 3D views** (`port/shots/shot_dm6.cfg`: 9 views; `shot_dm5.cfg`: 4 views; run with `port/shot.sh pair <name> <cfg>`, which runs both renderers and diffs every view; `fixed` runs one renderer, `views` re-diffs). How they work:
   - `+set g_gametype 0 +set thereisnomonkey 1 +devmap <map> +set fixedtime 10` (from the cfg's `// args:` line). `thereisnomonkey 1` is what unlocks the cheat commands (without it the game resets `cheats` to 0 at the first cheat command: that's why session 3's `tele` did nothing). `fixedtime 10` makes every frame advance game time by exactly 10 ms, so the frames are identical in every run: **both renderers are bit-for-bit deterministic run to run.**
@@ -375,6 +456,9 @@ Session 3 result (2a):
 - `r_picmip`, `r_textureMode`/anisotropy, `r_ext_*`-equivalent capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines).
 - Spearhead/Breakthrough (`com_target_game 1/2`), the `MTLBinaryArchive` pipeline cache.
 - Fullscreen and borderless fullscreen hitting direct-to-display, Info.plist Game Mode keys (§4b rules 4–5).
+  - Session 5 found that neither renderer's fullscreen goes direct today. Instruments' reason for Metal's layer: "layer requires a potential offscreen render". Find the cause (SDL's view and layer setup, the window style and fullscreen path, `CAMetalLayer` properties) and fix it.
+  - Verify with `TRACE=1 LATSTATS=2 port/latency.sh metal <name> 12 +set r_fullscreen 1 +set r_customwidth 1920 +set r_customheight 1080`: `display_trace.py` prints "direct to display" per swap.
+  - Then re-run session 5's latency matrix (§2) in window, fullscreen and borderless modes, and check whether Core Animation's present feedback works in fullscreen with vsync off once the layer goes direct.
 - **Done when:**
   - The fixed-view harness (`port/shot.sh pair`, session 4: devmap + fixedtime + tele/face, GL1 vs Metal screenshots, per-pixel diff) shows no visible differences on a fixed view list (stock DM + objective + SP maps with sky portals, fog, mirrors, terrain), and the user confirms the look.
   - Online smoke test on a real server (connect, play a few minutes, no errors or desync).
@@ -422,28 +506,65 @@ Session 3 result (2a):
 
 ## 6. Next session
 
-**Session 5 = Phase 2, slice 2c** (the latency probe), which completes Phase 2; then push `metal`. Start with CLAUDE.md, then this file's §4b (the latency chain and rules), §3.2 (including "Added in session 3" and "Added in session 4"), Phase 2 (sessions 3 and 4) and §2 "Metal, Phase 2b".
+**Session 6 = Phase 3, slice 3a.** Start with CLAUDE.md, then §4b (rules 4–5 and the Phase 3/5 lines), §2 "Input → present latency" (session 5's findings), §3.2 "Added in session 5", and Phase 3.
 
-Where things stand (end of session 4):
-- 2a and 2b are done and committed on `metal` (not pushed: Phase 2 isn't finished). The 3D path matches GL1 in fixed views to a few hundred pixels per 1280×720 view, all explained (§3.2 "Added in session 4"); bench with the screen unlocked: Metal 0.39 ms vs GL1 0.88–0.96 ms work per frame; HiDPI at 2× renders at full resolution.
-- Fixed views: `port/shot.sh pair dm6 shot_dm6.cfg` and `pair dm5 shot_dm5.cfg` (about a minute each); per-view images and diffs land in `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.png`. Run both after any backend change: today's numbers are in Phase 2's session 4 result, so a regression shows up as a jump.
-- All backend code is still `code/renderer_metal/tr_mtl.m` + `shaders/tr_mtl_stage.metal`; the front end is verbatim GL1 apart from the qgl → mb rename.
+Where things stand (end of session 5):
+- **Phase 2 is done** and pushed (`metal` on origin), together with session 1's four timing-plan docs commits.
+- **Metal:** 0.40 ms work/frame vs GL1 1.08 ms (session 5's sitting; GL1 measured 0.88–0.96 in session 4). The fixed views match GL1, with all remaining pixel differences explained (§3.2 "Added in session 4").
+- **The latency probe** works (`cl_latencyStats 1`; `port/latency.sh` runs it with synthetic mouse movement) and its present times are validated against the display (`TRACE=1`).
+- **Window, 250 fps:** pump → present 10.0 ms p50, bimodal ~5 / ~9.7 ms.
+- **Fullscreen** is composited, not direct-to-display, in both renderers, and with vsync off Core Animation reports most fullscreen frames as never shown.
+- All backend code is still `code/renderer_metal/tr_mtl.m` + `shaders/tr_mtl_stage.metal`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
-Do next, in order:
-1. **2c: `cl_latencyStats 1`** (§4b, Phase 2 plan): per frame, the time from the newest mouse event folded into the usercmd (mach time stamped where SDL events are pumped, µs) to the frame's real present time (`addPresentedHandler` → `presentedTime`), plus input → commit; p50/p95/p99 over N frames, printed periodically and at shutdown. GL1 gets only input → `SwapBuffers` return (a lower bound; say so in the output). Keep the client-side part small (it touches `client/` and `sdl/sdl_input.c`: a timestamp and a refimport/refexport addition only if needed, additively). It must not change frame pacing or usercmd timing. Measuring needs real mouse movement: ask the user to move the mouse during a run, or find an honest synthetic input (e.g. a CGEvent-posted mouse move is still a real HID-path event; say which). Record windowed and fullscreen numbers on the 240 Hz display in §2, screen unlocked.
-2. With 2c done, Phase 2 is complete: build, bench (§2 command lines), fixed views, update the status lines, commit, `git push origin metal`.
-3. Then Phase 3 starts in its own session (never roll into it): its fixed view list needs maps that load (see the crash below), plus a grenade throw for the swipe check (§3.2 "Added in session 4").
+Phase 3 is large. Suggested slices (adjust if something turns out bigger):
+- **3a (session 6): display modes, measured with the probe.**
+  - Fullscreen and borderless fullscreen hitting direct-to-display: find why Metal's layer "requires a potential offscreen render" and fix it (Phase 3 bullet).
+  - Info.plist Game Mode keys (§4b rule 5).
+  - Then the latency matrix per display mode: window, fullscreen, borderless; 250 and ~1000 fps; vsync off and on. Re-check Core Animation's fullscreen present feedback.
+  - Gamma/overbright per mode belongs with this too: GL1 only overbrights in fullscreen with hardware gamma (§1.3).
+- **3b: the world features with fixed views.**
+  - First the local map-load crash. It's game code: investigate, then propose any fix to the user before changing it (hard rules), because Phase 3's fixed view list needs maps beyond mohdm5/6.
+  - Then sky box, portal sky (m2l1), all fog modes, mirrors/portals, Q3 flares + sun/lens flares, dlights, stencil and blob shadows, ghost textures, marks, and the swipe check (throw a grenade, §3.2 "Added in session 4").
+- **3c:**
+  - cinematics (`RE_StretchRaw`), screenshot variants and levelshots (async readback);
+  - `r_picmip`, `r_textureMode`/anisotropy, capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines);
+  - Spearhead/Breakthrough;
+  - the `MTLBinaryArchive` pipeline cache.
+- **3d:** the user's look at the result, and an online smoke test on a real server.
 
-Gotchas found in session 4:
-- **The Bash tool runs zsh: `$VAR` holding several args is not word-split** (`port/shot.sh … $A` passes one argument; the game then took everything as one cvar value and never loaded the map). Use arrays (`"${A[@]}"`), `${=A}`, or `$(…)`.
-- **`wait N` continues after N/msec − 1 frames:** `Cbuf_Execute` subtracts the frame's msec right after the wait command, so with `fixedtime 10` `wait 10` doesn't wait and `wait 20` is exactly one frame; a bare `wait` may not even cross a frame (there are two `Cbuf_Execute` calls per frame).
-- **Several `screenshot`s in one frame all write the last file name** (GL1's `R_TakeScreenshot` keeps the name in a static buffer).
-- **`r_drawworld 0` does nothing** in this renderer (both). `r_znear` changes the view the next frame (useful for frame-timing probes).
-- Cheats need `+set thereisnomonkey 1`; `noclip` hides the view model; positions outside the playable area show leftovers of earlier frames in both renderers (no clear): pick views inside the map.
-- The weapon bar highlight in the HUD runs on a real-time clock: it differs between runs even with `fixedtime`.
-- Most maps crash the game when loaded locally (both renderers and upstream GL, `SimpleEntity::SetOrigin` from a map script); only mohdm6 and mohdm5 load (Phase 2's session 4 result).
-- Session 3's gotchas still apply: check `ioreg -n Root -d1 -a | grep -A1 CGSSessionScreenIsLocked` before benchmarking or measuring latency (session 4 ran unlocked); never pace frames on completed handlers; never name a test cfg like a game cfg (`port/shots/` uses `shot_`); `g_gametype 0 +devmap` needs `finishloadingscreen`; `cmake/utils/metallib.cmake` gets the shader list joined with `|`.
-- Session 2's gotchas still apply: the renderer's `vid_restart` is queued after pending cfg commands; `screencapture` has no permission (use the in-game `screenshot`); a fullscreen `vid_restart` takes seconds; HiDPI input on 2× displays is untested (with `r_allowResize 1`, `sdl_input.c`'s `SDL_WINDOWEVENT_RESIZED` compares points with pixels and would `vid_restart` repeatedly, relative mouse deltas are in points while the UI cursor is in pixels, and `SDL_WarpMouseInWindow(vidWidth / 2, ...)` expects points).
-- Session 1 gotchas still apply: stale PID files block on an "Abnormal Exit" dialog (`run.sh` cleans them); `xctrace --launch` is unreliable; don't edit a running bash script; upstream's `.gitignore` `build*` rule; `s_initsound 0` crashes; the upstream launchers don't work on macOS; use `sv_maxclients` ≥ 2 for scripted map loads; `glconfig_t` is ABI; overbright depends on fullscreen + hardware gamma in GL1.
+Gotchas found in session 5:
+- **`port/latency.sh` takes over the mouse:** the game window grabs it, and synthetic moves are posted for the run's length, about 30 s per run. Every run in session 5 got the keyboard focus by itself. If the user clicks elsewhere, SDL ignores the mouse and the run has no input frames. Check the screen lock first (the script does).
+- **Instruments' display labels are misleading:**
+  - the 240 Hz G2524H shows up as "external-0" with resolution (3840,2160), and the 60 Hz 4K as "external-1" (1920,1080): tell displays apart by their swap rate;
+  - `Frame N` in surface labels starts at 1 with the first present inside the trace and wraps at 1000;
+  - the presented-handler table's "Requested Time" is not on the host clock.
 
-Open bugs: none known in the renderer. Outside it: the local map-load crash above (game code, upstream). Untested: HiDPI input, DDS/BC uploads (no map that loads uses a .dds), cinematics (`RE_StretchRaw`), swipes at run time.
+  `port/display_trace.py` handles all of this.
+- Traces are ~0.3 GB each in `build.noindex/latency/`; `latency.sh` keeps them, so delete them after use.
+- **Core Animation's present feedback in fullscreen with vsync off is wrong** (§2): don't trust `r_metalPresentStats`' "shown" count or the probe's present lines in that mode until it goes direct and has been re-checked.
+- macOS `sed` has no `\|` in basic regexes (use `grep -E`/awk). In zsh, `${=var}` word-splits a string variable.
+- Session 4's gotchas still apply:
+  - the Bash tool runs zsh (use arrays or `${=A}` for several args);
+  - `wait N` with `fixedtime` continues after N/msec − 1 frames;
+  - several `screenshot`s in one frame overwrite each other;
+  - `r_drawworld 0` does nothing;
+  - cheats need `+set thereisnomonkey 1`;
+  - the weapon bar highlight runs on a real-time clock;
+  - most maps crash when loaded locally.
+- Sessions 1–3's gotchas still apply:
+  - check `CGSSessionScreenIsLocked` before measuring;
+  - never pace frames on completed handlers;
+  - test cfgs get a prefix (`shot_`, `lat_`);
+  - `g_gametype 0 +devmap` needs `finishloadingscreen`;
+  - the renderer's `vid_restart` is queued after pending cfg commands;
+  - `screencapture` and ScreenCaptureKit have no permission (`CGPreflightScreenCaptureAccess` 0), but posting events does;
+  - stale PID files block on the "Abnormal Exit" dialog;
+  - `s_initsound 0` crashes;
+  - use `sv_maxclients` ≥ 2 for scripted map loads;
+  - `glconfig_t` is ABI;
+  - HiDPI input on 2× displays is untested (§6 of session 4: `SDL_WINDOWEVENT_RESIZED` compares points with pixels, relative mouse deltas are in points, `SDL_WarpMouseInWindow` expects points).
+
+Open bugs:
+- **In the renderer:** none known. Display-path findings: fullscreen isn't direct-to-display (both renderers), and Core Animation's fullscreen vsync-off present feedback is wrong.
+- **Outside it:** the local map-load crash (game code, upstream).
+- **Untested:** HiDPI input, DDS/BC uploads, cinematics, swipes at run time, borderless fullscreen.

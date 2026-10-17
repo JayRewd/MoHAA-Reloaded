@@ -118,6 +118,32 @@ static _Atomic uint64_t	mb_statGPUTime, mb_statGPULatency, mb_statCompletion;	//
 static _Atomic int		mb_statGPUFrames;
 static int			mb_statPipelines, mb_statRingGrowths;
 
+// cl_latencyStats (mbLatencyTag/mbLatencyPoll): when each tagged frame was committed, finished on the GPU and
+// shown. Records are polled in frame order; the command buffer's completed handler and the drawable's presented
+// handler (Metal and Core Animation threads) fill in their times under mb_latencyLock. A record is reused only
+// after it was polled, and a handler only writes the record whose sequence number it holds, so a late handler
+// never touches another frame's record.
+#define MB_LATENCY_FRAMES	256
+#define MB_LATENCY_GIVEUP	1000000		// us after the commit: a handler that never ran counts as no time
+
+#define MB_LAT_COMMIT		1			// mbLatencyFrame_t.pending: times still to come
+#define MB_LAT_GPU			2
+#define MB_LAT_PRESENT		4
+
+typedef struct {
+	uint64_t	seq;					// 1-based
+	int			tag;
+	int			pending;				// MB_LAT_* bits
+	long long	commitUsec, gpuDoneUsec;
+	long long	presentUsec;			// > 0 shown at, 0 not presented (no drawable), -1 presented but never shown
+} mbLatencyFrame_t;
+
+static os_unfair_lock		mb_latencyLock = OS_UNFAIR_LOCK_INIT;
+static mbLatencyFrame_t		mb_latency[MB_LATENCY_FRAMES];	// guarded by mb_latencyLock
+static uint64_t				mb_latencyHead, mb_latencyTail;	// records made, records polled
+static qboolean				mb_latencyTagged;				// mbLatencyTag was called for the frame being recorded
+static int					mb_latencyTag;
+
 static int		mb_framesInFlight;
 static int		mb_width, mb_height;
 static char		mb_rendererString[MAX_STRING_CHARS];
@@ -1288,6 +1314,12 @@ void mbShutdown( void )
 
 	MB_StopDrawableAcquisition();
 
+	// drop the latency records of this window's frames (their presented handlers may never run)
+	os_unfair_lock_lock( &mb_latencyLock );
+	mb_latencyTail = mb_latencyHead;
+	os_unfair_lock_unlock( &mb_latencyLock );
+	mb_latencyTagged = qfalse;
+
 	if ( mb_statFrames && r_metalPresentStats->integer ) {
 		mach_timebase_info_data_t tb;
 
@@ -1375,11 +1407,137 @@ void mbSetGamma( const unsigned char red[256], const unsigned char green[256], c
 }
 
 /*
+** MB_LatencyUsec
+**
+** Microseconds on the mach_absolute_time clock, the one presentedTime and NSEvent timestamps use.
+*/
+static long long MB_LatencyUsec( void )
+{
+	return (long long)( clock_gettime_nsec_np( CLOCK_UPTIME_RAW ) / 1000 );
+}
+
+/*
+** MB_LatencyBegin
+**
+** Starts the record of the frame being ended; returns its sequence number, 0 when the ring is full.
+*/
+static uint64_t MB_LatencyBegin( int tag )
+{
+	mbLatencyFrame_t *f;
+	uint64_t seq = 0;
+
+	os_unfair_lock_lock( &mb_latencyLock );
+	if ( mb_latencyHead - mb_latencyTail < MB_LATENCY_FRAMES ) {
+		f = &mb_latency[mb_latencyHead % MB_LATENCY_FRAMES];
+		seq = ++mb_latencyHead;
+		f->seq = seq;
+		f->tag = tag;
+		f->pending = MB_LAT_COMMIT | MB_LAT_GPU | MB_LAT_PRESENT;
+		f->commitUsec = f->gpuDoneUsec = f->presentUsec = 0;
+	}
+	os_unfair_lock_unlock( &mb_latencyLock );
+
+	return seq;
+}
+
+/*
+** MB_LatencyTime
+**
+** Fills in one of a record's times (host time in seconds, the CACurrentMediaTime clock; 0 = none).
+*/
+static void MB_LatencyTime( uint64_t seq, int which, CFTimeInterval t )
+{
+	mbLatencyFrame_t *f = &mb_latency[( seq - 1 ) % MB_LATENCY_FRAMES];
+
+	os_unfair_lock_lock( &mb_latencyLock );
+	if ( f->seq == seq && ( f->pending & which ) ) {
+		if ( which == MB_LAT_GPU ) {
+			f->gpuDoneUsec = (long long)( t * 1e6 );
+		} else {
+			f->presentUsec = t > 0.0 ? (long long)( t * 1e6 ) : -1;	// 0: Core Animation says never shown
+		}
+		f->pending &= ~which;
+	}
+	os_unfair_lock_unlock( &mb_latencyLock );
+}
+
+/*
+** MB_LatencyCommitted
+*/
+static void MB_LatencyCommitted( uint64_t seq, qboolean presented )
+{
+	mbLatencyFrame_t *f = &mb_latency[( seq - 1 ) % MB_LATENCY_FRAMES];
+	long long now = MB_LatencyUsec();
+
+	os_unfair_lock_lock( &mb_latencyLock );
+	if ( f->seq == seq ) {
+		f->commitUsec = now;
+		f->pending &= ~MB_LAT_COMMIT;
+		if ( !presented ) {
+			f->pending &= ~MB_LAT_PRESENT;	// no drawable was ready: presentUsec stays 0
+		}
+	}
+	os_unfair_lock_unlock( &mb_latencyLock );
+}
+
+/*
+** mbLatencyTag
+**
+** Called by the client before EndFrame: record the frame under this tag.
+*/
+void mbLatencyTag( int tag )
+{
+	mb_latencyTagged = qtrue;
+	mb_latencyTag = tag;
+}
+
+/*
+** mbLatencyPoll
+**
+** The oldest recorded frame, once its commit, GPU and present times are in.
+*/
+qboolean mbLatencyPoll( int *tag, long long *commitUsec, long long *gpuDoneUsec, long long *presentUsec )
+{
+	mbLatencyFrame_t *f;
+	qboolean ready = qfalse;
+
+	os_unfair_lock_lock( &mb_latencyLock );
+	if ( mb_latencyTail < mb_latencyHead ) {
+		f = &mb_latency[mb_latencyTail % MB_LATENCY_FRAMES];
+		if ( !( f->pending & MB_LAT_COMMIT ) && f->pending && MB_LatencyUsec() - f->commitUsec > MB_LATENCY_GIVEUP ) {
+			if ( f->pending & MB_LAT_PRESENT ) {
+				f->presentUsec = -1;	// its presented handler never ran
+			}
+			f->pending = 0;
+		}
+		if ( !f->pending ) {
+			*tag = f->tag;
+			*commitUsec = f->commitUsec;
+			*gpuDoneUsec = f->gpuDoneUsec;
+			*presentUsec = f->presentUsec;
+			mb_latencyTail++;
+			ready = qtrue;
+		}
+	}
+	os_unfair_lock_unlock( &mb_latencyLock );
+
+	return ready;
+}
+
+/*
 ** mbEndFrame
 */
 void mbEndFrame( void )
 {
 	uint64_t serial = mb_frameSerial;
+	uint64_t latency = 0;		// this frame's cl_latencyStats record
+
+	if ( mb_latencyTagged ) {
+		mb_latencyTagged = qfalse;
+		if ( mb_layer ) {
+			latency = MB_LatencyBegin( mb_latencyTag );
+		}
+	}
 
 	if ( !mb_layer ) {
 		return;
@@ -1419,6 +1577,11 @@ void mbEndFrame( void )
 					}
 				}];
 			}
+			if ( latency ) {
+				[drawable addPresentedHandler:^( id<MTLDrawable> shown ) {
+					MB_LatencyTime( latency, MB_LAT_PRESENT, shown.presentedTime );
+				}];
+			}
 		}
 
 		// Frame completion is read from this event, not from a completed handler: handlers arrived ~1.3 ms after
@@ -1439,8 +1602,16 @@ void mbEndFrame( void )
 				mb_statGPUFrames++;
 			}];
 		}
+		if ( latency ) {
+			[mb_cmd addCompletedHandler:^( id<MTLCommandBuffer> buffer ) {
+				MB_LatencyTime( latency, MB_LAT_GPU, buffer.GPUEndTime );
+			}];
+		}
 		MB_CommitUploads();
 		[mb_cmd commit];
+		if ( latency ) {
+			MB_LatencyCommitted( latency, drawable != nil );
+		}
 		mb_lastCommitted = mb_cmd;
 		mb_cmd = nil;
 	}

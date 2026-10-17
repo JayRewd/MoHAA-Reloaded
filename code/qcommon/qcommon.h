@@ -1492,6 +1492,13 @@ void Sys_InitPIDFile( const char *gamedir );
 
 void Sys_ProcessBackgroundTasks();
 
+#ifdef __APPLE__
+// cl_latencyStats: OS timestamps (microseconds, mach_absolute_time clock) of the mouse movement events
+// the application dispatched since the last call (sys_osx.m)
+void Sys_MouseEventMonitor( qboolean on );
+qboolean Sys_TakeMouseEventTimes( long long *oldest, long long *newest );
+#endif
+
 /* This is based on the Adaptive Huffman algorithm described in Sayood's Data
  * Compression book.  The ranks are not actually stored, but implicitly defined
  * by the location of a node within a doubly-linked list */

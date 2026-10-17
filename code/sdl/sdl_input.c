@@ -1042,6 +1042,8 @@ static void IN_ProcessEvents( void )
 	if( !SDL_WasInit( SDL_INIT_VIDEO ) )
 			return;
 
+	CL_LatencyPump( );
+
 	while( SDL_PollEvent( &e ) )
 	{
 		switch( e.type )

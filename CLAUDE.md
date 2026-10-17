@@ -14,7 +14,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 - `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it.
 - `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
-- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` (renderer screenshot comparison, cfgs in `port/shots/`), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
+- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` (renderer screenshot comparison, cfgs in `port/shots/`), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, traces; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules
@@ -42,6 +42,7 @@ port/bench.sh trace gl             # one traced timedemo: GPU utilization and GP
 port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1), into build.noindex/shots
 port/shot.sh diff menu             # per-pixel difference GL1 vs Metal for every screenshot pair of that name
 port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): both renderers + per-view diffs
+port/latency.sh metal win-250 20   # cl_latencyStats in dm/mohdm6 with 20 s of synthetic mouse (takes the mouse!); TRACE=1 checks it against the display
 ```
 
 New flavors (e.g. `metal`) are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.

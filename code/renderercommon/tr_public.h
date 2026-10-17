@@ -180,6 +180,15 @@ typedef struct {
     void (*FreeRawImage)(byte *pic);
 
     void (*Set2DInitialShaderTime)(float startTime);
+
+    // Added for the Metal port: the cl_latencyStats probe (client/cl_latency.cpp). NULL in renderers that
+    // can't report present times (GL1). LatencyTag, called before EndFrame: record the frame being ended
+    // under the client's tag (0 = no new input). LatencyPoll: the oldest recorded frame whose times are all
+    // in, in frame order: its tag, when it was committed, when the GPU finished it (0 = unknown) and when it
+    // was shown on screen (microseconds on the mach_absolute_time clock; presentUsec 0 = not presented,
+    // -1 = presented but reported as never shown). Returns qfalse when no frame is ready.
+    void        (*LatencyTag)(int tag);
+    qboolean    (*LatencyPoll)(int *tag, long long *commitUsec, long long *gpuDoneUsec, long long *presentUsec);
 } refexport_t;
 
 //

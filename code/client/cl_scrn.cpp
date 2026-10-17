@@ -503,12 +503,14 @@ void SCR_SimpleUpdateScreen( void ) {
 		UpdateStereoSide( STEREO_CENTER );
 	}
 
+	CL_LatencyBeforeEndFrame();
 	if( com_speeds->integer ) {
 		re.EndFrame( &time_frontend, &time_backend );
 	}
 	else {
 		re.EndFrame( NULL, NULL );
 	}
+	CL_LatencyAfterEndFrame();
 }
 
 /*

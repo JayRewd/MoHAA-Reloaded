@@ -454,6 +454,7 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 	{
 		cl.mouseDx[cl.mouseIndex] += dx;
 		cl.mouseDy[cl.mouseIndex] += dy;
+		CL_LatencyMouseEvent();
 	}
 }
 
@@ -568,6 +569,8 @@ void CL_MouseMove( usercmd_t *cmd ) {
 
     if (mx == 0.0f && my == 0.0f)
         return;
+
+    CL_LatencyMouseMove();
 
 	if (cl_mouseAccel->value != 0.0f)
 	{

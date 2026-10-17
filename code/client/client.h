@@ -608,6 +608,17 @@ void IN_CenterView (void);
 
 void CL_VerifyCode( void );
 
+//
+// cl_latency.cpp (cl_latencyStats)
+//
+void CL_LatencyInit( void );
+void CL_LatencyShutdown( void );
+void CL_LatencyPump( void );
+void CL_LatencyMouseEvent( void );
+void CL_LatencyMouseMove( void );
+void CL_LatencyBeforeEndFrame( void );
+void CL_LatencyAfterEndFrame( void );
+
 float CL_KeyState (kbutton_t *key);
 const char *Key_KeynumToString( int keynum );
 const char *Key_KeynumToBindString( int keynum );

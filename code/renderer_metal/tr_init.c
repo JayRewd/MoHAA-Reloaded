@@ -1950,5 +1950,8 @@ refexport_t *GetRefAPI ( int apiVersion, refimport_t *rimp ) {
 
 	re.Set2DInitialShaderTime = Set2DInitialShaderTime;
 
+	re.LatencyTag = mbLatencyTag;
+	re.LatencyPoll = mbLatencyPoll;
+
 	return &re;
 }
