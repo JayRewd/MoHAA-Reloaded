@@ -14,7 +14,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 - `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it.
 - `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
-- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` + `tgamontage.py` (renderer screenshot comparison and side-by-side tiles, cfgs in `port/shots/`), `roqtest.py` (a RoQ test video for the cinematic path), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), `glcheck.sh` (no OpenGL left in the tree or the binary), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
+- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` + `tgamontage.py` (renderer screenshot comparison and side-by-side tiles, cfgs in `port/shots/`), `roqtest.py` (a RoQ test video for the cinematic path), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), `glcheck.sh` (no OpenGL left in the tree or the binary), `skinab.sh` + `skinab_patch.py` (the GPU-skinning A/B build: GPU vs CPU vertex outputs compared bit for bit), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, traces; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules
@@ -45,6 +45,7 @@ port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): GL1 
 port/shot.sh regress base-s9       # the six fixed views on Metal only: vs GL1 per view and vs a saved Metal baseline (port/shot.sh savebase <dir>)
 port/latency.sh metal win-250 20   # cl_latencyStats in dm/mohdm6 with 20 s of synthetic mouse (takes the mouse!); TRACE=1 checks it against the display
 port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
+port/skinab.sh                     # GPU-skinning A/B flavor (metalab), then: port/bench.sh run metalab 1; grep SKINAB build.noindex/bench/metalab-1.log | tail -1 (every "differ" 0)
 ```
 
 New flavors are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. OpenGL is gone from the tree since Phase 4; GL1 comparisons (screenshots, bench) use the `gl` reference flavor, which never changes unless `GL1_REF` in `port/build.sh` does. `cl_renderer` is ignored (read-only "metal"). Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.
