@@ -1,6 +1,7 @@
 #!/bin/bash
-# Screenshots for comparing the renderers (GL1 is the reference). Runs the metal install (GL1 + Metal) once with
-# a cfg that takes in-game `screenshot`s, in a 1280x720 window with a fresh default config, and collects them.
+# Screenshots for comparing the renderers (GL1 is the reference). Runs one install once with a cfg that takes
+# in-game `screenshot`s, in a 1280x720 window with a fresh default config, and collects them: Metal from the metal
+# install, GL1 from the GL1 reference install (port/build.sh gl: the last commit that had GL1).
 #   port/shot.sh <renderer> <name> <cfg> [engine args...]
 #       renderer: metal | opengl1;  cfg: a file in port/shots/ (copied into the run home; prefix shot_: the game itself execs e.g. menu.cfg)
 #       -> build.noindex/shots/<name>-<renderer>-<n>.tga (+ .png to look at) and <name>-<renderer>.log
@@ -17,7 +18,8 @@
 #   port/shot.sh metal console shot_console.cfg +set ui_console 1 +set cl_playintro 0
 #   port/shot.sh metal view shot_view.cfg +set g_gametype 0 +set cg_drawviewmodel 0 +set cheats 1 +devmap dm/mohdm6
 #   port/shot.sh pair dm6 shot_dm6.cfg
-# OMM_FLAVOR=<flavor> runs another install than build.noindex/metal-install (e.g. a scratch build with other flags).
+# OMM_FLAVOR=<flavor> runs another install than build.noindex/metal-install for Metal (e.g. a scratch build with other
+# flags), OMM_GL_FLAVOR=<flavor> another one than build.noindex/gl-install for GL1.
 # Anything time-based (animated menu items, flickering lights, timing text in the console) differs between runs,
 # except in the fixed views: they run with fixedtime, which makes game time advance the same per frame in every run.
 set -uo pipefail
@@ -78,7 +80,8 @@ R="$1"; NAME="$2"; CFG="$3"; shift 3
 [ -f "$OMM_PORT/shots/$CFG" ] && cp "$OMM_PORT/shots/$CFG" "$OMM_HOME/main/"
 # screenshots land in the game dir: main/, or mainta/ / maintt/ with com_target_game 1/2 (Spearhead/Breakthrough)
 rm -rf "$OMM_HOME"/main*/screenshots "$OMM_HOME/main/configs" "$OUT/$NAME-$R"-* "$OUT/$NAME-view"*-"$R".*
-perl -e 'alarm shift; exec @ARGV' 120 "$OMM_PORT/run.sh" "${OMM_FLAVOR:-metal}" +set cl_renderer "$R" \
+if [ "$R" = opengl1 ]; then FLAVOR="${OMM_GL_FLAVOR:-gl}"; else FLAVOR="${OMM_FLAVOR:-metal}"; fi
+perl -e 'alarm shift; exec @ARGV' 120 "$OMM_PORT/run.sh" "$FLAVOR" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
 	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 "$@" +exec "$CFG" > "$OUT/$NAME-$R.log" 2>&1
 n=0

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Input-to-present latency in a live map: the cl_latencyStats probe with synthetic mouse movement.
 #   port/latency.sh <renderer> <name> [seconds] [engine args...]
-#       renderer: metal | opengl1 (both from the metal install); seconds of mouse movement (default 20)
+#       renderer: metal | opengl1 (Metal from the metal install, GL1 from the GL1 reference install, port/build.sh gl);
+#       seconds of mouse movement (default 20)
 #       -> build.noindex/latency/<name>.log; prints the probe's whole-run numbers and the mouse tool's line
 # Spawns in dm/mohdm6 (single-player mode on a local server, like the fixed views), turns the probe on, then
 # port/mousemove.c posts 1000 Hz mouse moves at the HID event tap (the same WindowServer -> application path
@@ -50,7 +51,8 @@ EOF
 
 LOG="$OUT/$NAME.log"
 rm -rf "$OMM_HOME/main/configs"
-perl -e 'alarm shift; exec @ARGV' $(( SECS + 90 )) "$OMM_PORT/run.sh" metal +set cl_renderer "$R" \
+if [ "$R" = opengl1 ]; then FLAVOR=gl; else FLAVOR=metal; fi
+perl -e 'alarm shift; exec @ARGV' $(( SECS + 90 )) "$OMM_PORT/run.sh" "$FLAVOR" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
 	+set r_swapInterval 0 +set com_maxfps 250 +set com_maxfpsUnfocused 0 +set com_maxfpsMinimized 0 \
 	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 \

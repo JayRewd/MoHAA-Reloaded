@@ -5,6 +5,7 @@
 #   port/bench.sh trace [flavor]         one timedemo under Metal System Trace: GPU busy time and utilization
 #   port/bench.sh record [flavor]        re-record the demo (only if the reference demo must change; then re-baseline
 #                                        every flavor and replace port/bench/bench_mohdm6.dm_8)
+# Flavors: metal (the game) and gl (the GL1 reference, port/build.sh gl: the last commit that had GL1).
 # The reference demo is port/bench/bench_mohdm6.dm_8 (dm/mohdm6, 120 s, spectator following 8 bots, 2398 timedemo
 # frames); it is copied into home.noindex/main/demos/ when missing.
 # Results: one line per run, "<frames> frames <seconds> seconds <fps> fps <min>/<avg>/<max>/<sdev> ms | work: <ms>/frame".
