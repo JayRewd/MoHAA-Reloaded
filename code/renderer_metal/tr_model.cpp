@@ -1169,19 +1169,22 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
         }
 
         for (i = 0; i < indexes; i += 3) {
-            assert(collapse[triangles[i]] < sf->numVerts);
-            assert(collapse[triangles[i + 1]] < sf->numVerts);
-            assert(collapse[triangles[i + 2]] < sf->numVerts);
+            // read once: the index stores could alias the model's triangle list, which forced reloads after each store
+            const int c0 = collapse[triangles[i]];
+            const int c1 = collapse[triangles[i + 1]];
+            const int c2 = collapse[triangles[i + 2]];
 
-            if (collapse[triangles[i]] == collapse[triangles[i + 1]]
-                || collapse[triangles[i + 1]] == collapse[triangles[i + 2]]
-                || collapse[triangles[i + 2]] == collapse[triangles[i]]) {
+            assert(c0 < sf->numVerts);
+            assert(c1 < sf->numVerts);
+            assert(c2 < sf->numVerts);
+
+            if (c0 == c1 || c1 == c2 || c2 == c0) {
                 break;
             }
 
-            tess.indexes[baseIndex + i]     = baseVertex + collapse[triangles[i]];
-            tess.indexes[baseIndex + i + 1] = baseVertex + collapse[triangles[i + 1]];
-            tess.indexes[baseIndex + i + 2] = baseVertex + collapse[triangles[i + 2]];
+            tess.indexes[baseIndex + i]     = baseVertex + c0;
+            tess.indexes[baseIndex + i + 1] = baseVertex + c1;
+            tess.indexes[baseIndex + i + 2] = baseVertex + c2;
         }
 
         entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
