@@ -242,6 +242,8 @@ typedef struct {
 	int			timeDemoLastFrame;// time the last frame was rendered
 	int			timeDemoMinDuration;	// minimum frame duration
 	int			timeDemoMaxDuration;	// maximum frame duration
+	long long	timeDemoStartUsec;		// Com_Microseconds() before first frame
+	long long	timeDemoStartWaitUsec;	// com_timedemoWaitUsec before first frame
 	unsigned char	timeDemoDurations[ MAX_TIMEDEMO_DURATIONS ];	// log of frame durations
 
     float		aviVideoFrameRemainder;

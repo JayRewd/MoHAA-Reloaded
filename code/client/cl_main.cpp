@@ -555,6 +555,18 @@ void CL_DemoCompleted( void )
 					CL_DemoFrameDurationSDev( ) );
 			Com_Printf( "%s", buffer );
 
+			// Frame work time: wall time minus the time Com_Frame spent padding frames to its 1 ms minimum,
+			// so renderers faster than 1000 fps can still be compared (Metal port benchmark)
+			{
+				double wallUsec = (double)( Com_Microseconds() - clc.timeDemoStartUsec );
+				double waitUsec = (double)( com_timedemoWaitUsec - clc.timeDemoStartWaitUsec );
+
+				Com_Printf( "timedemo work: %.3f ms/frame (wall %.3f, frame limiter wait %.3f)\n",
+						( wallUsec - waitUsec ) / 1000.0 / clc.timeDemoFrames,
+						wallUsec / 1000.0 / clc.timeDemoFrames,
+						waitUsec / 1000.0 / clc.timeDemoFrames );
+			}
+
 			// Write a log of all the frame durations
 			if( cl_timedemoLog && strlen( cl_timedemoLog->string ) > 0 )
 			{

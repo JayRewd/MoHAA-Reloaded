@@ -47,3 +47,6 @@ out
 # Flex and Bison
 ####################
 /code/parser/generated
+
+# Metal port: SSD-local build trees, run home (configs/logs/screenshots), caches
+*.noindex/

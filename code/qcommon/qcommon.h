@@ -1000,6 +1000,7 @@ void 		Com_Quit_f( void ) Q_NO_RETURN;
 void		Com_GameRestart(int checksumFeed, qboolean disconnect);
 
 int			Com_Milliseconds( void );	// will be journaled properly
+long long	Com_Microseconds( void );	// wall clock, for benchmark measurements only
 unsigned	Com_BlockChecksum( const void *buffer, int length );
 char		*Com_MD5File(const char *filename, int length, const char *prefix, int prefix_len);
 int			Com_HashKey(char *string, int maxlen);
@@ -1087,6 +1088,7 @@ extern	int		time_backend;		// renderer backend time
 
 extern	int		com_frameTime;
 extern	int		com_frameMsec;
+extern	long long	com_timedemoWaitUsec;	// time spent in the frame limiter during a timedemo
 
 extern	qboolean	com_errorEntered;
 extern	qboolean	com_fullyInitialized;

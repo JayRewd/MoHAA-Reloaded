@@ -146,6 +146,10 @@ int			com_frameTime;
 int			com_frameNumber;
 int			com_frameMsec;
 
+// Metal port benchmark: microseconds spent waiting in Com_Frame's 1 ms frame limiter during a timedemo,
+// so the timedemo can report the frame work time even when frames are padded to 1 ms.
+long long	com_timedemoWaitUsec;
+
 qboolean	com_errorEntered = qfalse;
 qboolean	com_fullyInitialized = qfalse;
 qboolean	com_gameRestarting = qfalse;
@@ -2234,6 +2238,21 @@ int Com_TimeVal(int minMsec)
 
 /*
 =================
+Com_Microseconds
+
+Wall clock in microseconds, for benchmark measurements only.
+=================
+*/
+long long Com_Microseconds(void)
+{
+	struct timespec ts;
+
+	timespec_get(&ts, TIME_UTC);
+	return (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+/*
+=================
 Com_Frame
 =================
 */
@@ -2242,6 +2261,7 @@ void Com_Frame( void ) {
 	int		msec, minMsec;
 	int		timeVal, timeValSV;
 	static int	lastTime = 0, bias = 0;
+	long long	waitStartUsec;
  
 	int		timeBeforeFirstEvents;
 	int		timeBeforeServer;
@@ -2324,6 +2344,8 @@ void Com_Frame( void ) {
     else
         minMsec = 1;
 
+    waitStartUsec = com_timedemo->integer ? Com_Microseconds() : 0;
+
     do
     {
         if (com_sv_running->integer)
@@ -2343,6 +2365,10 @@ void Com_Frame( void ) {
         else
             NET_Sleep(timeVal - 1);
     } while (Com_TimeVal(minMsec));
+
+    if (com_timedemo->integer) {
+        com_timedemoWaitUsec += Com_Microseconds() - waitStartUsec;
+    }
 
     IN_Frame();
 

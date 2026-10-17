@@ -1298,6 +1298,8 @@ void CL_SetCGameTime( void ) {
 
 		if (!clc.timeDemoStart) {
 			clc.timeDemoStart = clc.timeDemoLastFrame = now;
+			clc.timeDemoStartUsec = Com_Microseconds();
+			clc.timeDemoStartWaitUsec = com_timedemoWaitUsec;
 			clc.timeDemoMinDuration = INT_MAX;
 			clc.timeDemoMaxDuration = 0;
 		}
