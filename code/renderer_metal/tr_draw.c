@@ -288,7 +288,7 @@ void RE_DrawBackground_TexSubImage(int cols, int rows, int bgr, byte* data) {
 		format = MB_RGB;
 	}
 
-	GL_Bind(tr.scratchImage);
+	R_Bind(tr.scratchImage);
 
 	if (cols == tr.scratchImage->width && rows == tr.scratchImage->height && format == tr.scratchImage->internalFormat)
 	{
@@ -333,7 +333,7 @@ RE_DrawBackground_DrawPixels
 void RE_DrawBackground_DrawPixels(int cols, int rows, int bgr, byte* data) {
 	R_IssuePendingRenderCommands();
 
-	GL_State(0);
+	R_State(0);
 	mbDisable(MB_TEXTURE_2D);
 
 	mbPixelZoom(glConfig.vidWidth / rows, glConfig.vidHeight / cols);
@@ -359,7 +359,7 @@ void AddBox(float x, float y, float w, float h) {
 
 	mbColor4ubv(backEnd.color2D);
 	mbDisable(MB_TEXTURE_2D);
-	GL_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
 
 	mbBegin(MB_QUADS);
 
@@ -383,7 +383,7 @@ void DrawBox(float x, float y, float w, float h) {
 
 	mbColor4ubv(backEnd.color2D);
 	mbDisable(MB_TEXTURE_2D);
-	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
 
 	mbBegin(MB_QUADS);
 
@@ -444,7 +444,7 @@ void Set2DWindow(int x, int y, int w, int h, float left, float right, float bott
 	mbMatrixMode(MB_MODELVIEW);
 
 	mbLoadIdentity();
-	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
 	mbEnable(MB_BLEND);
 	mbDisable(MB_CULL_FACE);
 	mbDisable(MB_CLIP_PLANE0);

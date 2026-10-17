@@ -1198,7 +1198,7 @@ the bits are allocated as follows:
 #define	QSORT_REFENTITYNUM_SHIFT	7
 #define	QSORT_STATICMODEL_SHIFT	20 // was 21, decreased in 2.30
 
-extern	int			gl_filter_min, gl_filter_max;
+extern	int			mb_filter_min, mb_filter_max;
 
 /*
 ** performanceCounters_t
@@ -1478,7 +1478,7 @@ extern cvar_t	*r_gamma;
 extern cvar_t	*r_displayRefresh;		// optional display refresh option
 extern cvar_t	*r_ignorehwgamma;		// overrides hardware gamma capabilities
 
-extern cvar_t	*r_allowExtensions;				// global enable/disable of OpenGL extensions
+extern cvar_t	*r_allowExtensions;				// global enable/disable of the r_ext_* features
 extern cvar_t	*r_ext_compressed_textures;		// these control use of specific extensions
 extern cvar_t	*r_ext_gamma_control;
 extern cvar_t	*r_ext_texenv_op;
@@ -1675,17 +1675,17 @@ void R_RotateForViewer(void);
 void R_SetupFrustum(void);
 
 /*
-** GL wrapper/helper functions
+** render state helper functions over the backend
 */
-void	GL_SetFogColor(const vec4_t fColor);
-void	GL_Bind( image_t *image );
-void	GL_SetDefaultState (void);
-void	GL_SelectTexture( int unit );
-void	GL_TextureMode( const char *string );
-void	GL_CheckErrors( void );
-void	GL_State( unsigned long stateVector );
-void	GL_TexEnv( int env );
-void	GL_Cull( int cullType );
+void	R_SetFogColor(const vec4_t fColor);
+void	R_Bind( image_t *image );
+void	R_SetDefaultState (void);
+void	R_SelectTexture( int unit );
+void	R_TextureMode( const char *string );
+void	R_CheckErrors( void );
+void	R_State( unsigned long stateVector );
+void	R_TexEnv( int env );
+void	R_Cull( int cullType );
 
 #define GLS_SRCBLEND_ZERO						0x00000001
 #define GLS_SRCBLEND_ONE						0x00000002
@@ -1841,20 +1841,15 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 ====================================================================
 */
 
-void		GLimp_Init( qboolean fixedFunction );
-void		GLimp_Shutdown( void );
-void		GLimp_EndFrame( void );
+void		MTLimp_Init( qboolean fixedFunction );
+void		MTLimp_Shutdown( void );
+void		MTLimp_EndFrame( void );
 
-qboolean	GLimp_SpawnRenderThread( void (*function)( void ) );
-void		*GLimp_RendererSleep( void );
-void		GLimp_FrontEndSleep( void );
-void		GLimp_WakeRenderer( void *data );
-
-void		GLimp_LogComment( char *comment );
+void		MTLimp_LogComment( char *comment );
 
 // NOTE TTimo linux works with float gamma value, not the gamma table
 //   the params won't be used, getting the r_gamma cvar directly
-void		GLimp_SetGamma( unsigned char red[256], 
+void		MTLimp_SetGamma( unsigned char red[256], 
 						    unsigned char green[256],
 							unsigned char blue[256] );
 

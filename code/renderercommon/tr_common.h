@@ -115,7 +115,7 @@ extern cvar_t *r_ignorehwgamma;		// overrides hardware gamma capabilities
 extern cvar_t *r_drawBuffer;
 extern cvar_t *r_swapInterval;
 
-extern cvar_t *r_allowExtensions;				// global enable/disable of OpenGL extensions
+extern cvar_t *r_allowExtensions;				// global enable/disable of the r_ext_* features
 extern cvar_t *r_ext_compressed_textures;		// these control use of specific extensions
 extern cvar_t *r_ext_multitexture;
 extern cvar_t *r_ext_compiled_vertex_array;
@@ -171,14 +171,14 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 ====================================================================
 */
 
-void		GLimp_Init( qboolean fixedFunction );
-void		GLimp_Shutdown( void );
-void		GLimp_EndFrame( void );
+void		MTLimp_Init( qboolean fixedFunction );
+void		MTLimp_Shutdown( void );
+void		MTLimp_EndFrame( void );
 
-void		GLimp_LogComment( char *comment );
-void		GLimp_Minimize(void);
+void		MTLimp_LogComment( char *comment );
+void		MTLimp_Minimize(void);
 
-void		GLimp_SetGamma( unsigned char red[256],
+void		MTLimp_SetGamma( unsigned char red[256],
 		unsigned char green[256],
 		unsigned char blue[256] );
 

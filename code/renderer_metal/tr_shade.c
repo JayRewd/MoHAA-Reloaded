@@ -34,7 +34,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ================
 R_ArrayElementDiscrete
 
-This is just for OpenGL conformance testing, it should never be the fastest
+This is just for conformance testing, it should never be the fastest
 ================
 */
 static void R_ArrayElementDiscrete( int index ) {
@@ -214,7 +214,7 @@ static void R_BindAnimatedImage( textureBundle_t *bundle ) {
 	int index;
 
 	if (bundle->numImageAnimations <= 1) {
-		GL_Bind(bundle->image[0]);
+		R_Bind(bundle->image[0]);
 		return;
 	}
 
@@ -232,7 +232,7 @@ static void R_BindAnimatedImage( textureBundle_t *bundle ) {
 		index = bundle->numImageAnimations - 1;
 	}
 
-	GL_Bind(bundle->image[index]);
+	R_Bind(bundle->image[index]);
 }
 
 /*
@@ -243,13 +243,13 @@ Draws triangle outlines for debugging
 ================
 */
 static void DrawTris (shaderCommands_t *input, int flags) {
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	mbColor3f (1,1,1);
 
 	if (flags == 1) {
-		GL_State(GLS_POLYMODE_LINE);
+		R_State(GLS_POLYMODE_LINE);
 	} else {
-        GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+        R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
         mbDepthRange(0, 0);
 	}
 
@@ -260,12 +260,12 @@ static void DrawTris (shaderCommands_t *input, int flags) {
 		mbVertexPointer(3, MB_FLOAT, 16, input->xyz);	// padded for SIMD
 
 		mbLockArraysEXT(0, input->numVertexes);
-		GLimp_LogComment("glLockArraysEXT\n");
+		MTLimp_LogComment("glLockArraysEXT\n");
 
 		R_DrawElements(input->numIndexes, input->indexes);
 
 		mbUnlockArraysEXT();
-		GLimp_LogComment("glUnlockArraysEXT\n");
+		MTLimp_LogComment("glUnlockArraysEXT\n");
 		mbDepthRange(0, 1);
 	}
 
@@ -275,7 +275,7 @@ static void DrawTris (shaderCommands_t *input, int flags) {
         start[1] = start[0] = 0.0;
 		end[1] = end[0] = 0.0;
 
-        GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+        R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
         mbDepthRange(0, 0);
 
         mbDisable(MB_TEXTURE_2D);
@@ -326,10 +326,10 @@ static void DrawNormals (shaderCommands_t *input) {
 	int		i;
 	vec3_t	temp;
 
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	mbColor3f (1,1,1);
 	mbDepthRange( 0, 0 );	// never occluded
-	GL_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE );
+	R_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE );
 
 	mbBegin (MB_LINES);
 	for (i = 0 ; i < input->numVertexes ; i++) {
@@ -378,7 +378,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 
 	pStage = tess.xstages[stage];
 
-	GL_State( pStage->stateBits );
+	R_State( pStage->stateBits );
 
 	// this is an ugly hack to work around a GeForce driver
 	// bug with multitexture and clip planes
@@ -389,7 +389,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	//
 	// base
 	//
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 	mbTexCoordPointer( 2, MB_FLOAT, 0, input->svars.texcoords[0] );
 	R_BindAnimatedImage( &pStage->bundle[0] );
 
@@ -432,12 +432,12 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	//
 	// lightmap/secondary pass
 	//
-	GL_SelectTexture( 1 );
+	R_SelectTexture( 1 );
 	mbEnable( MB_TEXTURE_2D );
 	mbEnableClientState( MB_TEXTURE_COORD_ARRAY );
 
 	if ( r_lightmap->integer && pStage->bundle[1].isLightmap ) {
-		GL_TexEnv( MB_REPLACE );
+		R_TexEnv( MB_REPLACE );
 /*
     //
 	// Removed in 2.0
@@ -445,7 +445,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	} else if (pStage->stateBits & GLS_MULTITEXTURE_ENV) {
 		glState.cntTexEnvExt = GLS_MULTITEXTURE_ENV;
 
-		GL_TexEnv(MB_COMBINE);
+		R_TexEnv(MB_COMBINE);
 		mbTexEnvf(MB_TEXTURE_ENV, MB_COMBINE_RGB, MB_INTERPOLATE);
 		mbTexEnvf(MB_TEXTURE_ENV, MB_SOURCE0_RGB, MB_PRIMARY_COLOR);
 		mbTexEnvf(MB_TEXTURE_ENV, MB_OPERAND0_RGB, MB_SRC_COLOR);
@@ -455,7 +455,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 		mbTexEnvf(MB_TEXTURE_ENV, MB_OPERAND2_RGB, MB_SRC_ALPHA);
 */
 	} else {
-		GL_TexEnv( pStage->multitextureEnv );
+		R_TexEnv( pStage->multitextureEnv );
 	}
 
 	mbTexCoordPointer( 2, MB_FLOAT, 0, input->svars.texcoords[1] );
@@ -463,7 +463,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	if (!input->dlightMap || !pStage->bundle[1].isLightmap) {
 		R_BindAnimatedImage(&pStage->bundle[1]);
 	} else {
-		GL_Bind(tr.dlightImages[input->dlightMap - 1]);
+		R_Bind(tr.dlightImages[input->dlightMap - 1]);
 	}
 
 	R_DrawElements( input->numIndexes, input->indexes );
@@ -474,7 +474,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	//
 	mbDisableClientState(MB_TEXTURE_COORD_ARRAY);
 
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 }
 
 
@@ -716,14 +716,14 @@ static void ProjectDlightTexture( void ) {
 		mbColorPointer(4, MB_UNSIGNED_BYTE, 0, colorArray);
 		mbTexCoordPointer(2, MB_FLOAT, 0, texCoordsArray[0]);
 
-		GL_Bind( tr.dlightImage );
+		R_Bind( tr.dlightImage );
 		// include GLS_DEPTHFUNC_EQUAL so alpha tested surfaces don't add light
 		// where they aren't rendered
 		if ( dl->type & additive) {
-			GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+			R_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
 		}
 		else {
-			GL_State( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+			R_State( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
 		}
 		R_DrawElements( numIndexes, hitIndexes );
 		backEnd.pc.c_totalIndexes += numIndexes;
@@ -1463,10 +1463,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		else
 		{
 			if (backEnd.in2D) {
-				GL_State(pStage->stateBits | GLS_DEPTHTEST_DISABLE);
+				R_State(pStage->stateBits | GLS_DEPTHTEST_DISABLE);
 			}
 			else {
-				GL_State(pStage->stateBits);
+				R_State(pStage->stateBits);
 			}
 
 			if (!setArraysOnce)
@@ -1479,11 +1479,11 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			//
 			if (pStage->bundle[0].vertexLightmap && r_vertexLight->integer && r_lightmap->integer)
 			{
-				GL_Bind(tr.whiteImage);
+				R_Bind(tr.whiteImage);
 			}
 			else {
 				if (input->dlightMap && tess.xstages[stage]->bundle[0].isLightmap) {
-					GL_Bind(tr.dlightImages[input->dlightMap - 1]);
+					R_Bind(tr.dlightImages[input->dlightMap - 1]);
 				}
 				else {
 					R_BindAnimatedImage(&pStage->bundle[0]);
@@ -1527,13 +1527,13 @@ void RB_StageIteratorGeneric( void )
 	{
 		// don't just call LogComment, or we will get
 		// a call to va() every frame!
-		GLimp_LogComment( va("--- RB_StageIteratorGeneric( %s ) ---\n", tess.shader->name) );
+		MTLimp_LogComment( va("--- RB_StageIteratorGeneric( %s ) ---\n", tess.shader->name) );
 	}
 
 	//
 	// set face culling appropriately
 	//
-	GL_Cull( input->shader->cullType );
+	R_Cull( input->shader->cullType );
 
 	// set polygon offset if necessary
 	if ( input->shader->polygonOffset )
@@ -1570,7 +1570,7 @@ void RB_StageIteratorGeneric( void )
 	//
 	mbVertexPointer (3, MB_FLOAT, 16, input->xyz);	// padded for SIMD
 	mbLockArraysEXT(0, input->numVertexes);
-	GLimp_LogComment( "glLockArraysEXT\n" );
+	MTLimp_LogComment( "glLockArraysEXT\n" );
 
 	//
 	// enable color and texcoord arrays after the lock if necessary
@@ -1597,7 +1597,7 @@ void RB_StageIteratorGeneric( void )
 	// unlock arrays
 	//
 	mbUnlockArraysEXT();
-	GLimp_LogComment( "glUnlockArraysEXT\n" );
+	MTLimp_LogComment( "glUnlockArraysEXT\n" );
 
 	//
 	// reset polygon offset
@@ -1651,13 +1651,13 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	{
 		// don't just call LogComment, or we will get
 		// a call to va() every frame!
-		GLimp_LogComment( va("--- RB_StageIteratorVertexLitTexturedUnfogged( %s ) ---\n", tess.shader->name) );
+		MTLimp_LogComment( va("--- RB_StageIteratorVertexLitTexturedUnfogged( %s ) ---\n", tess.shader->name) );
 	}
 
 	//
 	// set face culling appropriately
 	//
-	GL_Cull( input->shader->cullType );
+	R_Cull( input->shader->cullType );
 
 	//
 	// set arrays and lock
@@ -1670,13 +1670,13 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	mbVertexPointer (3, MB_FLOAT, 16, input->xyz);
 
 	mbLockArraysEXT(0, input->numVertexes);
-	GLimp_LogComment( "glLockArraysEXT\n" );
+	MTLimp_LogComment( "glLockArraysEXT\n" );
 
 	//
 	// call special shade routine
 	//
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
-	GL_State( tess.xstages[0]->stateBits );
+	R_State( tess.xstages[0]->stateBits );
 	R_DrawElements( input->numIndexes, input->indexes );
 
 	// 
@@ -1690,7 +1690,7 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	// unlock arrays
 	//
 	mbUnlockArraysEXT();
-	GLimp_LogComment( "glUnlockArraysEXT\n" );
+	MTLimp_LogComment( "glUnlockArraysEXT\n" );
 }
 
 //define	REPLACE_MODE
@@ -1706,18 +1706,18 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	if ( r_logFile->integer ) {
 		// don't just call LogComment, or we will get
 		// a call to va() every frame!
-		GLimp_LogComment( va("--- RB_StageIteratorLightmappedMultitexture( %s ) ---\n", tess.shader->name) );
+		MTLimp_LogComment( va("--- RB_StageIteratorLightmappedMultitexture( %s ) ---\n", tess.shader->name) );
 	}
 
 	//
 	// set face culling appropriately
 	//
-	GL_Cull( input->shader->cullType );
+	R_Cull( input->shader->cullType );
 
 	//
 	// set color, pointers, and lock
 	//
-	GL_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
+	R_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
 	mbVertexPointer( 3, MB_FLOAT, 16, input->xyz );
 
 #ifdef REPLACE_MODE
@@ -1732,7 +1732,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	//
 	// select base stage
 	//
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 
 	mbEnableClientState( MB_TEXTURE_COORD_ARRAY );
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
@@ -1741,15 +1741,15 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	//
 	// configure second stage
 	//
-	GL_SelectTexture( 1 );
+	R_SelectTexture( 1 );
 	mbEnable( MB_TEXTURE_2D );
 	if ( r_lightmap->integer ) {
-		GL_TexEnv( MB_REPLACE );
+		R_TexEnv( MB_REPLACE );
 	} else {
-		GL_TexEnv( MB_MODULATE );
+		R_TexEnv( MB_MODULATE );
 	}
 	if (tess.dlightMap && tess.xstages[0]->bundle[1].isLightmap) {
-		GL_Bind(tr.dlightImages[tess.dlightMap - 1]);
+		R_Bind(tr.dlightImages[tess.dlightMap - 1]);
 	} else {
 		R_BindAnimatedImage(&tess.xstages[0]->bundle[1]);
 	}
@@ -1760,7 +1760,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	// lock arrays
 	//
 	mbLockArraysEXT(0, input->numVertexes);
-	GLimp_LogComment( "glLockArraysEXT\n" );
+	MTLimp_LogComment( "glLockArraysEXT\n" );
 
 	R_DrawElements( input->numIndexes, input->indexes );
 
@@ -1770,9 +1770,9 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	mbDisable( MB_TEXTURE_2D );
 	mbDisableClientState( MB_TEXTURE_COORD_ARRAY );
 
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 #ifdef REPLACE_MODE
-	GL_TexEnv( MB_MODULATE );
+	R_TexEnv( MB_MODULATE );
 	mbShadeModel( MB_SMOOTH );
 #endif
 
@@ -1787,7 +1787,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	// unlock arrays
 	//
 	mbUnlockArraysEXT();
-	GLimp_LogComment( "glUnlockArraysEXT\n" );
+	MTLimp_LogComment( "glUnlockArraysEXT\n" );
 }
 
 /*
@@ -1851,6 +1851,6 @@ void RB_EndSurface( void ) {
 	// clear shader so we can tell we don't have any unclosed surfaces
 	tess.numIndexes = 0;
 
-	GLimp_LogComment( "----------\n" );
+	MTLimp_LogComment( "----------\n" );
 }
 

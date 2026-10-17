@@ -276,23 +276,22 @@ static char infostring[8192];
 
 
 /*
-** InitOpenGL
+** InitBackend
 **
-** This function is responsible for initializing a valid OpenGL subsystem.  This
-** is done by calling GLimp_Init (which gives us a working OGL subsystem) then
-** setting variables, checking GL constants, and reporting the gfx system config
+** This function is responsible for initializing the Metal backend.  This
+** is done by calling MTLimp_Init (which opens the window and starts the backend) then
+** setting variables, checking the backend's limits, and reporting the gfx system config
 ** to the user.
 */
-static void InitOpenGL( void )
+static void InitBackend( void )
 {
 	char renderer_buffer[1024];
 
 	//
 	// initialize OS specific portions of the renderer
 	//
-	// GLimp_Init directly or indirectly references the following cvars:
+	// MTLimp_Init directly or indirectly references the following cvars:
 	//		- r_fullscreen
-	//		- r_glDriver
 	//		- r_mode
 	//		- r_(color|depth|stencil)bits
 	//		- r_ignorehwgamma
@@ -301,12 +300,12 @@ static void InitOpenGL( void )
 	
 	if ( glConfig.vidWidth == 0 )
 	{
-		GLimp_Init(qtrue);
+		MTLimp_Init(qtrue);
 
 		strcpy( renderer_buffer, glConfig.renderer_string );
 		Q_strlwr( renderer_buffer );
 
-		// glConfig.maxTextureSize comes from the backend (GLimp_Init)
+		// glConfig.maxTextureSize comes from the backend (MTLimp_Init)
 
 		// stubbed or broken drivers may have reported 0...
 		if ( glConfig.maxTextureSize <= 0 ) 
@@ -323,15 +322,15 @@ static void InitOpenGL( void )
 	GfxInfo_f();
 
 	// set default state
-	GL_SetDefaultState();
+	R_SetDefaultState();
 }
 
 /*
 ==================
-GL_CheckErrors
+R_CheckErrors
 ==================
 */
-void GL_CheckErrors( void ) {
+void R_CheckErrors( void ) {
 	int		err;
 	char	s[64];
 
@@ -344,29 +343,29 @@ void GL_CheckErrors( void ) {
 	}
 	switch( err ) {
 		case MB_INVALID_ENUM:
-			strcpy( s, "GL_INVALID_ENUM" );
+			strcpy( s, "MB_INVALID_ENUM" );
 			break;
 		case MB_INVALID_VALUE:
-			strcpy( s, "GL_INVALID_VALUE" );
+			strcpy( s, "MB_INVALID_VALUE" );
 			break;
 		case MB_INVALID_OPERATION:
-			strcpy( s, "GL_INVALID_OPERATION" );
+			strcpy( s, "MB_INVALID_OPERATION" );
 			break;
 		case MB_STACK_OVERFLOW:
-			strcpy( s, "GL_STACK_OVERFLOW" );
+			strcpy( s, "MB_STACK_OVERFLOW" );
 			break;
 		case MB_STACK_UNDERFLOW:
-			strcpy( s, "GL_STACK_UNDERFLOW" );
+			strcpy( s, "MB_STACK_UNDERFLOW" );
 			break;
 		case MB_OUT_OF_MEMORY:
-			strcpy( s, "GL_OUT_OF_MEMORY" );
+			strcpy( s, "MB_OUT_OF_MEMORY" );
 			break;
 		default:
 			Com_sprintf( s, sizeof(s), "%i", err);
 			break;
 	}
 
-	ri.Error( ERR_FATAL, "GL_CheckErrors: %s", s );
+	ri.Error( ERR_FATAL, "R_CheckErrors: %s", s );
 }
 
 
@@ -967,9 +966,9 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 //============================================================================
 
 /*
-** GL_SetDefaultState
+** R_SetDefaultState
 */
-void GL_SetDefaultState( void )
+void R_SetDefaultState( void )
 {
 	mbClearDepth( 1.0f );
 
@@ -980,16 +979,16 @@ void GL_SetDefaultState( void )
 	// initialize downstream texture unit if we're running
 	// in a multitexture environment
 	if ( mbMultitexture ) {
-		GL_SelectTexture( 1 );
-		GL_TextureMode( r_textureMode->string );
-		GL_TexEnv( MB_MODULATE );
+		R_SelectTexture( 1 );
+		R_TextureMode( r_textureMode->string );
+		R_TexEnv( MB_MODULATE );
 		mbDisable( MB_TEXTURE_2D );
-		GL_SelectTexture( 0 );
+		R_SelectTexture( 0 );
 	}
 
 	mbEnable(MB_TEXTURE_2D);
-	GL_TextureMode( r_textureMode->string );
-	GL_TexEnv( MB_MODULATE );
+	R_TextureMode( r_textureMode->string );
+	R_TexEnv( MB_MODULATE );
 
 	mbShadeModel( MB_SMOOTH );
 	mbDepthFunc( MB_LEQUAL );
@@ -1086,14 +1085,14 @@ void BuildGfxInfo(char* dest, size_t destsize) {
 		"fullscreen"
 	};
 
-	PrintAndAppendString( dest, destsize, "\nGL_VENDOR: %s\n", glConfig.vendor_string );
-	PrintAndAppendString( dest, destsize, "GL_RENDERER: %s\n", glConfig.renderer_string );
-	PrintAndAppendString( dest, destsize, "GL_VERSION: %s\n", glConfig.version_string );
-	PrintAndAppendString( dest, destsize, "GL_EXTENSIONS: " );
+	PrintAndAppendString( dest, destsize, "\nVENDOR: %s\n", glConfig.vendor_string );
+	PrintAndAppendString( dest, destsize, "RENDERER: %s\n", glConfig.renderer_string );
+	PrintAndAppendString( dest, destsize, "VERSION: %s\n", glConfig.version_string );
+	PrintAndAppendString( dest, destsize, "EXTENSIONS: " );
 	R_PrintLongString( dest, destsize, glConfig.extensions_string );
 	PrintAndAppendString( dest, destsize, "\n" );
-	PrintAndAppendString( dest, destsize, "GL_MAX_TEXTURE_SIZE: %d\n", glConfig.maxTextureSize );
-	PrintAndAppendString( dest, destsize, "GL_MAX_TEXTURE_UNITS_ARB: %d\n", glConfig.numTextureUnits );
+	PrintAndAppendString( dest, destsize, "MAX_TEXTURE_SIZE: %d\n", glConfig.maxTextureSize );
+	PrintAndAppendString( dest, destsize, "MAX_TEXTURE_UNITS: %d\n", glConfig.numTextureUnits );
 	PrintAndAppendString( dest, destsize, "\nPIXELFORMAT: color(%d-bits) Z(%d-bit) stencil(%d-bits)\n", glConfig.colorBits, glConfig.depthBits, glConfig.stencilBits );
 	PrintAndAppendString( dest, destsize, "MODE: %d, %d x %d %s hz:", r_mode->integer, glConfig.vidWidth, glConfig.vidHeight, fsstrings[r_fullscreen->integer == 1] );
 	if ( glConfig.displayFrequency )
@@ -1612,7 +1611,7 @@ void R_Init( void ) {
 	backEndData->staticModelData = NULL;
 	R_InitNextFrame();
 
-	InitOpenGL();
+	InitBackend();
 
 	R_InitExtensions();
 
@@ -1660,9 +1659,9 @@ void RE_Shutdown( qboolean destroyWindow ) {
 		R_DeleteTextures();
 	}
 
-	// shut down platform specific OpenGL stuff
+	// shut down the window and the backend
 	if ( destroyWindow ) {
-		GLimp_Shutdown();
+		MTLimp_Shutdown();
 
 		Com_Memset( &glConfig, 0, sizeof( glConfig ) );
 		textureFilterAnisotropic = qfalse;

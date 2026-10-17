@@ -377,7 +377,7 @@ static void DrawSkySide( struct image_s *image, const int mins[2], const int max
 {
 	int s, t;
 
-	GL_Bind( image );
+	R_Bind( image );
 
 	for ( t = mins[1]+HALF_SKY_SUBDIVISIONS; t < maxs[1]+HALF_SKY_SUBDIVISIONS; t++ )
 	{
@@ -831,7 +831,7 @@ void RB_StageIteratorSky( void ) {
 		mbColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
 		
 		mbPushMatrix ();
-		GL_State( 0 );
+		R_State( 0 );
 		mbTranslatef (backEnd.viewParms.ori.origin[0], backEnd.viewParms.ori.origin[1], backEnd.viewParms.ori.origin[2]);
 
 		DrawSkyBox( tess.shader );

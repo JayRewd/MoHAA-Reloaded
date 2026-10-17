@@ -14,7 +14,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 - `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it.
 - `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
-- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` + `tgamontage.py` (renderer screenshot comparison and side-by-side tiles, cfgs in `port/shots/`), `roqtest.py` (a RoQ test video for the cinematic path), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
+- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` + `tgamontage.py` (renderer screenshot comparison and side-by-side tiles, cfgs in `port/shots/`), `roqtest.py` (a RoQ test video for the cinematic path), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present latency probe with synthetic mouse movement, checked against Instruments), `glcheck.sh` (no OpenGL left in the tree or the binary), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, traces; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules
@@ -32,20 +32,20 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 ```bash
 source port/env.sh                 # every shell, first
-port/build.sh gl                   # upstream GL1 reference build -> build.noindex/gl-install (~40 s, arm64)
-port/build.sh metal                # GL1 + Metal renderer in one install (mounts the Metal Toolchain itself)
-port/run.sh gl +map dm/mohdm6      # run against the retail data; extra args are engine args
-port/run.sh metal +set cl_renderer metal   # the Metal renderer (cl_renderer opengl1 = GL1 from the same install)
-port/bench.sh run gl 3             # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs
-port/bench.sh run metal 3 +set cl_renderer metal   # the same on Metal (extra engine args after the run count)
-port/bench.sh trace gl             # one traced timedemo: GPU utilization and GPU ms per frame
-port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1), into build.noindex/shots
+port/build.sh metal                # the game: Metal only, the renderer linked in (mounts the Metal Toolchain itself) -> build.noindex/metal-install (~40 s, arm64)
+port/build.sh gl                   # the GL1 reference: the last commit with GL1 (c9dddadd), built from a git archive export -> build.noindex/gl-install
+port/run.sh metal +map dm/mohdm6   # run against the retail data; extra args are engine args (port/run.sh gl = the GL1 reference)
+port/bench.sh run metal 3          # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs (extra engine args after the run count)
+port/bench.sh run gl 3             # the same on the GL1 reference
+port/bench.sh trace metal          # one traced timedemo: GPU utilization and GPU ms per frame
+port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1 = the GL1 reference), into build.noindex/shots
 port/shot.sh diff menu             # per-pixel difference GL1 vs Metal for every screenshot pair of that name
-port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): both renderers + per-view diffs
+port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): GL1 reference + Metal, per-view diffs
 port/latency.sh metal win-250 20   # cl_latencyStats in dm/mohdm6 with 20 s of synthetic mouse (takes the mouse!); TRACE=1 checks it against the display
+port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
 ```
 
-New flavors (e.g. `metal`) are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.
+New flavors are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. OpenGL is gone from the tree since Phase 4; GL1 comparisons (screenshots, bench) use the `gl` reference flavor, which never changes unless `GL1_REF` in `port/build.sh` does. `cl_renderer` is ignored (read-only "metal"). Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.
 
 Gotchas: in OpenMoHAA, `wait N` counts **milliseconds**, and `wait 1` is exactly one frame. A killed run leaves a PID file, and the next start then blocks on a modal "Abnormal Exit" dialog (`run.sh` removes stale PID files). Don't use `s_initsound 0` (upstream crashes on the first footstep); mute with `s_volume 0`. The upstream launchers (`launch_openmohaa_*`) don't work on macOS; run the .app binary directly.
 

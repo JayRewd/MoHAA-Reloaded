@@ -618,7 +618,7 @@ static void RB_Sphere_Light_Sun()
                 VectorCopy(backEnd.currentEntity->e.origin, temppos);
                 MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
 
-                GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+                R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
                 mbPushMatrix();
 
@@ -660,7 +660,7 @@ static void RB_Sphere_Light_Sun()
         VectorSubtract(trace.endpos, backEnd.currentEntity->e.origin, temppos);
         MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
 
-        GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+        R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
         mbPushMatrix();
 

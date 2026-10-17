@@ -43,8 +43,8 @@ static void LoadJPG( const char *name, byte **pic, int *width, int *height );
 static byte			 s_intensitytable[256];
 static unsigned char s_gammatable[256];
 
-int		gl_filter_min = MB_LINEAR_MIPMAP_NEAREST;
-int		gl_filter_max = MB_LINEAR;
+int		mb_filter_min = MB_LINEAR_MIPMAP_NEAREST;
+int		mb_filter_max = MB_LINEAR;
 
 #define FILE_HASH_SIZE		1024
 static	image_t*		hashTable[FILE_HASH_SIZE];
@@ -101,10 +101,10 @@ static long generateHashValue( const char *fname ) {
 
 /*
 ===============
-GL_TextureMode
+R_TextureMode
 ===============
 */
-void GL_TextureMode( const char *string ) {
+void R_TextureMode( const char *string ) {
 	int		i;
 	image_t	*glt;
 
@@ -127,16 +127,16 @@ void GL_TextureMode( const char *string ) {
 		return;
 	}
 
-	gl_filter_min = modes[i].minimize;
-	gl_filter_max = modes[i].maximize;
+	mb_filter_min = modes[i].minimize;
+	mb_filter_max = modes[i].maximize;
 
 	// change all the existing mipmap texture objects
 	for ( i = 0 ; i < tr.numImages ; i++ ) {
 		glt = &tr.images[ i ];
 		if ( glt->numMipmaps && glt->texnum ) {
-			GL_Bind (glt);
-			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, gl_filter_min);
-			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, gl_filter_max);
+			R_Bind (glt);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, mb_filter_min);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, mb_filter_max);
 		}
 	}
 }
@@ -509,7 +509,7 @@ static void Upload32(
 	}
 
 	//
-	// clamp to the current upper OpenGL limit
+	// clamp to the current upper texture size limit
 	// scale both axis down equally so we don't have to
 	// deal with a half mip resampling
 	//
@@ -687,8 +687,8 @@ done:
 			mbTexParameteri( MB_TEXTURE_2D, MB_TEXTURE_MAX_ANISOTROPY_EXT,
 					(int)Com_Clamp( 1, maxAnisotropy, r_ext_max_anisotropy->integer ) );
 
-		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, gl_filter_min);
-		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, gl_filter_max);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, mb_filter_min);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, mb_filter_max);
 	}
 	else
 	{
@@ -699,7 +699,7 @@ done:
 		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR );
 	}
 
-	GL_CheckErrors();
+	R_CheckErrors();
 
 	//if ( scaledBuffer != 0 )
 	//	ri.Hunk_FreeTempMemory( scaledBuffer );
@@ -804,7 +804,7 @@ static void UploadCompressed(
 		}
 
 		mbCompressedTexImage2D(MB_TEXTURE_2D, i - iStartImage, glCompressMode, scaled_width, scaled_height, 0, size, offset);
-		GL_CheckErrors();
+		R_CheckErrors();
 
 		if (i < iMipmapsAvailable && w > 1 && h > 1) {
 			offset += size;
@@ -816,14 +816,14 @@ static void UploadCompressed(
 	}
 
 	if (numMipmaps > 1) {
-		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, gl_filter_min);
-		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, gl_filter_max);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, mb_filter_min);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, mb_filter_max);
 	} else {
 		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, MB_LINEAR);
 		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR);
 	}
 
-	GL_CheckErrors();
+	R_CheckErrors();
 }
 
 /*
@@ -908,10 +908,10 @@ image_t* R_CreateImageOld(
 	}
 
 	if ( mbMultitexture ) {
-		GL_SelectTexture( image->TMU );
+		R_SelectTexture( image->TMU );
 	}
 
-	GL_Bind(image);
+	R_Bind(image);
 
 	if (glCompressMode) {
 		UploadCompressed(
@@ -953,7 +953,7 @@ image_t* R_CreateImageOld(
 
 	glState.currenttextures[image->TMU] = -1;
 	if ( image->TMU == 1 ) {
-		GL_SelectTexture( 0 );
+		R_SelectTexture( 0 );
 	}
 
 	hash = generateHashValue(name);
@@ -1535,7 +1535,7 @@ static void LoadDDS(const char* name, byte** pic, int* width, int* height, qbool
 	ddsHeader.fourCC = LittleLong(ddsHeader.fourCC);
 
 	//
-	// Convert DXGI format/FourCC into OpenGL format
+	// Convert DXGI format/FourCC into the backend's format
 	//
 	if (ddsHeader.fourCC == EncodeFourCC("DXT1")) {
 		intSize = 2;
@@ -2841,7 +2841,7 @@ void R_SetColorMappings( void ) {
 
 	if ( glConfig.deviceSupportsGamma )
 	{
-		GLimp_SetGamma( s_gammatable, s_gammatable, s_gammatable );
+		MTLimp_SetGamma( s_gammatable, s_gammatable, s_gammatable );
 	}
 }
 
@@ -2925,9 +2925,9 @@ void R_DeleteTextures( void ) {
 
 	Com_Memset( glState.currenttextures, 0, sizeof( glState.currenttextures ) );
 	if ( mbMultitexture ) {
-		GL_SelectTexture( 1 );
+		R_SelectTexture( 1 );
 		mbBindTexture( MB_TEXTURE_2D, 0 );
-		GL_SelectTexture( 0 );
+		R_SelectTexture( 0 );
 		mbBindTexture( MB_TEXTURE_2D, 0 );
 	} else {
 		mbBindTexture( MB_TEXTURE_2D, 0 );

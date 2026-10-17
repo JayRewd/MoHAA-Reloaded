@@ -21,7 +21,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 // sdl_mtlimp.m -- the Metal renderer's window: an SDL window with a CAMetalLayer (SDL_Metal_CreateView).
-// Mode selection and fullscreen handling follow sdl_glimp.c; there is no GL context.
+// Mode selection and fullscreen handling follow upstream's SDL window code of the GL1 renderer.
 //
 // Low latency (docs/METAL_PORT_PLAN.md 4b): the layer is opaque, has 2 drawables (3 for vsync in fullscreen),
 // presents immediately when r_swapInterval is 0 (displaySyncEnabled NO) and never with a Core Animation
@@ -70,10 +70,10 @@ cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 fo
 
 /*
 ===============
-GLimp_DestroyWindow
+MTLimp_DestroyWindow
 ===============
 */
-static void GLimp_DestroyWindow( void )
+static void MTLimp_DestroyWindow( void )
 {
 	mbShutdown();
 
@@ -92,26 +92,26 @@ static void GLimp_DestroyWindow( void )
 
 /*
 ===============
-GLimp_Shutdown
+MTLimp_Shutdown
 ===============
 */
-void GLimp_Shutdown( void )
+void MTLimp_Shutdown( void )
 {
 	ri.IN_Shutdown();
 
-	GLimp_DestroyWindow();
+	MTLimp_DestroyWindow();
 
 	SDL_QuitSubSystem( SDL_INIT_VIDEO );
 }
 
 /*
 ===============
-GLimp_Minimize
+MTLimp_Minimize
 
 Minimize the game so that user is back at the desktop
 ===============
 */
-void GLimp_Minimize( void )
+void MTLimp_Minimize( void )
 {
 	SDL_MinimizeWindow( SDL_window );
 }
@@ -119,31 +119,31 @@ void GLimp_Minimize( void )
 
 /*
 ===============
-GLimp_LogComment
+MTLimp_LogComment
 ===============
 */
-void GLimp_LogComment( char *comment )
+void MTLimp_LogComment( char *comment )
 {
 }
 
 /*
 =================
-GLimp_SetGamma
+MTLimp_SetGamma
 
 There is no hardware gamma: the ramp is applied in the backend's final pass.
 =================
 */
-void GLimp_SetGamma( unsigned char red[256], unsigned char green[256], unsigned char blue[256] )
+void MTLimp_SetGamma( unsigned char red[256], unsigned char green[256], unsigned char blue[256] )
 {
 	mbSetGamma( red, green, blue );
 }
 
 /*
 ===============
-GLimp_CompareModes
+MTLimp_CompareModes
 ===============
 */
-static int GLimp_CompareModes( const void *a, const void *b )
+static int MTLimp_CompareModes( const void *a, const void *b )
 {
 	const float ASPECT_EPSILON = 0.001f;
 	SDL_Rect *modeA = (SDL_Rect *)a;
@@ -167,10 +167,10 @@ static int GLimp_CompareModes( const void *a, const void *b )
 
 /*
 ===============
-GLimp_DetectAvailableModes
+MTLimp_DetectAvailableModes
 ===============
 */
-static void GLimp_DetectAvailableModes(void)
+static void MTLimp_DetectAvailableModes(void)
 {
 	int i, j;
 	char buf[ MAX_STRING_CHARS ] = { 0 };
@@ -233,7 +233,7 @@ static void GLimp_DetectAvailableModes(void)
 	}
 
 	if( numModes > 1 )
-		qsort( modes, numModes, sizeof( SDL_Rect ), GLimp_CompareModes );
+		qsort( modes, numModes, sizeof( SDL_Rect ), MTLimp_CompareModes );
 
 	for( i = 0; i < numModes; i++ )
 	{
@@ -256,10 +256,10 @@ static void GLimp_DetectAvailableModes(void)
 
 /*
 ===============
-GLimp_SetMode
+MTLimp_SetMode
 ===============
 */
-static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
+static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 {
 	SDL_Surface *icon = NULL;
 	Uint32 flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_METAL | SDL_WINDOW_ALLOW_HIGHDPI;
@@ -359,7 +359,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	{
 		SDL_GetWindowPosition( SDL_window, &x, &y );
 		ri.Printf( PRINT_DEVELOPER, "Existing window at %dx%d before being destroyed\n", x, y );
-		GLimp_DestroyWindow();
+		MTLimp_DestroyWindow();
 	}
 
 	if( fullscreen )
@@ -397,7 +397,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		if( SDL_SetWindowDisplayMode( SDL_window, &desiredMode ) < 0 )
 		{
 			ri.Printf( PRINT_DEVELOPER, "SDL_SetWindowDisplayMode failed: %s\n", SDL_GetError( ) );
-			GLimp_DestroyWindow();
+			MTLimp_DestroyWindow();
 			SDL_FreeSurface( icon );
 			return RSERR_INVALID_FULLSCREEN;
 		}
@@ -410,7 +410,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	if( !SDL_metalView )
 	{
 		ri.Printf( PRINT_ALL, "SDL_Metal_CreateView failed: %s\n", SDL_GetError( ) );
-		GLimp_DestroyWindow();
+		MTLimp_DestroyWindow();
 		return RSERR_INVALID_MODE;
 	}
 	layer = (__bridge CAMetalLayer *)SDL_Metal_GetLayer( SDL_metalView );
@@ -434,7 +434,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 
 	if( !mbInit( (__bridge void *)layer ) )
 	{
-		GLimp_DestroyWindow();
+		MTLimp_DestroyWindow();
 		return RSERR_UNKNOWN;
 	}
 
@@ -454,19 +454,19 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		( (__bridge NSView *)SDL_metalView ).window.hasShadow = NO;
 	}
 
-	GLimp_DetectAvailableModes();
+	MTLimp_DetectAvailableModes();
 
-	ri.Printf( PRINT_ALL, "GL_RENDERER: %s\n", mbRendererString() );
+	ri.Printf( PRINT_ALL, "RENDERER: %s\n", mbRendererString() );
 
 	return RSERR_OK;
 }
 
 /*
 ===============
-GLimp_StartDriverAndSetMode
+MTLimp_StartDriverAndSetMode
 ===============
 */
-static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qboolean noborder)
+static qboolean MTLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qboolean noborder)
 {
 	rserr_t err;
 
@@ -493,7 +493,7 @@ static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qbool
 		fullscreen = qfalse;
 	}
 
-	err = GLimp_SetMode(mode, fullscreen, noborder);
+	err = MTLimp_SetMode(mode, fullscreen, noborder);
 
 	switch ( err )
 	{
@@ -516,13 +516,13 @@ static qboolean GLimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qbool
 
 /*
 ===============
-GLimp_InitCapabilities
+MTLimp_InitCapabilities
 
 What the GL1 front end reads from extensions, set the way GL1 sets them on Apple's GL driver so shader
 collapsing and image uploads take the same paths.
 ===============
 */
-static void GLimp_InitCapabilities( void )
+static void MTLimp_InitCapabilities( void )
 {
 	glConfig.textureCompression = TC_NONE;
 	if ( r_ext_compressed_textures->value )
@@ -552,15 +552,15 @@ static void GLimp_InitCapabilities( void )
 
 /*
 ===============
-GLimp_Init
+MTLimp_Init
 
 This routine is responsible for initializing the OS specific portions
 of the renderer (window, Metal layer)
 ===============
 */
-void GLimp_Init( qboolean fixedFunction )
+void MTLimp_Init( qboolean fixedFunction )
 {
-	ri.Printf( PRINT_DEVELOPER, "Glimp_Init( )\n" );
+	ri.Printf( PRINT_DEVELOPER, "MTLimp_Init( )\n" );
 
 	r_sdlDriver = ri.Cvar_Get( "r_sdlDriver", "", CVAR_ROM );
 	r_allowResize = ri.Cvar_Get( "r_allowResize", "0", CVAR_ARCHIVE | CVAR_LATCH );
@@ -576,16 +576,12 @@ void GLimp_Init( qboolean fixedFunction )
 		ri.Cvar_Set( "com_abnormalExit", "0" );
 	}
 
-	ri.Sys_GLimpInit( );
-
 	// Create the window and its Metal layer
-	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
+	if(MTLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
 		goto success;
 
-	// Try again, this time in a platform specific "safe mode"
-	ri.Sys_GLimpSafeInit( );
-
-	if(GLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, qfalse))
+	// Try again, this time without the borderless window
+	if(MTLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, qfalse))
 		goto success;
 
 	// Finally, try the default screen resolution
@@ -594,12 +590,12 @@ void GLimp_Init( qboolean fixedFunction )
 		ri.Printf( PRINT_ALL, "Setting r_mode %d failed, falling back on r_mode %d\n",
 				r_mode->integer, R_MODE_FALLBACK );
 
-		if(GLimp_StartDriverAndSetMode(R_MODE_FALLBACK, qfalse, qfalse))
+		if(MTLimp_StartDriverAndSetMode(R_MODE_FALLBACK, qfalse, qfalse))
 			goto success;
 	}
 
 	// Nothing worked, give up
-	ri.Error( ERR_FATAL, "GLimp_Init() - could not initialize Metal" );
+	ri.Error( ERR_FATAL, "MTLimp_Init() - could not initialize Metal" );
 
 success:
 	// These values force the UI to disable driver selection
@@ -617,7 +613,7 @@ success:
 	Q_strncpyz( glConfig.version_string, "Metal 4", sizeof( glConfig.version_string ) );
 	glConfig.extensions_string[0] = 0;
 
-	GLimp_InitCapabilities();
+	MTLimp_InitCapabilities();
 
 	ri.Cvar_Get( "r_availableModes", "", CVAR_ROM );
 
@@ -628,12 +624,12 @@ success:
 
 /*
 ===============
-GLimp_EndFrame
+MTLimp_EndFrame
 
 Responsible for doing a swapbuffers
 ===============
 */
-void GLimp_EndFrame( void )
+void MTLimp_EndFrame( void )
 {
 	mbEndFrame();
 

@@ -418,7 +418,7 @@ typedef struct {
 	int				levels;			// allocated mip levels
 	int				definedLevels;	// levels with an image
 	MTLPixelFormat	format;
-	qboolean		rgbOnly;		// GL_RGB-like internal format: samples alpha 1, replace keeps the incoming alpha
+	qboolean		rgbOnly;		// MB_RGB-like internal format: samples alpha 1, replace keeps the incoming alpha
 	int				minFilter, magFilter, wrapS, wrapT, anisotropy;
 	qboolean		samplerDirty;
 	qboolean		allocated;		// the name is in use
@@ -1538,7 +1538,7 @@ static id<CAMetalDrawable> MB_TakeDrawable( void )
 /*
 ** mbInit
 **
-** Called by GLimp_Init once the window and its CAMetalLayer exist and glConfig.vidWidth/vidHeight hold
+** Called by MTLimp_Init once the window and its CAMetalLayer exist and glConfig.vidWidth/vidHeight hold
 ** the drawable size in pixels. The device, queue, shader library and state caches live for the whole
 ** process (vid_restart keeps them).
 */
@@ -3157,8 +3157,8 @@ void mbTexEnv( int mode )
 	case MB_ADD:		env = MB_ENV_ADD; break;
 	case MB_COMBINE:	env = MB_ENV_COMBINE; break;
 	default:
-		// MB_COMBINE4_NV (GLS_MULTITEXTURE_ENV): Apple's GL has no GL_NV_texture_env_combine4, so GL1's
-		// glTexEnv call fails with GL_INVALID_ENUM there and the unit keeps its previous mode. Same here.
+		// MB_COMBINE4_NV (GLS_MULTITEXTURE_ENV): Apple's GL had no NV_texture_env_combine4, so GL1's
+		// glTexEnv call failed with an invalid-enum error there and the unit kept its previous mode. Same here.
 		return;
 	}
 	if ( mb_units[mb_activeUnit].env != env ) {

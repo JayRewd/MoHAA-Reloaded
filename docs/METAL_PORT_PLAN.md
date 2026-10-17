@@ -11,8 +11,8 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d (the user's look, online smoke test) waits until the user is back; Phase 4 goes first (session 9) |
-| 4 | Delete OpenGL entirely | **Next** (session 9, before 3d: the user is away) |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d (the user's look, online smoke test) waits until the user is back |
+| 4 | Delete OpenGL entirely | **Done** (session 9, before 3d: the user was away). GL1 lives on only as the `gl` reference flavor (an export of c9dddadd) for screenshot and bench comparisons |
 | 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
 | 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | Not started |
@@ -162,6 +162,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
   - Caveat: on the local server, `SV_Frame` (the 20 Hz game frame) runs between the input pump and the usercmd on about 1 frame in 12 at 250 fps. Online clients don't do that work, so it can only inflate pump → commit's p95/p99.
 - **Metal, Phase 3a** (session 6, 2026-10-17, screen unlocked). `port/bench.sh run gl 3` and `port/bench.sh run metal 3 +set cl_renderer metal`, same sitting: GL1 **0.928 / 0.937 / 0.917 ms** work, Metal **0.395 / 0.397 / 0.391 ms**. The bench runs in a window, so the display-mode changes don't touch it.
 - **Metal, Phase 3b** (session 7, 2026-10-17, screen unlocked, the user active on the machine). Same commands, same sitting, with the compiler-bug flag (§3.2 session 7): GL1 **0.931 / 0.958 / 1.048 ms** work, Metal **0.409 / 0.443 / 0.408 ms**. Before the flag, in an earlier sitting: GL1 1.086 / 0.983 / 0.959, Metal 0.485 / 0.410 / 0.443. No renderer code changed since 3a. Both renderers vary together with the load, so the ratio (~2.2×) is the comparable figure.
+- **Metal, Phase 4** (session 9, 2026-10-17, screen unlocked; OpenGL deleted, the renderer linked into the client). GL1 now comes from the `gl` reference flavor (an export of c9dddadd, the last commit with GL1; `port/build.sh gl`). Same sitting, `port/bench.sh run gl 3` and `port/bench.sh run metal 3`: GL1 **0.921 / 0.923 / 0.909 ms** work, Metal **0.413 / 0.416 / 0.408 ms**. Static vs dylib, A/B in one earlier sitting (the pre-deletion GL1+Metal build from the same export, `cl_renderer metal`): dylib 0.424 / 0.423 / 0.423 and 0.422 / 0.418 / 0.413, static 0.430 / 0.425 / 0.411: **the static link changes nothing measurable.** This sitting ran ~0.015 ms slower than session 8 (0.40) for both builds.
 - **Input → present latency per display mode** (session 6, 2026-10-17, after the direct-to-display fix, §3.2 "Added in session 6"). Same setup as session 5 (`port/latency.sh`, 20 s of synthetic mouse, 2 frames in flight, screen unlocked), all three modes in one sitting:
   - *window*: 1280×720, composited;
   - *fullscreen*: exclusive, `r_fullscreen 1`, 1920×1080;
@@ -227,7 +228,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
 - **Backend language: Objective-C with ARC** (`.m` files) behind the C API. No metal-cpp, no Swift. The front end stays C/C++.
 - **Classic Metal API first** (`MTLCommandQueue`, `MTLRenderCommandEncoder`, automatic hazard tracking). Metal 4 (`MTL4CommandQueue`, argument tables, residency sets) is evaluated in Phase 5 where it measurably helps.
 - **The metallib is embedded in the renderer binary** (generated C array), so there's no file lookup at run time. Compiled with `-std=metal4.0 -target air64-apple-macos26.0 -O3` (verified working with the mounted toolchain in session 1).
-- **Renderer packaging:** a dylib selected with `cl_renderer metal` during Phases 1–3 (A/B against `opengl1`). In Phase 4 it's linked statically into the client (`USE_RENDERER_DLOPEN OFF`: one binary, LTO across client+renderer, no PLT). Hidden visibility from day one.
+- **Renderer packaging:** a dylib selected with `cl_renderer metal` during Phases 1–3 (A/B against `opengl1`). In Phase 4 it's linked statically into the client (`USE_RENDERER_DLOPEN OFF`: one binary, LTO across client+renderer, no PLT). Hidden visibility from day one. *Done in session 9: see "Added in session 9".*
 - **Deployment target macOS 26.0, arm64 only** (Phase 1 edits `cmake/platforms/macos.cmake`, a tiny diff).
 
 Added in session 2 (Phase 1):
@@ -373,6 +374,24 @@ Added in session 8 (Phase 3c, readback and the rest):
 - **`r_showtris`/`r_shownormals` need `developer 1`** in MOHAA (`tr_shade.c`: `r_showtris->integer && r_developer->integer`). `r_showImages 1` draws nothing visible in either renderer (it runs, "0 msec to draw all images" per frame; upstream behavior). `sv_showbboxes 1` only boxes solid entities within 1000 units of the player; `sv_showbboxes 3` boxes tiki models.
 - **`port/run.sh` links `mainta/` and `maintt/` paks too** (only the retail `pak*.pk3`), for `com_target_game 1/2`.
 - **Test tools:** `port/roqtest.py` writes a RoQ test video (retail data ships no video, and there's no encoder here). The fixed-view cfgs gained `shot_readback.cfg`, `shot_cinematic.cfg`, `shot_texmodes.cfg`, `shot_debug.cfg`, `shot_sh.cfg` and `shot_bt.cfg`. The flare test is a scratch hook in both renderers (`r_flareTest "x y z …"` adds flares at world points), not committed: `build.noindex/experiments/flares/` has the GL1 patch (the Metal one is the same hunk) and its cfg.
+
+Added in session 9 (Phase 4, OpenGL deleted):
+- **The GL1 reference is a build flavor, not code in the tree.** `port/build.sh gl` exports `GL1_REF` (c9dddadd, the last commit with GL1) with `git archive` into `build.noindex/gl-src/` (once per ref; never a second checkout) and builds it like any flavor into `build.noindex/gl-install`. `GIT_CEILING_DIRECTORIES` keeps CMake's version step from reading this repo's HEAD (the export sits inside the work tree). `port/shot.sh` and `port/latency.sh` run `opengl1` from that install (`OMM_GL_FLAVOR` overrides it), `port/bench.sh run gl` too. Checked: GL1 from the reference is bit-identical to GL1 from the old combined install on all nine dm6 views. The reference never changes unless `GL1_REF` does, so anything outside the renderer that changes after Phase 4 (client timing in Phase 5, SDL in Phase 6) is not in it: compare renderer output only.
+- **Static renderer.** The Metal renderer's sources are compiled into the client target (`client.cmake`, `RENDERER_METAL_BINARY_SOURCES`); no dylib, no `GetRefAPI` lookup, LTO across both. Gone: the `BUILD_RENDERER_GL1/GL2/METAL` and `USE_RENDERER_DLOPEN` options (the jpeg/freetype guards now test `BUILD_CLIENT`), `cmake/renderer_gl1.cmake`/`gl2.cmake`, `-framework OpenGL`, the renderer dylib placement in `macos.cmake`. The client's `#ifdef USE_RENDERER_DLOPEN` code stays as upstream wrote it (inactive), for small diffs.
+- **`cl_renderer` is registered read-only as "metal"** in the static branch of `CL_InitRef`. A config or command line with `cl_renderer opengl1` loads and is overridden (`seta cl_renderer` after startup prints "cl_renderer is read only."). `r_glDriver` and `OPENGL_DRIVER_NAME` are gone; an old config's `seta r_glDriver …` just leaves an unused user cvar. GL-named cvar values stay accepted: `r_textureMode GL_LINEAR_MIPMAP_NEAREST` (checked from an old-style config), `r_drawBuffer GL_BACK`, and the `GL_ONE`/`GL_SRC_ALPHA`… keywords of the retail shader scripts.
+- **Renames in the renderer (4b),** on top of session 2's `qglFoo` → `mbFoo` and `GL_FOO` → `MB_FOO`, to port upstream GL1 fixes by hand:
+  - `GL_Bind`, `GL_BindMultitexture`, `GL_Cull`, `GL_State`, `GL_TexEnv`, `GL_SelectTexture`, `GL_SetDefaultState`, `GL_TextureMode`, `GL_CheckErrors`, `GL_SetFogColor` → `R_…` (same arguments; no name clashes);
+  - `GLimp_*` (window layer, `sdl_mtlimp.m`) → `MTLimp_*`; `gl_filter_min/max` → `mb_filter_min/max`; `InitOpenGL` → `InitBackend`;
+  - log strings and comments that named GL calls or enums now name the mb/MB_ ones; `gfxinfo` prints `VENDOR`/`RENDERER`/`VERSION`/`EXTENSIONS`/`MAX_TEXTURE_SIZE`/`MAX_TEXTURE_UNITS` without the `GL_` prefix.
+  - Kept, not GL usage and not matched by the Phase 4 grep: the `GLS_*` state bits, `glState`/`glstate_t`, `glConfig`/`glconfig_t` (ABI), `r_ignoreGLErrors`, `myGlMultMatrix`. Renaming them is churn across every front-end file for no gain.
+- **The refimport hooks `Sys_GLimpInit`/`Sys_GLimpSafeInit` stay** (no-ops on macOS): the window layer no longer calls them, but the fields, the client's assignments and the sys implementations are upstream code and refimport only changes additively (CLAUDE.md). Phase 7 can drop them with `sys_win32.c`. The unused SMP stubs `GLimp_SpawnRenderThread`/`RendererSleep`/`FrontEndSleep`/`WakeRenderer` (`sys/new/sys_main_new.c`, never called) were deleted with their declarations.
+- **Removed OpenGL code that was never built:** the vendored SDL2 GL headers (`SDL_opengl*.h`, `SDL_opengles*.h`, `SDL_egl.h`; SDL includes `SDL_egl.h` only for Vivante), recastnavigation's `RecastDemo` (an OpenGL demo app; we build only Detour/DetourCrowd/Recast), the GameSpy `gt2action` sample (GLUT), and `ommap`'s `gldraw.c` (the unbuilt map compiler keeps its `nodraw.c` stubs, which cover every draw call it makes).
+- **`port/glcheck.sh`** runs the Phase 4 grep with the documented exceptions taken out of each line (a planted `glBindTexture(GL_TEXTURE_2D, 0)` is caught), then `otool -L`/`nm -u` on the installed binary. Run it after upstream merges: a merge can bring GL code back. The exceptions, all in the script with a reason:
+  - cvar values and shader keywords (`tr_shader.c`, `tr_image.c`, `tr_init.c`, `tr_cmds.c`);
+  - false positives: `fontheader_sgl_t` (a font format), `GL_USEANGLES` (game glue flag), `EV_UILGL_` (a UI event), jpeg's `QGLOBAL_H`, a comment in OpenAL's `al.h`;
+  - upstream client/sys code kept for small diffs: `Sys_GLimpInit`/`Sys_GLimpSafeInit`, the inactive `cl_renderer "opengl1"` dlopen branch, a matrix-order comment in `q_math.c`;
+  - until Phase 6: the vendored SDL2 headers (the `SDL_GL_*` API), and recastnavigation's vendored CI files; until Phase 7: `emscripten.cmake` (WebGL flags).
+- **SDL2 itself still contains its (unused) GL backend:** `libSDL2-2.0.0.dylib` doesn't link OpenGL, but imports `NSOpenGLContext` and would `dlopen` libGL if a GL context were requested (we never request one). It goes with SDL in Phase 6. It is also still a universal (x86_64 + arm64) binary: Phase 7.
 
 ---
 
@@ -665,7 +684,20 @@ Session 6 result (3a, display modes):
   - Online smoke test on a real server (connect, play a few minutes, no errors or desync).
   - Bench recorded.
 
-### Phase 4: Delete OpenGL entirely. **Status: not started.**
+### Phase 4: Delete OpenGL entirely. **Status: done (session 9, 2026-10-17; 4a removal + static link, 4b the grep-clean pass).**
+Session 9 result:
+- **GL1 reference first:** `port/build.sh gl` builds c9dddadd (the last commit with GL1) from a `git archive` export; `port/shot.sh`, `port/latency.sh` and `port/bench.sh run gl` take GL1 from it. Checked before deleting anything: GL1 from the reference is bit-identical to GL1 from the old combined install on all nine dm6 views, and the dm6 pair gave session 8's numbers (1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2440).
+- **4a (commit 57911495): removed** `renderergl1/`, `renderergl2/`, `renderercommon/qgl.h`, `sdl_glimp.c`, `sdl_gamma.c`, `cmake/renderer_gl1.cmake`/`gl2.cmake` and the `BUILD_RENDERER_*`/`USE_RENDERER_DLOPEN` options, `-framework OpenGL`, `r_glDriver`/`OPENGL_DRIVER_NAME`. **The renderer is linked into the client** (one binary); `cl_renderer` is read-only "metal" (§3.2 "Added in session 9").
+- **4b: the grep-clean pass.** Renderer helpers renamed (`GL_Bind` → `R_Bind`, …, `GLimp_*` → `MTLimp_*`), comments and log strings reworded, unbuilt GL code deleted (SDL GL headers, RecastDemo, gt2action, ommap's `gldraw.c`), the unused SMP `GLimp_*` stubs deleted. `port/glcheck.sh` = the Phase 4 grep minus the documented exceptions, plus the binary checks.
+- **Done criteria:**
+  - **grep: pass.** `port/glcheck.sh`: "source clean (only documented exceptions)"; the exceptions are listed in §3.2 "Added in session 9" and in the script.
+  - **Build: pass,** no new warnings. `otool -L openmohaa`: Cocoa, IOKit, Metal, QuartzCore, AppKit, CoreFoundation, Foundation, libobjc, libc++, libSDL2; no OpenGL. `nm -u`: no `gl*`/`CGL*`/`NSOpenGL*` imports. The .app holds only `openmohaa` (3.3 MB) and `libSDL2`.
+  - **Old configs:** `seta cl_renderer "opengl1"` + `seta r_glDriver "opengl32"` + `seta r_textureMode "GL_LINEAR_MIPMAP_NEAREST"` in `omconfig.cfg`: Metal starts, `cl_renderer` reads "metal", the texture mode is taken.
+  - **Bench: unchanged** (same sitting): GL1 reference **0.921 / 0.923 / 0.909 ms** work, Metal **0.413 / 0.416 / 0.408 ms**. Static vs the pre-deletion dylib build in one sitting: 0.411–0.430 vs 0.413–0.424 (§2).
+  - **Fixed views: unchanged** (final build, GL1 from the reference): dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2433 (view 8: the weapon bar's real-time highlight); dm5 1756 / 1352 / 784 / 608 (snow noise, session 8: 1754 / 1383 / 777 / 580); dm6fx 0 / 4 / 605, the stencil-shadow view 97.6% (explained, §3.2 session 7), firing and grenade views alike by eye; m2l1 4253 / 753; dm4 843 / 1694 / 323 / 521; obj3 11389 / 16 / 14151. The 4a build gave the same.
+- **Not done in Phase 4:** SDL2 still carries its own (unused) GL backend (Phase 6 replaces SDL); `emscripten.cmake`, `sys_win32.c` and other-platform CI still mention GL (Phase 7).
+
+Plan (session 1):
 - Remove:
   - `renderergl1/`, `renderergl2/`, `renderercommon/qgl.h`, GL parts of `tr_common.h` (`texnum` → plain integer);
   - `sdl_glimp.c`, `sdl_gamma.c`;
@@ -707,27 +739,38 @@ Session 6 result (3a, display modes):
 
 ## 6. Next session
 
-**Session 9 = Phase 4: delete OpenGL entirely** (the Phase 4 bullets). **Changed 2026-10-17:** the user is away for the day and asked for a next session that doesn't need them. Slice 3d needs the user, so it waits until they're back: do it in the first session after their return ("What 3d needs" below). Start with CLAUDE.md, then the Phase 4 bullets, "Where things stand" below, and §3.2 "Added in session 8".
+**Session 10: slice 3d if the user is back; otherwise Phase 5a.** Start with CLAUDE.md, then this section, then §3.2 "Added in session 9".
+- **User back → slice 3d** ("What 3d needs" below). Ask early (`AskUserQuestion`, or in the report): both steps need the user.
+- **User still away → Phase 5a, the user-free part of Phase 5** ("Phase 5a" below). Don't start anything that needs the user's OK (the list is below).
 
-Phase 4 notes (session 8):
-- **Keep a GL1 reference before deleting it.** 3d (the user's look) and Phase 5 ("the fixed views show no visual change") still compare against GL1. Add a reference flavor to `port/build.sh` that builds the last commit before the deletion from an export in build.noindex/ (`git archive`, never a second checkout of the repo). Make `port/shot.sh pair` take its GL1 side from that install (it runs both renderers from one install today, switched by `cl_renderer`), and `port/bench.sh run gl` too. Check that the reference reproduces today's numbers (dm6: 1454 / 135 / 496 / 2533 / …).
-- `cl_renderer` stays accepted but is ignored: an old config with `cl_renderer opengl1` must still start Metal. Keep the `glconfig_t` layout and the GL-named cvar values (`r_textureMode GL_…`).
-- Split it if it's big (e.g. 4a: remove the GL renderers, `sdl_glimp.c`/`sdl_gamma.c`, the cmake options, link the renderer statically; 4b: the grep-clean pass of GL names). Stop at a coherent point and say where.
-- At the end of Phase 4, with the build and bench passing, push `metal` (CLAUDE.md). That also publishes 3a–3c; Phase 3 stays open until 3d.
-
-Where things stand (end of session 8):
-- **Phase 3c is done** (commit on `metal`, not pushed: 3a, 3b and 3c go out together at the end of Phase 3). What it did:
-  - readback never waits for the GPU in the frame: async screenshots/JPEG/levelshots/resampled shots, `r_measureOverdraw`'s stencil, and Q3 flares through visibility queries answered 2 frames later (§3.2 session 8);
-  - cinematics, texture modes, picmip, anisotropy, the capability cvars, DDS/BC uploads, the debug views, Spearhead and Breakthrough: all match GL1 (Phase 3, session 8 result);
-  - the `MTLBinaryArchive` pipeline cache: every pipeline a run needs is created up front from `<fs_homepath>/metal/` (12 in 0.8 ms on dm6), instead of a 40–56 ms compile at first use mid-game on a cold system shader cache.
-- **Fixed views and bench unchanged:** all six maps as in session 7; bench Metal 0.400–0.405 ms work vs GL1 0.885–0.907 ms.
-- **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen (`r_fullscreen 1` + `r_noborder 1`). Borderless at the desktop resolution has the same latency as exclusive fullscreen, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b), which is always composited.
+Where things stand (end of session 9):
+- **Phase 4 is done and pushed** (`metal` on origin now has 3a, 3b, 3c and 4; Phase 3 stays open until 3d). What it did (§3.2 "Added in session 9", Phase 4 result):
+  - GL1/GL2 renderers, `qgl.h`, `sdl_glimp.c`, `sdl_gamma.c`, the GL cmake options and `-framework OpenGL`, `r_glDriver` are gone; unbuilt GL code too (SDL's GL headers, RecastDemo, gt2action, ommap's `gldraw.c`);
+  - the Metal renderer is linked into the client: one 3.3 MB `openmohaa` + `libSDL2`; `otool -L` shows Metal and QuartzCore, no OpenGL;
+  - `cl_renderer` is read-only "metal": old configs with `cl_renderer opengl1` start Metal;
+  - the renderer's GL-named helpers are renamed (`GL_Bind` → `R_Bind`, `GLimp_*` → `MTLimp_*`, …); `port/glcheck.sh` checks the tree and the binary (exceptions documented in the script and §3.2).
+- **GL1 = the `gl` reference flavor:** `port/build.sh gl` builds c9dddadd from a `git archive` export. `port/shot.sh pair`, `port/latency.sh … opengl1` and `port/bench.sh run gl` use it. Rebuild it after deleting `build.noindex/`.
+- **Bench:** Metal 0.408–0.416 ms work vs GL1 0.909–0.923 (same sitting). **Fixed views unchanged** (Phase 4 result).
+- **For the user** (still not told in a session report; say it in 3d): play in fullscreen or borderless fullscreen (`r_fullscreen 1` + `r_noborder 1`), not in a window: ~2 ms pump → present vs 2.4–13 ms windowed (§2).
 - Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
-What 3d needs (after Phase 4, when the user is back; both steps need the user, so ask early, with `AskUserQuestion` or in the report):
-1. **The user's look.** Show the fixed views side by side (GL1 | Metal | diff): `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first. Ask the user to play a few minutes with `cl_renderer metal` in borderless fullscreen and say whether anything looks or feels wrong.
+What 3d needs (when the user is back; both steps need the user, so ask early):
+1. **The user's look.** Show the fixed views side by side (GL1 | Metal | diff): `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first (`port/build.sh gl` first if `build.noindex/gl-install` is missing). Ask the user to play a few minutes in borderless fullscreen and say whether anything looks or feels wrong. Metal is the only renderer now.
 2. **Online smoke test on a real server** (Phase 3 "done when"): connect, play a few minutes, no errors, no desync. Connecting to a server is outward-facing: ask the user which server (one of theirs, or a public one they pick) and get their OK before connecting. Check the console log for errors and the `r_metalPresentStats` line at quit.
 3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and push `metal` to origin (CLAUDE.md: the user said yes to pushing at the end of every phase).
+
+Phase 5a (if the user is still away): the renderer's own frame cost, measured first, one change at a time (Phase 5 rules).
+- Profile the bench first: `port/bench.sh trace metal` (GPU) and a Time Profiler trace of a timedemo (`xcrun xctrace record --template 'Time Profiler' --all-processes`, like `bench.sh trace`), then rank where the 0.41 ms goes (front end, tessellation and copies, backend state/encoding, the drawable/present path).
+- Candidates (Phase 5 list): static world geometry in GPU-resident buffers; batching by shader + lightmap and fewer state changes; GPU skinning; the 0.3 ms commit → GPU start gap (§2 session 5).
+- Every change: before/after bench in one sitting, the six fixed-view pairs unchanged, the build passing; record it in Phase 5. Commit per change.
+- **Needs the user first, so not in 5a:** the engine frame floor / µs-precise pacing (usercmd timing), the decoupled command/render mode (the user tests it online), Game Mode / QoS experiments that change gameplay feel, and Phase 6 (confirm before starting).
+
+Gotchas found in session 9:
+- **dm6 view 7 (the spawned soldier) can differ in one run:** once in session 9 a Metal run showed 574589 pixels off (a slightly moved view, game side); the next run matched GL1 again (1 pixel). GL1 runs agree bit for bit. If it happens, rerun the Metal side (`port/shot.sh fixed metal dm6 shot_dm6.cfg`, then `port/shot.sh views dm6`).
+- **`port/build.sh` wipes a build tree that was configured from another source tree** (the old `gl` tree pointed at the repo root). Its default flavor is now `metal`.
+- **`build.noindex/metalref-install`** was a scratch build of the pre-deletion GL1 + Metal (dylib) for the static-link A/B; deleted at the end of session 9. To rebuild it: configure `build.noindex/gl-src` with `-DBUILD_RENDERER_METAL=ON` (see §2 Phase 4).
+- **`.github/workflows` still pass the removed options** (`USE_RENDERER_DLOPEN`, `BUILD_RENDERER_GL2`) and can't compile the Metal shaders without the toolchain: other-platform CI goes in Phase 7.
+- The `seta cl_renderer` of an old config is written back as `seta cl_renderer "metal"` (the user's archive flag stays); harmless.
 
 Gotchas found in session 8:
 - **The Bash tool runs zsh:** `for p in "a b" …; do cmd $p; done` passes "a b" as one argument; use `${=p}`.
@@ -744,7 +787,7 @@ Gotchas found in session 7:
   - spawned actors walk off, so use `spawn script_model model <tiki>`. `spawn` places the entity 40 units ahead and 40 up: spawn from 40 below the floor to stand it on the floor;
   - firing, grenades, `cg_acidtrip` and (since the compiler flag) dm5's snow differ run to run. Check a new view with two runs of one renderer (`port/shot.sh fixed metal <name>B …`) before reading a GL1 difference as a renderer one.
 - **mohdm6's "spawned soldier" view (dm6 view 7) mostly shows a close wall:** the soldier is barely in it. `shot_dm6fx.cfg` view 2 is the real model view.
-- **`port/shot.sh` runs the `metal` install;** `OMM_FLAVOR=<flavor>` runs another one (e.g. a scratch build in build.noindex/).
+- **`port/shot.sh` runs the `metal` install for Metal and the `gl` reference for GL1;** `OMM_FLAVOR=<flavor>` / `OMM_GL_FLAVOR=<flavor>` run other ones (e.g. a scratch build in build.noindex/).
 - **`lldb --batch` stops at a crash without running the following `-o` commands:** use `-k "bt 40"` (`--source-on-crash`).
 - **Grenade timing:** a frag grenade thrown from a cfg (`useweaponclass grenade`, `+attack`, `wait 500`, `-attack`) explodes ~4.5 s after the release.
 - **No PIL here:** `port/tgamontage.py out.tga <columns> <downscale> a.tga b.tga …` tiles screenshots to look at them side by side; `sips -s format png` converts TGA → PNG.
@@ -791,7 +834,7 @@ Gotchas found in session 5:
 
 Open bugs:
 - **In the renderer:** none known. (The depth/stencil readback stubs are gone, session 8.)
-- **Display path:** GL1's fullscreen still isn't direct (same window shadow; left alone, GL1 goes away in Phase 4). The window's latency depends on the compositor's mode (§2).
+- **Display path:** the window's latency depends on the compositor's mode (§2). (GL1's fullscreen never went direct; GL1 is gone, the reference flavor keeps it for comparisons only.)
 - **Outside it:** none known. The local map-load crash was the Apple clang 21 `MergeCompatibleInvokes` bug; the build flag fixes it (§3.2 session 7). Drop the flag once Xcode fixes the bug.
 - **Untested:**
   - HiDPI input;

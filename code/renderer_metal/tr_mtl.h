@@ -19,17 +19,18 @@ along with OpenMoHAA source code; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
-// tr_mtl.h -- the Metal backend API used by the renderer front end (no OpenGL anywhere).
+// tr_mtl.h -- the Metal backend API used by the renderer front end.
 //
-// renderer_metal is a copy of renderergl1 in which every qglFoo call became mbFoo and every GL_FOO
-// constant became MB_FOO. The backend (tr_mtl.m, Objective-C) mirrors the GL1 fixed-function state model
+// renderer_metal is a copy of upstream's GL1 renderer (code/renderergl1, deleted in Phase 4) in which every
+// GL call became an mb call with the same arguments (glFoo -> mbFoo) and every GL constant an MB_ constant
+// of the same name and value. The backend (tr_mtl.m, Objective-C) mirrors the GL1 fixed-function state model
 // the front end was written against (caps, blend/depth/alpha/stencil state, texenv per texture unit, client
 // arrays, matrices, fog, clip plane) and turns it into Metal pipeline/depth-stencil/sampler state at draw
-// time. That keeps visual parity with GL1 and keeps upstream renderergl1 fixes portable file by file.
+// time. That keeps visual parity with GL1 and keeps upstream GL1 renderer fixes portable file by file
+// (the other renames are listed in docs/METAL_PORT_PLAN.md, Phase 4).
 //
 // The MB_ values are numerically equal to the GL enums they replace, so shader/texture data, decompiled
-// literals and printouts (imagelist, gfxinfo) stay identical. They are plain numbers; nothing here
-// includes or links OpenGL.
+// literals and printouts (imagelist, gfxinfo) stay identical. They are plain numbers.
 
 #ifndef TR_MTL_H
 #define TR_MTL_H
@@ -144,10 +145,10 @@ extern "C" {
 #define MB_INCR							0x1E02
 #define MB_DECR							0x1E03
 
-// texture environment modes (mbTexEnv). MB_COMBINE is the one GL_COMBINE setup GL1 uses
-// (GL_State, GLS_MULTITEXTURE): rgb = mix(texture, primary color, primary alpha), alpha = texture * previous.
-// MB_COMBINE4_NV is GLS_MULTITEXTURE_ENV; Apple's GL has no GL_NV_texture_env_combine4, so GL1's glTexEnv
-// call fails there (GL_INVALID_ENUM) and the unit keeps its previous mode. mbTexEnv does the same.
+// texture environment modes (mbTexEnv). MB_COMBINE is the one combiner setup GL1 used
+// (R_State, GLS_MULTITEXTURE): rgb = mix(texture, primary color, primary alpha), alpha = texture * previous.
+// MB_COMBINE4_NV is GLS_MULTITEXTURE_ENV; Apple's GL had no NV_texture_env_combine4, so GL1's glTexEnv
+// call failed there (invalid enum) and the unit kept its previous mode. mbTexEnv does the same.
 #define MB_ADD							0x0104
 #define MB_REPLACE						0x1E01
 #define MB_MODULATE						0x2100
@@ -187,7 +188,7 @@ extern "C" {
 #define MB_FOG_MODE						0x0B65
 #define MB_FOG_COLOR					0x0B66
 
-// error codes (GL_CheckErrors); the backend reports none
+// error codes (R_CheckErrors); the backend reports none
 #define MB_INVALID_ENUM					0x0500
 #define MB_INVALID_VALUE				0x0501
 #define MB_INVALID_OPERATION			0x0502
@@ -212,7 +213,7 @@ int			mbMaxTextureSize( void );
 void		mbLatencyTag( int tag );
 qboolean	mbLatencyPoll( int *tag, long long *commitUsec, long long *gpuDoneUsec, long long *presentUsec );
 
-extern qboolean	mbMultitexture;				// GL_ARB_multitexture equivalent (r_ext_multitexture)
+extern qboolean	mbMultitexture;				// ARB_multitexture equivalent (r_ext_multitexture)
 
 //
 // state

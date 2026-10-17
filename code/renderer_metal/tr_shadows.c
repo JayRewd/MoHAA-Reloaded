@@ -204,9 +204,9 @@ void RB_ShadowTessEnd( void ) {
 
 	// draw the silhouette edges
 
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	mbEnable( MB_CULL_FACE );
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	R_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
 	mbColor3f( 0.2f, 0.2f, 0.2f );
 
 	// don't write to the color buffer
@@ -302,9 +302,9 @@ void RB_ComputeShadowVolume() {
 
 	// draw the silhouette edges
 
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	mbEnable( MB_CULL_FACE );
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	R_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
 	mbColor3f( 0.2f, 0.2f, 0.2f );
 
 	// don't write to the color buffer
@@ -364,15 +364,15 @@ void RB_ShadowFinish( void ) {
 	mbDisable (MB_CLIP_PLANE0);
 	mbDisable (MB_CULL_FACE);
 
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 
     mbLoadIdentity ();
 
 	mbColor3f( 0.6f, 0.6f, 0.6f );
-	GL_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO );
+	R_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO );
 
 //	mbColor3f( 1, 0, 0 );
-//	GL_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+//	R_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
 
 	mbBegin( MB_QUADS );
 	mbVertex3f( -100, 100, -10 );

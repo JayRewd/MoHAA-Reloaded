@@ -27,14 +27,14 @@ backEndState_t	backEnd;
 
 static float	s_flipMatrix[16] = {
 	// convert from our coordinate system (looking down X)
-	// to OpenGL's coordinate system (looking down -Z)
+	// to the eye coordinate system (looking down -Z)
 	0, 0, -1, 0,
 	-1, 0, 0, 0,
 	0, 1, 0, 0,
 	0, 0, 0, 1
 };
 
-void GL_SetFogColor(const vec4_t fColor) {
+void R_SetFogColor(const vec4_t fColor) {
 	glState.fFogColor[0] = fColor[0];
 	glState.fFogColor[1] = fColor[1];
 	glState.fFogColor[2] = fColor[2];
@@ -46,13 +46,13 @@ void GL_SetFogColor(const vec4_t fColor) {
 }
 
 /*
-** GL_Bind
+** R_Bind
 */
-void GL_Bind( image_t *image ) {
+void R_Bind( image_t *image ) {
 	int texnum;
 
 	if ( !image ) {
-		ri.Printf( PRINT_WARNING, "GL_Bind: NULL image\n" );
+		ri.Printf( PRINT_WARNING, "R_Bind: NULL image\n" );
 		texnum = tr.defaultImage->texnum;
 	} else {
 		texnum = image->texnum;
@@ -73,9 +73,9 @@ void GL_Bind( image_t *image ) {
 }
 
 /*
-** GL_SelectTexture
+** R_SelectTexture
 */
-void GL_SelectTexture( int unit )
+void R_SelectTexture( int unit )
 {
 	if ( glState.currenttmu == unit )
 	{
@@ -85,18 +85,18 @@ void GL_SelectTexture( int unit )
 	if ( unit == 0 )
 	{
 		mbActiveTextureARB( MB_TEXTURE0_ARB );
-		GLimp_LogComment( "glActiveTextureARB( GL_TEXTURE0_ARB )\n" );
+		MTLimp_LogComment( "mbActiveTextureARB( MB_TEXTURE0_ARB )\n" );
 		mbClientActiveTextureARB( MB_TEXTURE0_ARB );
-		GLimp_LogComment( "glClientActiveTextureARB( GL_TEXTURE0_ARB )\n" );
+		MTLimp_LogComment( "mbClientActiveTextureARB( MB_TEXTURE0_ARB )\n" );
 	}
 	else if ( unit == 1 )
 	{
 		mbActiveTextureARB( MB_TEXTURE1_ARB );
-		GLimp_LogComment( "glActiveTextureARB( GL_TEXTURE1_ARB )\n" );
+		MTLimp_LogComment( "mbActiveTextureARB( MB_TEXTURE1_ARB )\n" );
 		mbClientActiveTextureARB( MB_TEXTURE1_ARB );
-		GLimp_LogComment( "glClientActiveTextureARB( GL_TEXTURE1_ARB )\n" );
+		MTLimp_LogComment( "mbClientActiveTextureARB( MB_TEXTURE1_ARB )\n" );
 	} else {
-		ri.Error( ERR_DROP, "GL_SelectTexture: unit = %i", unit );
+		ri.Error( ERR_DROP, "R_SelectTexture: unit = %i", unit );
 	}
 
 	glState.currenttmu = unit;
@@ -104,9 +104,9 @@ void GL_SelectTexture( int unit )
 
 
 /*
-** GL_BindMultitexture
+** R_BindMultitexture
 */
-void GL_BindMultitexture( image_t *image0, unsigned int env0, image_t *image1, unsigned int env1 ) {
+void R_BindMultitexture( image_t *image0, unsigned int env0, image_t *image1, unsigned int env1 ) {
 	int		texnum0, texnum1;
 
 	texnum0 = image0->texnum;
@@ -117,13 +117,13 @@ void GL_BindMultitexture( image_t *image0, unsigned int env0, image_t *image1, u
 	}
 
 	if ( glState.currenttextures[1] != texnum1 ) {
-		GL_SelectTexture( 1 );
+		R_SelectTexture( 1 );
 		image1->frameUsed = tr.frameCount;
 		glState.currenttextures[1] = texnum1;
 		mbBindTexture( MB_TEXTURE_2D, texnum1 );
 	}
 	if ( glState.currenttextures[0] != texnum0 ) {
-		GL_SelectTexture( 0 );
+		R_SelectTexture( 0 );
 		image0->frameUsed = tr.frameCount;
 		glState.currenttextures[0] = texnum0;
 		mbBindTexture( MB_TEXTURE_2D, texnum0 );
@@ -132,9 +132,9 @@ void GL_BindMultitexture( image_t *image0, unsigned int env0, image_t *image1, u
 
 
 /*
-** GL_Cull
+** R_Cull
 */
-void GL_Cull( int cullType ) {
+void R_Cull( int cullType ) {
 	if ( glState.faceCulling == cullType ) {
 		return;
 	}
@@ -175,9 +175,9 @@ void GL_Cull( int cullType ) {
 }
 
 /*
-** GL_TexEnv
+** R_TexEnv
 */
-void GL_TexEnv( int env )
+void R_TexEnv( int env )
 {
 	if ( env == glState.texEnv[glState.currenttmu] )
 	{
@@ -198,18 +198,18 @@ void GL_TexEnv( int env )
 		mbTexEnv( env );
 		break;
 	default:
-		ri.Error( ERR_DROP, "GL_TexEnv: invalid env '%d' passed\n", env );
+		ri.Error( ERR_DROP, "R_TexEnv: invalid env '%d' passed\n", env );
 		break;
 	}
 }
 
 /*
-** GL_State
+** R_State
 **
 ** This routine is responsible for setting the most commonly changed state
 ** in Q3.
 */
-void GL_State( unsigned long stateBits )
+void R_State( unsigned long stateBits )
 {
 	unsigned long diff = glState.glStateBits ^ (glState.externalSetState | stateBits);
 
@@ -273,7 +273,7 @@ void GL_State( unsigned long stateBits )
 				break;
 			default:
 				srcFactor = MB_ONE;		// to get warning to shut up
-				ri.Error( ERR_DROP, "GL_State: invalid src blend state bits\n" );
+				ri.Error( ERR_DROP, "R_State: invalid src blend state bits\n" );
 				break;
 			}
 
@@ -305,7 +305,7 @@ void GL_State( unsigned long stateBits )
 				break;
 			default:
 				dstFactor = MB_ONE;		// to get warning to shut up
-				ri.Error( ERR_DROP, "GL_State: invalid dst blend state bits\n" );
+				ri.Error( ERR_DROP, "R_State: invalid dst blend state bits\n" );
 				break;
 			}
 
@@ -367,19 +367,19 @@ void GL_State( unsigned long stateBits )
 	{
 		if (stateBits & GLS_MULTITEXTURE_ENV)
 		{
-			GL_TexEnv(MB_COMBINE4_NV);
+			R_TexEnv(MB_COMBINE4_NV);
 		}
 		else if (stateBits & GLS_MULTITEXTURE)
 		{
-			// MB_COMBINE is the GL_COMBINE setup GL1 made here: rgb = mix(texture, primary, primary alpha),
+			// MB_COMBINE is the combiner setup GL1 made here: rgb = mix(texture, primary, primary alpha),
 			// alpha = texture * previous (see tr_mtl.h)
 			glState.cntTexEnvExt = GLS_MULTITEXTURE;
 
-			GL_TexEnv(MB_COMBINE);
+			R_TexEnv(MB_COMBINE);
 		}
 		else
 		{
-			GL_TexEnv(MB_MODULATE);
+			R_TexEnv(MB_MODULATE);
 		}
 	}
 
@@ -454,19 +454,19 @@ void GL_State( unsigned long stateBits )
 		{
 			int currenttmu = glState.currenttmu;
 
-			GL_SelectTexture(0);
+			R_SelectTexture(0);
 			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, clampValue);
 			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, clampValue);
 
-			GL_SelectTexture(1);
+			R_SelectTexture(1);
 			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, clampValue);
 			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, clampValue);
 
-			GL_SelectTexture(currenttmu);
+			R_SelectTexture(currenttmu);
 		}
 		else
 		{
-			GL_SelectTexture(0);
+			R_SelectTexture(0);
 			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, clampValue);
 			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, clampValue);
 		}
@@ -604,7 +604,7 @@ void RB_BeginDrawingView (void) {
 	R_UploadDlights();
 
 	// ensures that depth writes are enabled for the depth clear
-	GL_State( GLS_DEFAULT );
+	R_State( GLS_DEFAULT );
 	// clear relevant buffers
 	clearBits = MB_DEPTH_BUFFER_BIT;
 
@@ -1014,7 +1014,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 		ri.Error (ERR_DROP, "Draw_StretchRaw: size not a power of 2: %i by %i", cols, rows);
 	}
 
-	GL_Bind( tr.scratchImage );
+	R_Bind( tr.scratchImage );
 
 	// if the scratchImage isn't in the format we want, specify it as a new texture
 	if ( cols != tr.scratchImage->width || rows != tr.scratchImage->height ) {
@@ -1033,7 +1033,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 
 	if ( r_speeds->integer ) {
 		end = ri.Milliseconds();
-		ri.Printf( PRINT_ALL, "qglTexSubImage2D %i, %i: %i msec\n", cols, rows, end - start );
+		ri.Printf( PRINT_ALL, "mbTexSubImage2D %i, %i: %i msec\n", cols, rows, end - start );
 	}
 
 	RB_SetGL2D();
@@ -1054,7 +1054,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
 
-	GL_Bind( &tr.scratchImage[client] );
+	R_Bind( &tr.scratchImage[client] );
 
 	// if the scratchImage isn't in the format we want, specify it as a new texture
 	if ( cols != tr.scratchImage[client].width || rows != tr.scratchImage[client].height ) {
@@ -1188,7 +1188,7 @@ void RB_SetupFog() {
         vFogColor[1] = backEnd.viewParms.farplane_color[1] * tr.identityLight;
         vFogColor[2] = backEnd.viewParms.farplane_color[2] * tr.identityLight;
         vFogColor[3] = 1.0;
-        GL_SetFogColor(vFogColor);
+        R_SetFogColor(vFogColor);
 
 		glState.externalSetState |= GLS_FOG;
 	}
@@ -1308,7 +1308,7 @@ void RB_ShowImages( qboolean quiet ) {
 			h *= image->uploadHeight / 512.0f;
 		}
 
-		GL_Bind( image );
+		R_Bind( image );
 		mbBegin (MB_QUADS);
 		mbTexCoord2f( 0, 0 );
 		mbVertex2f( x, y );
@@ -1419,9 +1419,9 @@ const void	*RB_SwapBuffers( const void *data ) {
 		mbFinish();
 	}
 
-	GLimp_LogComment( "***************** RB_SwapBuffers *****************\n\n\n" );
+	MTLimp_LogComment( "***************** RB_SwapBuffers *****************\n\n\n" );
 
-	GLimp_EndFrame();
+	MTLimp_EndFrame();
 
 	backEnd.in2D = qfalse;
 

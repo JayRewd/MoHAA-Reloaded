@@ -1584,7 +1584,7 @@ void R_UpdateGhostTextures()
         gt->Update();
         gt->Burn();
 
-        GL_Bind(gt->m_image);
+        R_Bind(gt->m_image);
         mbTexImage2D(MB_TEXTURE_2D, 0, 3, gt->m_width, gt->m_height, 0, MB_RGBA, MB_UNSIGNED_BYTE, gt->m_texture);
     }
 }

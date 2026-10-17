@@ -3235,7 +3235,7 @@ void CL_InitRef( void ) {
 		Com_Error(ERR_FATAL, "Can't load symbol GetRefAPI: '%s'",  Sys_LibraryError());
 	}
 #else
-	// the Metal renderer is linked in; cl_renderer is kept for old configs (e.g. "opengl1") and ignored
+	// the Metal renderer is linked in; cl_renderer is kept for old configs and ignored
 	cl_renderer = Cvar_Get("cl_renderer", "metal", CVAR_ROM);
 #endif
 

@@ -1498,7 +1498,7 @@ void R_UploadDlights()
             ri.Error(ERR_DROP, "R_UploadDlights: bad allocated height");
         }
 
-        GL_Bind(tr.dlightImages[dli.dlightMap]);
+        R_Bind(tr.dlightImages[dli.dlightMap]);
         mbTexSubImage2D(MB_TEXTURE_2D, 0, 0, 0, LIGHTMAP_SIZE, h, MB_RGBA, MB_UNSIGNED_BYTE, dli.lightmap_buffer);
 
         tr.pc.c_dlightMaps++;

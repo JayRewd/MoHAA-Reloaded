@@ -356,9 +356,9 @@ void RB_SurfaceBeam( void )
 		VectorAdd( start_points[i], direction, end_points[i] );
 	}
 
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
+	R_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 
 	mbColor3f( 1, 0, 0 );
 
@@ -690,7 +690,7 @@ Draws x/y/z lines from the origin for orientation debugging
 ===================
 */
 void RB_SurfaceAxis( void ) {
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	mbLineWidth( 3 );
 	mbBegin( MB_LINES );
 	mbColor3f( 1,0,0 );

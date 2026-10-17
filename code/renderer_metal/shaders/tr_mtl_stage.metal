@@ -48,7 +48,7 @@ struct MbVSUniforms
 #define MB_ENV_ADD			3u
 #define MB_ENV_COMBINE		4u
 
-// alpha functions: GL compare func - GL_NEVER
+// alpha functions: MB_ compare func - MB_NEVER
 #define MB_AF_NEVER			0u
 #define MB_AF_LESS			1u
 #define MB_AF_EQUAL			2u
@@ -58,7 +58,7 @@ struct MbVSUniforms
 #define MB_AF_GEQUAL		6u
 
 #define MB_FS_FOG			1u
-#define MB_FS_RGB0			2u		// unit 0's texture has no alpha channel (GL_RGB): replace keeps the incoming alpha
+#define MB_FS_RGB0			2u		// unit 0's texture has no alpha channel (MB_RGB): replace keeps the incoming alpha
 #define MB_FS_RGB1			4u
 
 struct MbFSUniforms
@@ -138,7 +138,7 @@ static float4 MB_TexEnv( uint env, float4 tex, float4 prev, float4 primary, bool
 	case MB_ENV_ADD:
 		return float4( min( prev.rgb + tex.rgb, 1.0f ), prev.a * tex.a );
 	case MB_ENV_COMBINE:
-		// GL1's GL_COMBINE setup (GLS_MULTITEXTURE): rgb = interpolate(primary, texture, primary alpha),
+		// GL1's combiner setup (GLS_MULTITEXTURE): rgb = interpolate(primary, texture, primary alpha),
 		// alpha = texture * previous
 		return float4( mix( tex.rgb, primary.rgb, primary.a ), tex.a * prev.a );
 	default:
