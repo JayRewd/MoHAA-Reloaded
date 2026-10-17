@@ -50,3 +50,4 @@ out
 
 # Metal port: SSD-local build trees, run home (configs/logs/screenshots), caches
 *.noindex/
+!/port/build.sh
