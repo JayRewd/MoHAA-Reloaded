@@ -13,7 +13,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | Not started |
 | 3 | Full feature parity + screenshot-compare harness + online smoke test | Not started |
 | 4 | Delete OpenGL entirely | Not started |
-| 5 | Performance | Not started |
+| 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
 | 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | Not started |
 
@@ -116,6 +116,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
 3. **Platforms: macOS-only, keep the server.** Delete Windows/Linux/Emscripten/x86 asm/Launcher platform code and the GL renderers. Keep the dedicated server target (`omohaaded`) building on macOS for local tests. The user's Linux servers keep using upstream builds; `main` stays the upstream mirror.
 4. **Shaders: offline .metallib.** CMake compiles the hand-written `.metal` files into one metallib at build time with the read-only mounted Metal Toolchain. At run time an `MTLBinaryArchive` pipeline cache avoids compile hitches.
 5. **Push: yes.** Push `metal` to origin at the end of every phase (recorded in CLAUDE.md).
+6. **Lowest input latency and overhead** (asked by the user after the plan was written): a standing requirement next to the Goal. See §4b.
 
 ### 3.2 Technical decisions (session 1; revisit only with a reason, tell the user if one changes)
 - **renderer_metal starts as a copy of renderergl1** (`code/renderer_metal/`, front end unchanged), with every qgl call replaced by a small GL-free backend API (`tr_mtl.h`, C) that mirrors GL1's state model, as in the Vulkan port. Keeps visual parity, keeps upstream renderer fixes portable (by hand, file for file), and lets GL1 run side by side for A/B until Phase 4. GL-isms are removed later where it pays (Phase 5).
@@ -167,7 +168,38 @@ client (cl_main, cgame, uilib)  --refexport_t/refimport_t (unchanged ABI)-->  re
 - Textures: `image_t.texnum` → index into a backend texture table; handles are never reused while frames are in flight. RGBA8 uploads (CPU mips kept first for parity). DDS → BC1/BC3 (natively supported). Mid-frame re-uploads (cinematics, ghost textures, dlight lightmaps) use a small per-frame ring so recorded draws keep their contents. Deferred destruction after the frame's completion.
 - Flares: replace the `glReadPixels` depth test with visibility-result (occlusion) queries or a depth read one frame late.
 
-**Threading:** single-threaded, like GL1 (Metal encoding is cheap, and there's no driver thread to fight). A render thread or parallel encoding only if Phase 5 profiling shows the CPU is the limit.
+**Threading:** single-threaded, like GL1 (Metal encoding is cheap, and there's no driver thread to fight). A render thread or parallel encoding only if Phase 5 profiling shows the CPU is the limit. A render thread would add a frame of latency, so it needs a clear win to justify it (see §4b).
+
+## 4b. Lowest input latency and overhead (user requirement, 2026-10-16)
+
+The user's words: "can we also optimize for lowest input lag/delay possible? like lowest overhead". This sits alongside the Goal: every design choice is judged on input-to-photon latency and overhead as well as fps. The user plays competitively online on a 240 Hz display, currently in a 1920×1080 *window* on a 1920×1080 screen.
+
+**The latency chain and what we control:**
+mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_SendCmd` builds the usercmd/view angles → cgame + renderer build the frame → GPU → present → WindowServer compositor (windowed) or direct-to-display (fullscreen) → scanout.
+- The engine's frame order is already latency-friendly: Com_Frame sleeps in its frame limiter **before** pumping input, then samples input, then renders (`qcommon/common.c` Com_Frame → `client/cl_main.cpp:2830` `CL_SendCmd` → `:2852` `SCR_UpdateScreen`). Keep it that way: **no waiting between input sampling and rendering**.
+- GL1 today: `glFinish` every frame (`tr_backend.c:1429`) plus a composited window (at least one extra refresh, ~4.2 ms at 240 Hz).
+
+**Design rules (all phases):**
+1. **Never block between input sampling and encoding.** Any wait for the GPU (frames-in-flight semaphore) or for a drawable happens at the *end* of the previous frame or right before the limiter sleep, never after `CL_SendCmd`. Acquire the drawable as late as possible (only for the final pass); present right after commit; `presentsWithTransaction NO`.
+2. **Minimal queueing.** Frames in flight is a cvar (`r_metalFramesInFlight`, 1–3), and `CAMetalLayer.maximumDrawableCount` is 2 by default (3 only if measured to help). With ~0.2 ms of GPU work per frame, 1–2 frames in flight cost almost no throughput; pick the default by measuring latency *and* work time.
+3. **`r_swapInterval 0` = immediate present** (`displaySyncEnabled NO`, tearing allowed in fullscreen) for the lowest latency. `1` = vsync, optionally paced with `CAMetalDisplayLink` (`preferredFrameLatency` 1) instead of blocking in `nextDrawable`.
+4. **Fullscreen must hit direct-to-display** (compositor bypass): opaque layer, drawable size = native display pixels, no overlays or transforms. Verify with the Metal Performance HUD ("Direct") and Metal System Trace. Offer a borderless-fullscreen mode that keeps direct-to-display, so the user doesn't pay compositor latency for "windowed fullscreen". Tell the user that a plain window is always composited (+1 refresh).
+5. **Game Mode and scheduling.** Info.plist `LSApplicationCategoryType = public.app-category.games` + `GCSupportsGameMode` (macOS Game Mode in fullscreen: CPU/GPU priority, doubled Bluetooth sampling for controllers and AirPods). While in a game: `NSProcessInfo beginActivityWithOptions: NSActivityLatencyCritical | NSActivityUserInitiated` (no App Nap, minimal timer coalescing), and the main thread at `QOS_CLASS_USER_INTERACTIVE` (P-cores).
+6. **Low overhead in the hot path:** no per-frame heap allocations in the renderer or backend; one `@autoreleasepool` per frame; cached PSOs, depth/stencil and sampler states (no lookups by string); state changes filtered on the CPU; hidden visibility, LTO, and the renderer linked statically in Phase 4; no Objective-C in the front end; no GPU→CPU readbacks in the frame (flares/screenshots are async).
+7. **Gameplay feel is not ours to change silently.** Anything that alters frame pacing or usercmd timing (the 1 ms frame floor, `com_maxfps` precision, `Sys_Milliseconds` resolution) affects movement and online feel: measure, propose, and get the user's OK first.
+
+**Planned latency work, by phase:**
+- **Phase 1:** CAMetalLayer configured per rules 2–4 (drawable count, `displaySyncEnabled` from `r_swapInterval`, opaque layer, `presentsWithTransaction NO`); the wait-placement rule built into the frame loop from day one.
+- **Phase 2:** **latency probe** `cl_latencyStats 1`. For each frame, the time from the newest mouse event folded into the usercmd (mach time stamped at pump time, µs) to the frame's real present time (`MTLDrawable addPresentedHandler` → `presentedTime`). Log p50/p95/p99 over N frames, plus input→commit. For GL1, only input→`SwapBuffers` return is available (a lower bound; documented). Record SDL+Metal numbers windowed and fullscreen in §2.
+- **Phase 3:** direct-to-display verified in fullscreen and borderless fullscreen; Info.plist Game Mode keys; latency numbers per display mode recorded.
+- **Phase 5 (performance and latency):**
+  - tune frames in flight / drawable count with the probe;
+  - **raw mouse input via GCMouse** (GameController framework: unaccelerated HID deltas from a high-frequency handler, accumulated off the main thread and read at `IN_Frame`), usable while SDL still owns the window. Pulled ahead of Phase 6 because it's the biggest input-path win; verify first whether SDL's relative mode on macOS applies pointer acceleration;
+  - µs-precise frame limiter (sleep with `mach_wait_until`, then a short spin) for exact `com_maxfps` pacing with low jitter. **User OK needed** (rule 7);
+  - `NSActivityLatencyCritical` / QoS / Game Mode measured on and off;
+  - **audio latency:** openal-soft period/refresh (`ALC_REFRESH`, period size) tuned and measured (footsteps matter online).
+- **Phase 6:** native AppKit input replaces SDL entirely (keyboard events, text input, window); compare with the probe.
+- Optional external check (user, any phase): iPhone 240 fps slow-motion video of mouse click → muzzle flash, GL1 vs Metal, same settings.
 
 ---
 
@@ -184,7 +216,7 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
   - New `cmake/renderer_metal.cmake` (option `BUILD_RENDERER_METAL`): `renderer_metal` dylib built next to `renderer_opengl1` in the .app; frameworks Metal, QuartzCore; `-fobjc-arc`; hidden visibility; jpeg/freetype guards widened.
   - Offline metallib step (custom command running `$OMM_METAL_BIN/metal`, a clear error if the toolchain isn't mounted, embedded as a C array).
   - `port/build.sh metal` flavor (GL1 + Metal in one install, so `cl_renderer` switches).
-  - `sdl/sdl_mtlimp.m` (window, CAMetalLayer, HiDPI, modes, fullscreen, `vid_restart`, `IN_Init`).
+  - `sdl/sdl_mtlimp.m` (window, CAMetalLayer, HiDPI, modes, fullscreen, `vid_restart`, `IN_Init`). The layer is set up for low latency per §4b rules 1–4.
   - `renderer_metal/` = copy of renderergl1 with qgl call sites converted to `tr_mtl.h` calls whose implementations are stubs, except device/queue setup and clear+present.
 - **1b (if 1a runs long):** finish the call-site conversion; maps load without crashing.
 - **Done when:**
@@ -199,7 +231,8 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
   - 3D: projection/z remap, viewport flip, cull, depth range, polygon offset;
   - BSP surfaces, patches, terrain, lightmaps (multitexture collapse), vertex lighting, CPU tcGen/tcMod/deforms;
   - entities incl. TIKI CPU skinning and sphere lighting, static models, sprites, marks/decals, swipes. GL1 leaves the `SwipePoint`/`DrawBackground` exports NULL: find out how the client copes, then match or fix deliberately and note it here.
-- **Done when:** the bench demo plays fully on Metal; 5 fixed views match GL1 by eye and by screenshot diff; first Metal bench numbers are in §2's table (target work ≤ 0.45 ms/frame).
+- **2c:** the `cl_latencyStats` latency probe (§4b).
+- **Done when:** the bench demo plays fully on Metal; 5 fixed views match GL1 by eye and by screenshot diff; first Metal bench numbers are in §2's table (target work ≤ 0.45 ms/frame); first input→present latency numbers (windowed + fullscreen) recorded.
 
 ### Phase 3: Full feature parity. **Status: not started.**
 - Sky box + cloud layers, portal sky, linear fog (all `GLS_FOG*` modes), mirrors/portals (clip distance).
@@ -207,6 +240,7 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
 - Cinematics (`DrawStretchRaw` ring), screenshots (`screenshot`, `screenshotJPEG`, levelshots; async readback), gamma/overbright final pass.
 - `r_picmip`, `r_textureMode`/anisotropy, `r_ext_*`-equivalent capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines).
 - Spearhead/Breakthrough (`com_target_game 1/2`), the `MTLBinaryArchive` pipeline cache.
+- Fullscreen and borderless fullscreen hitting direct-to-display, Info.plist Game Mode keys (§4b rules 4–5).
 - **Done when:**
   - `port/compare.sh` (new: deterministic views via devmap + fixedtime + tele/face + pause, GL1 vs Metal screenshots, per-pixel diff) shows no visible differences on a fixed view list (stock DM + objective + SP maps with sky portals, fog, mirrors, terrain), and the user confirms the look.
   - Online smoke test on a real server (connect, play a few minutes, no errors or desync).
@@ -224,7 +258,8 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
   - `grep -rniE "qgl|opengl|SDL_GL_|GL_[A-Z0-9_]+|glimp" code cmake` finds nothing except documented exceptions (struct/cvar names kept for compatibility).
   - The build passes, the bench is unchanged, and `otool -L`/`nm` show no OpenGL.
 
-### Phase 5: Performance. **Status: not started.**
+### Phase 5: Performance and input latency. **Status: not started.**
+- Latency work from §4b (frames-in-flight tuning, GCMouse raw input, precise limiter with the user's OK, activity/QoS/Game Mode, audio latency), measured with the latency probe.
 - Measure first (bench + `trace` + `sample`/Time Profiler), one change at a time, each recorded here with before/after numbers. Candidates:
   - Static world geometry in GPU-resident buffers (no per-frame re-tessellation/copy).
   - Batching by shader+lightmap; sort keys to minimize PSO/state changes; fewer render passes.
@@ -234,7 +269,7 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
   - Metal 4 (argument tables, residency sets, `MTL4CommandQueue`) where measured.
   - Frame pacing (present timing / CAMetalDisplayLink).
 - Engine frame floor: `Com_Frame` pads frames to 1 ms with an integer-ms clock, which caps fps near 1000. Making it µs-precise changes how `com_maxfps` behaves online (frame pacing feeds usercmd timing and movement feel), so **ask the user before touching it**.
-- **Done when:** the bench work time is ≤ 0.25 ms/frame or the remaining cost is documented as engine-side, p99 frame time is lower than GL1, and `compare.sh` shows no visual change.
+- **Done when:** the bench work time is ≤ 0.25 ms/frame or the remaining cost is documented as engine-side, p99 frame time is lower than GL1, input→present latency is measured lower than the Phase 2 numbers (and as low as the display mode allows), and `compare.sh` shows no visual change.
 
 ### Phase 6: Native AppKit/GameController (replace SDL2). **Status: not started.**
 - Measure input latency SDL vs native first, and confirm with the user before starting.
@@ -263,7 +298,7 @@ Do next, in order:
 1. `source port/env.sh`, `omm_mount_metal`. Edit `cmake/platforms/macos.cmake` (arm64, 26.0). Rebuild GL (`port/build.sh gl`) and re-run `port/bench.sh run gl 3` for the arm64-only reference.
 2. Add `cmake/renderer_metal.cmake` and a `metal` case in `port/build.sh` (`-DBUILD_RENDERER_METAL=ON`, keeping GL1 on for A/B). Model it on `cmake/renderer_gl1.cmake` + `finish_macos_app` in macos.cmake. Widen the jpeg/freetype guards.
 3. Add the metallib build + embed step with one trivial shader (clear/fullscreen triangle). Fail with a clear message if `$OMM_METAL_BIN/metal` is missing ("source port/env.sh && omm_mount_metal").
-4. Write `sdl/sdl_mtlimp.m` (mirror `sdl_glimp.c`'s `GLimp_SetMode`/`GLimp_Init`/`GLimp_EndFrame`/`GLimp_Shutdown` behavior with `SDL_WINDOW_METAL | SDL_WINDOW_ALLOW_HIGHDPI` + `SDL_Metal_CreateView`/`SDL_Metal_GetLayer`).
+4. Write `sdl/sdl_mtlimp.m` (mirror `sdl_glimp.c`'s `GLimp_SetMode`/`GLimp_Init`/`GLimp_EndFrame`/`GLimp_Shutdown` behavior with `SDL_WINDOW_METAL | SDL_WINDOW_ALLOW_HIGHDPI` + `SDL_Metal_CreateView`/`SDL_Metal_GetLayer`). Configure the layer for low latency (§4b rules 1–4): opaque, `maximumDrawableCount` 2, `displaySyncEnabled` from `r_swapInterval`, `presentsWithTransaction NO`, drawable acquired late, and no GPU wait between input sampling and encoding.
 5. Copy renderergl1 → `renderer_metal/`, add `tr_mtl.h` (the backend API), and convert qgl call sites file by file (largest first: tr_backend, tr_shade, tr_draw, tr_shadows, tr_init, tr_main, tr_image, tr_model, tr_surface, tr_sky, tr_cmds, flares). The backend implements device/queue/clear/present for real and stubs the rest.
 6. Check the Phase 1 done criteria; record what passes. If the session gets long, stop after a coherent subset and hand over 1b.
 

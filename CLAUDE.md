@@ -6,6 +6,8 @@
 
 (The user's words. Never reword them.)
 
+Standing requirement, added by the user on 2026-10-16: "can we also optimize for lowest input lag/delay possible? like lowest overhead". Judge every design choice on input-to-photon latency and overhead as well as fps. Rules and the planned work are in the plan, §4b.
+
 The full plan, findings, decisions, phase status and the hand-over note are in `docs/METAL_PORT_PLAN.md`. Read its "Next session" section before doing anything.
 
 ## Repo layout
@@ -19,7 +21,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 - **Native only.** No translation layers: no MoltenVK, SPIRV-Cross, ANGLE, metal-shaderconverter or GPTK. Shaders are hand-written MSL.
 - **Target:** macOS 26+ on Apple Silicon (arm64) only. Dev machine: Apple M4 Mac mini (4P+6E cores, 10-core GPU, 16 GB, Metal 4), macOS 26, Xcode 27.1.
-- **Online compatibility.** The client must keep working on existing MOHAA/OpenMoHAA servers and with retail game data. The network protocol, game/cgame logic and the data formats don't change unless a phase explicitly says so and the user agreed. `glconfig_t` and the refexport/refimport ABI stay as they are (cgame copies glconfig field by field). Rendering must look the same as the GL renderer (compare screenshots).
+- **Online compatibility.** The client must keep working on existing MOHAA/OpenMoHAA servers and with retail game data. The network protocol, game/cgame logic and the data formats don't change unless a phase explicitly says so and the user agreed. Frame pacing and usercmd timing (`com_maxfps`, the 1 ms frame floor) also count as gameplay feel: ask first. The `glconfig_t` layout is ABI with cgame (copied field by field) and never changes. refexport/refimport sit between the client and the renderer, both in this tree, so they change only when a phase needs it, additively. Rendering must look the same as the GL renderer (compare screenshots).
 - **Disk.** All build output, caches and temp files stay on the SSD (`/Volumes/1TB BLUE`), inside this repo in `build.noindex/` or `home.noindex/`. Always `source port/env.sh` (it sets TMPDIR and the clang module cache). Nothing goes on the internal disk except what macOS itself writes. Game data is read from `$OMM_GAME_DIR` (default `~/Documents/Games/moh`) and never copied or committed. Only the retail `Pak*.pk3` files are symlinked into the run layout, never the user's own dylibs, mods or configs.
 - **Metal shader compiler.** `xcrun metal` fails on this machine on purpose. The Metal Toolchain is an exported disk image under `/Volumes/1TB BLUE/gtav/toolchain.noindex/`. `omm_mount_metal` (from `port/env.sh`) mounts it read-only at `/Volumes/MetalToolchainCryptex`, and the compiler is `$OMM_METAL_BIN/metal`. Never write into `/Volumes/1TB BLUE/gtav`. **Never run `xcodebuild -downloadComponent`** (it installs a copy on the internal disk).
 - **Style.** Match each file's existing code style, indentation and line endings. Keep changes outside the renderer small, so upstream merges stay easy.
