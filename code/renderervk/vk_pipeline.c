@@ -290,13 +290,15 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	depthStencil.maxDepthBounds = 1.0f;
 
 	// the framebuffer has no destination alpha, like the GL1 visual: blend
-	// factors read it as 1 and nothing else reads it. With multisampling,
-	// pipelines that write all of RGB write alpha too, as 1 without
-	// blending (alphaOne) and unchanged with it: a write mask without alpha
-	// is a partial write, which costs multisampled DCC-compressed targets
-	// (6 % more GPU time with 4 samples in the m6l1a forest on a Radeon
-	// 780M). Without multisampling it makes no difference in speed, and on
-	// RADV 1 in about 10^5 pixels then rounds one step lower, unlike GL1.
+	// factors read it as 1 and nothing else reads it. Pipelines that write
+	// all of RGB without blending write alpha too, as 1 (alphaOne): a write
+	// mask without alpha is a partial write, which costs DCC-compressed
+	// targets (Radeon 780M: 1 to 2 % of the GPU time at 3840x2160, 4 % in
+	// views that clear the color buffer first; 6 % with 4 samples in the
+	// m6l1a forest). With blending they write it too only with
+	// multisampling, unchanged: without multisampling RADV then rounds 1 in
+	// about 10^5 blended pixels one step lower, unlike GL1, and it saves
+	// nothing there (blending reads the target anyway).
 	colorMask = VK_FIELD( bits, VK_PIPE_COLORMASK_SHIFT, 7 );
 
 	Com_Memset( &blendAttachment, 0, sizeof( blendAttachment ) );
@@ -312,7 +314,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	blendAttachment.colorWriteMask = ( ( colorMask & 1 ) ? VK_COLOR_COMPONENT_R_BIT : 0 )
 		| ( ( colorMask & 2 ) ? VK_COLOR_COMPONENT_G_BIT : 0 )
 		| ( ( colorMask & 4 ) ? VK_COLOR_COMPONENT_B_BIT : 0 )
-		| ( colorMask == 7 && vk.samples != VK_SAMPLE_COUNT_1_BIT ? VK_COLOR_COMPONENT_A_BIT : 0 );
+		| ( colorMask == 7 && ( vk.samples != VK_SAMPLE_COUNT_1_BIT || !( srcBlend || dstBlend ) ) ? VK_COLOR_COMPONENT_A_BIT : 0 );
 
 	Com_Memset( &blend, 0, sizeof( blend ) );
 	blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

@@ -408,10 +408,10 @@ target
 static float VK_DepthTexelValue( const byte *texel ) {
 	float depth;
 
-	if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT ) {
+	if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT || vk.depthFormat == VK_FORMAT_D16_UNORM ) {
 		return *(const unsigned short *)texel / 65535.0f;
 	}
-	if ( vk.depthFormat == VK_FORMAT_D24_UNORM_S8_UINT ) {
+	if ( vk.depthFormat == VK_FORMAT_D24_UNORM_S8_UINT || vk.depthFormat == VK_FORMAT_X8_D24_UNORM_PACK32 ) {
 		return ( *(const unsigned int *)texel & 0xFFFFFF ) / 16777215.0f;
 	}
 	Com_Memcpy( &depth, texel, sizeof( depth ) );
@@ -1220,7 +1220,9 @@ static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples
 static int VK_DepthBits( VkFormat format ) {
 	switch ( format ) {
 	case VK_FORMAT_D16_UNORM_S8_UINT: return 16;
+	case VK_FORMAT_D16_UNORM: return 16;
 	case VK_FORMAT_D24_UNORM_S8_UINT: return 24;
+	case VK_FORMAT_X8_D24_UNORM_PACK32: return 24;
 	default: return 32;
 	}
 }
@@ -1310,7 +1312,7 @@ static void VK_ClearTargetImage( VkImage image, qboolean color ) {
 	VkClearDepthStencilValue clearDepth;
 	VkImageAspectFlags aspect;
 
-	aspect = color ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	aspect = color ? VK_IMAGE_ASPECT_COLOR_BIT : vk.depthAspect;
 	Com_Memset( &range, 0, sizeof( range ) );
 	range.aspectMask = aspect;
 	range.levelCount = 1;
@@ -1405,7 +1407,7 @@ static void VK_MultisampleAttachment( VkAttachmentDescription2 *attachment, VkAt
 	ref->sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
 	ref->attachment = index;
 	ref->layout = attachment->initialLayout;
-	ref->aspectMask = color ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	ref->aspectMask = color ? VK_IMAGE_ASPECT_COLOR_BIT : vk.depthAspect;
 }
 
 static void VK_CreateMultisampleRenderPasses( VkPipelineStageFlags attachmentStages, VkAccessFlags attachmentAccess ) {
@@ -1516,8 +1518,7 @@ static void VK_CreateDepthTarget( qboolean readable ) {
 	if ( readable ) {
 		usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	}
-	VK_CreateTargetImage( vk.depthFormat, VK_SAMPLE_COUNT_1_BIT, usage,
-		VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &vk.depthImage, &vk.depthMemory, &vk.depthView );
+	VK_CreateTargetImage( vk.depthFormat, VK_SAMPLE_COUNT_1_BIT, usage, vk.depthAspect, &vk.depthImage, &vk.depthMemory, &vk.depthView );
 	vk.depthReadable = readable;
 }
 
@@ -1601,6 +1602,18 @@ static void VK_CreateRenderTargets( void ) {
 		VK_FORMAT_D32_SFLOAT_S8_UINT,	// AMD has no D24
 		VK_FORMAT_D16_UNORM_S8_UINT
 	};
+	// the same depth without the stencil plane when no stencil buffer is
+	// wanted (r_stencilbits 0, the default on Linux, where GL1's depth buffer
+	// has no stencil either): AMD's HTILE then holds depth only, 0.5 % less
+	// GPU time at 3840x2160 on a Radeon 780M, and the depth clear fills it
+	// instead of running a compute pass that keeps the stencil bits
+	static const VkFormat depthOnlyFormats[] = {
+		VK_FORMAT_X8_D24_UNORM_PACK32,
+		VK_FORMAT_D32_SFLOAT,
+		VK_FORMAT_D16_UNORM
+	};
+	const VkFormatFeatureFlags depthFeatures = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+		| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 	VkFramebufferCreateInfo framebufferInfo;
 	VkImageView views[4];
 	VkPipelineStageFlags attachmentStages;
@@ -1624,9 +1637,14 @@ static void VK_CreateRenderTargets( void ) {
 	}
 
 	vk.depthFormat = VK_FORMAT_UNDEFINED;
+	vk.depthAspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 	for ( i = 0; i < ARRAY_LEN( depthFormats ); i++ ) {
-		if ( VK_FormatHasFeatures( depthFormats[i], VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-			| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT ) ) {
+		if ( r_stencilbits->integer <= 0 && VK_FormatHasFeatures( depthOnlyFormats[i], depthFeatures ) ) {
+			vk.depthFormat = depthOnlyFormats[i];
+			vk.depthAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+			break;
+		}
+		if ( VK_FormatHasFeatures( depthFormats[i], depthFeatures ) ) {
 			vk.depthFormat = depthFormats[i];
 			break;
 		}
@@ -1645,7 +1663,7 @@ static void VK_CreateRenderTargets( void ) {
 		VK_CreateTargetImage( vk.colorFormat, vk.samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 			VK_IMAGE_ASPECT_COLOR_BIT, &vk.msColorImage, &vk.msColorMemory, &vk.msColorView );
 		VK_CreateTargetImage( vk.depthFormat, vk.samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &vk.msDepthImage, &vk.msDepthMemory, &vk.msDepthView );
+			vk.depthAspect, &vk.msDepthImage, &vk.msDepthMemory, &vk.msDepthView );
 	}
 
 	// successive render passes read what the previous ones wrote
@@ -1823,6 +1841,7 @@ static void VK_ReportCapabilities( void ) {
 		props2.pNext = &driverProps;
 		qvkGetPhysicalDeviceProperties2( vk.physicalDevice, &props2 );
 		Com_sprintf( driver, sizeof( driver ), ", %s %s", driverProps.driverName, driverProps.driverInfo );
+		vk.drawColorClears = driverProps.driverID == VK_DRIVER_ID_MESA_RADV && vk.samples == VK_SAMPLE_COUNT_1_BIT;
 	}
 
 	Q_strncpyz( glConfig.vendor_string, VK_VendorName( props->vendorID ), sizeof( glConfig.vendor_string ) );
@@ -1844,7 +1863,7 @@ static void VK_ReportCapabilities( void ) {
 	// only reported when r_stencilbits asked for one
 	glConfig.colorBits = 24;
 	glConfig.depthBits = VK_DepthBits( vk.depthFormat );
-	glConfig.stencilBits = r_stencilbits->integer > 0 ? 8 : 0;
+	glConfig.stencilBits = ( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ? 8 : 0;
 
 	ri.Printf( PRINT_ALL, "Vulkan device: %s (%s)\n", glConfig.renderer_string, glConfig.version_string );
 	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d\n", VK_SwapchainPresentModeName(), vk.width, vk.height );
@@ -3030,14 +3049,45 @@ static float VK_ClearComponent( float c ) {
 
 /*
 ===============
-VK_ClearColorMasked
+VK_DrawClearColor
 
-glClear of the color buffer with a partial color mask: a quad over the
-scissor rectangle with the current mask, since vkCmdClearAttachments
-ignores the mask
+Whether a clear of the color buffer to this color is drawn as a quad
+instead of vkCmdClearAttachments: on RADV without multisampling, when a
+component isn't 0 or 1. RADV clears DCC-compressed images to such colors
+with comp-to-single, a compute pass that writes the color into every
+256-byte block: with the depth clear, 0.28 ms per 3840x2160 frame on a
+Radeon 780M against 0.25 ms with the quad, which writes the pixels like
+any draw (alpha too, see vk_pipeline.c). The 3D view of fog maps is
+cleared to the fog color in every frame where no sky is in view, every
+view with r_fastsky 1.
 ===============
 */
-static void VK_ClearColorMasked( const vec4_t color ) {
+static qboolean VK_DrawClearColor( const vec4_t color ) {
+	int i;
+
+	if ( !vk.drawColorClears ) {
+		return qfalse;
+	}
+	for ( i = 0; i < 3; i++ ) {
+		float c = VK_ClearComponent( color[i] );
+
+		if ( c != 0.0f && c != 1.0f ) {
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+/*
+===============
+VK_ClearColor
+
+glClear of the color buffer as a quad over the scissor rectangle with the
+current color mask: for a partial mask, since vkCmdClearAttachments
+ignores it, and for the colors of VK_DrawClearColor
+===============
+*/
+static void VK_ClearColor( const vec4_t color ) {
 	static const float xyz[4][3] = { { -1, -1, 0 }, { 1, -1, 0 }, { 1, 1, 0 }, { -1, 1, 0 } };
 	static const glIndex_t indexes[6] = { 0, 1, 2, 0, 2, 3 };
 	drawGeometry_t geometry;
@@ -3078,7 +3128,7 @@ static void VK_ClearColorMasked( const vec4_t color ) {
 void vk_clear( int buffers, const vec4_t color ) {
 	VkClearAttachment attachments[2];
 	VkClearRect rect;
-	qboolean maskedColor;
+	qboolean drawColor;
 	uint32_t numAttachments;
 
 	if ( !vk.device ) {
@@ -3092,12 +3142,12 @@ void vk_clear( int buffers, const vec4_t color ) {
 	rect.layerCount = 1;
 
 	numAttachments = 0;
-	maskedColor = qfalse;
+	drawColor = qfalse;
 
 	// alpha isn't stored (no destination alpha, see vk_pipeline.c), so only
 	// the RGB mask matters
 	if ( ( buffers & CLEAR_COLOR ) && color && ( vks.colorMask[0] || vks.colorMask[1] || vks.colorMask[2] ) ) {
-		if ( vks.colorMask[0] && vks.colorMask[1] && vks.colorMask[2] ) {
+		if ( vks.colorMask[0] && vks.colorMask[1] && vks.colorMask[2] && !VK_DrawClearColor( color ) ) {
 			attachments[numAttachments].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			attachments[numAttachments].colorAttachment = 0;
 			attachments[numAttachments].clearValue.color.float32[0] = VK_ClearComponent( color[0] );
@@ -3106,7 +3156,7 @@ void vk_clear( int buffers, const vec4_t color ) {
 			attachments[numAttachments].clearValue.color.float32[3] = 1.0f;
 			numAttachments++;
 		} else {
-			maskedColor = qtrue;
+			drawColor = qtrue;
 		}
 	}
 
@@ -3116,7 +3166,7 @@ void vk_clear( int buffers, const vec4_t color ) {
 	if ( ( buffers & CLEAR_DEPTH ) && ( vks.stateBits & GLS_DEPTHMASK_TRUE ) ) {
 		attachments[numAttachments].aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
 	}
-	if ( ( buffers & CLEAR_STENCIL ) && ( vks.stencilWriteMask & 0xFF ) ) {
+	if ( ( buffers & CLEAR_STENCIL ) && ( vks.stencilWriteMask & 0xFF ) && ( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ) {
 		attachments[numAttachments].aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
 	}
 	if ( attachments[numAttachments].aspectMask ) {
@@ -3126,7 +3176,7 @@ void vk_clear( int buffers, const vec4_t color ) {
 		numAttachments++;
 	}
 
-	if ( !numAttachments && !maskedColor ) {
+	if ( !numAttachments && !drawColor ) {
 		return;
 	}
 
@@ -3134,8 +3184,8 @@ void vk_clear( int buffers, const vec4_t color ) {
 	if ( numAttachments ) {
 		qvkCmdClearAttachments( vk.frame->mainCmd, numAttachments, attachments, 1, &rect );
 	}
-	if ( maskedColor ) {
-		VK_ClearColorMasked( color );
+	if ( drawColor ) {
+		VK_ClearColor( color );
 	}
 }
 
@@ -3194,8 +3244,12 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 	if ( width <= 0 || height <= 0 ) {
 		return;
 	}
-	// pixels outside of the framebuffer read as 0
+	// pixels outside of the framebuffer read as 0, and stencil without a
+	// stencil buffer
 	Com_Memset( buffer, 0, (size_t)pixelSize * width * height );
+	if ( format == READ_STENCIL8 && !( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ) {
+		return;
+	}
 
 	x0 = Q_max( x, 0 );
 	y0 = Q_max( y, 0 );
@@ -3232,13 +3286,13 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		VK_ResolveDepth();
 		image = vk.depthImage;
 		aspect = format == READ_DEPTH_FLOAT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_STENCIL_BIT;
-		barrierAspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+		barrierAspect = vk.depthAspect;
 		layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		stages = VK_DepthImageStages();
 		access = VK_DepthImageWriteAccess();
 		if ( format == READ_STENCIL8 ) {
 			texelSize = 1;
-		} else if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT ) {
+		} else if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT || vk.depthFormat == VK_FORMAT_D16_UNORM ) {
 			texelSize = 2;
 		} else {
 			texelSize = 4;
@@ -3376,14 +3430,14 @@ void vk_queue_depth_reads( int count, const int *xy, unsigned int *ids ) {
 	VK_ResolveDepth();
 	cmd = frame->mainCmd;
 
-	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+	VK_ImageBarrier( cmd, vk.depthImage, vk.depthAspect,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		VK_DepthImageStages(), VK_DepthImageWriteAccess(),
 		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT );
 
 	qvkCmdCopyImageToBuffer( cmd, vk.depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, frame->depthReadBuffer.buffer, numRegions, regions );
 
-	VK_ImageBarrier( cmd, vk.depthImage, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+	VK_ImageBarrier( cmd, vk.depthImage, vk.depthAspect,
 		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
 		VK_DepthImageStages(), VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_DepthImageWriteAccess() );

@@ -387,6 +387,7 @@ typedef struct {
 	VkSampleCountFlagBits samples;
 	VkFormat			colorFormat;
 	VkFormat			depthFormat;
+	VkImageAspectFlags	depthAspect;	// depth, and stencil when the format has it (see VK_CreateRenderTargets)
 	VkImage				colorImage;
 	VkDeviceMemory		colorMemory;
 	VkImageView			colorView;
@@ -397,6 +398,9 @@ typedef struct {
 	// multisampling, otherwise only while depth or stencil reads are wanted
 	// (VK_UpdateDepthTarget in vk.c)
 	qboolean			depthReadable;
+	// color clears to colors other than 0 and 1 are drawn as a quad (RADV,
+	// see VK_DrawClearColor in vk.c)
+	qboolean			drawColorClears;
 	uint64_t			depthReadSerial;	// frame in which depth or stencil reads were last wanted, 0 for never
 	VkImage				msColorImage, msDepthImage;
 	VkDeviceMemory		msColorMemory, msDepthMemory;

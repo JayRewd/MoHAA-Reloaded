@@ -112,6 +112,16 @@ below are done.
   652 to 838 fps, GL1 506 to 757, and the fourth runs at 772 fps instead of
   614, GL1 500), with the GPU time unchanged within 1 % at 3840x2160 (see
   Performance, Skeletal models); views without players don't change
+- GPU time at 3840x2160 (2026-10-16 evening): where the GPU limits, the
+  Vulkan renderer took 1 to 4 % more GPU time than GL1; the pipelines
+  without blending now write alpha too (an RGB-only write to the BGRA
+  swapchain image is a partial write), the depth image has no stencil
+  plane when no stencil buffer is wanted, and RADV's clears to the fog
+  color are drawn: 2.7 to 5.4 % less GPU time per frame in six of seven
+  views (0.7 % in the seventh), faster than GL1 in all but the
+  `dm/mohdm3` overview (0.6 % slower), with the same frames (see
+  Performance, GPU time at 3840x2160). What is left is RADV not
+  compressing textures
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -371,8 +381,9 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   ...; terrain patches included), to pick views.
 - `perf.py`: frame time and renderer time of views with both renderers,
   uncapped, in interleaved runs (see Performance); `rtimer/` builds the
-  `renderer_timed.so` wrapper it uses and `libstacks.so`, a stack sampler
-  whose output `stacks.py` sums up.
+  `renderer_timed.so` wrapper it uses, `libstacks.so`, a stack sampler
+  whose output `stacks.py` sums up, and `libglts.so`, GPU timestamps of
+  GL1's frames (see Performance, GPU time at 3840x2160).
 - `soldiers.py`: writes a view list of a multiplayer scene, soldier models
   around the camera and muzzle flash lights (see Test content).
 - `summary.py`: the worst view's numbers of several lists after
@@ -811,6 +822,37 @@ spawns the soldiers of `mp_mohdm1`, turns `r_gpuSkinning` off and on,
 runs `vid_restart` and loads `obj/obj_team4` with its soldiers (the skin
 data cleared and filled again); the main menu matches GL1 (fan masked).
 
+The GPU time changes of 2026-10-16 evening (alpha written by the
+pipelines without blending, the depth image without a stencil plane when
+`r_stencilbits` is 0, the fog color and `r_fastsky` clears drawn on
+RADV; see Performance, GPU time at 3840x2160), against the build before
+them (`run.sh`, `tgadiff.py`, 640x480) on the 41 view lists plus the
+dynamic light lists with `r_fastdlights 1`, `mohdm1_texenv` with
+`r_ext_texture_env_add 1`, `mohdm1` with `r_ext_multisample 4` and with
+`r_stencilbits 8` (the stencil plane kept), `mohdm1` and `dm/mohdm3`
+with `r_fastsky 1` (drawn clears) and `menus.txt` (208 views): 176 views
+give the same frames to the bit, and the other 32 are the random content
+and run-to-run noise named above (the smoke and convoy of `m1l1`, AI in
+`m1l2a` and `m1l3a`, the camera shake of `m3l1a`, the shutters of
+`m5l1a`, the tank of `m5l2a`, a particle in `m53_street`, snow in
+`m6l1a` and `mohdm5_fog`, and ±1 near the camera in `s2_a`/`s2_b`,
+`fm4_a`/`fm4_b`, `m61_slope`, `d7_alley` and `d7_arch`), among them the
+`r_fastsky 1` views, whose color clears are all drawn now, and the fog
+maps. No validation message in any of these runs (`r_vkValidation 1`),
+nor with synchronization validation (`r_vkValidation 2`) on `mohdm1`
+with `r_fastsky 1` (also with `r_ext_multisample 4`), `mohdm2_fog`,
+`mohdm1_dlight`, `mohdm1` with `r_stencilbits 8` and `r_measureOverdraw
+1` and with `r_measureOverdraw 1` alone (no stencil buffer: the warning,
+like GL1), and a script that switches `r_stencilbits` 8 and 0,
+`r_measureOverdraw` and `r_shadows 2`, and multisampling on and off with
+`vid_restart` in `dm/mohdm1`, then loads `dm/mohdm2`. Against GL1
+(`compare.sh`, `summary.py`), `dm/mohdm3`, `obj_team2`, `obj_team4`,
+`mp_mohdm1` and `mp_obj_team4` give the numbers of the tables above at
+640x480 and at 4160x240, `dm/mohdm1`, `mohdm2_fog` and `mohdm4_fog` the
+same kind (at most 0.17 % of the pixels differ at 4160x240), and the
+main menu matches GL1 (fan masked; `menus.txt` gives the numbers of its
+paragraph above).
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -867,7 +909,7 @@ Other things learned:
 `tools/perf.py` measures views with both renderers (see its docstring):
 
 ```sh
-code/renderervk/tools/rtimer/build.sh      # renderer_timed.so and libstacks.so into build-vk
+code/renderervk/tools/rtimer/build.sh      # renderer_timed.so, libstacks.so and libglts.so into build-vk
 code/renderervk/tools/perf.py --list code/renderervk/tools/views/perf.txt \
     --sizes 640x480,1920x1080 --renderers opengl1,vulkan --runs 3 --json out.json
 code/renderervk/tools/perf.py m6l1a 6152 -6528 5500 0 135 0 --runs 1 --stacks out
@@ -1078,7 +1120,7 @@ frames are CPU-limited.
 
 A depth format without the unused stencil plane (D32 instead of D32S8,
 GL1 has no stencil either) saves 0.5 % more at 3840x2160 and nothing at
-1080p after that; not done.
+1080p after that; not done then, done since (see GPU time at 3840x2160).
 
 Second round (2026-10-14 night): the renderer's CPU time. With the
 depth image change the `m6l1a` forest is GPU-bound at 1080p, so CPU gains
@@ -1128,7 +1170,9 @@ buffer in host-cached memory instead of write-combined device-local memory,
 the depth format without the stencil plane (0.5 % less GPU time at
 3840x2160, nothing at 1080p or with multisampling) and writing alpha
 without multisampling (1.2 % less GPU time at 3840x2160 in `dm/mohdm3` and
-`m3l3`, but 1 pixel in about 10^5 rounds one step lower, see State).
+`m3l3`, but 1 pixel in about 10^5 rounds one step lower, see State). Both
+were taken up again with the GPU time at 3840x2160 (below): alpha is now
+written by the pipelines without blending only, which keeps the frames.
 
 What the profile shows after it (640x480, `m6l1a`, % of the 1 ms frame):
 `vk_draw` 10 % for 340 draws (vertex and index copies about 4, RADV's
@@ -1407,6 +1451,122 @@ the world and the static models (`RB_StaticMesh` 4 % in `pm1_front`),
 cgame (about 20 % of the wall clock time, outside the renderer) and the
 end of the frame.
 
+GPU time at 3840x2160 (2026-10-16 evening). Where the GPU limits, the
+Vulkan renderer's main pass took 1 to 4 % more GPU time than GL1's whole
+frame (`dm/mohdm3` overview 2.53 ms against 2.47, `po4_front` 2.59
+against 2.53, see the tables above), about 0.08 ms per frame, which
+turning content off didn't change (see Plan, Remaining, before this
+work). GL1 has no GPU timestamps, so `tools/rtimer/glts.c`
+(`libglts.so`, preloaded: `LD_PRELOAD=<bindir>/libglts.so
+GLTS_OUT=<file> perf.py ... --renderers opengl1,...`) writes GL
+timestamp queries right after each swap, before and after the first
+depth clear of a frame (the 3D view's) and before the swap, and a
+temporary build of the Vulkan renderer wrote timestamps at the same
+points (bottom of the pipe, like GL's). Per frame, ms (medians of 2 or 3
+runs; the timestamps themselves cost about 0.02 ms):
+
+| view | | before the clear | the clear | clear to end of frame | end to next frame (swap, present) | per frame |
+| --- | --- | --- | --- | --- | --- | --- |
+| `dm/mohdm3` overview | GL1 | 0.000 | 0.266 | 2.190 | 0.043 | 2.499 |
+| | Vulkan before | 0.004 | 0.280 | 2.262 | 0.039 | 2.585 |
+| `obj_team2` yard | GL1 | 0.000 | 0.002 | 1.750 | 0.028 | 1.780 |
+| | Vulkan before | 0.004 | 0.010 | 1.722 | 0.027 | 1.762 |
+| `obj_team2` yard, `r_fastsky 1` | GL1 | 0.000 | 0.264 | 1.503 | 0.034 | 1.801 |
+| | Vulkan, alpha written | 0.004 | 0.279 | 1.560 | 0.028 | 1.871 |
+
+So the start and the end of the frame (the swapchain image's layout
+transitions, the submission, the present) cost what GL1's swap costs,
+and the yard was already faster than GL1. The difference is in the
+drawing, and it is largest in the views that clear the color buffer (to
+the fog color in `dm/mohdm3`, where the view holds no sky, and with
+`r_fastsky 1`); GL1 draws its sky more slowly than Vulkan (`r_fastsky 1`
+takes 0.25 ms of drawing off GL1's yard and about 0.13 off Vulkan's),
+which hid the rest there. What it was, each measured on its own against
+the build before it (medians of 3 interleaved runs, ms per frame, frame
+time):
+
+- Partial color writes. GL1's window buffer is BGRX8 (no alpha), so its
+  RGB writes are writes of whole pixels; the swapchain image is BGRA8 and
+  the pipelines wrote RGB only, partial writes, which the DCC-compressed
+  target has to merge with the alpha it holds. Writing alpha, as 1, in
+  the pipelines without blending: 2.560 to 2.533 in the overview (-1.1 %),
+  1.757 to 1.727 in the yard (-1.7 %), 1.952 to 1.872 in the yard with
+  `r_fastsky 1` (-4.1 %). Alpha written by the blending pipelines too
+  (unchanged, factors 0 and 1) saves nothing more (2.532, 1.724) and
+  changes the rounding of a few blended pixels by 1 (6 in `d3_street`, 15
+  in `o2_pipe2`, both directions: the 1 in 10^5 of the second round), so
+  they keep the RGB mask; with only the pipelines without blending the
+  frames are the same to the bit.
+- The stencil plane. D32S8 has one; GL1's depth buffer (Z24X8) has none.
+  Without a stencil buffer (`r_stencilbits` 0, the default on Linux) the
+  depth image is D32, whose HTILE holds depth only and whose depth clear
+  is a fill instead of a compute pass that keeps the stencil bits (the
+  clear took 0.010 ms in the yard against GL1's 0.002): with alpha written,
+  2.531 to 2.516 in the overview, 1.727 to 1.719 in the yard (-0.5 %).
+- The color clear. To a color with components other than 0 and 1, both
+  drivers clear with DCC comp-to-single, a compute pass that writes the
+  color into every 256-byte block: 0.266 ms with GL1, 0.280 with Vulkan
+  (with the depth clear). A quad drawn over the view (writing alpha, so
+  whole pixels) takes 0.247 ms: with the two changes above, 2.517 to
+  2.500 in the overview, 1.855 to 1.837 in the yard with `r_fastsky 1`,
+  3.019 to 2.984 in the `m3l3` path (fog color too), the yard without a
+  color clear unchanged (1.715, 1.716). Done on RADV only (other drivers
+  clear any color without such a pass, untested here) and without
+  multisampling.
+- Not tried, from RADV's source: the load and store operations of the
+  render pass (`DONT_CARE` for depth at the end of the frame, for stencil
+  throughout). `radv_cmd_buffer.c` never reads `storeOp` and
+  `radv_meta_clear.c` only looks for `loadOp` `CLEAR` (Mesa 26.0.8), and
+  the measured views have one render pass per frame.
+
+What is left is the textures. radeonsi gives DCC to textures, RADV only
+to images that can be color attachments and are larger than 512x512
+(`radv_image_use_fast_clear_for_image_early`): after loading
+`dm/mohdm3`, 711 of GL1's 940 tiled textures have DCC (`AMD_DEBUG=tex`;
+128x128 ones, the size of the lightmaps, among them) and none of
+Vulkan's 533 (`RADV_DEBUG=img`), which are all 512x512 or smaller. With
+`RADV_DEBUG=forcecompress` (DCC for every image) the final build takes
+2.438 ms in the overview (GL1 2.473), 1.687 in the yard (1.773) and
+2.984 in the `m3l3` path (3.022): faster than GL1 in every view, 0.03 to
+0.06 ms less than without it. The renderer can't get that: its textures
+are below RADV's threshold whatever their usage flags. It would be a
+change to RADV (compressing sampled images that copies write, as
+radeonsi does); not done.
+
+The result against GL1 and the build before (idle machine; medians of 3
+interleaved runs; frame time with the fps of the median and the main
+pass's GPU time; ms per frame; the frames are the same to the bit, see
+Testing):
+
+| view | size | frame GL1 | before | after | GPU before | after |
+| --- | --- | --- | --- | --- | --- | --- |
+| `dm/mohdm3` overview | 3840x2160 | 2.483 (403 fps) | 2.566 (390) | 2.497 (400) | 2.535 | 2.466 |
+| `obj_team2` yard | 3840x2160 | 1.775 (563) | 1.777 (563) | 1.721 (581) | 1.749 | 1.699 |
+| `obj_team2` yard, `r_fastsky 1` | 3840x2160 | 1.779 (562) | 1.952 (512) | 1.848 (541) | 1.929 | 1.825 |
+| `m3l3` path | 3840x2160 | 3.062 (327) | 3.129 (320) | 3.017 (331) | 3.090 | 2.980 |
+| `pm1_front` | 3840x2160 | 4.062 (246) | 4.121 (243) | 3.943 (254) | 4.073 | 3.897 |
+| `po1_front` | 3840x2160 | 2.761 (362) | 2.803 (357) | 2.727 (367) | 2.768 | 2.693 |
+| `po4_front` | 3840x2160 | 2.551 (392) | 2.626 (381) | 2.491 (401) | 2.595 | 2.461 |
+| `pm7_flash` | 3840x2160 | 2.455 (407) | 2.016 (496) | 2.003 (499) | 1.991 | 1.978 |
+| `dm/mohdm3` overview | 1920x1080 | | 0.999 | 0.999 | 0.722 | 0.700 |
+| `obj_team2` yard | 1920x1080 | | 0.999 | 0.999 | 0.620 | 0.622 |
+| `m3l3` path | 1920x1080 | | 0.999 | 0.998 | 0.943 | 0.921 |
+| `pm1_front` | 1920x1080 | | 1.299 (770) | 1.271 (787) | 1.271 | 1.241 |
+| `po1_front` | 1920x1080 | | 0.999 | 0.999 | 0.834 | 0.823 |
+| `po4_front` | 1920x1080 | | 0.999 | 0.999 | 0.812 | 0.792 |
+| `pm7_flash` | 1920x1080 | | 0.999 | 0.999 | 0.663 | 0.661 |
+
+(0.999 is the 1000 frames per second limit; others 2.3 CPUs at most, in
+one run of the build before in the yard, its slowest. GL1 varies more
+from run to run in the `m3l3` path, 3.005 to 3.119 ms, and in
+`pm7_flash`, where it is CPU-bound with the three lights.) At 3840x2160
+the GPU time per frame goes down 2.7 to 5.4 % (0.7 % in `pm7_flash`),
+and Vulkan's frames are faster than GL1's in every view but the
+`dm/mohdm3` overview (0.6 % slower) and the yard with `r_fastsky 1` (3.9
+% slower: GL1's slow sky is gone there); at 1920x1080, where these views
+are CPU-bound but `pm1_front`, the GPU time goes down or stays within
+±0.3 %, and `pm1_front` runs at 787 fps instead of 770.
+
 The plan items, each measured before and after with interleaved builds:
 
 | item | measured |
@@ -1488,13 +1648,15 @@ asks for no alpha bits): `DST_ALPHA` and `ONE_MINUS_DST_ALPHA` blend
 factors are the constants 1 and 0 and `SRC_ALPHA_SATURATE` gives 0, as in
 GL1, whatever the color target's alpha holds (a swapchain image's is
 undefined until written; only a test shader, `textures/mohtest/brick`,
-uses `GL_DST_ALPHA`). Alpha is not written, except with multisampling:
-there pipelines that write all of RGB write alpha too (1 without blending,
-the stored value with it), because a write mask without alpha is a
-partial write, which made a multisampled frame of the `m6l1a` forest 6 %
-slower on the GPU (Radeon 780M, see Performance). Without multisampling it
-saves nothing, and RADV then rounds 1 pixel in about 10^5 one step lower
-than with the RGB mask (and GL1), so the RGB mask stays.
+uses `GL_DST_ALPHA`). Pipelines that write all of RGB without blending
+write alpha too, as 1, because a write mask without alpha is a partial
+write, which costs DCC-compressed color targets: 1 to 2 % of the GPU time
+at 3840x2160, 4 % in views that clear the color buffer first, 6 % in the
+`m6l1a` forest with 4 samples (Radeon 780M, see Performance). Blending
+pipelines write alpha (unchanged) only with multisampling: without it RADV
+then rounds about 1 blended pixel in 10^5 one step lower than with the RGB
+mask (and GL1), in both directions (15 pixels of `o2_pipe2`, the wet pipes
+of `obj_team2`), and blending reads the target anyway.
 
 ### Fragment pipeline
 
@@ -1549,8 +1711,13 @@ debug drawing and is ignored when unsupported.
 color mask, the depth write bit of the current state and the stencil write
 mask. Depth clears to 1.0, stencil to 0. `color` may be NULL when
 `CLEAR_COLOR` is not set. The backend uses `vkCmdClearAttachments`, which
-ignores masks, and draws a quad for a color clear with a partial color mask; a
-partial stencil write mask clears all bits (the renderer never sets one). The
+ignores masks, and draws a quad for a color clear with a partial color mask,
+and on RADV (without multisampling) for a color clear to a color with a
+component other than 0 or 1, which RADV clears with comp-to-single, slower
+than the quad at 3840x2160 (see Performance, GPU time at 3840x2160); a
+partial stencil write mask clears all bits (the renderer never sets one).
+Without a stencil buffer (`r_stencilbits` 0, see Implementation notes,
+Render target) stencil clears do nothing and stencil reads give 0. The
 clear color is first rounded to the nearest 8-bit value on the CPU: drivers
 convert clear colors with float arithmetic that can round the other way near
 half a step (RADV gives 179 for 0.7, GL1 the correctly rounded 178; it shows
@@ -1722,7 +1889,16 @@ selects the sample count (see Implementation notes).
   resized before its `vid_restart`, no usable swapchain) the frame is drawn
   into an offscreen color image of that format, blitted (scaled) to the
   swapchain image at present; frames that drew nothing present nothing. The
-  depth/stencil image is always offscreen. Without multisampling it can
+  depth/stencil image is always offscreen. Its format is the first of
+  `D24_UNORM_S8_UINT`, `D32_SFLOAT_S8_UINT` and `D16_UNORM_S8_UINT` the
+  device supports, or without a stencil buffer (`r_stencilbits` 0, the
+  default on Linux, where GL1's depth buffer has no stencil either) the same
+  depth without the stencil plane (`X8_D24_UNORM_PACK32`, `D32_SFLOAT`,
+  `D16_UNORM`; `D32_SFLOAT` on RADV): HTILE then holds depth only, 0.5 % less
+  GPU time at 3840x2160 on a Radeon 780M, and the depth clear is a plain fill
+  of HTILE instead of a compute pass that keeps its stencil bits. The
+  stencil buffer is reported (`glConfig.stencilBits`) only when there is one,
+  like GL1's. Without multisampling it can
   only be copied from (`TRANSFER_SRC` usage) while depth or stencil reads
   are wanted (`VK_UpdateDepthTarget`, at the start of a frame, replaces it
   with a readable image after a read or `vk_want_depth_reads`, and with a
@@ -2291,6 +2467,22 @@ Done:
    whole-unit coordinates went to the same slot). The renderer's CPU time
    goes down 57 to 64 % in these views, with no measurable GPU cost.
 
+10. The GPU time at 3840x2160 (2026-10-16 evening, see Performance, GPU
+    time at 3840x2160): GL timestamps for GL1 (`tools/rtimer/glts.c`)
+    and temporary ones in the Vulkan renderer put the 1 to 4 % that
+    Vulkan took more than GL1 in the drawing, mostly in views that clear
+    the color buffer, and A/B builds found three causes: partial color
+    writes (the pipelines wrote RGB only to the BGRA swapchain image,
+    GL1's BGRX buffer takes whole pixels), the unused stencil plane of
+    the depth image, and RADV's comp-to-single clears of the fog color.
+    The pipelines without blending write alpha, the depth image has no
+    stencil plane when `r_stencilbits` is 0, and on RADV those clears
+    are drawn: 2.7 to 5.4 % less GPU time per frame in six of the seven
+    views measured at 3840x2160 (0.7 % in the seventh); Vulkan's frames
+    are now faster than GL1's there but in the `dm/mohdm3` overview (0.6
+    % slower). The frames are the same to the bit. What is left is
+    RADV's choice not to compress textures (see Remaining).
+
 Remaining:
 
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
@@ -2339,31 +2531,27 @@ Remaining:
   measured again after the trace cache fix. The LOD terrain, re-split
   every frame (`RB_DrawTerrainTris`), still copies its vertexes.
 
-- At 3840x2160 the GPU-bound `dm/mohdm3` overview and `m3l3` path take
-  3 to 4 % more GPU time than GL1's frames (2.53 against 2.46-2.48 ms,
-  3.05 against 3.00 ms), a fixed ~0.08 ms per frame that doesn't come from
-  any one kind of content (the same with `r_drawterrain 0`, `r_fastsky 1`,
-  `r_drawstaticmodels 0` or `r_drawentities 0` in both renderers), is not
-  the depth clear (a fast clear: `RADV_DEBUG=nofastclears` adds 0.38 ms)
-  nor the swapchain image's transition for presentation (0.006 ms), and
-  doubles with primitive binning off in both drivers, so it is memory
-  traffic again. Writing alpha (1.2 %, but a rounding difference, see
-  State), the depth format without stencil (0.5 %) and DCC on textures
-  (`RADV_DEBUG=forcecompress`: -2.3 % in one view, +0.8 % in the other)
-  account for part of it. At 1080p these views are CPU-bound, where the
-  Vulkan renderer is faster.
-- Leads left from the main pass investigation (see Performance), none
-  worth more than a few percent as far as measured: a depth format
-  without the unused stencil plane when `r_stencilbits` is 0 (D32 instead
-  of D32S8: 0.5 % less GPU time at 3840x2160, nothing at 1080p or with
-  multisampling); RADV's
+- At 3840x2160, where the GPU limits, the views measured since the GPU
+  time work (see Performance, GPU time at 3840x2160) take 1 to 3 % less
+  time than GL1's frames, but the `dm/mohdm3` overview, 0.6 % more (2.497
+  against 2.483 ms), and the `obj_team2` yard with `r_fastsky 1`, 3.9 %
+  more. What is left of the difference is the textures: radeonsi gives
+  textures DCC, RADV only images that can be color attachments and are
+  larger than 512x512, and with `RADV_DEBUG=forcecompress` (DCC for every
+  image) Vulkan's frames take 0.03 to 0.06 ms less and are faster than
+  GL1's in the `dm/mohdm3` overview, the `obj_team2` yard and the `m3l3`
+  path. The textures (all 512x512 or smaller in `dm/mohdm3`, the lightmaps
+  128x128) are below RADV's threshold whatever the renderer asks for; the fix
+  would be in RADV (compressing sampled images that copies write, as
+  radeonsi does), not in the renderer; not tried.
+- A lead left from the main pass investigation (see Performance): RADV's
   primitive binning uses 128x128 bins where radeonsi uses 128x64 for
   depth-tested draws on this GPU (in `radv_gfx10_compute_bin_size`, Mesa
   26.0.8, the final `extent.height = MAX2(extent.width, ...)` and the depth
   bin's height taken from the color bins look like typos; a 128x128 bin
-  needs more depth tag space than the 78 KB the formula allows). Neither
-  can be changed from the application; testing the bin size needs a
-  patched RADV (not done), and if it matters the fix belongs in Mesa.
+  needs more depth tag space than the 78 KB the formula allows). It can't
+  be changed from the application; testing it needs a patched RADV (not
+  done), and if it matters the fix belongs in Mesa.
 - `r_ext_multisample 4` is 3 % slower than GL1's (2.77 against 2.70 ms per
   frame in the `m6l1a` forest at 1080p); the resolve into the swapchain
   image costs 0.26 ms of GPU time (RADV resolves into a DCC-compressed
