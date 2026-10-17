@@ -360,14 +360,14 @@ void RB_SurfaceBeam( void )
 
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 
-	qglColor3f( 1, 0, 0 );
+	mbColor3f( 1, 0, 0 );
 
-	qglBegin( GL_TRIANGLE_STRIP );
+	mbBegin( MB_TRIANGLE_STRIP );
 	for ( i = 0; i <= NUM_BEAM_SEGS; i++ ) {
-		qglVertex3fv( start_points[ i % NUM_BEAM_SEGS] );
-		qglVertex3fv( end_points[ i % NUM_BEAM_SEGS] );
+		mbVertex3fv( start_points[ i % NUM_BEAM_SEGS] );
+		mbVertex3fv( end_points[ i % NUM_BEAM_SEGS] );
 	}
-	qglEnd();
+	mbEnd();
 }
 
 /*
@@ -691,19 +691,19 @@ Draws x/y/z lines from the origin for orientation debugging
 */
 void RB_SurfaceAxis( void ) {
 	GL_Bind( tr.whiteImage );
-	qglLineWidth( 3 );
-	qglBegin( GL_LINES );
-	qglColor3f( 1,0,0 );
-	qglVertex3f( 0,0,0 );
-	qglVertex3f( 16,0,0 );
-	qglColor3f( 0,1,0 );
-	qglVertex3f( 0,0,0 );
-	qglVertex3f( 0,16,0 );
-	qglColor3f( 0,0,1 );
-	qglVertex3f( 0,0,0 );
-	qglVertex3f( 0,0,16 );
-	qglEnd();
-	qglLineWidth( 1 );
+	mbLineWidth( 3 );
+	mbBegin( MB_LINES );
+	mbColor3f( 1,0,0 );
+	mbVertex3f( 0,0,0 );
+	mbVertex3f( 16,0,0 );
+	mbColor3f( 0,1,0 );
+	mbVertex3f( 0,0,0 );
+	mbVertex3f( 0,16,0 );
+	mbColor3f( 0,0,1 );
+	mbVertex3f( 0,0,0 );
+	mbVertex3f( 0,0,16 );
+	mbEnd();
+	mbLineWidth( 1 );
 }
 
 //===========================================================================
@@ -801,8 +801,7 @@ void RB_SurfaceFlare( srfFlare_t *surf ) {
 
 void RB_SurfaceDisplayList( srfDisplayList_t *surf ) {
 	// all apropriate state must be set in RB_BeginSurface
-	// this isn't implemented yet...
-	qglCallList( surf->listNum );
+	// this isn't implemented yet... (GL1 called glCallList; display lists don't exist in Metal)
 }
 
 void RB_SurfaceSkip( void *surf ) {

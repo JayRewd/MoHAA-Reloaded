@@ -1,6 +1,8 @@
 #!/bin/bash
 # Configure, build and install one flavor of OpenMoHAA into build.noindex/<flavor>-install.
 #   port/build.sh gl        upstream GL1 renderer (the baseline / reference build)
+#   port/build.sh metal     GL1 + the Metal renderer in one install (switch with +set cl_renderer metal|opengl1);
+#                           mounts the Metal Toolchain for the offline shader compile
 # Extra arguments are passed to the CMake configure step (e.g. -DCMAKE_BUILD_TYPE=Debug).
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
@@ -13,6 +15,7 @@ INSTALL_DIR="$OMM_BUILD/$FLAVOR-install"
 
 case "$FLAVOR" in
 	gl) FLAVOR_ARGS=() ;;
+	metal) omm_mount_metal; FLAVOR_ARGS=(-DBUILD_RENDERER_METAL=ON) ;;
 	*) echo "build.sh: unknown flavor '$FLAVOR'" >&2; exit 1 ;;
 esac
 

@@ -284,9 +284,9 @@ void RE_StretchPic ( float x, float y, float w, float h,
 #define MODE_GREEN_MAGENTA 4
 #define MODE_MAX	MODE_GREEN_MAGENTA
 
-void R_SetColorMode(GLboolean *rgba, stereoFrame_t stereoFrame, int colormode)
+void R_SetColorMode(qboolean *rgba, stereoFrame_t stereoFrame, int colormode)
 {
-	rgba[0] = rgba[1] = rgba[2] = rgba[3] = GL_TRUE;
+	rgba[0] = rgba[1] = rgba[2] = rgba[3] = MB_TRUE;
 	
 	if(colormode > MODE_MAX)
 	{
@@ -301,22 +301,22 @@ void R_SetColorMode(GLboolean *rgba, stereoFrame_t stereoFrame, int colormode)
 	if(colormode == MODE_GREEN_MAGENTA)
 	{
 		if(stereoFrame == STEREO_LEFT)
-			rgba[0] = rgba[2] = GL_FALSE;
+			rgba[0] = rgba[2] = MB_FALSE;
 		else if(stereoFrame == STEREO_RIGHT)
-			rgba[1] = GL_FALSE;
+			rgba[1] = MB_FALSE;
 	}
 	else
 	{
 		if(stereoFrame == STEREO_LEFT)
-			rgba[1] = rgba[2] = GL_FALSE;
+			rgba[1] = rgba[2] = MB_FALSE;
 		else if(stereoFrame == STEREO_RIGHT)
 		{
-			rgba[0] = GL_FALSE;
+			rgba[0] = MB_FALSE;
 		
 			if(colormode == MODE_RED_BLUE)
-				rgba[1] = GL_FALSE;
+				rgba[1] = MB_FALSE;
 			else if(colormode == MODE_RED_GREEN)
-				rgba[2] = GL_FALSE;
+				rgba[2] = MB_FALSE;
 		}
 	}
 }
@@ -363,11 +363,11 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 		else
 		{
 			R_IssuePendingRenderCommands();
-			qglEnable( GL_STENCIL_TEST );
-			qglStencilMask( ~0U );
-			qglClearStencil( 0U );
-			qglStencilFunc( GL_ALWAYS, 0U, ~0U );
-			qglStencilOp( GL_KEEP, GL_INCR, GL_INCR );
+			mbEnable( MB_STENCIL_TEST );
+			mbStencilMask( ~0U );
+			mbClearStencil( 0U );
+			mbStencilFunc( MB_ALWAYS, 0U, ~0U );
+			mbStencilOp( MB_KEEP, MB_INCR, MB_INCR );
 		}
 		r_measureOverdraw->modified = qfalse;
 	}
@@ -376,7 +376,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 		// this is only reached if it was on and is now off
 		if ( r_measureOverdraw->modified ) {
 			R_IssuePendingRenderCommands();
-			qglDisable( GL_STENCIL_TEST );
+			mbDisable( MB_STENCIL_TEST );
 		}
 		r_measureOverdraw->modified = qfalse;
 	}
@@ -406,7 +406,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 		int	err;
 
 		R_IssuePendingRenderCommands();
-		if ((err = qglGetError()) != GL_NO_ERROR)
+		if ((err = mbGetError()) != MB_NO_ERROR)
 			ri.Error(ERR_FATAL, "RE_BeginFrame() - glGetError() failed (0x%x)!", err);
 	}
 
@@ -417,9 +417,9 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 		cmd->commandId = RC_DRAW_BUFFER;
 		
 		if ( stereoFrame == STEREO_LEFT ) {
-			cmd->buffer = (int)GL_BACK_LEFT;
+			cmd->buffer = (int)MB_BACK_LEFT;
 		} else if ( stereoFrame == STEREO_RIGHT ) {
-			cmd->buffer = (int)GL_BACK_RIGHT;
+			cmd->buffer = (int)MB_BACK_RIGHT;
 		} else {
 			ri.Error( ERR_FATAL, "RE_BeginFrame: Stereo is enabled, but stereoFrame was %i", stereoFrame );
 		}
@@ -431,13 +431,13 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 			if(r_anaglyphMode->modified)
 			{
 				// clear both, front and backbuffer.
-				qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-				qglClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+				mbColorMask(MB_TRUE, MB_TRUE, MB_TRUE, MB_TRUE);
+				mbClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 				
-				qglDrawBuffer(GL_FRONT);
-				qglClear(GL_COLOR_BUFFER_BIT);
-				qglDrawBuffer(GL_BACK);
-				qglClear(GL_COLOR_BUFFER_BIT);
+				mbDrawBuffer(MB_FRONT);
+				mbClear(MB_COLOR_BUFFER_BIT);
+				mbDrawBuffer(MB_BACK);
+				mbClear(MB_COLOR_BUFFER_BIT);
 				
 				r_anaglyphMode->modified = qfalse;
 			}
@@ -483,14 +483,14 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 
 			if(r_anaglyphMode->modified)
 			{
-				qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+				mbColorMask(MB_TRUE, MB_TRUE, MB_TRUE, MB_TRUE);
 				r_anaglyphMode->modified = qfalse;
 			}
 
 			if (!Q_stricmp(r_drawBuffer->string, "GL_FRONT"))
-				cmd->buffer = (int)GL_FRONT;
+				cmd->buffer = (int)MB_FRONT;
 			else
-				cmd->buffer = (int)GL_BACK;
+				cmd->buffer = (int)MB_BACK;
 		}
 	}
 	

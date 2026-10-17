@@ -1228,8 +1228,8 @@ void GhostTexture::Burn()
 {
     int     x, y;
     int     r, g, b;
-    GLint   pixel;
-    GLuint *line;
+    int   pixel;
+    unsigned int *line;
 
     if (m_isfade) {
         for (y = 1; y < m_height - 1; y++) {
@@ -1585,7 +1585,7 @@ void R_UpdateGhostTextures()
         gt->Burn();
 
         GL_Bind(gt->m_image);
-        qglTexImage2D(GL_TEXTURE_2D, 0, 3, gt->m_width, gt->m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, gt->m_texture);
+        mbTexImage2D(MB_TEXTURE_2D, 0, 3, gt->m_width, gt->m_height, 0, MB_RGBA, MB_UNSIGNED_BYTE, gt->m_texture);
     }
 }
 

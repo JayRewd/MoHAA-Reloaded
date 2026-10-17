@@ -25,31 +25,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
 #include "../qcommon/qcommon.h"
-#include "tr_public.h"
-#include "../renderercommon/qgl.h"
 #include "../renderercommon/tr_common.h"
-#include "qgl.h"
-
-#ifdef __cplusplus
-#define GLE(ret, name, ...) extern "C" name##proc * qgl##name;
-#else
-#define GLE(ret, name, ...) extern name##proc * qgl##name;
-#endif
-
-QGL_1_1_PROCS;
-QGL_1_1_FIXED_FUNCTION_PROCS;
-QGL_1_3_PROCS;
-QGL_DESKTOP_1_1_PROCS;
-QGL_DESKTOP_1_1_FIXED_FUNCTION_PROCS;
-QGL_3_0_PROCS;
-
-#undef GLE
+#include "tr_mtl.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define GL_INDEX_TYPE		GL_UNSIGNED_INT
+#define MB_INDEX_TYPE		MB_UNSIGNED_INT
 typedef unsigned int glIndex_t;
 
 // fast float to int conversion
@@ -223,7 +206,7 @@ typedef struct image_s {
 	char		imgName[MAX_QPATH];		// game path, including extension
 	int			width, height;				// source image
 	int			uploadWidth, uploadHeight;	// after power of two and picmip but not including clamp to MAX_TEXTURE_SIZE
-	GLuint		texnum;					// gl texture binding
+	unsigned int		texnum;					// gl texture binding
 
 	int			frameUsed;			// for texture usage in frame statistics
 	int			bytesUsed;
@@ -479,7 +462,7 @@ typedef struct {
 	
 	textureBundle_t	bundle[NUM_TEXTURE_BUNDLES];
 	image_t			*normalMap;
-	int				multitextureEnv;		// 0, GL_MODULATE, GL_ADD (FIXME: put in stage)
+	int				multitextureEnv;		// 0, MB_MODULATE, MB_ADD (FIXME: put in stage)
 
 	waveForm_t		rgbWave;
 	colorGen_t		rgbGen;
@@ -2432,7 +2415,7 @@ typedef struct
 {
 	int commandId;
 
-	GLboolean rgba[4];
+	qboolean rgba[4];
 } colorMaskCommand_t;
 
 typedef struct

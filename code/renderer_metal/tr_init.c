@@ -302,16 +302,12 @@ static void InitOpenGL( void )
 	
 	if ( glConfig.vidWidth == 0 )
 	{
-		GLint		temp;
-		
 		GLimp_Init(qtrue);
 
 		strcpy( renderer_buffer, glConfig.renderer_string );
 		Q_strlwr( renderer_buffer );
 
-		// OpenGL driver constants
-		qglGetIntegerv( GL_MAX_TEXTURE_SIZE, &temp );
-		glConfig.maxTextureSize = temp;
+		// glConfig.maxTextureSize comes from the backend (GLimp_Init)
 
 		// stubbed or broken drivers may have reported 0...
 		if ( glConfig.maxTextureSize <= 0 ) 
@@ -340,30 +336,30 @@ void GL_CheckErrors( void ) {
 	int		err;
 	char	s[64];
 
-	err = qglGetError();
-	if ( err == GL_NO_ERROR ) {
+	err = mbGetError();
+	if ( err == MB_NO_ERROR ) {
 		return;
 	}
 	if ( r_ignoreGLErrors->integer ) {
 		return;
 	}
 	switch( err ) {
-		case GL_INVALID_ENUM:
+		case MB_INVALID_ENUM:
 			strcpy( s, "GL_INVALID_ENUM" );
 			break;
-		case GL_INVALID_VALUE:
+		case MB_INVALID_VALUE:
 			strcpy( s, "GL_INVALID_VALUE" );
 			break;
-		case GL_INVALID_OPERATION:
+		case MB_INVALID_OPERATION:
 			strcpy( s, "GL_INVALID_OPERATION" );
 			break;
-		case GL_STACK_OVERFLOW:
+		case MB_STACK_OVERFLOW:
 			strcpy( s, "GL_STACK_OVERFLOW" );
 			break;
-		case GL_STACK_UNDERFLOW:
+		case MB_STACK_UNDERFLOW:
 			strcpy( s, "GL_STACK_UNDERFLOW" );
 			break;
-		case GL_OUT_OF_MEMORY:
+		case MB_OUT_OF_MEMORY:
 			strcpy( s, "GL_OUT_OF_MEMORY" );
 			break;
 		default:
@@ -484,9 +480,9 @@ byte *RB_ReadPixels(int x, int y, int width, int height, size_t *offset, int *pa
 {
 	byte *buffer, *bufstart;
 	int padwidth, linelen;
-	GLint packAlign;
+	int packAlign;
 	
-	qglGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
+	packAlign = 1;	// mbReadPixels writes tightly packed rows
 	
 	linelen = width * 3;
 	padwidth = PAD(linelen, packAlign);
@@ -495,7 +491,7 @@ byte *RB_ReadPixels(int x, int y, int width, int height, size_t *offset, int *pa
 	buffer = ri.Hunk_AllocateTempMemory(padwidth * height + *offset + packAlign - 1);
 	
 	bufstart = PADP((intptr_t) buffer + *offset, packAlign);
-	qglReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, bufstart);
+	mbReadPixels(x, y, width, height, MB_RGB, MB_UNSIGNED_BYTE, bufstart);
 	
 	*offset = bufstart - buffer;
 	*padlen = padwidth - linelen;
@@ -962,11 +958,11 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 	byte				*cBuf;
 	size_t				memcount, linelen;
 	int				padwidth, avipadwidth, padlen, avipadlen;
-	GLint packAlign;
+	int packAlign;
 	
 	cmd = (const videoFrameCommand_t *)data;
 	
-	qglGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
+	packAlign = 1;	// mbReadPixels writes tightly packed rows
 
 	linelen = cmd->width * 3;
 
@@ -979,8 +975,8 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 
 	cBuf = PADP(cmd->captureBuffer, packAlign);
 		
-	qglReadPixels(0, 0, cmd->width, cmd->height, GL_RGB,
-		GL_UNSIGNED_BYTE, cBuf);
+	mbReadPixels(0, 0, cmd->width, cmd->height, MB_RGB,
+		MB_UNSIGNED_BYTE, cBuf);
 
 	memcount = padwidth * cmd->height;
 
@@ -1035,46 +1031,46 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 */
 void GL_SetDefaultState( void )
 {
-	qglClearDepth( 1.0f );
+	mbClearDepth( 1.0f );
 
-	qglCullFace(GL_FRONT);
+	mbCullFace(MB_FRONT);
 
-	qglColor4f (1,1,1,1);
+	mbColor4f (1,1,1,1);
 
 	// initialize downstream texture unit if we're running
 	// in a multitexture environment
-	if ( qglActiveTextureARB ) {
+	if ( mbMultitexture ) {
 		GL_SelectTexture( 1 );
 		GL_TextureMode( r_textureMode->string );
-		GL_TexEnv( GL_MODULATE );
-		qglDisable( GL_TEXTURE_2D );
+		GL_TexEnv( MB_MODULATE );
+		mbDisable( MB_TEXTURE_2D );
 		GL_SelectTexture( 0 );
 	}
 
-	qglEnable(GL_TEXTURE_2D);
+	mbEnable(MB_TEXTURE_2D);
 	GL_TextureMode( r_textureMode->string );
-	GL_TexEnv( GL_MODULATE );
+	GL_TexEnv( MB_MODULATE );
 
-	qglShadeModel( GL_SMOOTH );
-	qglDepthFunc( GL_LEQUAL );
+	mbShadeModel( MB_SMOOTH );
+	mbDepthFunc( MB_LEQUAL );
 
 	// the vertex array is always enabled, but the color and texture
 	// arrays are enabled and disabled around the compiled vertex array call
-	qglEnableClientState (GL_VERTEX_ARRAY);
+	mbEnableClientState (MB_VERTEX_ARRAY);
 
 	//
 	// make sure our GL state vector is set correctly
 	//
 	glState.glStateBits = GLS_DEPTHTEST_DISABLE | GLS_DEPTHMASK_TRUE;
 
-	qglPolygonMode (GL_FRONT_AND_BACK, GL_FILL);
-	qglDepthMask( GL_TRUE );
-	qglDisable( GL_DEPTH_TEST );
-	qglEnable( GL_SCISSOR_TEST );
-	qglDisable( GL_CULL_FACE );
-	qglDisable( GL_BLEND );
+	mbPolygonMode (MB_FRONT_AND_BACK, MB_FILL);
+	mbDepthMask( MB_TRUE );
+	mbDisable( MB_DEPTH_TEST );
+	mbEnable( MB_SCISSOR_TEST );
+	mbDisable( MB_CULL_FACE );
+	mbDisable( MB_BLEND );
 
-	qglFogi(GL_FOG_MODE, GL_LINEAR);
+	mbFogi(MB_FOG_MODE, MB_LINEAR);
 
 	glState.fFogColor[0] = 0.0;
 	glState.fFogColor[1] = 0.0;
@@ -1154,22 +1150,7 @@ void BuildGfxInfo(char* dest, size_t destsize) {
 	PrintAndAppendString( dest, destsize, "GL_RENDERER: %s\n", glConfig.renderer_string );
 	PrintAndAppendString( dest, destsize, "GL_VERSION: %s\n", glConfig.version_string );
 	PrintAndAppendString( dest, destsize, "GL_EXTENSIONS: " );
-	// glConfig.extensions_string is a limited length so get the full list directly
-	if ( qglGetStringi )
-	{
-		GLint numExtensions;
-		int i;
-
-		qglGetIntegerv( GL_NUM_EXTENSIONS, &numExtensions );
-		for ( i = 0; i < numExtensions; i++ )
-		{
-			PrintAndAppendString( dest, destsize, "%s ", qglGetStringi( GL_EXTENSIONS, i ) );
-		}
-	}
-	else
-	{
-		R_PrintLongString( dest, destsize, (char *) qglGetString( GL_EXTENSIONS ) );
-	}
+	R_PrintLongString( dest, destsize, glConfig.extensions_string );
 	PrintAndAppendString( dest, destsize, "\n" );
 	PrintAndAppendString( dest, destsize, "GL_MAX_TEXTURE_SIZE: %d\n", glConfig.maxTextureSize );
 	PrintAndAppendString( dest, destsize, "GL_MAX_TEXTURE_UNITS_ARB: %d\n", glConfig.numTextureUnits );
@@ -1201,11 +1182,7 @@ void BuildGfxInfo(char* dest, size_t destsize) {
 		PrintAndAppendString( dest, destsize, "rendering primitives: " );
 		primitives = r_primitives->integer;
 		if ( primitives == 0 ) {
-			if ( qglLockArraysEXT ) {
-				primitives = 2;
-			} else {
-				primitives = 1;
-			}
+			primitives = 2;
 		}
 		if ( primitives == -1 ) {
 			PrintAndAppendString( dest, destsize, "none\n" );
@@ -1221,8 +1198,8 @@ void BuildGfxInfo(char* dest, size_t destsize) {
 	PrintAndAppendString( dest, destsize, "texturemode: %s\n", r_textureMode->string );
 	PrintAndAppendString( dest, destsize, "picmip: %d\n", r_picmip->integer );
 	PrintAndAppendString( dest, destsize, "texture bits: %d\n", r_texturebits->integer );
-	PrintAndAppendString( dest, destsize, "multitexture: %s\n", enablestrings[qglActiveTextureARB != 0] );
-	PrintAndAppendString( dest, destsize, "compiled vertex arrays: %s\n", enablestrings[qglLockArraysEXT != 0 ] );
+	PrintAndAppendString( dest, destsize, "multitexture: %s\n", enablestrings[mbMultitexture != 0] );
+	PrintAndAppendString( dest, destsize, "compiled vertex arrays: %s\n", enablestrings[1] );
 	PrintAndAppendString( dest, destsize, "texenv add: %s\n", enablestrings[glConfig.textureEnvAddAvailable != 0] );
 	PrintAndAppendString( dest, destsize, "compressed textures: %s\n", enablestrings[glConfig.textureCompression!=TC_NONE] );
 	if ( r_vertexLight->integer || glConfig.hardwareType == GLHW_PERMEDIA2 )
@@ -1591,19 +1568,19 @@ void R_Register( void )
 }
 
 void R_InitExtensions() {
-	// FIXME: qglTextureEnvCombineExists
+	// FIXME: mbTextureEnvCombineExists
 #if 0
 	glState.cntTexEnvExt = 0;
 	glState.cntnvblendmode = 0;
 
-	qglTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_RGB, 34165.0);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, 8448.0);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_SOURCE0_RGB, 0x47057700);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_OPERAND0_RGB, 0x44400000);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_SOURCE1_RGB, 5890.0);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_OPERAND1_RGB, 0x44400000);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_SOURCE2_RGB, 0x47057700);
-	qglTexEnvf(GL_TEXTURE_ENV, GL_OPERAND2_RGB, 770.0);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_COMBINE_RGB, 34165.0);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_COMBINE_ALPHA, 8448.0);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_SOURCE0_RGB, 0x47057700);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_OPERAND0_RGB, 0x44400000);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_SOURCE1_RGB, 5890.0);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_OPERAND1_RGB, 0x44400000);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_SOURCE2_RGB, 0x47057700);
+	mbTexEnvf(MB_TEXTURE_ENV, MB_OPERAND2_RGB, 770.0);
 #endif
 }
 
@@ -1711,8 +1688,8 @@ void R_Init( void ) {
 	tr.pFontDebugStrings = R_LoadFont("verdana-14");
 	g_bInfoworldtris = qfalse;
 
-	err = qglGetError();
-	if ( err != GL_NO_ERROR )
+	err = mbGetError();
+	if ( err != MB_NO_ERROR )
 		ri.Printf (PRINT_ALL, "glGetError() = 0x%x\n", err);
 
 	ri.Printf( PRINT_ALL, "----- finished R_Init -----\n" );

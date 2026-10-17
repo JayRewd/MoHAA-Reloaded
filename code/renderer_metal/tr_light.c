@@ -1499,7 +1499,7 @@ void R_UploadDlights()
         }
 
         GL_Bind(tr.dlightImages[dli.dlightMap]);
-        qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, LIGHTMAP_SIZE, h, GL_RGBA, GL_UNSIGNED_BYTE, dli.lightmap_buffer);
+        mbTexSubImage2D(MB_TEXTURE_2D, 0, 0, 0, LIGHTMAP_SIZE, h, MB_RGBA, MB_UNSIGNED_BYTE, dli.lightmap_buffer);
 
         tr.pc.c_dlightMaps++;
         memset(dli.allocated, 0, sizeof(dli.allocated));

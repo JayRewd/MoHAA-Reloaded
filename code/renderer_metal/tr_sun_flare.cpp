@@ -527,12 +527,12 @@ void R_DrawLensFlares()
 
     R_RotateForViewer();
 
-    qglPushMatrix();
-    qglLoadIdentity();
-    qglMatrixMode(GL_PROJECTION);
-    qglPushMatrix();
-    qglLoadIdentity();
-    qglOrtho(-1.0, 1.0, -1.0, 1.0, -99999.0, 99999.0);
+    mbPushMatrix();
+    mbLoadIdentity();
+    mbMatrixMode(MB_PROJECTION);
+    mbPushMatrix();
+    mbLoadIdentity();
+    mbOrtho(-1.0, 1.0, -1.0, 1.0, -99999.0, 99999.0);
 
     tess.no_global_fog = true;
     R_DrawSunFlare();
@@ -600,9 +600,9 @@ void R_DrawLensFlares()
     R_DrawSunFlareBlend();
     tess.no_global_fog = qfalse;
 
-    qglPopMatrix();
-    qglMatrixMode(GL_MODELVIEW);
-    qglPopMatrix();
+    mbPopMatrix();
+    mbMatrixMode(MB_MODELVIEW);
+    mbPopMatrix();
 }
 
 void R_InitLensFlare()

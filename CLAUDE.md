@@ -32,9 +32,12 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 ```bash
 source port/env.sh                 # every shell, first
-port/build.sh gl                   # upstream GL1 reference build -> build.noindex/gl-install (~1.5 min, universal)
+port/build.sh gl                   # upstream GL1 reference build -> build.noindex/gl-install (~40 s, arm64)
+port/build.sh metal                # GL1 + Metal renderer in one install (mounts the Metal Toolchain itself)
 port/run.sh gl +map dm/mohdm6      # run against the retail data; extra args are engine args
+port/run.sh metal +set cl_renderer metal   # the Metal renderer (cl_renderer opengl1 = GL1 from the same install)
 port/bench.sh run gl 3             # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs
+port/bench.sh run metal 3 +set cl_renderer metal   # the same on Metal (extra engine args after the run count)
 port/bench.sh trace gl             # one traced timedemo: GPU utilization and GPU ms per frame
 ```
 

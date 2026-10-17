@@ -9,8 +9,8 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | Phase | What | Status |
 |---|---|---|
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
-| 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | Not started (next) |
-| 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | Not started |
+| 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check is open: display not connected) |
+| 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | Not started (next: 2a) |
 | 3 | Full feature parity + screenshot-compare harness + online smoke test | Not started |
 | 4 | Delete OpenGL entirely | Not started |
 | 5 | Performance and input latency | Not started |
@@ -27,9 +27,9 @@ Paths are relative to `code/` unless they start with `cmake/`.
 - CMake ≥ 3.25, Ninja. Options in `CMakeLists.txt:14-40`: `BUILD_RENDERER_GL1` ON, `BUILD_RENDERER_GL2` OFF, `USE_RENDERER_DLOPEN` ON, `USE_OPENAL(_DLOPEN)` ON, `BUILD_SERVER` ON, `BUILD_MACOS_APP` ON (`cmake/platforms/macos.cmake:7`).
 - Targets: client `openmohaa` (.app bundle), server `omohaaded`, `renderer_opengl1.dylib` (moved into `openmohaa.app/Contents/MacOS` by `finish_macos_app`), `cgame.dylib`, `game.dylib`, plus launchers (broken on macOS: they read `/proc/self/exe`).
 - Install layout: everything goes to `<prefix>/lib/openmohaa/`. `fs_basepath` defaults to the folder that holds the .app. Libraries are found in `Contents/MacOS`, then in `fs_basepath` (`sys/sys_main.c:511`).
-- `cmake/platforms/macos.cmake:17-18` sets **deployment target 11.0 and universal arm64;x86_64** as plain variables, which override `-D` flags. Every build is universal until Phase 1 changes it. Every renderer links `-framework OpenGL` (`:15`).
+- `cmake/platforms/macos.cmake:17-18` set **deployment target 11.0 and universal arm64;x86_64** as plain variables, which override `-D` flags. Phase 1 changed them to **26.0 and arm64** (session 2). Every renderer gets `-framework OpenGL` (`:15`); `cmake/renderer_metal.cmake` removes it again for the Metal renderer.
 - `find_package(OpenAL)` picks Apple's OpenAL.framework, which has no `alext.h`, and the build fails. `port/build.sh` passes `-DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON` (internal openal-soft headers; the library is dlopen'ed as `libopenal.1.dylib`, `client/snd_openal_new.cpp:124`). Nothing builds openal-soft locally, so `port/run.sh` links Homebrew's next to the exe.
-- `cmake/libraries/jpeg.cmake:1` and `freetype.cmake:5` only work when a GL renderer is built. A Metal-only build must widen these guards. There is also a `JPEG_DEFINTIONS` typo at `jpeg.cmake:22`.
+- `cmake/libraries/jpeg.cmake:1` and `freetype.cmake:5` only worked when a GL renderer is built (widened for `BUILD_RENDERER_METAL` in session 2). There is also a `JPEG_DEFINTIONS` typo at `jpeg.cmake:22`; left as is, because fixing it adds `USE_INTERNAL_JPEG`/`JPEG_INTERNALS` to GL1's compile.
 - Flex/Bison output is written into the source tree (`code/parser/generated`, gitignored). CTest finds no tests.
 - Internal SDL is a prebuilt universal `thirdparty/libs/macos/libSDL2-2.0.0.dylib` (2.32.8). zlib, jpeg-9f, ogg, vorbis, opus, libmad are compiled from `thirdparty/`.
 
@@ -91,6 +91,8 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
 
 **Build** (`port/build.sh gl`): Release, ThinLTO, universal arm64+x86_64 (forced by macos.cmake), deployment target 11.0. 85 s on 10 cores. GL context reports "2.1 Metal - 90.5": Apple's GL runs on Metal internally.
 
+**arm64-only rebuild** (session 2, after Phase 1 set arm64 + macOS 26.0): build 36 s. Same bench, same binary, two sets: 937.1 / 941.1 / 941.1 fps = **0.896 / 0.895 / 0.893 ms work**, and later 909.4 / 925.5 / 912.5 fps = 0.954 / 0.922 / 0.941 ms. GL1 from the combined `metal` install (`cl_renderer opengl1`): 0.901 / 0.943 / 0.940 ms. So the arm64-only GL1 reference is **~0.90–0.95 ms work/frame**; between sets the noise is about ±3% (within a set ±0.3%), larger than session 1 measured. Compare against GL1 runs made in the same sitting.
+
 **Benchmark** (`port/bench.sh run gl 3`): timedemo of `port/bench/bench_mohdm6.dm_8` (dm/mohdm6 Stalingrad, FFA, 8 bots, spectator following bots, 120 s, 2398 frames; sha256 `c62f7972735b60c15b32392168f41235849407b637c9ac6004d68a36312320a2`), 1280×720 window on the main display, `r_swapInterval 0`, `com_maxfps 0`, sound muted, fresh default config each run.
 
 | Config | fps (3 runs) | wall ms/frame | **work ms/frame** | GPU ms/frame (`trace`) |
@@ -104,6 +106,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
   - `r_primitives 2`: the frame is dominated by `RB_SwapBuffers`. It calls `qglFinish()` every frame (`tr_backend.c:1429`), and the CPU blocks in `GLDShareGroupRec::waitUsage` until the GPU is done, then `CGLFlushDrawable` presents. The GPU is busy only 0.18 ms of each ~1 ms frame, so most of the frame is CPU↔GPU **synchronization latency**, not rendering. The engine's own CPU work is small.
   - `r_primitives 0`: ~1.96 ms/frame in `RB_SwapBuffers` (≈half glFinish wait, half present) and ~1.7 ms/frame drawing the 3D view/HUD (`UIWindowManager::UpdateViews`). Of the latter, ~65% is Apple's GL driver (AGX, AppleMetalOpenGLRenderer, GLEngine, malloc churn from immediate mode) and ~13% renderer code (top: `RB_Light_Real` 4.7%, `RB_SkelMesh` 2.4%, `R_DrawStripElements` 1.3%).
   - Apple's GL splits every game frame into ~8–10 GPU submissions (render passes): 23806 trace frames for ~2400 game frames. On a tile-based GPU each extra pass costs tile loads/stores.
+- **Metal, Phase 1** (session 2; draws are still stubs, so this is the floor of front end + backend frame overhead, not comparable with GL1): `port/bench.sh run metal 1 +set cl_renderer metal`: 998.8 fps, **0.318 ms work/frame**, no wait for drawables or GPU. With `r_swapInterval 1`: 239.1 fps, the ~3.5 ms vsync wait sits at the end of the frame (before the next input sample).
 - **What this means for Metal:** with frames in flight (no per-frame wait), one render pass per frame where possible, and no driver state validation, the frame cost should approach max(CPU, GPU) instead of their sum. **Phase 2 target: work ≤ 0.45 ms/frame (≥2× GL1 `r_primitives 2`) on this bench. Phase 5 stretch: ≤ 0.25 ms.** Beyond ~1000 fps the visible fps stays capped by the engine's 1 ms frame floor (see Phase 5).
 
 ---
@@ -127,6 +130,16 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
 - **Renderer packaging:** a dylib selected with `cl_renderer metal` during Phases 1–3 (A/B against `opengl1`). In Phase 4 it's linked statically into the client (`USE_RENDERER_DLOPEN OFF`: one binary, LTO across client+renderer, no PLT). Hidden visibility from day one.
 - **Deployment target macOS 26.0, arm64 only** (Phase 1 edits `cmake/platforms/macos.cmake`, a tiny diff).
 
+Added in session 2 (Phase 1):
+- **Backend API shape (`renderer_metal/tr_mtl.h`):** the GL1 fixed-function state model with GL-free names: every `qglFoo` call became `mbFoo` (same arguments), every `GL_FOO` constant `MB_FOO`, and GL types plain C types (a perl pass outside string literals, then hand fixes). `MB_*` values equal the GL enums, so shader/texture data, decompiled literals and printouts stay identical; they are just numbers. Front-end diffs against renderergl1 stay mechanical (upstream fixes port by reversing the rename). The texenv combiner setups collapsed into modes: `mbTexEnv(MB_MODULATE | MB_REPLACE | MB_DECAL | MB_ADD | MB_COMBINE | MB_COMBINE4_NV)`. GL1's function-pointer checks became `mbMultitexture` (from `r_ext_multitexture`); compiled vertex arrays always exist (`mbLockArraysEXT` = one vertex copy for all stages), so `r_primitives 0` means indexed triangles. GL queries became `glConfig` fields filled by the window layer. `mbGetError` always returns `MB_NO_ERROR`. `glCallList` (display lists, unused) is gone.
+- **The pristine copy is its own commit** (`5d6b2dd6`): `git diff 5d6b2dd6 -- code/renderer_metal` shows exactly what the Metal port changed.
+- **Drawable acquisition (low latency without throttling the game loop).** Measured: acquiring the drawable inside the frame blocked 1.3 ms per frame in a 1280×720 window (the WindowServer holds drawables until its next 240 Hz composite), and acquiring it at the end of the previous frame blocked 1.9 ms (2 drawables) / 1.25 ms (3). A blocking present caps the engine loop below `com_maxfps` (350–680 fps instead of GL1's ~1000), which changes usercmd timing. So with `r_swapInterval 0` a helper thread (`QOS_CLASS_USER_INTERACTIVE`) waits in `nextDrawable` and keeps one drawable ready. The frame takes it without waiting, or skips its present when none is ready: the compositor couldn't have shown that frame, and GL1's non-blocking swap drops it too. With `r_swapInterval 1` the next drawable is acquired at the end of the frame, after commit, and blocks like GL1's swap. Either way nothing waits between input sampling and present. To revisit with the Phase 2c latency probe.
+- **Defaults: 2 drawables, 2 frames in flight** (`r_metalDrawables` 2/3, `r_metalFramesInFlight` 1–3, both LATCH). With 3 drawables more frames get presented (8600 vs 6069 in the bench run) but 1700 of them are never shown; with 2, 6067 of 6069 presented frames were shown.
+- **Window size and HiDPI:** `r_mode`/`r_customwidth` give the window size in points; `glConfig.vidWidth/vidHeight` = the drawable in pixels (`SDL_WINDOW_ALLOW_HIGHDPI` + `SDL_Metal_GetDrawableSize`). Identical on the 1080p main display. New `r_displayIndex` picks the display the window opens on.
+- **Fullscreen toggle = `vid_restart`.** `r_fullscreen` is LATCH, so Alt+Enter only stores the new value and GL1's in-place toggle in `GLimp_EndFrame` never fires (`->integer` doesn't change before a restart). The Metal window layer issues `vid_restart` when the latched value differs from the current mode.
+- **Gamma:** `glConfig.deviceSupportsGamma = !r_ignorehwgamma`; `GLimp_SetGamma` hands the same 256-entry table GL1 loads into the display's hardware ramp to the backend, which applies it in the final pass (also in a window, and without touching the rest of the desktop). Overbright parity per mode is still Phase 3.
+- **Capabilities mirror Apple's GL driver** (from GL1's log): texenv add on, multitexture on (8 units reported), S3TC only with `r_ext_compressed_textures`, anisotropy only with `r_ext_texture_filter_anisotropic` (max 16), clamp-to-edge on, max texture size 16384, 24/32/8 color/depth/stencil bits.
+
 ---
 
 ## 4. Architecture of renderer_metal
@@ -144,12 +157,12 @@ client (cl_main, cgame, uilib)  --refexport_t/refimport_t (unchanged ABI)-->  re
 
 **Window layer (`sdl/sdl_mtlimp.m`, compiled into the renderer like sdl_glimp.c):**
 - Same mode/fullscreen logic as `sdl_glimp.c` (`r_mode`, `r_customwidth/height`, `r_fullscreen`, `r_noborder`, desktop mode `-2`, live fullscreen toggle, resize → `vid_restart`). Calls `ri.IN_Init(window)`.
-- `CAMetalLayer`: `BGRA8Unorm` (not sRGB: Q3 math is gamma-space), `framebufferOnly YES`, `maximumDrawableCount 3`, `displaySyncEnabled = r_swapInterval`.
+- `CAMetalLayer`: `BGRA8Unorm` (not sRGB: Q3 math is gamma-space), `framebufferOnly YES`, opaque, `maximumDrawableCount 2` (`r_metalDrawables`), `displaySyncEnabled = r_swapInterval`, `presentsWithTransaction NO`, `drawableSize` = window pixels.
 - HiDPI: drawable size in pixels → `glConfig.vidWidth/vidHeight`. Check the HUD/UI scaling on the 4K@2× display.
 - Fills `glConfig` (renderer string "Apple M4 (Metal)", maxTextureSize 16384, stencil 8, no hardware gamma: gamma is applied in-shader).
 
 **Frame model:**
-- One `MTLCommandQueue`. 3 frames in flight (dispatch_semaphore). One command buffer per frame, begun lazily at the first backend call (2D exports draw outside the queue).
+- One `MTLCommandQueue`. 2 frames in flight by default (`r_metalFramesInFlight`, dispatch_semaphore; the next frame's slot is taken right after commit). One command buffer per frame (`commandBufferWithUnretainedReferences`), begun lazily at the first backend call (2D exports draw outside the queue). Drawables: see §3.2 "Drawable acquisition".
 - Rendering goes to an offscreen color target (`RGBA8Unorm`, private) + `Depth32Float_Stencil8`. At end of frame one fullscreen triangle copies it to the drawable and applies **gamma + overbright in the shader**, reproducing GL1's behavior per mode (overbright only where GL1 has it: fullscreen with hw gamma). Then present + commit. Never wait on the GPU except at shutdown and readback.
 - Screenshots and video frames: blit from the offscreen target (pre-gamma, as GL1's back-buffer read) into a shared buffer, written out in the completion handler (async, no stall).
 
@@ -195,7 +208,7 @@ mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_Send
    - Any limiter change must keep divisor values bit-exact (250 → every frame exactly 4 ms) and should be checked with frame-time and packet-spacing histograms.
 
 **Planned latency work, by phase:**
-- **Phase 1:** CAMetalLayer configured per rules 2–4 (drawable count, `displaySyncEnabled` from `r_swapInterval`, opaque layer, `presentsWithTransaction NO`); the wait-placement rule built into the frame loop from day one.
+- **Phase 1:** CAMetalLayer configured per rules 2–4 (drawable count, `displaySyncEnabled` from `r_swapInterval`, opaque layer, `presentsWithTransaction NO`); the wait-placement rule built into the frame loop from day one. *Done in session 2; drawables come from a helper thread with vsync off, see §3.2 "Drawable acquisition".*
 - **Phase 2:** **latency probe** `cl_latencyStats 1`. For each frame, the time from the newest mouse event folded into the usercmd (mach time stamped at pump time, µs) to the frame's real present time (`MTLDrawable addPresentedHandler` → `presentedTime`). Log p50/p95/p99 over N frames, plus input→commit. For GL1, only input→`SwapBuffers` return is available (a lower bound; documented). Record SDL+Metal numbers windowed and fullscreen in §2.
 - **Phase 3:** direct-to-display verified in fullscreen and borderless fullscreen; Info.plist Game Mode keys; latency numbers per display mode recorded.
 - **Phase 5 (performance and latency):**
@@ -219,7 +232,18 @@ Each phase can take several sessions (slices). One session = one phase or slice 
 ### Phase 0: Survey, baseline, plan, decisions. **Status: done (session 1, 2026-10-16).**
 Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedemo work metric, decisions (§3), CLAUDE.md, this plan.
 
-### Phase 1: Build plumbing, Metal window layer, renderer_metal skeleton. **Status: not started.**
+### Phase 1: Build plumbing, Metal window layer, renderer_metal skeleton. **Status: done (session 2, 2026-10-16), except the 4K@2× HiDPI check (display not connected; carried into Phase 2a).**
+Session 2 result:
+- `cmake/platforms/macos.cmake` arm64 + 26.0. `cmake/renderer_metal.cmake` (`BUILD_RENDERER_METAL`, default OFF): `renderer_metal.dylib` in `openmohaa.app/Contents/MacOS` next to `renderer_opengl1.dylib`; Metal + QuartzCore, no OpenGL; `-fobjc-arc` for the two `.m` files; hidden visibility (only `GetRefAPI` exported). jpeg/freetype/renderer_common guards widened.
+- `cmake/utils/metallib.cmake`: the custom command compiles `code/renderer_metal/shaders/*.metal` with `$OMM_METAL_BIN/metal -std=metal4.0 -target air64-apple-macos26.0 -O3 -Wall -Werror` (module cache inside the build dir), links with `metallib`, and embeds the result as a C array (`xxd -i` → `build.noindex/metal/renderer_metal/tr_mtl_metallib.h`). It fails with "Mount the Metal Toolchain first: source port/env.sh && omm_mount_metal" when the toolchain isn't mounted. `port/build.sh metal` mounts it itself. Shader so far: `tr_mtl_final.metal` (fullscreen triangle, texel read of the scene target, gamma ramp).
+- `code/sdl/sdl_mtlimp.m`: the window layer, mirroring `sdl_glimp.c` (modes, `-2` desktop mode, fullscreen with display mode, `r_noborder`, `r_centerWindow`, fallbacks, `IN_Init`), plus the layer setup, `r_displayIndex` and the fullscreen-toggle `vid_restart`.
+- `code/renderer_metal/`: renderergl1 copy, fully converted to `tr_mtl.h` (no qgl call site left). `tr_mtl.m`: device/queue (kept across `vid_restart`), embedded library + final pipeline, offscreen RGBA8 scene target, clear, final pass, present, frames-in-flight semaphore, drawable thread, texture names, synchronous scene readback for `screenshot`. Everything else is an empty stub. `r_metalPresentStats 1` prints frames / presented / skipped / shown and the waits at shutdown.
+- Outside the renderer: `renderercommon/tr_common.h` (`qgl.h` only without `RENDERER_METAL`, `texnum` is `unsigned int` = GLuint) and the CMake lines above. No client, cgame or protocol change.
+- Done criteria:
+  - **Build: pass.** `port/build.sh metal` builds (36 s). `otool -L renderer_metal.dylib`: Metal, QuartzCore, Cocoa, SDL2, libc++, libobjc, no OpenGL. `nm -u`: no `gl*`/`CGL*`.
+  - **Window: pass at 1280×720 windowed and 1920×1080 fullscreen** (log and drawable size; every presented drawable has a `presentedTime`; `screenshot` reads back the clear color (0, 64, 89)). **4K@2×: not tested,** only the DELL G2524H was connected (`system_profiler`).
+  - **Menu, `+map dm/mohdm6` (`map` from a cfg), in-map `vid_restart`, fullscreen toggle, quit: pass.** A live switch Metal → `cl_renderer opengl1` + `vid_restart` → Metal works too. The bench demo plays through on Metal (draws stubbed).
+  - **GL1: pass.** Works from the combined install; arm64-only bench in §2.
 - **1a:**
   - `cmake/platforms/macos.cmake`: arm64 only + deployment target 26.0.
   - New `cmake/renderer_metal.cmake` (option `BUILD_RENDERER_METAL`): `renderer_metal` dylib built next to `renderer_opengl1` in the .app; frameworks Metal, QuartzCore; `-fobjc-arc`; hidden visibility; jpeg/freetype guards widened.
@@ -227,7 +251,7 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
   - `port/build.sh metal` flavor (GL1 + Metal in one install, so `cl_renderer` switches).
   - `sdl/sdl_mtlimp.m` (window, CAMetalLayer, HiDPI, modes, fullscreen, `vid_restart`, `IN_Init`). The layer is set up for low latency per §4b rules 1–4.
   - `renderer_metal/` = copy of renderergl1 with qgl call sites converted to `tr_mtl.h` calls whose implementations are stubs, except device/queue setup and clear+present.
-- **1b (if 1a runs long):** finish the call-site conversion; maps load without crashing.
+- **1b (if 1a runs long):** finish the call-site conversion; maps load without crashing. *(Not needed: done in session 2.)*
 - **Done when:**
   - `port/build.sh metal` builds; `renderer_metal.dylib` has no GL symbols (`nm -u` shows no `gl*`/`CGL*`) and doesn't link OpenGL (`otool -L`).
   - `port/run.sh metal +set cl_renderer metal` opens a window that shows the Metal clear color every frame, at the right size: 1280×720 window, 1920×1080 fullscreen, and full pixel resolution on the 4K@2× display.
@@ -297,30 +321,31 @@ Done: survey (§1), `port/` scripts, reference demo, GL1 baseline (§2), timedem
 
 ## 6. Next session
 
-**Session 2 = Phase 1, slice 1a.** Start with CLAUDE.md, then this file's §3.2, §4 and Phase 1.
+**Session 3 = Phase 2, slice 2a** (frame ring, buffers, textures, samplers, PSO/depth-stencil caches, the generic stage shader, the 2D path). Start with CLAUDE.md, then this file's §3.2 (including the session 2 additions), §4, §4b and Phase 2.
 
-Where things stand:
-- `metal` has CLAUDE.md, this plan, `port/` (env/build/run/bench scripts, the profile/trace parsers, the reference demo), the `*.noindex/` gitignore line, and the timedemo work metric (5 small edits in `qcommon/common.c`, `qcommon/qcommon.h`, `client/client.h`, `client/cl_cgame.cpp`, `client/cl_main.cpp`). No renderer code yet.
-- The GL1 reference build is in `build.noindex/gl-install`. GL1 numbers are in §2 (compare on **work ms/frame**; reference 0.934 ms with `r_primitives 2`, which `bench.sh` now passes by default).
+Where things stand (end of session 2):
+- Phase 1 is done and pushed. `port/build.sh metal` builds GL1 + Metal into `build.noindex/metal-install`. Run Metal with `port/run.sh metal +set cl_renderer metal` (add `+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0` for a window). The window shows the clear color; nothing else is drawn yet. `cl_renderer` is ARCHIVE: delete `home.noindex/main/configs` (the bench does) or set it explicitly.
+- The front end is the full GL1 renderer calling `mb*` (`code/renderer_metal/tr_mtl.h`). All state/array/draw/texture functions in `tr_mtl.m` are empty stubs, except texture names (`mbGenTextures`), clears and `mbReadPixels` (RGB/RGBA from the scene target).
+- Numbers: §2 (GL1 arm64 ~0.90–0.95 ms work; Metal with stubs 0.318 ms).
 
-Do next, in order:
-1. `source port/env.sh`, `omm_mount_metal`. Edit `cmake/platforms/macos.cmake` (arm64, 26.0). Rebuild GL (`port/build.sh gl`) and re-run `port/bench.sh run gl 3` for the arm64-only reference.
-2. Add `cmake/renderer_metal.cmake` and a `metal` case in `port/build.sh` (`-DBUILD_RENDERER_METAL=ON`, keeping GL1 on for A/B). Model it on `cmake/renderer_gl1.cmake` + `finish_macos_app` in macos.cmake. Widen the jpeg/freetype guards.
-3. Add the metallib build + embed step with one trivial shader (clear/fullscreen triangle). Fail with a clear message if `$OMM_METAL_BIN/metal` is missing ("source port/env.sh && omm_mount_metal").
-4. Write `sdl/sdl_mtlimp.m` (mirror `sdl_glimp.c`'s `GLimp_SetMode`/`GLimp_Init`/`GLimp_EndFrame`/`GLimp_Shutdown` behavior with `SDL_WINDOW_METAL | SDL_WINDOW_ALLOW_HIGHDPI` + `SDL_Metal_CreateView`/`SDL_Metal_GetLayer`). Configure the layer for low latency (§4b rules 1–4): opaque, `maximumDrawableCount` 2, `displaySyncEnabled` from `r_swapInterval`, `presentsWithTransaction NO`, drawable acquired late, and no GPU wait between input sampling and encoding.
-5. Copy renderergl1 → `renderer_metal/`, add `tr_mtl.h` (the backend API), and convert qgl call sites file by file (largest first: tr_backend, tr_shade, tr_draw, tr_shadows, tr_init, tr_main, tr_image, tr_model, tr_surface, tr_sky, tr_cmds, flares). The backend implements device/queue/clear/present for real and stubs the rest.
-6. Check the Phase 1 done criteria; record what passes. If the session gets long, stop after a coherent subset and hand over 1b.
+Do next, in order (Phase 2a):
+1. Backend state tracking in `tr_mtl.m` for everything the front end sets: caps, blend, depth func/mask/range, alpha func, cull, polygon mode/offset, color mask, stencil, texenv per unit, bound texture per unit, client arrays + lock, matrices (projection/modelview stacks), viewport/scissor (GL bottom-left → Metal top-left), fog, clip plane. Turn that into a PSO key + depth-stencil key + per-draw uniforms at draw time; cache PSOs/depth-stencil states/samplers (no string lookups).
+2. Frame ring: per-frame shared `MTLBuffer` ring for vertices/indices/uniforms (no per-frame allocations), command buffer begun lazily, one scene render pass per frame where possible. 2D exports draw outside the render-command queue (`R_IssuePendingRenderCommands`), so encoding must be possible at any point of the frame.
+3. Textures: `mbTexImage2D`/`mbTexSubImage2D`/`mbCompressedTexImage2D` into `MTLTexture`s (RGBA8 as GL1 uploads, CPU mips kept; BC1–3 for DDS), sampler state per texture from `mbTexParameter*` (GL semantics: the parameters belong to the texture bound to the active unit), deferred destruction after the frame's completion, never reusing a name while a frame that uses it is in flight.
+4. The generic stage shader (`shaders/tr_mtl_stage.metal`): function constants for texture count, texenv per unit (`MB_MODULATE/REPLACE/DECAL/ADD/COMBINE`; decide `MB_COMBINE4_NV`, see gotchas), vertex color vs constant color, alpha test function+ref (exact GL1 thresholds), fog mode, clip plane. Plus immediate mode (`mbBegin`/`mbEnd` → a scratch vertex stream, `MB_QUADS`/`MB_POLYGON` → triangles, `MB_LINE_LOOP` → line strip).
+5. The 2D path end to end: `Set2DWindow`/ortho, StretchPic/TilePic, fonts, DrawBox/LineLoop, Scissor. Done for 2a when menus, console and HUD look like GL1 (compare `screenshot` output of both renderers).
+6. The 4K@2× HiDPI check from Phase 1 when the U4323QE is connected (`+set r_displayIndex 1`): drawable = full pixel size, HUD/UI scaling, and the HiDPI input gotchas below.
+7. Bench Metal and GL1 in the same sitting; record in §2.
 
-Gotchas found in session 1:
-- OpenMoHAA's `wait N` counts milliseconds; `wait 1` = one frame. Long loading frames use up timed waits at once.
-- A killed game leaves `home.noindex/main/*.pid`, and the next launch blocks on a modal "Abnormal Exit" NSAlert. `run.sh` deletes stale PID files when no game runs. Never leave a game process running.
-- `xctrace record --launch` often leaves the game suspended at `_dyld_start` (state `T`). `bench.sh trace` therefore records all processes while `run.sh` starts the game normally.
-- Don't edit a bash script while it's running (bash reads scripts incrementally).
-- Upstream's `.gitignore` has `build*`, which silently ignores any new file whose name starts with "build" (e.g. `port/build.sh` needed a `!/port/build.sh` exception). Check `git status` / `git check-ignore -v` after adding files.
-- `s_initsound 0` crashes upstream; mute with `s_volume 0`.
-- The upstream launchers don't work on macOS.
-- `sv_maxclients 1` makes single-player-style "Continue" prompts block after map loads; use ≥ 2 for scripted runs.
-- `glconfig_t` layout is ABI with cgame. `SwipePoint`/`DrawBackground` are NULL in GL1's refexport (upstream bug).
-- Overbright in GL1 depends on fullscreen + hardware gamma. Decide parity per mode carefully in Phase 3.
+Gotchas found in session 2:
+- The renderer's `vid_restart` (fullscreen toggle) is appended to the command buffer, so in a cfg it runs only after every pending `wait` and command (e.g. after a later `quit`). Test the toggle with a cfg that ends right after `set r_fullscreen 1`.
+- `screencapture` can't capture the screen from this session (no screen recording permission). Use the in-game `screenshot` (reads the scene target) and `r_metalPresentStats 1`.
+- A fullscreen `vid_restart` takes a few seconds (display reconfiguration + R_Init).
+- HiDPI (2× displays only, untested): with `r_allowResize 1`, `sdl_input.c`'s `SDL_WINDOWEVENT_RESIZED` handler compares the window size in points with `glConfig` in pixels and would `vid_restart` again and again. Relative mouse deltas are in points while the UI cursor is in pixels (half speed), and `SDL_WarpMouseInWindow(vidWidth / 2, ...)` expects points. Fix these before HiDPI is the default anywhere.
+- `MB_COMBINE4_NV` (`GLS_MULTITEXTURE_ENV`): renderergl1 never sets up the NV combiner sources (commented out, "Removed in 2.0"). Apple's GL has no `GL_NV_texture_env_combine4`, so GL1 there probably keeps the previous texenv. Check which shaders use it and what GL1 shows before choosing.
+- `R_ArrayElementDiscrete` (`r_primitives 3` only) passes texture units 0/1 to `mbMultiTexCoord2fARB` instead of `MB_TEXTURE0/1`: accept both.
+- The front end calls `mbClear` only when GL1 would (fog/farplane or `r_fastsky`); on maps with a sky the color buffer is never cleared, so the backend must load (not clear) the scene target's color by default.
+- Bench noise between sets is about ±3% (same binary measured 0.895 and 0.94 ms). Compare renderers in the same sitting.
+- Session 1 gotchas still apply: `wait N` is milliseconds; stale PID files block on an "Abnormal Exit" dialog (`run.sh` cleans them); `xctrace --launch` is unreliable; don't edit a running bash script; upstream's `.gitignore` `build*` rule; `s_initsound 0` crashes; the upstream launchers don't work on macOS; use `sv_maxclients` ≥ 2 for scripted map loads; `glconfig_t` is ABI; `SwipePoint`/`DrawBackground` are NULL in GL1's refexport; overbright depends on fullscreen + hardware gamma in GL1.
 
-Open bugs: none in port code yet.
+Open bugs: none known in port code. Untested: HiDPI on a 2× display.

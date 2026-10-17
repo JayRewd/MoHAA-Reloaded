@@ -620,27 +620,27 @@ static void RB_Sphere_Light_Sun()
 
                 GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
-                qglPushMatrix();
+                mbPushMatrix();
 
-                qglLoadMatrixf(backEnd.ori.modelMatrix);
+                mbLoadMatrixf(backEnd.ori.modelMatrix);
                 // Clear the depth range
-                qglDepthRange(0.0, 0.0);
+                mbDepthRange(0.0, 0.0);
 
-                qglDisable(GL_TEXTURE_2D);
+                mbDisable(MB_TEXTURE_2D);
 
-                qglBegin(GL_LINES);
-                qglColor3f(0.0, 0.0, 0.0);
-                qglVertex3fv(backEnd.currentSphere->origin);
-                qglColor3f(0.5, 0.5, 0.5);
-                qglVertex3fv(transpos);
-                qglEnd();
+                mbBegin(MB_LINES);
+                mbColor3f(0.0, 0.0, 0.0);
+                mbVertex3fv(backEnd.currentSphere->origin);
+                mbColor3f(0.5, 0.5, 0.5);
+                mbVertex3fv(transpos);
+                mbEnd();
 
-                qglEnable(GL_TEXTURE_2D);
+                mbEnable(MB_TEXTURE_2D);
 
                 // Bring the depth range back
-                qglDepthRange(0.0, 1.0);
+                mbDepthRange(0.0, 1.0);
 
-                qglPopMatrix();
+                mbPopMatrix();
             }
 
             return;
@@ -662,33 +662,33 @@ static void RB_Sphere_Light_Sun()
 
         GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
-        qglPushMatrix();
+        mbPushMatrix();
 
-        qglLoadMatrixf(backEnd.ori.modelMatrix);
+        mbLoadMatrixf(backEnd.ori.modelMatrix);
         // Clear the depth range
-        qglDepthRange(0.0, 0.0);
+        mbDepthRange(0.0, 0.0);
 
-        qglDisable(GL_TEXTURE_2D);
+        mbDisable(MB_TEXTURE_2D);
 
-        qglBegin(GL_LINES);
+        mbBegin(MB_LINES);
 
         if (hitSun) {
-            qglColor3f(1.0, 1.0, 0.0);
+            mbColor3f(1.0, 1.0, 0.0);
         } else {
-            qglColor3f(0.0, 0.0, 0.0);
+            mbColor3f(0.0, 0.0, 0.0);
         }
 
-        qglVertex3fv(backEnd.currentSphere->origin);
-        qglColor3f(0.5, 0.5, 0.5);
-        qglVertex3fv(transpos);
-        qglEnd();
+        mbVertex3fv(backEnd.currentSphere->origin);
+        mbColor3f(0.5, 0.5, 0.5);
+        mbVertex3fv(transpos);
+        mbEnd();
 
-        qglEnable(GL_TEXTURE_2D);
+        mbEnable(MB_TEXTURE_2D);
 
         // Bring the depth range back
-        qglDepthRange(0.0, 1.0);
+        mbDepthRange(0.0, 1.0);
 
-        qglPopMatrix();
+        mbPopMatrix();
     }
 
     if (hitSun) {
@@ -824,13 +824,13 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
         return;
     }
 
-    qglPushMatrix();
+    mbPushMatrix();
 
-    qglLoadMatrixf(backEnd.ori.modelMatrix);
+    mbLoadMatrixf(backEnd.ori.modelMatrix);
     // Clear the depth range
-    qglDepthRange(0.0, 0.0);
+    mbDepthRange(0.0, 0.0);
 
-    qglDisable(GL_TEXTURE_2D);
+    mbDisable(MB_TEXTURE_2D);
 
     if (r_light_lines->integer == 2) {
         newColor[0] = thislight->color[0] * (falloff * r_entlight_scale->value / 255.0);
@@ -850,35 +850,35 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
         newColor[2] = 1.0;
     }
 
-    qglColor3f(newColor[0], newColor[1], newColor[2]);
+    mbColor3f(newColor[0], newColor[1], newColor[2]);
 
-    qglBegin(GL_LINES);
-    qglVertex3fv(origin);
-    qglVertex3fv(backEnd.currentSphere->origin);
+    mbBegin(MB_LINES);
+    mbVertex3fv(origin);
+    mbVertex3fv(backEnd.currentSphere->origin);
 
     for (i = 0; i < 5; i += 2) {
         VectorMA(origin, 16.0, spheredef[i], fakeLine);
         VectorMA(origin, -16.0, spheredef[i], fakeLine2);
 
-        qglVertex3fv(fakeLine);
-        qglVertex3fv(fakeLine2);
+        mbVertex3fv(fakeLine);
+        mbVertex3fv(fakeLine2);
     }
 
     if (thislight->spot_light) {
-        qglColor3f(0.7, 1.0, 0.7);
+        mbColor3f(0.7, 1.0, 0.7);
 
         MatrixTransformVectorRight(backEnd.currentEntity->e.axis, thislight->spot_dir, fakeLine);
         VectorMA(origin, 32.0, fakeLine, fakeLine);
 
-        qglVertex3fv(origin);
-        qglVertex3fv(fakeLine);
+        mbVertex3fv(origin);
+        mbVertex3fv(fakeLine);
     }
 
-    qglEnd();
-    qglEnable(GL_TEXTURE_2D);
+    mbEnd();
+    mbEnable(MB_TEXTURE_2D);
     // Restore depth
-    qglDepthRange(0.0, 1.0);
-    qglPopMatrix();
+    mbDepthRange(0.0, 1.0);
+    mbPopMatrix();
 }
 
 static void RB_Sphere_AddSpotLight(const spherel_t *thislight)

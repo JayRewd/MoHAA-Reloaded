@@ -621,8 +621,8 @@ void RB_DrawSkeletor(trRefEntity_t *ent)
         orientation_t parent_or;
         int           iParentBone;
 
-        qglLineWidth(3);
-        qglBegin(GL_LINES);
+        mbLineWidth(3);
+        mbBegin(MB_LINES);
 
         for (i = 0; i < ri.TIKI_GetNumChannels(tiki); i++) { // draw a skeleton
 
@@ -636,9 +636,9 @@ void RB_DrawSkeletor(trRefEntity_t *ent)
                 AxisCopy(ent->e.axis, parent_or.axis);
             }
 
-            qglColor3f(1, 1, 1);
-            qglVertex3fv(parent_or.origin);
-            qglVertex3fv(ori.origin);
+            mbColor3f(1, 1, 1);
+            mbVertex3fv(parent_or.origin);
+            mbVertex3fv(ori.origin);
 
             // draw bone axis
             /*glColor3f( 1, 0, 0 );
@@ -662,29 +662,29 @@ void RB_DrawSkeletor(trRefEntity_t *ent)
 			glVertex3fv( vUp );
 			glVertex3fv( ori.origin );*/
         }
-        qglEnd();
-        qglLineWidth(1);
+        mbEnd();
+        mbLineWidth(1);
     } else if (r_showSkeleton->integer == 2) { // draw skeleton with bones
         orientation_t ori;
         orientation_t parent_or;
         int           iParentBone;
 
-        qglLineWidth(3);
-        qglBegin(GL_LINES);
+        mbLineWidth(3);
+        mbBegin(MB_LINES);
         for (i = 0; i < ri.TIKI_GetNumChannels(tiki); i++) {
             iParentBone = ri.SKEL_GetBoneParent(skeletor, i);
 
             if (iParentBone > 0) {
                 ori       = R_GetTagPositionAndOrientation(&ent->e, i);
                 parent_or = R_GetTagPositionAndOrientation(&ent->e, iParentBone);
-                qglColor3f(1, 1, 1);
-                qglVertex3fv(parent_or.origin);
-                qglVertex3fv(ori.origin);
+                mbColor3f(1, 1, 1);
+                mbVertex3fv(parent_or.origin);
+                mbVertex3fv(ori.origin);
             }
         }
-        qglEnd();
+        mbEnd();
 
-        qglBegin(GL_LINES);
+        mbBegin(MB_LINES);
         for (i = 0; i < ri.TIKI_GetNumChannels(tiki); i++) {
             vec3_t up, down, front;
             ori = R_GetTagPositionAndOrientation(&ent->e, i);
@@ -696,17 +696,17 @@ void RB_DrawSkeletor(trRefEntity_t *ent)
             VectorCopy(ori.origin, front);
             front[0] += 5;
 
-            qglColor3f(1, 0, 1);
-            qglVertex3fv(front);
-            qglVertex3fv(ori.origin);
-            qglVertex3fv(down);
-            qglVertex3fv(ori.origin);
-            qglVertex3fv(up);
-            qglVertex3fv(ori.origin);
+            mbColor3f(1, 0, 1);
+            mbVertex3fv(front);
+            mbVertex3fv(ori.origin);
+            mbVertex3fv(down);
+            mbVertex3fv(ori.origin);
+            mbVertex3fv(up);
+            mbVertex3fv(ori.origin);
         }
 
-        qglEnd();
-        qglLineWidth(1);
+        mbEnd();
+        mbLineWidth(1);
     }
 }
 
@@ -1800,8 +1800,8 @@ void R_DebugSkeleton(void)
     GL_Bind(tr.whiteImage);
     GL_State(GLS_POLYMODE_LINE);
 
-    qglDisableClientState(GL_COLOR_ARRAY);
-    qglDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    mbDisableClientState(MB_COLOR_ARRAY);
+    mbDisableClientState(MB_TEXTURE_COORD_ARRAY);
 
     for (i = 0; i < tr.refdef.num_entities; i++) {
         ent = &tr.refdef.entities[i];

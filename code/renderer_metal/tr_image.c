@@ -43,8 +43,8 @@ static void LoadJPG( const char *name, byte **pic, int *width, int *height );
 static byte			 s_intensitytable[256];
 static unsigned char s_gammatable[256];
 
-int		gl_filter_min = GL_LINEAR_MIPMAP_NEAREST;
-int		gl_filter_max = GL_LINEAR;
+int		gl_filter_min = MB_LINEAR_MIPMAP_NEAREST;
+int		gl_filter_max = MB_LINEAR;
 
 #define FILE_HASH_SIZE		1024
 static	image_t*		hashTable[FILE_HASH_SIZE];
@@ -68,12 +68,12 @@ typedef struct {
 } textureMode_t;
 
 textureMode_t modes[] = {
-	{"GL_NEAREST", GL_NEAREST, GL_NEAREST},
-	{"GL_LINEAR", GL_LINEAR, GL_LINEAR},
-	{"GL_NEAREST_MIPMAP_NEAREST", GL_NEAREST_MIPMAP_NEAREST, GL_NEAREST},
-	{"GL_LINEAR_MIPMAP_NEAREST", GL_LINEAR_MIPMAP_NEAREST, GL_LINEAR},
-	{"GL_NEAREST_MIPMAP_LINEAR", GL_NEAREST_MIPMAP_LINEAR, GL_NEAREST},
-	{"GL_LINEAR_MIPMAP_LINEAR", GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR}
+	{"GL_NEAREST", MB_NEAREST, MB_NEAREST},
+	{"GL_LINEAR", MB_LINEAR, MB_LINEAR},
+	{"GL_NEAREST_MIPMAP_NEAREST", MB_NEAREST_MIPMAP_NEAREST, MB_NEAREST},
+	{"GL_LINEAR_MIPMAP_NEAREST", MB_LINEAR_MIPMAP_NEAREST, MB_LINEAR},
+	{"GL_NEAREST_MIPMAP_LINEAR", MB_NEAREST_MIPMAP_LINEAR, MB_NEAREST},
+	{"GL_LINEAR_MIPMAP_LINEAR", MB_LINEAR_MIPMAP_LINEAR, MB_LINEAR}
 };
 
 /*
@@ -135,8 +135,8 @@ void GL_TextureMode( const char *string ) {
 		glt = &tr.images[ i ];
 		if ( glt->numMipmaps && glt->texnum ) {
 			GL_Bind (glt);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_min);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, gl_filter_min);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, gl_filter_max);
 		}
 	}
 }
@@ -195,19 +195,19 @@ void R_ImageList_f( void ) {
 		case 4:
 			ri.Printf( PRINT_ALL, "RGBA " );
 			break;
-		case GL_RGBA8:
+		case MB_RGBA8:
 			ri.Printf( PRINT_ALL, "RGBA8" );
 			break;
-		case GL_RGB8:
+		case MB_RGB8:
 			ri.Printf( PRINT_ALL, "RGB8" );
 			break;
-		case GL_RGB4_S3TC:
+		case MB_RGB4_S3TC:
 			ri.Printf( PRINT_ALL, "S3TC " );
 			break;
-		case GL_RGBA4:
+		case MB_RGBA4:
 			ri.Printf( PRINT_ALL, "RGBA4" );
 			break;
-		case GL_RGB5:
+		case MB_RGB5:
 			ri.Printf( PRINT_ALL, "RGB5 " );
 			break;
 		default:
@@ -215,10 +215,10 @@ void R_ImageList_f( void ) {
 		}
 
 		switch ( image->wrapClampModeX ) {
-		case GL_REPEAT:
+		case MB_REPEAT:
 			ri.Printf( PRINT_ALL, "rept " );
 			break;
-		case GL_CLAMP:
+		case MB_CLAMP:
 			ri.Printf( PRINT_ALL, "clmp " );
 			break;
 		default:
@@ -467,7 +467,7 @@ static void Upload32(
 	int			scaled_width, scaled_height;
 	int			i, c;
 	byte		*scan;
-	GLenum		internalFormat = GL_RGB;
+	int		internalFormat = MB_RGB;
 	float		rMax = 0, gMax = 0, bMax = 0;
 
 	//
@@ -557,19 +557,19 @@ static void Upload32(
 			{
 				if (r_texturebits->integer == 16)
 				{
-					internalFormat = GL_RGB5;
+					internalFormat = MB_RGB5;
 				}
 				else if (r_texturebits->integer == 32)
 				{
-					internalFormat = GL_RGB8;
+					internalFormat = MB_RGB8;
 				}
 				else if (r_colorbits->integer == 16)
 				{
-					internalFormat = GL_RGBA4;
+					internalFormat = MB_RGBA4;
 				}
 				else if (r_colorbits->integer == 32)
 				{
-					internalFormat = GL_RGBA8;
+					internalFormat = MB_RGBA8;
 				}
 				else
 				{
@@ -578,7 +578,7 @@ static void Upload32(
 			}
 			else
 			{
-				internalFormat = GL_RGB8;
+				internalFormat = MB_RGB8;
 			}
 		}
 		else if ( samples == 4 )
@@ -587,19 +587,19 @@ static void Upload32(
 			{
 				if (r_texturebits->integer == 16)
 				{
-					internalFormat = GL_RGBA4;
+					internalFormat = MB_RGBA4;
 				}
 				else if (r_texturebits->integer == 32)
 				{
-					internalFormat = GL_RGBA8;
+					internalFormat = MB_RGBA8;
 				}
 				else if (r_colorbits->integer == 16)
 				{
-					internalFormat = GL_RGBA4;
+					internalFormat = MB_RGBA4;
 				}
 				else if (r_colorbits->integer == 32)
 				{
-					internalFormat = GL_RGBA8;
+					internalFormat = MB_RGBA8;
 				}
 				else
 				{
@@ -608,18 +608,18 @@ static void Upload32(
 			}
 			else
 			{
-				internalFormat = GL_RGBA8;
+				internalFormat = MB_RGBA8;
 			}
 		}
 	} else {
-		internalFormat = GL_RGB;
+		internalFormat = MB_RGB;
 	}
 	// copy or resample data as appropriate for first MIP level
 	if ( ( scaled_width == width ) && 
 		( scaled_height == height ) ) {
 		if (!numMipmaps)
 		{
-			qglTexImage2D (GL_TEXTURE_2D, 0, internalFormat, scaled_width, scaled_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+			mbTexImage2D (MB_TEXTURE_2D, 0, internalFormat, scaled_width, scaled_height, 0, MB_RGBA, MB_UNSIGNED_BYTE, data);
 			*pUploadWidth = scaled_width;
 			*pUploadHeight = scaled_height;
 			*format = internalFormat;
@@ -652,7 +652,7 @@ static void Upload32(
 	*pUploadHeight = scaled_height;
 	*format = internalFormat;
 
-	qglTexImage2D (GL_TEXTURE_2D, 0, internalFormat, scaled_width, scaled_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, scaledBuffer );
+	mbTexImage2D (MB_TEXTURE_2D, 0, internalFormat, scaled_width, scaled_height, 0, MB_RGBA, MB_UNSIGNED_BYTE, scaledBuffer );
 
 	*bytesUsed = samples * scaled_width * scaled_height;
 
@@ -676,7 +676,7 @@ static void Upload32(
 				R_BlendOverTexture( (byte *)scaledBuffer, scaled_width * scaled_height, mipBlendColors[miplevel] );
 			}
 
-			qglTexImage2D (GL_TEXTURE_2D, miplevel, internalFormat, scaled_width, scaled_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, scaledBuffer );
+			mbTexImage2D (MB_TEXTURE_2D, miplevel, internalFormat, scaled_width, scaled_height, 0, MB_RGBA, MB_UNSIGNED_BYTE, scaledBuffer );
 		}
 	}
 done:
@@ -684,19 +684,19 @@ done:
 	if (numMipmaps)
 	{
 		if ( textureFilterAnisotropic )
-			qglTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
-					(GLint)Com_Clamp( 1, maxAnisotropy, r_ext_max_anisotropy->integer ) );
+			mbTexParameteri( MB_TEXTURE_2D, MB_TEXTURE_MAX_ANISOTROPY_EXT,
+					(int)Com_Clamp( 1, maxAnisotropy, r_ext_max_anisotropy->integer ) );
 
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_min);
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, gl_filter_min);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, gl_filter_max);
 	}
 	else
 	{
 		if (textureFilterAnisotropic)
-			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+			mbTexParameteri(MB_TEXTURE_2D, MB_TEXTURE_MAX_ANISOTROPY_EXT, 1);
 
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, MB_LINEAR );
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR );
 	}
 
 	GL_CheckErrors();
@@ -762,7 +762,7 @@ static void UploadCompressed(
 	*format = glCompressMode;
 	blockSize = 16;
 
-	if (glCompressMode == GL_COMPRESSED_RGB_S3TC_DXT1_EXT || glCompressMode == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT) {
+	if (glCompressMode == MB_COMPRESSED_RGB_S3TC_DXT1_EXT || glCompressMode == MB_COMPRESSED_RGBA_S3TC_DXT1_EXT) {
 		blockSize = 8;
 	}
 
@@ -803,7 +803,7 @@ static void UploadCompressed(
 			*pBytesUsed += size;
 		}
 
-		qglCompressedTexImage2D(GL_TEXTURE_2D, i - iStartImage, glCompressMode, scaled_width, scaled_height, 0, size, offset);
+		mbCompressedTexImage2D(MB_TEXTURE_2D, i - iStartImage, glCompressMode, scaled_width, scaled_height, 0, size, offset);
 		GL_CheckErrors();
 
 		if (i < iMipmapsAvailable && w > 1 && h > 1) {
@@ -816,11 +816,11 @@ static void UploadCompressed(
 	}
 
 	if (numMipmaps > 1) {
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_min);
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, gl_filter_min);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, gl_filter_max);
 	} else {
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, MB_LINEAR);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR);
 	}
 
 	GL_CheckErrors();
@@ -886,7 +886,7 @@ image_t* R_CreateImageOld(
     // Fixed in OPM / ioquake3
     //  Original mohaa uses a fixed texnum instead of generating one regardless of the platform.
     //  Here, by using glGenTextures, it will guarantee the uniqueness of the texture
-    qglGenTextures(1, &image->texnum);
+    mbGenTextures(1, &image->texnum);
 
 	image->numMipmaps = numMipmaps;
 	image->allowPicmip = allowPicmip;
@@ -901,13 +901,13 @@ image_t* R_CreateImageOld(
 	image->wrapClampModeY = glWrapClampModeY;
 
 	// lightmaps are always allocated on TMU 1
-	if ( qglActiveTextureARB && isLightmap ) {
+	if ( mbMultitexture && isLightmap ) {
 		image->TMU = 1;
 	} else {
 		image->TMU = 0;
 	}
 
-	if ( qglActiveTextureARB ) {
+	if ( mbMultitexture ) {
 		GL_SelectTexture( image->TMU );
 	}
 
@@ -946,10 +946,10 @@ image_t* R_CreateImageOld(
 		);
 	}
 
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, glWrapClampModeX );
-	qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, glWrapClampModeY );
+	mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, glWrapClampModeX );
+	mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, glWrapClampModeY );
 
-	qglBindTexture( GL_TEXTURE_2D, 0 );
+	mbBindTexture( MB_TEXTURE_2D, 0 );
 
 	glState.currenttextures[image->TMU] = -1;
 	if ( image->TMU == 1 ) {
@@ -1539,19 +1539,19 @@ static void LoadDDS(const char* name, byte** pic, int* width, int* height, qbool
 	//
 	if (ddsHeader.fourCC == EncodeFourCC("DXT1")) {
 		intSize = 2;
-		*glCompressMode = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+		*glCompressMode = MB_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 	} else if (ddsHeader.fourCC == EncodeFourCC("DXT2")) {
 		intSize = 4;
-		*glCompressMode = GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+		*glCompressMode = MB_COMPRESSED_RGBA_S3TC_DXT3_EXT;
 	} else if (ddsHeader.fourCC == EncodeFourCC("DXT3")) {
 		intSize = 4;
-		*glCompressMode = GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+		*glCompressMode = MB_COMPRESSED_RGBA_S3TC_DXT3_EXT;
 	} else if (ddsHeader.fourCC == EncodeFourCC("DXT4")) {
 		intSize = 4;
-		*glCompressMode = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+		*glCompressMode = MB_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 	} else if (ddsHeader.fourCC == EncodeFourCC("DXT5")) {
 		intSize = 4;
-		*glCompressMode = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+		*glCompressMode = MB_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 	} else {
 		ri.FS_CloseFile(handle);
 		return;
@@ -2661,7 +2661,7 @@ static void R_CreateDlightImage( void ) {
 			data[y][x][3] = 255;			
 		}
 	}
-	tr.dlightImage = R_CreateImageOld("*dlight", (byte *)data, DLIGHT_SIZE, DLIGHT_SIZE, 0, 1, qfalse, qfalse, qfalse, qfalse, GL_CLAMP, GL_CLAMP);
+	tr.dlightImage = R_CreateImageOld("*dlight", (byte *)data, DLIGHT_SIZE, DLIGHT_SIZE, 0, 1, qfalse, qfalse, qfalse, qfalse, MB_CLAMP, MB_CLAMP);
 	tr.dlightImage->r_sequence = -1;
 }
 
@@ -2698,7 +2698,7 @@ static void R_CreateDefaultImage( void ) {
 		data[x][DEFAULT_SIZE-1][2] =
 		data[x][DEFAULT_SIZE-1][3] = 255;
 	}
-	tr.defaultImage = R_CreateImageOld("*default", (byte *)data, DEFAULT_SIZE, DEFAULT_SIZE, 1, 1, qfalse, qfalse, qfalse, qfalse, GL_REPEAT, GL_REPEAT);
+	tr.defaultImage = R_CreateImageOld("*default", (byte *)data, DEFAULT_SIZE, DEFAULT_SIZE, 1, 1, qfalse, qfalse, qfalse, qfalse, MB_REPEAT, MB_REPEAT);
 	tr.defaultImage->r_sequence = -1;
 }
 
@@ -2717,7 +2717,7 @@ void R_CreateBuiltinImages(void) {
 
 	// we use a solid white image instead of disabling texturing
 	Com_Memset( data, 255, sizeof( data ) );
-	tr.whiteImage = R_CreateImageOld("*white", (byte *)data, 8, 8, 0, 1, qfalse, qfalse, qfalse, qfalse, GL_REPEAT, GL_REPEAT);
+	tr.whiteImage = R_CreateImageOld("*white", (byte *)data, 8, 8, 0, 1, qfalse, qfalse, qfalse, qfalse, MB_REPEAT, MB_REPEAT);
 	tr.whiteImage->r_sequence = -1;
 
 	// with overbright bits active, we need an image which is some fraction of full color,
@@ -2736,14 +2736,14 @@ void R_CreateBuiltinImages(void) {
 		char filename[64];
 
 		Com_sprintf(filename, sizeof(filename), "*lightmapD%i", i);
-		tr.dlightImages[i] = R_CreateImageOld(filename, lightmap_buffer, LIGHTMAP_SIZE, LIGHTMAP_SIZE, 0, 1, qfalse, qfalse, qfalse, 0, GL_CLAMP, GL_CLAMP);
+		tr.dlightImages[i] = R_CreateImageOld(filename, lightmap_buffer, LIGHTMAP_SIZE, LIGHTMAP_SIZE, 0, 1, qfalse, qfalse, qfalse, 0, MB_CLAMP, MB_CLAMP);
 		tr.dlightImages[i]->r_sequence = -1;
 	}
 
-	tr.identityLightImage = R_CreateImageOld("*identityLight", (byte *)data, 8, 8, 0, 1, qfalse, qfalse, qfalse, qfalse, GL_REPEAT, GL_REPEAT);
+	tr.identityLightImage = R_CreateImageOld("*identityLight", (byte *)data, 8, 8, 0, 1, qfalse, qfalse, qfalse, qfalse, MB_REPEAT, MB_REPEAT);
 	tr.identityLightImage->r_sequence = -1;
 
-	tr.scratchImage = R_CreateImageOld("*scratch", (byte*)data, DEFAULT_SIZE, DEFAULT_SIZE, 0, 1, r_picmip->integer, qfalse, qfalse, qfalse, GL_CLAMP, GL_CLAMP);
+	tr.scratchImage = R_CreateImageOld("*scratch", (byte*)data, DEFAULT_SIZE, DEFAULT_SIZE, 0, 1, r_picmip->integer, qfalse, qfalse, qfalse, MB_CLAMP, MB_CLAMP);
 	tr.scratchImage->r_sequence = -1;
 
 	R_CreateDlightImage();
@@ -2901,7 +2901,7 @@ R_FreeImage
 */
 void R_FreeImage(image_t* image) {
 	if (image->texnum) {
-		qglDeleteTextures(1, &image->texnum);
+		mbDeleteTextures(1, &image->texnum);
 	}
 
     R_DeleteImageFromHash(image);
@@ -2924,15 +2924,13 @@ void R_DeleteTextures( void ) {
 	tr.numImages = 0;
 
 	Com_Memset( glState.currenttextures, 0, sizeof( glState.currenttextures ) );
-	if ( qglBindTexture ) {
-		if ( qglActiveTextureARB ) {
-			GL_SelectTexture( 1 );
-			qglBindTexture( GL_TEXTURE_2D, 0 );
-			GL_SelectTexture( 0 );
-			qglBindTexture( GL_TEXTURE_2D, 0 );
-		} else {
-			qglBindTexture( GL_TEXTURE_2D, 0 );
-		}
+	if ( mbMultitexture ) {
+		GL_SelectTexture( 1 );
+		mbBindTexture( MB_TEXTURE_2D, 0 );
+		GL_SelectTexture( 0 );
+		mbBindTexture( MB_TEXTURE_2D, 0 );
+	} else {
+		mbBindTexture( MB_TEXTURE_2D, 0 );
 	}
 }
 

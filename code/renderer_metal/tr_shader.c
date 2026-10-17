@@ -47,7 +47,7 @@ static qboolean shader_force32bit;
 static shadertext_t* currentShader = NULL;
 static shadertext_t* hashTable[FILE_HASH_SIZE];
 
-#define GL_CLAMP_TO_EDGE 0x812F
+#define MB_CLAMP_TO_EDGE 0x812F
 
 /*
 ================
@@ -924,7 +924,7 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
 			}
 			else
 			{
-				stage->bundle[cntBundle].image[0] = R_FindImageFileOld(token, !stage->noMipMaps, stage->noPicMip ? qfalse : picmip, stage->force32bit, GL_REPEAT, GL_REPEAT);
+				stage->bundle[cntBundle].image[0] = R_FindImageFileOld(token, !stage->noMipMaps, stage->noPicMip ? qfalse : picmip, stage->force32bit, MB_REPEAT, MB_REPEAT);
 				if (!stage->bundle[cntBundle].image[0])
 				{
 					ri.Printf(PRINT_WARNING, "WARNING: R_FindImageFile could not find '%s' in shader '%s'\n", token, shader.name);
@@ -941,33 +941,33 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
 
 			if (!token[8]) {
 				if (!haveClampToEdge) {
-					clampx = GL_CLAMP;
-					clampy = GL_CLAMP;
+					clampx = MB_CLAMP;
+					clampy = MB_CLAMP;
 				}
 				else {
-					clampx = GL_CLAMP_TO_EDGE;
-					clampy = GL_CLAMP_TO_EDGE;
+					clampx = MB_CLAMP_TO_EDGE;
+					clampy = MB_CLAMP_TO_EDGE;
 				}
 			}
 			else {
 				if (token[8] == 'x' && !token[9])
 				{
 					if (!haveClampToEdge) {
-						clampx = GL_CLAMP;
+						clampx = MB_CLAMP;
 					}
 					else {
-						clampx = GL_CLAMP_TO_EDGE;
+						clampx = MB_CLAMP_TO_EDGE;
 					}
-					clampy = GL_REPEAT;
+					clampy = MB_REPEAT;
 				}
 				else if (token[8] == 'y' && !token[9])
 				{
-					clampx = GL_REPEAT;
+					clampx = MB_REPEAT;
 					if (!haveClampToEdge) {
-						clampy = GL_CLAMP;
+						clampy = MB_CLAMP;
 					}
 					else {
-						clampy = GL_CLAMP_TO_EDGE;
+						clampy = MB_CLAMP_TO_EDGE;
 					}
 				}
 				else {
@@ -1035,7 +1035,7 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
 				}
 				num = stage->bundle[cntBundle].numImageAnimations;
 				if ( num < MAX_IMAGE_ANIMATIONS ) {
-                    stage->bundle[cntBundle].image[num] = R_FindImageFileOld(token, !stage->noMipMaps, (!stage->noPicMip ? picmip : 0), stage->force32bit, GL_REPEAT, GL_REPEAT );
+                    stage->bundle[cntBundle].image[num] = R_FindImageFileOld(token, !stage->noMipMaps, (!stage->noPicMip ? picmip : 0), stage->force32bit, MB_REPEAT, MB_REPEAT );
 					if ( !stage->bundle[cntBundle].image[num] )
 					{
 						ri.Printf( PRINT_WARNING, "WARNING: R_FindImageFile could not find '%s' in shader '%s'\n", token, shader.name );
@@ -1058,7 +1058,7 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
                 return qfalse;
             }
 
-			stage->normalMap = R_FindImageFileOld(token, !stage->noMipMaps, (!stage->noPicMip ? picmip : 0), stage->force32bit, GL_REPEAT, GL_REPEAT);
+			stage->normalMap = R_FindImageFileOld(token, !stage->noMipMaps, (!stage->noPicMip ? picmip : 0), stage->force32bit, MB_REPEAT, MB_REPEAT);
 			if (!stage->normalMap)
             {
                 ri.Printf(PRINT_WARNING, "WARNING: R_FindImageFile could not find '%s' in shader '%s'\n", token, shader.name);
@@ -1678,16 +1678,16 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
         }
         else if (!Q_stricmp(token, "nextBundle"))
         {
-			if (!qglActiveTextureARB) {
+			if (!mbMultitexture) {
 				ri.Printf(PRINT_ALL, "WARNING: " PRODUCT_NAME " requires a video card with multitexturing capability\n");
 				return qfalse;
 			}
 
 			token = COM_ParseExt(text, qfalse);
 			if (token[0] && !Q_stricmp(token, "add")) {
-				stage->multitextureEnv = GL_ADD;
+				stage->multitextureEnv = MB_ADD;
 			} else {
-				stage->multitextureEnv = GL_MODULATE;
+				stage->multitextureEnv = MB_MODULATE;
 			}
 
 			cntBundle++;
@@ -1765,7 +1765,7 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
 	}
 
 	//
-	// implicitly assume that a GL_ONE GL_ZERO blend mask disables blending
+	// implicitly assume that a MB_ONE MB_ZERO blend mask disables blending
 	//
 	if ( ( blendSrcBits == GLS_SRCBLEND_ONE ) && 
 		 ( blendDstBits == GLS_DSTBLEND_ZERO ) )
@@ -2031,10 +2031,10 @@ static void ParseSkyParms( char **text ) {
 			Com_sprintf( pathname, sizeof(pathname), "%s_%s.tga"
 				, token, suf[i] );
 			if (!haveClampToEdge) {
-				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, qtrue, shader_force32bit, GL_CLAMP, GL_CLAMP);
+				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, qtrue, shader_force32bit, MB_CLAMP, MB_CLAMP);
 			}
 			else {
-				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, r_picmip->integer, shader_force32bit, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
+				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, r_picmip->integer, shader_force32bit, MB_CLAMP_TO_EDGE, MB_CLAMP_TO_EDGE);
 			}
 			if ( !shader.sky.outerbox[i] ) {
 				shader.sky.outerbox[i] = tr.defaultImage;
@@ -2066,9 +2066,9 @@ static void ParseSkyParms( char **text ) {
 			Com_sprintf( pathname, sizeof(pathname), "%s_%s.tga"
 				, token, suf[i] );
 			if (!haveClampToEdge) {
-				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, qtrue, shader_force32bit, GL_CLAMP, GL_CLAMP);
+				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, qtrue, shader_force32bit, MB_CLAMP, MB_CLAMP);
 			} else {
-				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, r_picmip->integer, shader_force32bit, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
+				shader.sky.outerbox[i] = R_FindImageFileOld((char*)pathname, qtrue, r_picmip->integer, shader_force32bit, MB_CLAMP_TO_EDGE, MB_CLAMP_TO_EDGE);
 			}
 			if ( !shader.sky.innerbox[i] ) {
 				shader.sky.innerbox[i] = tr.defaultImage;
@@ -2689,31 +2689,31 @@ typedef struct {
 
 static collapse_t	collapse[] = {
 	{ 0, GLS_DSTBLEND_SRC_COLOR | GLS_SRCBLEND_ZERO,	
-		GL_MODULATE, 0 },
+		MB_MODULATE, 0 },
 
 	{ 0, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR,
-		GL_MODULATE, 0 },
+		MB_MODULATE, 0 },
 
 	{ GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR,
-		GL_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
+		MB_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
 
 	{ GLS_DSTBLEND_SRC_COLOR | GLS_SRCBLEND_ZERO, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR,
-		GL_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
+		MB_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
 
 	{ GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR, GLS_DSTBLEND_SRC_COLOR | GLS_SRCBLEND_ZERO,
-		GL_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
+		MB_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
 
 	{ GLS_DSTBLEND_SRC_COLOR | GLS_SRCBLEND_ZERO, GLS_DSTBLEND_SRC_COLOR | GLS_SRCBLEND_ZERO,
-		GL_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
+		MB_MODULATE, GLS_DSTBLEND_ZERO | GLS_SRCBLEND_DST_COLOR },
 
 	{ 0, GLS_DSTBLEND_ONE | GLS_SRCBLEND_ONE,
-		GL_ADD, 0 },
+		MB_ADD, 0 },
 
 	{ GLS_DSTBLEND_ONE | GLS_SRCBLEND_ONE, GLS_DSTBLEND_ONE | GLS_SRCBLEND_ONE,
-		GL_ADD, GLS_DSTBLEND_ONE | GLS_SRCBLEND_ONE },
+		MB_ADD, GLS_DSTBLEND_ONE | GLS_SRCBLEND_ONE },
 #if 0
 	{ 0, GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA,
-		GL_DECAL, 0 },
+		MB_DECAL, 0 },
 #endif
 	{ -1 }
 };
@@ -2785,8 +2785,8 @@ static void CollapseMultitexture(int *stagecounter) {
 			continue;
 		}
 
-		// GL_ADD is a separate extension
-		if (collapse[iUseCollapse].multitextureEnv == GL_ADD && !glConfig.textureEnvAddAvailable) {
+		// MB_ADD is a separate extension
+		if (collapse[iUseCollapse].multitextureEnv == MB_ADD && !glConfig.textureEnvAddAvailable) {
 			continue;
 		}
 
@@ -2797,7 +2797,7 @@ static void CollapseMultitexture(int *stagecounter) {
 		}
 
 		// an add collapse can only have identity colors
-		if (collapse[iUseCollapse].multitextureEnv == GL_ADD && stage->rgbGen != CGEN_IDENTITY) {
+		if (collapse[iUseCollapse].multitextureEnv == MB_ADD && stage->rgbGen != CGEN_IDENTITY) {
 			continue;
 		}
 
@@ -3208,7 +3208,7 @@ static shader_t *FinishShader( void ) {
 		//
 		// look for multitexture potential
 		//
-		if (qglActiveTextureARB) {
+		if (mbMultitexture) {
 			CollapseMultitexture(&stage);
 		}
 	}
@@ -3474,10 +3474,10 @@ shader_t* R_FindShader(const char* name, int lightmapIndex, qboolean mipRawImage
 	Q_strncpyz( fileName, name, sizeof( fileName ) );
 	COM_DefaultExtension( fileName, sizeof( fileName ), ".tga" );
     if (!haveClampToEdge) {
-        image = R_FindImageFileOld(fileName, mipRawImage, picmip, qfalse, wrapx ? GL_REPEAT : GL_CLAMP, wrapy ? GL_REPEAT : GL_CLAMP);
+        image = R_FindImageFileOld(fileName, mipRawImage, picmip, qfalse, wrapx ? MB_REPEAT : MB_CLAMP, wrapy ? MB_REPEAT : MB_CLAMP);
 	}
     else {
-        image = R_FindImageFileOld(fileName, mipRawImage, picmip, qfalse, wrapx ? GL_REPEAT : GL_CLAMP_TO_EDGE, wrapy ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+        image = R_FindImageFileOld(fileName, mipRawImage, picmip, qfalse, wrapx ? MB_REPEAT : MB_CLAMP_TO_EDGE, wrapy ? MB_REPEAT : MB_CLAMP_TO_EDGE);
 	}
 
 	if ( !image ) {
@@ -3740,11 +3740,11 @@ void	R_ShaderList_f (void) {
 		}
 
 		for (stage = 0; pShader->unfoggedStages[stage] && pShader->unfoggedStages[stage]->active; stage++) {
-			if (pShader->unfoggedStages[stage]->multitextureEnv == GL_ADD ) {
+			if (pShader->unfoggedStages[stage]->multitextureEnv == MB_ADD ) {
 				ri.Printf( PRINT_ALL, "MT(a) " );
-			} else if (pShader->unfoggedStages[stage]->multitextureEnv == GL_MODULATE ) {
+			} else if (pShader->unfoggedStages[stage]->multitextureEnv == MB_MODULATE ) {
 				ri.Printf( PRINT_ALL, "MT(m) " );
-			} else if (pShader->unfoggedStages[stage]->multitextureEnv == GL_DECAL ) {
+			} else if (pShader->unfoggedStages[stage]->multitextureEnv == MB_DECAL ) {
 				ri.Printf( PRINT_ALL, "MT(d) " );
 			} else {
 				ri.Printf( PRINT_ALL, "      " );

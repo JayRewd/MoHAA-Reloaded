@@ -1501,23 +1501,23 @@ void R_DebugPolygon( int color, int numPoints, float *points ) {
 
 	// draw solid shade
 
-	qglColor3f( color&1, (color>>1)&1, (color>>2)&1 );
-	qglBegin( GL_POLYGON );
+	mbColor3f( color&1, (color>>1)&1, (color>>2)&1 );
+	mbBegin( MB_POLYGON );
 	for ( i = 0 ; i < numPoints ; i++ ) {
-		qglVertex3fv( points + i * 3 );
+		mbVertex3fv( points + i * 3 );
 	}
-	qglEnd();
+	mbEnd();
 
 	// draw wireframe outline
 	GL_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
-	qglDepthRange( 0, 0 );
-	qglColor3f( 1, 1, 1 );
-	qglBegin( GL_POLYGON );
+	mbDepthRange( 0, 0 );
+	mbColor3f( 1, 1, 1 );
+	mbBegin( MB_POLYGON );
 	for ( i = 0 ; i < numPoints ; i++ ) {
-		qglVertex3fv( points + i * 3 );
+		mbVertex3fv( points + i * 3 );
 	}
-	qglEnd();
-	qglDepthRange( 0, 1 );
+	mbEnd();
+	mbDepthRange( 0, 1 );
 }
 
 /*
@@ -1667,8 +1667,8 @@ void R_DrawDebugLines(void) {
 		GL_State(GLS_POLYMODE_LINE);
 	}
 
-    qglDisableClientState(GL_COLOR_ARRAY);
-    qglDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    mbDisableClientState(MB_COLOR_ARRAY);
+    mbDisableClientState(MB_TEXTURE_COORD_ARRAY);
 
     width = 1.0;
     factor = 4;
@@ -1676,43 +1676,43 @@ void R_DrawDebugLines(void) {
 
     if (r_stipplelines->integer)
     {
-        qglEnable(GL_LINE_STIPPLE);
-        qglLineStipple(4, -1);
-        qglLineWidth(1.0f);
+        mbEnable(MB_LINE_STIPPLE);
+        mbLineStipple(4, -1);
+        mbLineWidth(1.0f);
     }
 
-	qglBegin(GL_LINES);
+	mbBegin(MB_LINES);
 
 	for (i = 0; i < *ri.numDebugLines; i++) {
 		line = &(*ri.DebugLines)[i];
 
 		if (r_stipplelines->integer) {
 			if (line->width != width || line->factor != factor || line->pattern != pattern) {
-				qglEnd();
-				qglLineStipple(line->factor, line->pattern);
-                qglLineWidth(line->width);
-                qglBegin(GL_LINES);
+				mbEnd();
+				mbLineStipple(line->factor, line->pattern);
+                mbLineWidth(line->width);
+                mbBegin(MB_LINES);
                 factor = line->factor;
                 width = line->width;
                 pattern = line->pattern;
 			}
 		}
 
-		qglColor4f(line->color[0], line->color[1], line->color[2], line->alpha);
-        qglVertex3fv(line->start);
-        qglVertex3fv(line->end);
+		mbColor4f(line->color[0], line->color[1], line->color[2], line->alpha);
+        mbVertex3fv(line->start);
+        mbVertex3fv(line->end);
 	}
 
-    qglEnd();
+    mbEnd();
 
     if (r_stipplelines->integer)
     {
-        qglDisable(GL_LINE_STIPPLE);
-        qglLineStipple(1, -1);
-        qglLineWidth(1.0);
+        mbDisable(MB_LINE_STIPPLE);
+        mbLineStipple(1, -1);
+        mbLineWidth(1.0);
     }
 
-    qglDepthRange(0.0, 1.0);
+    mbDepthRange(0.0, 1.0);
 }
 
 /*

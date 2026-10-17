@@ -40,7 +40,7 @@ void Draw_SetColor(const vec4_t rgba) {
 	backEnd.color2D[1] = (byte)(rgba[1] * tr.identityLightByte);
 	backEnd.color2D[2] = (byte)(rgba[2] * tr.identityLightByte);
 	backEnd.color2D[3] = (byte)(rgba[3] * 255.0);
-	qglColor4ubv(backEnd.color2D);
+	mbColor4ubv(backEnd.color2D);
 #else
 	RE_SetColor(rgba);
 #endif
@@ -272,57 +272,57 @@ RE_DrawBackground_TexSubImage
 ================
 */
 void RE_DrawBackground_TexSubImage(int cols, int rows, int bgr, byte* data) {
-	GLenum	format;
+	int	format;
 	int		w, h;
 
 	w = glConfig.vidWidth;
 	h = glConfig.vidHeight;
 
 	R_IssuePendingRenderCommands();
-	qglFinish();
+	mbFinish();
 
 	if (bgr) {
-		format = GL_BGR_EXT;
+		format = MB_BGR_EXT;
 	}
 	else {
-		format = GL_RGB;
+		format = MB_RGB;
 	}
 
 	GL_Bind(tr.scratchImage);
 
 	if (cols == tr.scratchImage->width && rows == tr.scratchImage->height && format == tr.scratchImage->internalFormat)
 	{
-		qglTexSubImage2D(3553, 0, 0, 0, cols, rows, format, 5121, data);
+		mbTexSubImage2D(MB_TEXTURE_2D, 0, 0, 0, cols, rows, format, MB_UNSIGNED_BYTE, data);
 	}
 	else
 	{
 		tr.scratchImage->uploadWidth = cols;
 		tr.scratchImage->uploadHeight = rows;
 		tr.scratchImage->internalFormat = format;
-		qglTexImage2D(GL_TEXTURE_2D, 0, 3, cols, rows, 0, format, 5121, data);
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, 9729.0);
-		qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, 9729.0);
+		mbTexImage2D(MB_TEXTURE_2D, 0, MB_RGB, cols, rows, 0, format, MB_UNSIGNED_BYTE, data);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, MB_LINEAR);
+		mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR);
 	}
 
-	qglDisable(GL_CULL_FACE);
-	qglDisable(GL_DEPTH_TEST);
-	qglEnable(GL_TEXTURE_2D);
+	mbDisable(MB_CULL_FACE);
+	mbDisable(MB_DEPTH_TEST);
+	mbEnable(MB_TEXTURE_2D);
 
-	qglBegin(GL_QUADS);
+	mbBegin(MB_QUADS);
 
-	qglTexCoord2f(0.5 / (GLfloat)cols, ((GLfloat)rows - 0.5) / rows);
-	qglVertex2f(0, 0);
+	mbTexCoord2f(0.5 / (float)cols, ((float)rows - 0.5) / rows);
+	mbVertex2f(0, 0);
 
-	qglTexCoord2f(((GLfloat)cols - 0.5) / cols, ((GLfloat)rows - 0.5) / rows);
-	qglVertex2f(w, 0);
+	mbTexCoord2f(((float)cols - 0.5) / cols, ((float)rows - 0.5) / rows);
+	mbVertex2f(w, 0);
 
-	qglTexCoord2f(((GLfloat)cols - 0.5) / cols, 0.5 / (GLfloat)rows);
-	qglVertex2f(w, h);
+	mbTexCoord2f(((float)cols - 0.5) / cols, 0.5 / (float)rows);
+	mbVertex2f(w, h);
 
-	qglTexCoord2f(0.5 / (GLfloat)rows, 0.5 / (GLfloat)rows);
-	qglVertex2f(0, h);
+	mbTexCoord2f(0.5 / (float)rows, 0.5 / (float)rows);
+	mbVertex2f(0, h);
 
-	qglEnd();
+	mbEnd();
 }
 
 /*
@@ -334,19 +334,19 @@ void RE_DrawBackground_DrawPixels(int cols, int rows, int bgr, byte* data) {
 	R_IssuePendingRenderCommands();
 
 	GL_State(0);
-	qglDisable(GL_TEXTURE_2D);
+	mbDisable(MB_TEXTURE_2D);
 
-	qglPixelZoom(glConfig.vidWidth / rows, glConfig.vidHeight / cols);
+	mbPixelZoom(glConfig.vidWidth / rows, glConfig.vidHeight / cols);
 
 	if (bgr) {
-		qglDrawPixels(cols, rows, GL_BGR, GL_UNSIGNED_BYTE, data);
+		mbDrawPixels(cols, rows, MB_BGR, MB_UNSIGNED_BYTE, data);
 	} else {
-		qglDrawPixels(cols, rows, GL_RGB, GL_UNSIGNED_BYTE, data);
+		mbDrawPixels(cols, rows, MB_RGB, MB_UNSIGNED_BYTE, data);
 	}
 
-	qglPixelZoom(1.0, 1.0);
+	mbPixelZoom(1.0, 1.0);
 
-	qglEnable(GL_TEXTURE_2D);
+	mbEnable(MB_TEXTURE_2D);
 }
 
 /*
@@ -357,20 +357,20 @@ AddBox
 void AddBox(float x, float y, float w, float h) {
 	R_IssuePendingRenderCommands();
 
-	qglColor4ubv(backEnd.color2D);
-	qglDisable(GL_TEXTURE_2D);
+	mbColor4ubv(backEnd.color2D);
+	mbDisable(MB_TEXTURE_2D);
 	GL_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
 
-	qglBegin(GL_QUADS);
+	mbBegin(MB_QUADS);
 
-	qglVertex2f(x, y);
-	qglVertex2f(x + w, y);
-	qglVertex2f(x + w, y + h);
-	qglVertex2f(x, y + h);
+	mbVertex2f(x, y);
+	mbVertex2f(x + w, y);
+	mbVertex2f(x + w, y + h);
+	mbVertex2f(x, y + h);
 
-	qglEnd();
+	mbEnd();
 
-	qglEnable(GL_TEXTURE_2D);
+	mbEnable(MB_TEXTURE_2D);
 }
 
 /*
@@ -381,20 +381,20 @@ DrawBox
 void DrawBox(float x, float y, float w, float h) {
 	R_IssuePendingRenderCommands();
 
-	qglColor4ubv(backEnd.color2D);
-	qglDisable(GL_TEXTURE_2D);
+	mbColor4ubv(backEnd.color2D);
+	mbDisable(MB_TEXTURE_2D);
 	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
 
-	qglBegin(GL_QUADS);
+	mbBegin(MB_QUADS);
 
-	qglVertex2f(x, y);
-	qglVertex2f(x + w, y);
-	qglVertex2f(x + w, y + h);
-	qglVertex2f(x, y + h);
+	mbVertex2f(x, y);
+	mbVertex2f(x + w, y);
+	mbVertex2f(x + w, y + h);
+	mbVertex2f(x, y + h);
 
-	qglEnd();
+	mbEnd();
 
-	qglEnable(GL_TEXTURE_2D);
+	mbEnable(MB_TEXTURE_2D);
 }
 
 /*
@@ -407,25 +407,25 @@ void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipp
 
 	R_IssuePendingRenderCommands();
 
-	qglDisable(GL_TEXTURE_2D);
+	mbDisable(MB_TEXTURE_2D);
 
 	if (stipple_factor) {
-		qglEnable(GL_LINE_STIPPLE);
-		qglLineStipple(stipple_factor, stipple_mask);
+		mbEnable(MB_LINE_STIPPLE);
+		mbLineStipple(stipple_factor, stipple_mask);
 	}
 
-	qglBegin(GL_LINE_LOOP);
+	mbBegin(MB_LINE_LOOP);
 
 	for (i = 0; i < count; i++) {
-		qglVertex2f(points[i][0], points[i][1]);
+		mbVertex2f(points[i][0], points[i][1]);
 	}
 
-	qglEnd();
+	mbEnd();
 
-	qglEnable(GL_TEXTURE_2D);
+	mbEnable(MB_TEXTURE_2D);
 
 	if (stipple_factor) {
-		qglDisable(GL_LINE_STIPPLE);
+		mbDisable(MB_LINE_STIPPLE);
 	}
 }
 
@@ -436,24 +436,24 @@ Set2DWindow
 */
 void Set2DWindow(int x, int y, int w, int h, float left, float right, float bottom, float top, float n, float f) {
 	R_IssuePendingRenderCommands();
-	qglViewport(x, y, w, h);
-	qglScissor(x, y, w, h);
-	qglMatrixMode(GL_PROJECTION);
-	qglLoadIdentity();
-	qglOrtho(left, right, bottom, top, n, f);
-	qglMatrixMode(GL_MODELVIEW);
+	mbViewport(x, y, w, h);
+	mbScissor(x, y, w, h);
+	mbMatrixMode(MB_PROJECTION);
+	mbLoadIdentity();
+	mbOrtho(left, right, bottom, top, n, f);
+	mbMatrixMode(MB_MODELVIEW);
 
-	qglLoadIdentity();
+	mbLoadIdentity();
 	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
-	qglEnable(GL_BLEND);
-	qglDisable(GL_CULL_FACE);
-	qglDisable(GL_CLIP_PLANE0);
+	mbEnable(MB_BLEND);
+	mbDisable(MB_CULL_FACE);
+	mbDisable(MB_CLIP_PLANE0);
 	// Make sure to disable the fog to avoid messing up with the UI
-	qglDisable(GL_FOG);
-	qglFogf(GL_FOG_START, 0);
+	mbDisable(MB_FOG);
+	mbFogf(MB_FOG_START, 0);
 
 	if (r_reset_tc_array->integer) {
-		qglDisableClientState(GL_TEXTURE_COORD_ARRAY);
+		mbDisableClientState(MB_TEXTURE_COORD_ARRAY);
 	}
 
 	if (!backEnd.in2D)
@@ -471,8 +471,8 @@ RE_Scissor
 ================
 */
 void RE_Scissor(int x, int y, int width, int height) {
-	qglEnable(GL_SCISSOR_TEST);
-	qglScissor(x, y, width, height);
+	mbEnable(MB_SCISSOR_TEST);
+	mbScissor(x, y, width, height);
 }
 
 /*

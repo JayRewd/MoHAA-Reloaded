@@ -41,7 +41,7 @@ void GL_SetFogColor(const vec4_t fColor) {
 	glState.fFogColor[3] = fColor[3];
 
 	if (!(glState.glStateBits & GLS_FOG_COLOR)) {
-		qglFogfv(GL_FOG_COLOR, glState.fFogColor);
+		mbFogfv(MB_FOG_COLOR, glState.fFogColor);
 	}
 }
 
@@ -68,7 +68,7 @@ void GL_Bind( image_t *image ) {
 			image->frameUsed = tr.frameCount;
 		}
 		glState.currenttextures[glState.currenttmu] = texnum;
-		qglBindTexture (GL_TEXTURE_2D, texnum);
+		mbBindTexture (MB_TEXTURE_2D, texnum);
 	}
 }
 
@@ -84,16 +84,16 @@ void GL_SelectTexture( int unit )
 
 	if ( unit == 0 )
 	{
-		qglActiveTextureARB( GL_TEXTURE0_ARB );
+		mbActiveTextureARB( MB_TEXTURE0_ARB );
 		GLimp_LogComment( "glActiveTextureARB( GL_TEXTURE0_ARB )\n" );
-		qglClientActiveTextureARB( GL_TEXTURE0_ARB );
+		mbClientActiveTextureARB( MB_TEXTURE0_ARB );
 		GLimp_LogComment( "glClientActiveTextureARB( GL_TEXTURE0_ARB )\n" );
 	}
 	else if ( unit == 1 )
 	{
-		qglActiveTextureARB( GL_TEXTURE1_ARB );
+		mbActiveTextureARB( MB_TEXTURE1_ARB );
 		GLimp_LogComment( "glActiveTextureARB( GL_TEXTURE1_ARB )\n" );
-		qglClientActiveTextureARB( GL_TEXTURE1_ARB );
+		mbClientActiveTextureARB( MB_TEXTURE1_ARB );
 		GLimp_LogComment( "glClientActiveTextureARB( GL_TEXTURE1_ARB )\n" );
 	} else {
 		ri.Error( ERR_DROP, "GL_SelectTexture: unit = %i", unit );
@@ -106,7 +106,7 @@ void GL_SelectTexture( int unit )
 /*
 ** GL_BindMultitexture
 */
-void GL_BindMultitexture( image_t *image0, GLuint env0, image_t *image1, GLuint env1 ) {
+void GL_BindMultitexture( image_t *image0, unsigned int env0, image_t *image1, unsigned int env1 ) {
 	int		texnum0, texnum1;
 
 	texnum0 = image0->texnum;
@@ -120,13 +120,13 @@ void GL_BindMultitexture( image_t *image0, GLuint env0, image_t *image1, GLuint 
 		GL_SelectTexture( 1 );
 		image1->frameUsed = tr.frameCount;
 		glState.currenttextures[1] = texnum1;
-		qglBindTexture( GL_TEXTURE_2D, texnum1 );
+		mbBindTexture( MB_TEXTURE_2D, texnum1 );
 	}
 	if ( glState.currenttextures[0] != texnum0 ) {
 		GL_SelectTexture( 0 );
 		image0->frameUsed = tr.frameCount;
 		glState.currenttextures[0] = texnum0;
-		qglBindTexture( GL_TEXTURE_2D, texnum0 );
+		mbBindTexture( MB_TEXTURE_2D, texnum0 );
 	}
 }
 
@@ -143,32 +143,32 @@ void GL_Cull( int cullType ) {
 
 	if ( cullType == CT_TWO_SIDED ) 
 	{
-		qglDisable( GL_CULL_FACE );
+		mbDisable( MB_CULL_FACE );
 	} 
 	else 
 	{
-		qglEnable( GL_CULL_FACE );
+		mbEnable( MB_CULL_FACE );
 
 		if ( cullType == CT_BACK_SIDED )
 		{
 			if ( backEnd.viewParms.isMirror )
 			{
-				qglCullFace( GL_FRONT );
+				mbCullFace( MB_FRONT );
 			}
 			else
 			{
-				qglCullFace( GL_BACK );
+				mbCullFace( MB_BACK );
 			}
 		}
 		else
 		{
 			if ( backEnd.viewParms.isMirror )
 			{
-				qglCullFace( GL_BACK );
+				mbCullFace( MB_BACK );
 			}
 			else
 			{
-				qglCullFace( GL_FRONT );
+				mbCullFace( MB_FRONT );
 			}
 		}
 	}
@@ -189,21 +189,13 @@ void GL_TexEnv( int env )
 
 	switch ( env )
 	{
-	case GL_MODULATE:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
-		break;
-	case GL_REPLACE:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE );
-		break;
-	case GL_DECAL:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL );
-		break;
-	case GL_ADD:
-		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_ADD );
-		break;
-	case GL_COMBINE4_NV:
-	case GL_COMBINE:
-		qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, env);
+	case MB_MODULATE:
+	case MB_REPLACE:
+	case MB_DECAL:
+	case MB_ADD:
+	case MB_COMBINE4_NV:
+	case MB_COMBINE:
+		mbTexEnv( env );
 		break;
 	default:
 		ri.Error( ERR_DROP, "GL_TexEnv: invalid env '%d' passed\n", env );
@@ -233,11 +225,11 @@ void GL_State( unsigned long stateBits )
 	{
 		if ( stateBits & GLS_DEPTHFUNC_EQUAL )
 		{
-			qglDepthFunc( GL_EQUAL );
+			mbDepthFunc( MB_EQUAL );
 		}
 		else
 		{
-			qglDepthFunc( GL_LEQUAL );
+			mbDepthFunc( MB_LEQUAL );
 		}
 	}
 
@@ -246,41 +238,41 @@ void GL_State( unsigned long stateBits )
 	//
 	if ( diff & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) )
 	{
-		GLenum srcFactor, dstFactor;
+		int srcFactor, dstFactor;
 
 		if ( stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) )
 		{
 			switch ( stateBits & GLS_SRCBLEND_BITS )
 			{
 			case GLS_SRCBLEND_ZERO:
-				srcFactor = GL_ZERO;
+				srcFactor = MB_ZERO;
 				break;
 			case GLS_SRCBLEND_ONE:
-				srcFactor = GL_ONE;
+				srcFactor = MB_ONE;
 				break;
 			case GLS_SRCBLEND_DST_COLOR:
-				srcFactor = GL_DST_COLOR;
+				srcFactor = MB_DST_COLOR;
 				break;
 			case GLS_SRCBLEND_ONE_MINUS_DST_COLOR:
-				srcFactor = GL_ONE_MINUS_DST_COLOR;
+				srcFactor = MB_ONE_MINUS_DST_COLOR;
 				break;
 			case GLS_SRCBLEND_SRC_ALPHA:
-				srcFactor = GL_SRC_ALPHA;
+				srcFactor = MB_SRC_ALPHA;
 				break;
 			case GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA:
-				srcFactor = GL_ONE_MINUS_SRC_ALPHA;
+				srcFactor = MB_ONE_MINUS_SRC_ALPHA;
 				break;
 			case GLS_SRCBLEND_DST_ALPHA:
-				srcFactor = GL_DST_ALPHA;
+				srcFactor = MB_DST_ALPHA;
 				break;
 			case GLS_SRCBLEND_ONE_MINUS_DST_ALPHA:
-				srcFactor = GL_ONE_MINUS_DST_ALPHA;
+				srcFactor = MB_ONE_MINUS_DST_ALPHA;
 				break;
 			case GLS_SRCBLEND_ALPHA_SATURATE:
-				srcFactor = GL_SRC_ALPHA_SATURATE;
+				srcFactor = MB_SRC_ALPHA_SATURATE;
 				break;
 			default:
-				srcFactor = GL_ONE;		// to get warning to shut up
+				srcFactor = MB_ONE;		// to get warning to shut up
 				ri.Error( ERR_DROP, "GL_State: invalid src blend state bits\n" );
 				break;
 			}
@@ -288,41 +280,41 @@ void GL_State( unsigned long stateBits )
 			switch ( stateBits & GLS_DSTBLEND_BITS )
 			{
 			case GLS_DSTBLEND_ZERO:
-				dstFactor = GL_ZERO;
+				dstFactor = MB_ZERO;
 				break;
 			case GLS_DSTBLEND_ONE:
-				dstFactor = GL_ONE;
+				dstFactor = MB_ONE;
 				break;
 			case GLS_DSTBLEND_SRC_COLOR:
-				dstFactor = GL_SRC_COLOR;
+				dstFactor = MB_SRC_COLOR;
 				break;
 			case GLS_DSTBLEND_ONE_MINUS_SRC_COLOR:
-				dstFactor = GL_ONE_MINUS_SRC_COLOR;
+				dstFactor = MB_ONE_MINUS_SRC_COLOR;
 				break;
 			case GLS_DSTBLEND_SRC_ALPHA:
-				dstFactor = GL_SRC_ALPHA;
+				dstFactor = MB_SRC_ALPHA;
 				break;
 			case GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA:
-				dstFactor = GL_ONE_MINUS_SRC_ALPHA;
+				dstFactor = MB_ONE_MINUS_SRC_ALPHA;
 				break;
 			case GLS_DSTBLEND_DST_ALPHA:
-				dstFactor = GL_DST_ALPHA;
+				dstFactor = MB_DST_ALPHA;
 				break;
 			case GLS_DSTBLEND_ONE_MINUS_DST_ALPHA:
-				dstFactor = GL_ONE_MINUS_DST_ALPHA;
+				dstFactor = MB_ONE_MINUS_DST_ALPHA;
 				break;
 			default:
-				dstFactor = GL_ONE;		// to get warning to shut up
+				dstFactor = MB_ONE;		// to get warning to shut up
 				ri.Error( ERR_DROP, "GL_State: invalid dst blend state bits\n" );
 				break;
 			}
 
-			qglEnable( GL_BLEND );
-			qglBlendFunc( srcFactor, dstFactor );
+			mbEnable( MB_BLEND );
+			mbBlendFunc( srcFactor, dstFactor );
 		}
 		else
 		{
-			qglDisable( GL_BLEND );
+			mbDisable( MB_BLEND );
 		}
 	}
 
@@ -333,11 +325,11 @@ void GL_State( unsigned long stateBits )
 	{
 		if ( stateBits & GLS_DEPTHMASK_TRUE )
 		{
-			qglDepthMask( GL_TRUE );
+			mbDepthMask( MB_TRUE );
 		}
 		else
 		{
-			qglDepthMask( GL_FALSE );
+			mbDepthMask( MB_FALSE );
 		}
 	}
 
@@ -348,11 +340,11 @@ void GL_State( unsigned long stateBits )
 	{
 		if ( stateBits & GLS_POLYMODE_LINE )
 		{
-			qglPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+			mbPolygonMode( MB_FRONT_AND_BACK, MB_LINE );
 		}
 		else
 		{
-			qglPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+			mbPolygonMode( MB_FRONT_AND_BACK, MB_FILL );
 		}
 	}
 
@@ -363,11 +355,11 @@ void GL_State( unsigned long stateBits )
 	{
 		if ( stateBits & GLS_DEPTHTEST_DISABLE )
 		{
-			qglDisable( GL_DEPTH_TEST );
+			mbDisable( MB_DEPTH_TEST );
 		}
 		else
 		{
-			qglEnable( GL_DEPTH_TEST );
+			mbEnable( MB_DEPTH_TEST );
 		}
 	}
 
@@ -375,28 +367,19 @@ void GL_State( unsigned long stateBits )
 	{
 		if (stateBits & GLS_MULTITEXTURE_ENV)
 		{
-			GL_TexEnv(GL_COMBINE4_NV);
+			GL_TexEnv(MB_COMBINE4_NV);
 		}
 		else if (stateBits & GLS_MULTITEXTURE)
 		{
-			if (glState.cntTexEnvExt != GLS_MULTITEXTURE)
-			{
-				qglTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_MODULATE);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_PRIMARY_COLOR);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_TEXTURE);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_PRIMARY_COLOR);
-				qglTexEnvf(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_ALPHA);
-				glState.cntTexEnvExt = GLS_MULTITEXTURE;
-			}
+			// MB_COMBINE is the GL_COMBINE setup GL1 made here: rgb = mix(texture, primary, primary alpha),
+			// alpha = texture * previous (see tr_mtl.h)
+			glState.cntTexEnvExt = GLS_MULTITEXTURE;
 
-			GL_TexEnv(GL_COMBINE);
+			GL_TexEnv(MB_COMBINE);
 		}
 		else
 		{
-			GL_TexEnv(GL_MODULATE);
+			GL_TexEnv(MB_MODULATE);
 		}
 	}
 
@@ -408,35 +391,35 @@ void GL_State( unsigned long stateBits )
 		switch (stateBits & GLS_ATEST_BITS)
 		{
 		case 0:
-			qglDisable(GL_ALPHA_TEST);
+			mbDisable(MB_ALPHA_TEST);
 			break;
 		case GLS_ATEST_GT_0:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_GREATER, 0.05f);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_GREATER, 0.05f);
 			break;
 		case GLS_ATEST_LT_80:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_LESS, 0.5f);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_LESS, 0.5f);
 			break;
 		case GLS_ATEST_GE_80:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_GEQUAL, 0.5f);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_GEQUAL, 0.5f);
 			break;
 		case GLS_ATEST_LT_FOLIAGE1:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_LESS, r_alpha_foliage1->value);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_LESS, r_alpha_foliage1->value);
 			break;
 		case GLS_ATEST_GE_FOLIAGE1:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_GEQUAL, r_alpha_foliage1->value);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_GEQUAL, r_alpha_foliage1->value);
 			break;
 		case GLS_ATEST_LT_FOLIAGE2:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_LESS, r_alpha_foliage2->value);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_LESS, r_alpha_foliage2->value);
 			break;
 		case GLS_ATEST_GE_FOLIAGE2:
-			qglEnable(GL_ALPHA_TEST);
-			qglAlphaFunc(GL_GEQUAL, r_alpha_foliage2->value);
+			mbEnable(MB_ALPHA_TEST);
+			mbAlphaFunc(MB_GEQUAL, r_alpha_foliage2->value);
 			break;
 		default:
 			assert(0);
@@ -451,41 +434,41 @@ void GL_State( unsigned long stateBits )
 		if (haveClampToEdge)
 		{
 			if (stateBits & GLS_CLAMP_EDGE) {
-				clampValue = GL_CLAMP_TO_EDGE;
+				clampValue = MB_CLAMP_TO_EDGE;
 			}
 			else {
-				clampValue = GL_REPEAT;
+				clampValue = MB_REPEAT;
 			}
 		}
 		else
 		{
 			if (stateBits & GLS_CLAMP_EDGE) {
-				clampValue = GL_CLAMP;
+				clampValue = MB_CLAMP;
 			}
 			else {
-				clampValue = GL_REPEAT;
+				clampValue = MB_REPEAT;
 			}
 		}
 
-		if (qglActiveTextureARB)
+		if (mbMultitexture)
 		{
 			int currenttmu = glState.currenttmu;
 
 			GL_SelectTexture(0);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, clampValue);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clampValue);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, clampValue);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, clampValue);
 
 			GL_SelectTexture(1);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, clampValue);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clampValue);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, clampValue);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, clampValue);
 
 			GL_SelectTexture(currenttmu);
 		}
 		else
 		{
 			GL_SelectTexture(0);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, clampValue);
-			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clampValue);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, clampValue);
+			mbTexParameterf(MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, clampValue);
 		}
 	}
 	
@@ -493,28 +476,28 @@ void GL_State( unsigned long stateBits )
 	{
 		if (glState.externalSetState & GLS_FOG)
 		{
-			qglEnable(GL_FOG);
+			mbEnable(MB_FOG);
 
 			if (stateBits & GLS_FOG_BLACK)
 			{
 				vec4_t fBlackFogColor = { 0, 0, 0, 1 };
-				qglFogfv(GL_FOG_COLOR, fBlackFogColor);
+				mbFogfv(MB_FOG_COLOR, fBlackFogColor);
 			}
 			else if (stateBits & GLS_FOG_WHITE)
 			{
 				vec4_t fWhiteFogColor = { 1, 1, 1, 1 };
-				qglFogfv(GL_FOG_COLOR, fWhiteFogColor);
+				mbFogfv(MB_FOG_COLOR, fWhiteFogColor);
 			}
 			else
 			{
 				//
 				// Use the global fog
-				qglFogfv(GL_FOG_COLOR, glState.fFogColor);
+				mbFogfv(MB_FOG_COLOR, glState.fFogColor);
 			}
 		}
 		else
 		{
-			qglDisable(GL_FOG);
+			mbDisable(MB_FOG);
 		}
 	}
 	else if (glState.externalSetState & GLS_FOG)
@@ -522,10 +505,10 @@ void GL_State( unsigned long stateBits )
 		if (diff & GLS_FOG_ENABLED)
 		{
 			if (stateBits & GLS_FOG_ENABLED) {
-				qglEnable(GL_FOG);
+				mbEnable(MB_FOG);
 			}
 			else {
-				qglDisable(GL_FOG);
+				mbDisable(MB_FOG);
 			}
 		}
 
@@ -534,18 +517,18 @@ void GL_State( unsigned long stateBits )
 			if (stateBits & GLS_FOG_BLACK)
 			{
 				vec4_t fBlackFogColor = { 0, 0, 0, 1 };
-				qglFogfv(GL_FOG_COLOR, fBlackFogColor);
+				mbFogfv(MB_FOG_COLOR, fBlackFogColor);
 			}
 			else if (stateBits & GLS_FOG_WHITE)
 			{
 				vec4_t fWhiteFogColor = { 1, 1, 1, 1 };
-				qglFogfv(GL_FOG_COLOR, fWhiteFogColor);
+				mbFogfv(MB_FOG_COLOR, fWhiteFogColor);
 			}
 			else
             {
                 //
                 // Use the global fog
-                qglFogfv(GL_FOG_COLOR, glState.fFogColor);
+                mbFogfv(MB_FOG_COLOR, glState.fFogColor);
             }
 		}
 	}
@@ -570,22 +553,22 @@ static void RB_Hyperspace( void ) {
 	}
 
 	c = ( backEnd.refdef.time & 255 ) / 255.0f;
-	qglClearColor( c, c, c, 1 );
-	qglClear( GL_COLOR_BUFFER_BIT );
+	mbClearColor( c, c, c, 1 );
+	mbClear( MB_COLOR_BUFFER_BIT );
 
 	backEnd.isHyperspace = qtrue;
 }
 
 
 static void SetViewportAndScissor( void ) {
-	qglMatrixMode(GL_PROJECTION);
-	qglLoadMatrixf( backEnd.viewParms.projectionMatrix );
-	qglMatrixMode(GL_MODELVIEW);
+	mbMatrixMode(MB_PROJECTION);
+	mbLoadMatrixf( backEnd.viewParms.projectionMatrix );
+	mbMatrixMode(MB_MODELVIEW);
 
 	// set the window clipping
-	qglViewport( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
+	mbViewport( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
-	qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
+	mbScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, 
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
 }
 
@@ -602,7 +585,7 @@ void RB_BeginDrawingView (void) {
 
 	// sync with gl if needed
 	if ( r_finish->integer == 1 && !glState.finishCalled ) {
-		qglFinish ();
+		mbFinish ();
 		glState.finishCalled = qtrue;
 	}
 	if ( r_finish->integer == 0 ) {
@@ -623,30 +606,30 @@ void RB_BeginDrawingView (void) {
 	// ensures that depth writes are enabled for the depth clear
 	GL_State( GLS_DEFAULT );
 	// clear relevant buffers
-	clearBits = GL_DEPTH_BUFFER_BIT;
+	clearBits = MB_DEPTH_BUFFER_BIT;
 
 	if ( r_measureOverdraw->integer || r_shadows->integer == 3 )
 	{
-		clearBits |= GL_STENCIL_BUFFER_BIT;
+		clearBits |= MB_STENCIL_BUFFER_BIT;
 	}
 
 	if (!( backEnd.refdef.rdflags & RDF_NOWORLDMODEL))
 	{
 		if ((backEnd.viewParms.farplane_distance && !tr.skyRendered && !tr.portalRendered) || tr.farclip)
 		{
-			clearBits |= GL_COLOR_BUFFER_BIT;
-			qglClearColor(glState.fFogColor[0], glState.fFogColor[1], glState.fFogColor[2], glState.fFogColor[3]);
+			clearBits |= MB_COLOR_BUFFER_BIT;
+			mbClearColor(glState.fFogColor[0], glState.fFogColor[1], glState.fFogColor[2], glState.fFogColor[3]);
 		}
 		else
 		{
 			if (r_fastsky->integer)
 			{
-				clearBits |= GL_COLOR_BUFFER_BIT;
-				qglClearColor(0.5, 0.5, 1.0, 1.0);
+				clearBits |= MB_COLOR_BUFFER_BIT;
+				mbClearColor(0.5, 0.5, 1.0, 1.0);
 			}
 		}
 	}
-	qglClear( clearBits );
+	mbClear( clearBits );
 
 	if ( ( backEnd.refdef.rdflags & RDF_HYPERSPACE ) )
 	{
@@ -678,11 +661,11 @@ void RB_BeginDrawingView (void) {
 		plane2[2] = DotProduct (backEnd.viewParms.ori.axis[2], plane);
 		plane2[3] = DotProduct (plane, backEnd.viewParms.ori.origin) - plane[3];
 
-		qglLoadMatrixf( s_flipMatrix );
-		qglClipPlane (GL_CLIP_PLANE0, plane2);
-		qglEnable (GL_CLIP_PLANE0);
+		mbLoadMatrixf( s_flipMatrix );
+		mbClipPlane (MB_CLIP_PLANE0, plane2);
+		mbEnable (MB_CLIP_PLANE0);
 	} else {
-		qglDisable (GL_CLIP_PLANE0);
+		mbDisable (MB_CLIP_PLANE0);
 	}
 }
 
@@ -793,16 +776,16 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				}
 			}
 
-			qglLoadMatrixf( backEnd.ori.modelMatrix );
+			mbLoadMatrixf( backEnd.ori.modelMatrix );
 
 			//
 			// change depthrange if needed
 			//
 			if ( oldDepthRange != depthRange ) {
 				if ( depthRange ) {
-					qglDepthRange (0, 0.3);
+					mbDepthRange (0, 0.3);
 				} else {
-					qglDepthRange (0, 1.0);
+					mbDepthRange (0, 1.0);
 				}
 				oldDepthRange = depthRange;
 			}
@@ -881,9 +864,9 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	}
 
 	// go back to the world modelview matrix
-	qglLoadMatrixf( backEnd.viewParms.world.modelMatrix );
+	mbLoadMatrixf( backEnd.viewParms.world.modelMatrix );
 	if ( depthRange ) {
-		qglDepthRange (0, 1.0);
+		mbDepthRange (0, 1.0);
 	}
 
 	RB_ShadowFinish();
@@ -945,14 +928,14 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
             oldShader = shader;
         }
 
-        qglLoadMatrixf(backEnd.ori.modelMatrix);
+        mbLoadMatrixf(backEnd.ori.modelMatrix);
 
         if (oldDepthRange != depthRange)
         {
 			if (depthRange) {
-				qglDepthRange(0.0, 0.3);
+				mbDepthRange(0.0, 0.3);
 			} else {
-                qglDepthRange(0.0, 1.0);
+                mbDepthRange(0.0, 1.0);
 			}
 
             oldDepthRange = depthRange;
@@ -969,10 +952,10 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
 	}
 
     // go back to the world modelview matrix
-    qglLoadMatrixf(backEnd.viewParms.world.modelMatrix);
+    mbLoadMatrixf(backEnd.viewParms.world.modelMatrix);
 	// go back to the previous depth range
 	if (depthRange) {
-		qglDepthRange(0.0, 1.0);
+		mbDepthRange(0.0, 1.0);
 	}
 }
 
@@ -1015,7 +998,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 	R_IssuePendingRenderCommands();
 
 	// we definately want to sync every frame for the cinematics
-	qglFinish();
+	mbFinish();
 
 	start = end = 0;
 	if ( r_speeds->integer ) {
@@ -1037,15 +1020,15 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 	if ( cols != tr.scratchImage->width || rows != tr.scratchImage->height ) {
 		tr.scratchImage->width = tr.scratchImage->uploadWidth = cols;
 		tr.scratchImage->height = tr.scratchImage->uploadHeight = rows;
-		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP );	
+		mbTexImage2D( MB_TEXTURE_2D, 0, MB_RGB8, cols, rows, 0, MB_RGBA, MB_UNSIGNED_BYTE, data );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, MB_LINEAR );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, MB_CLAMP );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, MB_CLAMP );	
 	} else {
 		// otherwise, just subimage upload it so that drivers can tell we are going to be changing
 		// it and don't try and do a texture compression
-		qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data);
+		mbTexSubImage2D(MB_TEXTURE_2D, 0, 0, 0, cols, rows, MB_RGBA, MB_UNSIGNED_BYTE, data);
 	}
 
 	if ( r_speeds->integer ) {
@@ -1055,18 +1038,18 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 
 	RB_SetGL2D();
 
-	qglColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
+	mbColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
 
-	qglBegin (GL_QUADS);
-	qglTexCoord2f ( 0.5f / cols,  0.5f / rows );
-	qglVertex2f (x, y);
-	qglTexCoord2f ( ( cols - 0.5f ) / cols ,  0.5f / rows );
-	qglVertex2f (x+w, y);
-	qglTexCoord2f ( ( cols - 0.5f ) / cols, ( rows - 0.5f ) / rows );
-	qglVertex2f (x+w, y+h);
-	qglTexCoord2f ( 0.5f / cols, ( rows - 0.5f ) / rows );
-	qglVertex2f (x, y+h);
-	qglEnd ();
+	mbBegin (MB_QUADS);
+	mbTexCoord2f ( 0.5f / cols,  0.5f / rows );
+	mbVertex2f (x, y);
+	mbTexCoord2f ( ( cols - 0.5f ) / cols ,  0.5f / rows );
+	mbVertex2f (x+w, y);
+	mbTexCoord2f ( ( cols - 0.5f ) / cols, ( rows - 0.5f ) / rows );
+	mbVertex2f (x+w, y+h);
+	mbTexCoord2f ( 0.5f / cols, ( rows - 0.5f ) / rows );
+	mbVertex2f (x, y+h);
+	mbEnd ();
 }
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
@@ -1077,16 +1060,16 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 	if ( cols != tr.scratchImage[client].width || rows != tr.scratchImage[client].height ) {
 		tr.scratchImage[client].width = tr.scratchImage[client].uploadWidth = cols;
 		tr.scratchImage[client].height = tr.scratchImage[client].uploadHeight = rows;
-		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, haveClampToEdge ? GL_CLAMP_TO_EDGE : GL_CLAMP );
-		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, haveClampToEdge ? GL_CLAMP_TO_EDGE : GL_CLAMP );
+		mbTexImage2D( MB_TEXTURE_2D, 0, MB_RGB8, cols, rows, 0, MB_RGBA, MB_UNSIGNED_BYTE, data );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_MIN_FILTER, MB_LINEAR );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_MAG_FILTER, MB_LINEAR );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_WRAP_S, haveClampToEdge ? MB_CLAMP_TO_EDGE : MB_CLAMP );
+		mbTexParameterf( MB_TEXTURE_2D, MB_TEXTURE_WRAP_T, haveClampToEdge ? MB_CLAMP_TO_EDGE : MB_CLAMP );
 	} else {
 		if (dirty) {
 			// otherwise, just subimage upload it so that drivers can tell we are going to be changing
 			// it and don't try and do a texture compression
-			qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data );
+			mbTexSubImage2D( MB_TEXTURE_2D, 0, 0, 0, cols, rows, MB_RGBA, MB_UNSIGNED_BYTE, data );
 		}
 	}
 }
@@ -1198,8 +1181,8 @@ void RB_SetupFog() {
 	} else {
 		vec4_t vFogColor;
 
-		qglFogf(GL_FOG_START, backEnd.viewParms.farplane_bias);
-		qglFogf(GL_FOG_END, backEnd.viewParms.farplane_distance);
+		mbFogf(MB_FOG_START, backEnd.viewParms.farplane_bias);
+		mbFogf(MB_FOG_END, backEnd.viewParms.farplane_distance);
 
         vFogColor[0] = backEnd.viewParms.farplane_color[0] * tr.identityLight;
         vFogColor[1] = backEnd.viewParms.farplane_color[1] * tr.identityLight;
@@ -1274,12 +1257,12 @@ const void	*RB_DrawBuffer( const void *data ) {
 
 	cmd = (const drawBufferCommand_t *)data;
 
-	qglDrawBuffer( cmd->buffer );
+	mbDrawBuffer( cmd->buffer );
 
 	// clear screen for debugging
 	if ( r_clear->integer ) {
-		qglClearColor( 1, 0, 0.5, 1 );
-		qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+		mbClearColor( 1, 0, 0.5, 1 );
+		mbClear( MB_COLOR_BUFFER_BIT | MB_DEPTH_BUFFER_BIT );
 	}
 
 	return (const void *)(cmd + 1);
@@ -1305,9 +1288,9 @@ void RB_ShowImages( qboolean quiet ) {
 		RB_SetGL2D();
 	}
 
-	qglClear( GL_COLOR_BUFFER_BIT );
+	mbClear( MB_COLOR_BUFFER_BIT );
 
-	qglFinish();
+	mbFinish();
 
 	start = ri.Milliseconds();
 
@@ -1326,19 +1309,19 @@ void RB_ShowImages( qboolean quiet ) {
 		}
 
 		GL_Bind( image );
-		qglBegin (GL_QUADS);
-		qglTexCoord2f( 0, 0 );
-		qglVertex2f( x, y );
-		qglTexCoord2f( 1, 0 );
-		qglVertex2f( x + w, y );
-		qglTexCoord2f( 1, 1 );
-		qglVertex2f( x + w, y + h );
-		qglTexCoord2f( 0, 1 );
-		qglVertex2f( x, y + h );
-		qglEnd();
+		mbBegin (MB_QUADS);
+		mbTexCoord2f( 0, 0 );
+		mbVertex2f( x, y );
+		mbTexCoord2f( 1, 0 );
+		mbVertex2f( x + w, y );
+		mbTexCoord2f( 1, 1 );
+		mbVertex2f( x + w, y + h );
+		mbTexCoord2f( 0, 1 );
+		mbVertex2f( x, y + h );
+		mbEnd();
 	}
 
-	qglFinish();
+	mbFinish();
 
 	end = ri.Milliseconds();
 
@@ -1357,7 +1340,7 @@ const void *RB_ColorMask(const void *data)
 {
 	const colorMaskCommand_t *cmd = data;
 	
-	qglColorMask(cmd->rgba[0], cmd->rgba[1], cmd->rgba[2], cmd->rgba[3]);
+	mbColorMask(cmd->rgba[0], cmd->rgba[1], cmd->rgba[2], cmd->rgba[3]);
 	
 	return (const void *)(cmd + 1);
 }
@@ -1379,7 +1362,7 @@ const void *RB_ClearDepth(const void *data)
 	if (r_showImages->integer)
 		RB_ShowImages(qtrue);
 
-	qglClear(GL_DEPTH_BUFFER_BIT);
+	mbClear(MB_DEPTH_BUFFER_BIT);
 	
 	return (const void *)(cmd + 1);
 }
@@ -1414,7 +1397,7 @@ const void	*RB_SwapBuffers( const void *data ) {
 		unsigned char *stencilReadback;
 
 		stencilReadback = ri.Hunk_AllocateTempMemory( glConfig.vidWidth * glConfig.vidHeight );
-		qglReadPixels( 0, 0, glConfig.vidWidth, glConfig.vidHeight, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, stencilReadback );
+		mbReadPixels( 0, 0, glConfig.vidWidth, glConfig.vidHeight, MB_STENCIL_INDEX, MB_UNSIGNED_BYTE, stencilReadback );
 
 		for ( i = 0; i < glConfig.vidWidth * glConfig.vidHeight; i++ ) {
 			sum += stencilReadback[i];
@@ -1426,7 +1409,7 @@ const void	*RB_SwapBuffers( const void *data ) {
 
 
 	if ( !glState.finishCalled ) {
-		qglFinish();
+		mbFinish();
 	}
 
 	GLimp_LogComment( "***************** RB_SwapBuffers *****************\n\n\n" );
