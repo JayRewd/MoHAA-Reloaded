@@ -53,6 +53,7 @@ set(RENDERER_METAL_SOURCES
 
 set(RENDERER_METAL_SHADERS
     ${RENDERER_METAL_DIR}/shaders/tr_mtl_final.metal
+    ${RENDERER_METAL_DIR}/shaders/tr_mtl_stage.metal
 )
 
 # Offline shader compilation with the Metal Toolchain (mounted read-only by port/env.sh's omm_mount_metal),

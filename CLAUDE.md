@@ -14,7 +14,7 @@ The full plan, findings, decisions, phase status and the hand-over note are in `
 
 - `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it.
 - `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
-- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, the trace/profile parsers and the reference benchmark demo (`port/bench/`).
+- `port/` holds this port's scripts: `env.sh`, `build.sh`, `run.sh`, `bench.sh`, `shot.sh` + `tgadiff.py` (renderer screenshot comparison, cfgs in `port/shots/`), the trace/profile parsers and the reference benchmark demo (`port/bench/`).
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, traces; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules
@@ -39,6 +39,8 @@ port/run.sh metal +set cl_renderer metal   # the Metal renderer (cl_renderer ope
 port/bench.sh run gl 3             # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs
 port/bench.sh run metal 3 +set cl_renderer metal   # the same on Metal (extra engine args after the run count)
 port/bench.sh trace gl             # one traced timedemo: GPU utilization and GPU ms per frame
+port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1), into build.noindex/shots
+port/shot.sh diff menu             # per-pixel difference GL1 vs Metal for every screenshot pair of that name
 ```
 
 New flavors (e.g. `metal`) are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.

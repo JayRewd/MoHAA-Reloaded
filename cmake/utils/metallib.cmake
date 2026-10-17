@@ -10,12 +10,15 @@ endif()
 
 file(MAKE_DIRECTORY ${WORK_DIR})
 
+# renderer_metal.cmake joins the list with '|' (a ';' would split the -D argument)
+string(REPLACE "|" ";" SOURCES "${SOURCES}")
+
 set(AIR_FILES)
 foreach(SRC IN LISTS SOURCES)
     get_filename_component(NAME ${SRC} NAME_WE)
     set(AIR ${WORK_DIR}/${NAME}.air)
     execute_process(
-        COMMAND ${METAL_BIN}/metal -std=metal4.0 -target air64-apple-macos26.0 -O3 -Wall -Werror
+        COMMAND ${METAL_BIN}/metal -std=metal4.0 -target air64-apple-macos26.0 -O3 -fpreserve-invariance -Wall -Werror
             -fmodules-cache-path=${WORK_DIR}/module-cache -c ${SRC} -o ${AIR}
         RESULT_VARIABLE RESULT)
     if(RESULT)

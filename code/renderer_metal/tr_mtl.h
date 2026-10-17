@@ -146,8 +146,8 @@ extern "C" {
 
 // texture environment modes (mbTexEnv). MB_COMBINE is the one GL_COMBINE setup GL1 uses
 // (GL_State, GLS_MULTITEXTURE): rgb = mix(texture, primary color, primary alpha), alpha = texture * previous.
-// MB_COMBINE4_NV is GLS_MULTITEXTURE_ENV; renderergl1 never sets up its combiner sources (that code is
-// commented out, "Removed in 2.0"), so GL1's result depends on the driver. Decide its look in Phase 2.
+// MB_COMBINE4_NV is GLS_MULTITEXTURE_ENV; Apple's GL has no GL_NV_texture_env_combine4, so GL1's glTexEnv
+// call fails there (GL_INVALID_ENUM) and the unit keeps its previous mode. mbTexEnv does the same.
 #define MB_ADD							0x0104
 #define MB_REPLACE						0x1E01
 #define MB_MODULATE						0x2100
@@ -199,7 +199,8 @@ extern "C" {
 // device, window and frame (called by sdl/sdl_mtlimp.m)
 //
 // The backend never waits for the GPU between input sampling and encoding: the frames-in-flight wait
-// happens in mbEndFrame, after the frame is committed, and the drawable is acquired only there.
+// happens in mbEndFrame, after the frame is committed, and the drawable is taken only there. Drawing and
+// clearing may happen at any point of a frame (the 2D exports draw outside the render-command queue).
 qboolean	mbInit( void *metalLayer );		// CAMetalLayer *; creates the device/queue once, binds the layer
 void		mbShutdown( void );					// waits for the GPU, releases the layer and per-window objects
 void		mbSetGamma( const unsigned char red[256], const unsigned char green[256], const unsigned char blue[256] );	// applied in the final pass
@@ -305,8 +306,8 @@ void	mbColor4ubv( const byte *v );
 //
 // synchronization and readback
 //
-void	mbFinish( void );						// waits for all submitted GPU work (never in the normal frame path)
-void	mbReadPixels( int x, int y, int width, int height, int format, int type, void *pixels );	// rows tightly packed, bottom row first
+void	mbFinish( void );						// doesn't wait (see tr_mtl.m): queueing is bounded by r_metalFramesInFlight
+void	mbReadPixels( int x, int y, int width, int height, int format, int type, void *pixels );	// rows tightly packed, bottom row first; waits for the GPU
 void	mbDrawPixels( int width, int height, int format, int type, const void *pixels );
 void	mbPixelZoom( float xfactor, float yfactor );
 
