@@ -108,7 +108,7 @@ void mbABCapture( int which ) { mb_abWant = which; }
 	if ( mb_skinDraw && mb_encSkin != mb_skinBuffer ) {"""),
     ("""	memcpy( indexDst, indices, (size_t)count * 4 );
 
-	MB_BindVertices();""", """	memcpy( indexDst, indices, (size_t)count * 4 );
+	MB_BindVertices( mb_ring );""", """	memcpy( indexDst, indices, (size_t)count * 4 );
 
 	mb_vsu.capture = 0;
 	if ( mb_abWant >= 0 ) {
@@ -122,7 +122,7 @@ void mbABCapture( int which ) { mb_abWant = which; }
 		mb_abWant = -1;
 	}
 
-	MB_BindVertices();"""),
+	MB_BindVertices( mb_ring );"""),
     ("""		MB_CommitUploads();
 		[mb_cmd commit];
 		if ( latency ) {
