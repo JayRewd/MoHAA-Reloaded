@@ -11,7 +11,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d (the user's look, online smoke test) waits until the user is back |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d in progress: the user's look at the fixed views done 2026-10-17 ("looks good"); still open: a few minutes of play in borderless fullscreen, the online smoke test |
 | 4 | Delete OpenGL entirely | **Done** (session 9, before 3d: the user was away). GL1 lives on only as the `gl` reference flavor (an export of c9dddadd) for screenshot and bench comparisons |
 | 5 | Performance and input latency | **In progress:** 5a (sessions 10–12, the user away: the renderer's own frame cost; session 11: GPU skinning, 0.29 → 0.23 ms work locked; session 12: GPU-resident world faces and static models, 0.24 ms unlocked) |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
@@ -619,7 +619,7 @@ Session 3 result (2a):
 - **2c:** the `cl_latencyStats` latency probe (§4b).
 - **Done when:** the bench demo plays fully on Metal; 5 fixed views match GL1 by eye and by screenshot diff; first Metal bench numbers are in §2's table (target work ≤ 0.45 ms/frame); first input→present latency numbers (windowed + fullscreen) recorded.
 
-### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 3b in session 7, 3c in session 8, 2026-10-17; next 3d).**
+### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 3b in session 7, 3c in session 8, 2026-10-17; 3d in progress: the user's look at the fixed views done 2026-10-17, play test and online smoke test open).**
 Session 8 result (3c):
 - **Readback without a GPU wait in the frame** (§3.2 "Added in session 8"):
   - `screenshot`, `screenshotJPEG`, resampled shots and levelshots are async: the fixed views give the same numbers as before (dm6 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437), and a screenshot right before `quit` is still written. `shot_readback.cfg` vs GL1: levelshot 169 pixels (max 25), the 320×240 resampled shot 734, the JPEG alike (the compass and the HSR edge ties differ).
@@ -857,7 +857,10 @@ Where things stand (end of session 12):
 - Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`. GPU skinning: `tr_model.cpp` ("GPU SKINNING"), `tr_shade.c` (vertex-lit iterator, `RB_EndSurface`), `tr_mtl.m` ("GPU SKINNING"), `tr_mtl_stage.metal` (`mb_skin_vs`). Static geometry: `tr_mtl.m` ("STATIC VERTEX DATA", `MB_DrawStaticElements`), `tr_bsp.c` (`R_UploadStaticFaces`), `tr_staticmodels.cpp` (`R_UploadStaticModels`), `tr_surface.c` (`RB_SurfaceFace`, `RB_StaticMaterialize`), `tr_model.cpp` (`RB_StaticMesh`), `tr_shade.c` (the three iterators, `RB_EndSurface`).
 
 What 3d needs (when the user is back; both steps need the user, so ask early):
-1. **The user's look.** Show the fixed views side by side (GL1 | Metal | diff): `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first (`port/build.sh gl` first if `build.noindex/gl-install` is missing). Ask the user to play a few minutes in borderless fullscreen and say whether anything looks or feels wrong. Metal is the only renderer now.
+1. **The user's look.**
+   - **Done 2026-10-17 for the fixed views:** the user looked at the GL1 | Metal | diff sheets and said "looks good" (relayed by the session that showed them). The sheets were dm6, dm6fx, m2l1, dm4, obj3, Spearhead and Breakthrough, in `build.noindex/s11/sheets/`, built with `port/tgamontage.py` from `build.noindex/shots` at 18:31; the dm6 shots came from session 12's regress run. dm5 wasn't shown (it was being re-shot).
+   - **Still open:** the user plays a few minutes in borderless fullscreen and says whether anything looks or feels wrong (asked of the user on 2026-10-17). Metal is the only renderer now.
+   - To show sheets again: `port/tgamontage.py` over `build.noindex/shots/<name>-view<k>-{opengl1,metal,diff}.tga`, or rerun the pairs first (`port/build.sh gl` first if `build.noindex/gl-install` is missing).
 2. **Online smoke test on a real server** (Phase 3 "done when"): connect, play a few minutes, no errors, no desync. Connecting to a server is outward-facing: ask the user which server (one of theirs, or a public one they pick) and get their OK before connecting. Check the console log for errors and the `r_metalPresentStats` line at quit.
 3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and push `metal` to origin (CLAUDE.md: the user said yes to pushing at the end of every phase).
 
