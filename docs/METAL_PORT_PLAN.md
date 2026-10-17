@@ -11,7 +11,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); next 3b (session 7) |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); next 3c (session 8) |
 | 4 | Delete OpenGL entirely | Not started |
 | 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
@@ -161,6 +161,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
   - **event → pump** is the OS-side wait plus SDL's pump: ~0–2 ms for 1000 Hz events at 250 fps. The oldest and newest event of a pump are almost always the same: macOS coalesces mouse moves into one event per pump.
   - Caveat: on the local server, `SV_Frame` (the 20 Hz game frame) runs between the input pump and the usercmd on about 1 frame in 12 at 250 fps. Online clients don't do that work, so it can only inflate pump → commit's p95/p99.
 - **Metal, Phase 3a** (session 6, 2026-10-17, screen unlocked). `port/bench.sh run gl 3` and `port/bench.sh run metal 3 +set cl_renderer metal`, same sitting: GL1 **0.928 / 0.937 / 0.917 ms** work, Metal **0.395 / 0.397 / 0.391 ms**. The bench runs in a window, so the display-mode changes don't touch it.
+- **Metal, Phase 3b** (session 7, 2026-10-17, screen unlocked, the user active on the machine). Same commands, same sitting: GL1 **1.086 / 0.983 / 0.959 ms** work, Metal **0.485 / 0.410 / 0.443 ms**. No renderer code changed since 3a; both are slower by about the same factor (load), so the ratio (~2.2×) is the comparable figure.
 - **Input → present latency per display mode** (session 6, 2026-10-17, after the direct-to-display fix, §3.2 "Added in session 6"). Same setup as session 5 (`port/latency.sh`, 20 s of synthetic mouse, 2 frames in flight, screen unlocked), all three modes in one sitting:
   - *window*: 1280×720, composited;
   - *fullscreen*: exclusive, `r_fullscreen 1`, 1920×1080;
@@ -304,6 +305,27 @@ Added in session 6 (Phase 3a, display modes):
   MOHAA's default `r_overBrightBits` is 0, so by default nothing is overbright in any mode. The "GAMMA:" line in the startup log always says 0 bits: `GfxInfo_f` runs before `R_SetColorMappings` (upstream order). `gfxinfo` shows the real value.
   - **Where the ramp goes:** GL1 loads it into the display's hardware table. Read back with `CGGetDisplayTransferByTable`, it holds gamma 1.5, plus the doubling in fullscreen. On this Mac it's back to identity within 0.05–0.45 s, most likely because of the user's display-tint daemon (`~/.local/bin/dusk tint`, left running), so here GL1 with overbright shows the half-bright scene. Metal applies the same table in its final pass: unaffected by other gamma tools, never touching the rest of the desktop, and working in a window too.
   - **Color space:** the `CAMetalLayer` is tagged sRGB (its default; SDL also tags its windows sRGB, measured in the test program), and the display pipeline converts to the display's profile (DELL G2524H) without leaving direct-to-display. GL1's surface lives in the same sRGB-tagged SDL window (not checked separately).
+
+Added in session 7 (Phase 3b, world features):
+- **The local map-load crash is a compiler bug, not game code.** Apple clang 21 (Xcode 27.1, clang-2100.3.34.2), at -O3 with ThinLTO: SimplifyCFG's `MergeCompatibleInvokes` merges two `invoke`s with different function types into one call. In `ScriptVM::executeSetter`, `Listener::ProcessScriptEvent` is inlined, and its variadic `EVENT_DPrintf("^~^~^ Failed execution …", classname)` and the `(this->*response)(&ev)` call both unwind to the `Event` destructor. They became one `blr` with the variadic convention: `&ev` went on the stack instead of into `x1`, and `SimpleEntity::SetOrigin` read a garbage `Event` (`data` NULL, `dataSize` ≠ 0). Proven:
+  - by disassembly of the shipped `game.dylib` (no `x1` set before the shared `blr`);
+  - by a 20-line standalone repro, `clang++ -O3 -S -emit-llvm`: one `invoke void %44(ptr, ptr)` with phis for the callee and both arguments;
+  - by a scratch build with `-mllvm -simplifycfg-merge-compatible-invokes=false` (compile) and `-Wl,-mllvm,…` (the ThinLTO link runs the pass again): `add x1, sp, #0x8; blr x8`, and mohdm1, mohdm4, obj_team3 and m2l1 load and quit cleanly.
+
+  The source is correct. Upstream's macOS builds use an older Xcode. Any C++ target (cgame, client, game, renderer) can hit the same merge silently; C has no invokes. *Fix: see the Phase 3 session 7 result.*
+- **`tele` keeps the player's velocity** (`Player::EventTeleport` only sets the origin). On maps where the player is still falling from the spawn point when `noclip` turns on, the first views drift, by an amount that varies run to run (mohdm4: two different camera positions in two Metal runs). The cfgs for the new maps wait 2 s in noclip before the first `tele`. dm6 and dm5 are left as they are: they were already deterministic.
+- **Firing, grenades and `cg_acidtrip` lights are not deterministic run to run, even on one renderer.** Two Metal runs of the same firing view differ in 44.8% of the pixels: muzzle-flash size, casings, ammo bar. `rand()` is process-global. Their views (`shot_dm6fx.cfg` views 4–7) are compared by eye; everything else in the cfgs is deterministic.
+- **Stencil shadows (`cg_shadows 2`) are a no-op on Metal, and GL1 dims the whole view: GL1's behavior isn't imitated.**
+  - MOHAA never calls `RB_ShadowTessEnd`, so no shadow volume is ever drawn. Only `RB_ShadowFinish` runs: it multiplies by 0.6 wherever stencil ≠ 0.
+  - MOHAA clears the stencil only for `r_shadows 3` (Q3: `== 2`), and nothing else writes it. So GL1's test reads whatever its default framebuffer's stencil holds, and on this Mac that's nonzero everywhere: the whole view goes to 60%.
+  - Metal starts every frame with depth/stencil cleared (§3.2 session 3), so `RB_ShadowFinish` changes nothing. That's what a driver that zero-initializes the stencil shows too.
+- **Retail content survey (main + mainta + maintt, read-only):**
+  - 0 flare surfaces in every BSP (1.79M planar + 69K patch surfaces, nothing else), and `RB_AddDlightFlares` is commented out, so **Q3 flares have no source** in retail data;
+  - **no BSP uses a portal/mirror surface** (the 4 shaders with `portal` exist but are unused), so mirrors and mirrored culling can't be seen in retail data;
+  - **no `.gst` ghost texture** exists;
+  - **swipes:** `models/fx/fx_grenade_explosion.tik` (the only tiki with a `trail`) is referenced by no tiki, script or map, and spawning it as an entity doesn't run its effects. So `re.SwipePoint` stays NULL, as in GL1 (§3.2 session 4); only a mod that spawns it could reach the unguarded cgame call (in both renderers);
+  - **sun flare:** every map with a sun and no `"sunflarename" "none"` gets the default `sun` flare (mohdm6, mohdm1, mohdm3, obj_team2, …).
+- **Depth and stencil readback are still stubs** (`mbReadPixels` returns zeros for `MB_DEPTH_COMPONENT`/`MB_STENCIL_INDEX`). Q3 flares (`r_flares 1` on a map with flare surfaces) would therefore always test as hidden on Metal, and `r_measureOverdraw` reads zeros. Unreachable with retail data. 3c does them, without a GPU wait in the frame (§4b): a visibility-result query per flare, read a frame late, instead of GL1's `glReadPixels` per flare (a full GPU sync each).
 
 ---
 
@@ -496,7 +518,7 @@ Session 4 result (2b):
 - **Exports:** `SwipePoint`/`DrawBackground` stay NULL like GL1 (§3.2).
 - **Bench, unlocked screen:** §2 "Metal, Phase 2b": Metal 0.39 ms vs GL1 0.88–0.96 ms work; `r_swapInterval 1` runs at 237–240 fps on both.
 - **HiDPI (4K@2×, `r_displayIndex 1`): pass for rendering:** drawable and screenshots 2560×1440, HUD scaled like at 720p (`port/shots/shot_hidpi.cfg`). Input on a 2× display (the HiDPI gotchas in §6) was not exercised: needs a person at the mouse.
-- **Found, not ours: most maps crash the game when loaded locally.** `devmap`/`map` of dm/mohdm1–4 and mohdm7, obj/obj_team1–3 and m2l1 (also in FFA with `sv_maxclients 8`, and from a cfg after the menu) crash in `SimpleEntity::SetOrigin` (NULL `this`, from a map script setter at `Level::ServerSpawned`), with both renderers and with the upstream GL build (`port/build.sh gl`). Only mohdm6 and mohdm5 load. So the views for portal sky (m2l1), objective maps and more terrain (`shot_dm4.cfg`, `shot_obj3.cfg`, `shot_m2l1.cfg`) are written but can't run yet. Game code: investigate separately; any fix needs the user's OK (hard rules).
+- **Found, not ours: most maps crash the game when loaded locally.** `devmap`/`map` of dm/mohdm1–4 and mohdm7, obj/obj_team1–3 and m2l1 (also in FFA with `sv_maxclients 8`, and from a cfg after the menu) crash in `SimpleEntity::SetOrigin` (NULL `this`, from a map script setter at `Level::ServerSpawned`), with both renderers and with the upstream GL build (`port/build.sh gl`). Only mohdm6 and mohdm5 load. So the views for portal sky (m2l1), objective maps and more terrain (`shot_dm4.cfg`, `shot_obj3.cfg`, `shot_m2l1.cfg`) are written but can't run yet. Game code: investigate separately; any fix needs the user's OK (hard rules). *Session 7: not game code but an Apple clang 21 codegen bug (§3.2 "Added in session 7").*
 - **Not covered by the views yet:** portal sky, mirrors, marks/decals (mohdm6 has no `.dcl`; bullet marks need shooting), swipes, sprites/flares, dlights, polygon-offset decals, mirrored cull. Phase 3's fixed view list takes them once maps load.
 
 Session 3 result (2a):
@@ -518,7 +540,32 @@ Session 3 result (2a):
 - **2c:** the `cl_latencyStats` latency probe (§4b).
 - **Done when:** the bench demo plays fully on Metal; 5 fixed views match GL1 by eye and by screenshot diff; first Metal bench numbers are in §2's table (target work ≤ 0.45 ms/frame); first input→present latency numbers (windowed + fullscreen) recorded.
 
-### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 2026-10-17; next 3b).**
+### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 3b in session 7, 2026-10-17; next 3c).**
+Session 7 result (3b, world features):
+- **The local map-load crash: found, a compiler bug** (§3.2 "Added in session 7"). Proposed fix: `-mllvm -simplifycfg-merge-compatible-invokes=false` for C++ plus `-Wl,-mllvm,-simplifycfg-merge-compatible-invokes=false` at link, for AppleClang, in the macOS cmake. It's a build flag only: game logic, the protocol and timing don't change. **Not applied yet:** asked in session 7, no answer by the session's end. Until it's in, the committed build still crashes on those maps.
+- **Fixed views** (pixels of 921600 differing; >8 levels in brackets). The views for the new maps were run on a scratch build with the flag (`OMM_FLAVOR=metalfix`, build.noindex/metalfix*); the renderer code is the same as the committed build.
+  - **`shot_dm6fx.cfg` (new, mohdm6):**
+    - sun lens flare, looking up at the sun / past the roofs: **0 / 4**;
+    - a soldier `script_model` with its blob shadow: **605 (18)**;
+    - `cg_shadows 2`: 97.6% of pixels, GL1 dims the whole view (explained in §3.2: no volumes exist, GL1's stencil is never cleared);
+    - firing the Thompson at a wall (muzzle-flash dlight, sparks, casings, bullet marks) and a frag grenade's explosion and smoke: alike by eye. Not comparable by pixels: not deterministic run to run.
+  - **`shot_m2l1.cfg` (portal sky, farplane fog 14500): 4260 (29) / 753 (4):** tree and terrain edges, plus the weapon bar's highlight.
+  - **`shot_dm4.cfg` (terrain, farplane fog 5500, the map's `.dcl` decals loaded): 843 (18) / 1694 (9) / 323 (6) / 521 (0).**
+  - **`shot_obj3.cfg` (Omaha: terrain, water, obstacles): 11389 (152) / 16 (0) / 14151 (340):** along terrain triangle edges, the depth ties of §3.2 session 4 (mohdm5's terrain shows the same).
+  - **dm6 and dm5: unchanged.** dm6: 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2441. dm5: 1732 / 1337 / 749 / 558.
+  - So covered and matching: sky box and cloud layers (dm6, dm4, obj3), portal sky (m2l1), farplane fog in four maps, with the black/white fog of blended stages inside it; sun flare, blob shadow, terrain, decals.
+  - Explained: stencil shadows; firing/grenade effects (by eye).
+  - No retail content exists for: Q3 flares, mirrors/portals, ghost textures, swipes (§3.2 survey).
+- **No Metal renderer bug found in 3b, so renderer_metal is unchanged.** Open from it: the depth/stencil readback stubs (Q3 flares, `r_measureOverdraw`) → 3c.
+- **Tools:**
+  - `port/shot.sh` takes `OMM_FLAVOR=<flavor>` to run another install;
+  - `port/shots/shot_dm6fx.cfg` is new;
+  - the dm4/obj3/m2l1 cfgs wait for the spawn fall to die out (§3.2).
+- **Bench** (screen unlocked, but the user was active: WindowServer 42%, Firefox GPU 27% CPU): GL1 **1.086 / 0.983 / 0.959 ms** work, Metal **0.485 / 0.410 / 0.443 ms**. Both are slower than session 6 by about the same factor with unchanged renderer code: noise from the load. GL1/Metal stays ~2.2×.
+- **Not done in 3b:**
+  - dlights compared pixel by pixel (no deterministic dlight source found: map lights are baked, and `models/items/camera.tik` only flashes when used);
+  - mirrors (no content).
+
 Session 6 result (3a, display modes):
 - **Direct to display in fullscreen: fixed.** The cause was the window shadow on SDL's exclusive-fullscreen window (§3.2 "Added in session 6"); `sdl_mtlimp.m` clears it. **Borderless fullscreen** is new: `r_fullscreen 1` + `r_noborder 1`, a native fullscreen Space at the desktop resolution. Both go direct on every frame (Instruments).
 - **`r_metalDrawables` 0 = automatic** (3 for vsync in fullscreen): direct-to-display vsync with 2 drawables ran at 125 fps.
@@ -594,28 +641,49 @@ Session 6 result (3a, display modes):
 
 ## 6. Next session
 
-**Session 7 = Phase 3, slice 3b (the world features with fixed views).** Start with CLAUDE.md, then Phase 3 (bullets and the session 6 result), §3.2 "Added in session 4" (the fixed-view harness, HSR ties, the swipe/`SwipePoint` question, the map-load crash) and "Added in session 6", and Phase 2's session 4 result (what the views cover so far).
+**Session 8 = Phase 3, slice 3c.** Start with CLAUDE.md, then Phase 3 (bullets, the session 7 and session 6 results), §3.2 "Added in session 7" (the compiler bug, the harness gotchas, the content survey, the readback stubs) and "Added in session 4" (the fixed-view harness, HSR ties).
 
-Where things stand (end of session 6):
-- **Phase 3a is done** (display modes): committed on `metal`, not pushed. Pushes happen at the end of a phase (CLAUDE.md), so 3a goes out with the rest of Phase 3.
-- **Fullscreen and borderless fullscreen go direct to display** (the window shadow was the cause). Borderless = `r_fullscreen 1` + `r_noborder 1`.
-- **Latency, 250 fps, vsync off:** pump → present **2.1 ms** in both fullscreen modes, against 2.4–13 ms in a window, depending on the compositor's mode that run. With vsync: 8.06 ms at 240 fps (3 drawables, automatic). Core Animation's present feedback is right when direct, so the probe's fullscreen numbers are real at every rate.
-- **Game Mode** turns on in both fullscreen modes.
-- **Gamma/overbright per mode match GL1.**
-- **Bench:** Metal 0.39–0.40 ms work vs GL1 0.92–0.94 ms. The fixed views are unchanged (dm6 and dm5).
+Where things stand (end of session 7):
+- **Phase 3b is done** (world features). Committed on `metal`, not pushed: pushes happen at the end of a phase (CLAUDE.md), so 3a and 3b go out with the rest of Phase 3.
+- **What 3b found:**
+  - every world feature retail data has matches GL1 or is explained: sky, portal sky, fog in four maps, sun flare, blob shadow, terrain, decals;
+  - stencil shadows are a no-op on Metal; GL1 dims the whole view from its never-cleared stencil;
+  - firing and grenades are alike by eye (the game's randomness differs run to run).
+- **No Metal renderer bug was found in 3b**; renderer_metal is unchanged since 3a.
+- **The local map-load crash is an Apple clang 21 bug** (`MergeCompatibleInvokes`), not game code. The fix is a build flag. **It waits for the user's OK** (asked in session 7). If they agreed and it isn't in yet, apply it first:
+  - in `cmake/platforms/macos.cmake`, AppleClang only: `add_compile_options` for C++ and `add_link_options` (ThinLTO), with a comment pointing at §3.2;
+  - rebuild both flavors;
+  - check that mohdm1–4/7, obj_team1–4 and m2l1 load, and that the views run without `OMM_FLAVOR=metalfix`.
+
+  If they said no, the views for those maps keep using a scratch build with the flag.
+- **Bench:** Metal 0.41–0.49 ms work vs GL1 0.96–1.09 ms this sitting (the user was active; session 6: 0.39–0.40 vs 0.92–0.94).
 - **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen. Borderless at the desktop resolution has the same latency as exclusive, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b).
 - Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
 Phase 3's remaining slices (adjust if something turns out bigger):
-- **3b (session 7): the world features with fixed views.**
-  - First the local map-load crash (`SimpleEntity::SetOrigin` with a NULL `this` from a map script setter at `Level::ServerSpawned`, both renderers and the upstream GL build; only mohdm5/6 load). It's game code: investigate, then propose any fix to the user before changing it (hard rules). Phase 3's fixed view list needs maps beyond mohdm5/6.
-  - Then sky box, portal sky (m2l1), all fog modes, mirrors/portals, Q3 flares + sun/lens flares, dlights, stencil and blob shadows, ghost textures, marks, and the swipe check (throw a grenade, §3.2 "Added in session 4"). Each gets fixed views in `port/shots/` and a `pair` diff against GL1.
-- **3c:**
-  - cinematics (`RE_StretchRaw`), screenshot variants and levelshots (async readback);
-  - `r_picmip`, `r_textureMode`/anisotropy, capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines);
-  - Spearhead/Breakthrough;
+- **3c (session 8):**
+  - **readback without a GPU wait in the frame:**
+    - screenshots (`screenshot`, `screenshotJPEG`) and levelshots, async;
+    - the depth/stencil stubs in `mbReadPixels` (§3.2 session 7): Q3 flares via a visibility-result query per flare read a frame late, and `r_measureOverdraw`'s stencil read;
+    - check the flare path with `r_flares 1` on a map with flare surfaces: retail has none, so make a tiny test map or skip with a note;
+  - cinematics (`RE_StretchRaw`);
+  - `r_picmip`, `r_textureMode`/anisotropy, the capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines);
+  - Spearhead/Breakthrough (`com_target_game 1/2`; mainta/maintt are in the game folder);
   - the `MTLBinaryArchive` pipeline cache.
+
+  Keep `pair dm6`, `dm5`, `dm6fx`, `m2l1`, `dm4` and `obj3` passing, plus the bench.
 - **3d:** the user's look at the result, and an online smoke test on a real server. The session report should then also recommend fullscreen/borderless to the user (see above). Push at the end of Phase 3.
+
+Gotchas found in session 7:
+- **Fixed views only compare deterministic things:**
+  - `tele` keeps velocity: let a spawn fall die out in noclip first (`wait 2000`);
+  - spawned actors walk off, so use `spawn script_model model <tiki>`. `spawn` places the entity 40 units ahead and 40 up: spawn from 40 below the floor to stand it on the floor;
+  - firing, grenades and `cg_acidtrip` differ run to run. Check a new view with two runs of one renderer (`port/shot.sh fixed metal <name>B …`) before reading a GL1 difference as a renderer one.
+- **mohdm6's "spawned soldier" view (dm6 view 7) mostly shows a close wall:** the soldier is barely in it. `shot_dm6fx.cfg` view 2 is the real model view.
+- **`port/shot.sh` runs the `metal` install;** `OMM_FLAVOR=<flavor>` runs another one (e.g. a scratch build in build.noindex/).
+- **`lldb --batch` stops at a crash without running the following `-o` commands:** use `-k "bt 40"` (`--source-on-crash`).
+- **Grenade timing:** a frag grenade thrown from a cfg (`useweaponclass grenade`, `+attack`, `wait 500`, `-attack`) explodes ~4.5 s after the release.
+- **No PIL here:** `port/tgamontage.py out.tga <columns> <downscale> a.tga b.tga …` tiles screenshots to look at them side by side; `sips -s format png` converts TGA → PNG.
 
 Gotchas found in session 6:
 - **In zsh, `log` is a builtin:** use `/usr/bin/log show …` for the unified log (gamepolicyd: `--predicate 'process == "gamepolicyd"'`, look for "gaming session" and "Game mode status").
@@ -643,7 +711,7 @@ Gotchas found in session 5:
   - `r_drawworld 0` does nothing;
   - cheats need `+set thereisnomonkey 1`;
   - the weapon bar highlight runs on a real-time clock;
-  - most maps crash when loaded locally.
+  - most maps crash when loaded locally (session 7: the clang bug, §3.2).
 - Sessions 1–3's gotchas still apply:
   - check `CGSSessionScreenIsLocked` before measuring;
   - never pace frames on completed handlers;
@@ -658,9 +726,10 @@ Gotchas found in session 5:
   - HiDPI input on 2× displays is untested (§6 of session 4: `SDL_WINDOWEVENT_RESIZED` compares points with pixels, relative mouse deltas are in points, `SDL_WarpMouseInWindow` expects points).
 
 Open bugs:
-- **In the renderer:** none known.
+- **In the renderer:** the depth/stencil readback stubs (`mbReadPixels`). With them, Q3 flares always test as hidden with `r_flares 1`, and `r_measureOverdraw` reads zeros. Unreachable with retail data → 3c.
 - **Display path:** GL1's fullscreen still isn't direct (same window shadow; left alone, GL1 goes away in Phase 4). The window's latency depends on the compositor's mode (§2).
-- **Outside it:** the local map-load crash (game code, upstream).
+- **Outside it:** the local map-load crash = the Apple clang 21 `MergeCompatibleInvokes` bug (§3.2 session 7). The fix (a build flag) is proposed and waits for the user's OK.
 - **Untested:**
-  - HiDPI input, DDS/BC uploads, cinematics, swipes at run time;
+  - HiDPI input, DDS/BC uploads, cinematics;
+  - swipes and mirrors (no retail content reaches them, §3.2 session 7);
   - exclusive fullscreen at a non-native resolution (a display mode change), and fullscreen on the 4K@2× display.
