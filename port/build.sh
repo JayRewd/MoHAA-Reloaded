@@ -1,6 +1,7 @@
 #!/bin/bash
 # Configure, build and install one flavor of OpenMoHAA into build.noindex/<flavor>-install.
 #   port/build.sh metal     the game with the Metal renderer (mounts the Metal Toolchain for the offline shader compile)
+#   port/build.sh metalref  the Metal game at the last commit (METAL_REF=<ref> for another), for before/after benches
 #   port/build.sh gl        the GL1 reference: upstream's GL1 renderer as it was in the last commit that had it
 #                           (GL1_REF below), built from a `git archive` export in build.noindex/gl-src. OpenGL is gone
 #                           from the tree (Phase 4); the fixed views (port/shot.sh pair) and the bench (port/bench.sh
@@ -33,6 +34,19 @@ case "$FLAVOR" in
 		export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
 		FLAVOR_ARGS=() ;;
 	metal) omm_mount_metal; FLAVOR_ARGS=() ;;
+	metalref)
+		# The Metal game at a commit (METAL_REF, default HEAD: the last commit without the work tree's changes),
+		# from a `git archive` export like gl, for before/after benchmarks in one sitting (bench.sh run metalref).
+		REF="$(git -C "$OMM_ROOT" rev-parse "${METAL_REF:-HEAD}")"
+		SRC_DIR="$OMM_BUILD/metalref-src"
+		if [ "$(cat "$SRC_DIR/.metal-ref" 2>/dev/null)" != "$REF" ]; then
+			rm -rf "$SRC_DIR"
+			mkdir -p "$SRC_DIR"
+			git -C "$OMM_ROOT" archive "$REF" | tar -x -C "$SRC_DIR"
+			echo "$REF" > "$SRC_DIR/.metal-ref"
+		fi
+		export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
+		omm_mount_metal; FLAVOR_ARGS=() ;;
 	*) echo "build.sh: unknown flavor '$FLAVOR'" >&2; exit 1 ;;
 esac
 
