@@ -161,7 +161,7 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
   - **event → pump** is the OS-side wait plus SDL's pump: ~0–2 ms for 1000 Hz events at 250 fps. The oldest and newest event of a pump are almost always the same: macOS coalesces mouse moves into one event per pump.
   - Caveat: on the local server, `SV_Frame` (the 20 Hz game frame) runs between the input pump and the usercmd on about 1 frame in 12 at 250 fps. Online clients don't do that work, so it can only inflate pump → commit's p95/p99.
 - **Metal, Phase 3a** (session 6, 2026-10-17, screen unlocked). `port/bench.sh run gl 3` and `port/bench.sh run metal 3 +set cl_renderer metal`, same sitting: GL1 **0.928 / 0.937 / 0.917 ms** work, Metal **0.395 / 0.397 / 0.391 ms**. The bench runs in a window, so the display-mode changes don't touch it.
-- **Metal, Phase 3b** (session 7, 2026-10-17, screen unlocked, the user active on the machine). Same commands, same sitting: GL1 **1.086 / 0.983 / 0.959 ms** work, Metal **0.485 / 0.410 / 0.443 ms**. No renderer code changed since 3a; both are slower by about the same factor (load), so the ratio (~2.2×) is the comparable figure.
+- **Metal, Phase 3b** (session 7, 2026-10-17, screen unlocked, the user active on the machine). Same commands, same sitting, with the compiler-bug flag (§3.2 session 7): GL1 **0.931 / 0.958 / 1.048 ms** work, Metal **0.409 / 0.443 / 0.408 ms**. Before the flag, in an earlier sitting: GL1 1.086 / 0.983 / 0.959, Metal 0.485 / 0.410 / 0.443. No renderer code changed since 3a. Both renderers vary together with the load, so the ratio (~2.2×) is the comparable figure.
 - **Input → present latency per display mode** (session 6, 2026-10-17, after the direct-to-display fix, §3.2 "Added in session 6"). Same setup as session 5 (`port/latency.sh`, 20 s of synthetic mouse, 2 frames in flight, screen unlocked), all three modes in one sitting:
   - *window*: 1280×720, composited;
   - *fullscreen*: exclusive, `r_fullscreen 1`, 1920×1080;
@@ -312,7 +312,34 @@ Added in session 7 (Phase 3b, world features):
   - by a 20-line standalone repro, `clang++ -O3 -S -emit-llvm`: one `invoke void %44(ptr, ptr)` with phis for the callee and both arguments;
   - by a scratch build with `-mllvm -simplifycfg-merge-compatible-invokes=false` (compile) and `-Wl,-mllvm,…` (the ThinLTO link runs the pass again): `add x1, sp, #0x8; blr x8`, and mohdm1, mohdm4, obj_team3 and m2l1 load and quit cleanly.
 
-  The source is correct. Upstream's macOS builds use an older Xcode. Any C++ target (cgame, client, game, renderer) can hit the same merge silently; C has no invokes. *Fix: see the Phase 3 session 7 result.*
+  The source is correct. Upstream's macOS builds use an older Xcode. Any C++ target (cgame, client, game, renderer) can hit the same merge silently; C has no invokes.
+- **Decision (the user, 2026-10-17, asked in session 7): fix it with a build flag, no game code change.**
+  - `cmake/compilers/appleclang.cmake` appends `-mllvm -simplifycfg-merge-compatible-invokes=false` to `CMAKE_CXX_FLAGS` and adds `-Wl,-mllvm,-simplifycfg-merge-compatible-invokes=false` as a link option (ThinLTO). Both are AppleClang only, and every C++ target gets them.
+  - The comment next to them names the compiler: Apple clang 21.0.0, clang-2100.3.34.2, Xcode 27.1.
+  - **Re-check with every new Xcode** using the repro below, and drop the flag once the merged call keeps both function types.
+  - Result: every map that crashed now loads and quits cleanly: mohdm1–4 and mohdm7, obj_team1–4 and m2l1 on Metal, and obj_team3 on the upstream GL build. GL1 runs mohdm4, obj_team3 and m2l1 in the fixed views.
+
+  The standalone repro: with the bug, `clang++ -O3 -std=gnu++17 -arch arm64 -mmacosx-version-min=26.0 -S -emit-llvm -o - t.cpp` shows one `invoke void %N(ptr …, ptr …)` fed by phis for the callee and both arguments; without it (`-mllvm -simplifycfg-merge-compatible-invokes=false`), two invokes, one of them `void (ptr, ...)`.
+  ```cpp
+  struct Event;
+  struct ClassDef;
+  struct Class { virtual ~Class(); virtual ClassDef *classinfo() const; };
+  typedef void (Class::*Response)(Event *);
+  struct ResponseDef { int ev; Response response; };
+  struct ClassDef { const char *classname; void *pad[5]; ResponseDef **responseLookup; };
+  struct Event { unsigned short eventnum; void *data; Event(unsigned n); ~Event(); };
+  extern void (*DPrintf)(const char *fmt, ...);
+  static inline void process(Class *self, Event &ev)
+  {
+      ClassDef *c = self->classinfo();
+      if (!ev.eventnum) { DPrintf("failed for class '%s'\n", c->classname); return; }
+      ResponseDef *r = c->responseLookup[ev.eventnum];
+      if (!r) return;
+      Response resp = r->response;
+      if (resp) (self->*resp)(&ev);
+  }
+  bool setter(Class *self, unsigned n) { Event ev(n); process(self, ev); return true; }
+  ```
 - **`tele` keeps the player's velocity** (`Player::EventTeleport` only sets the origin). On maps where the player is still falling from the spawn point when `noclip` turns on, the first views drift, by an amount that varies run to run (mohdm4: two different camera positions in two Metal runs). The cfgs for the new maps wait 2 s in noclip before the first `tele`. dm6 and dm5 are left as they are: they were already deterministic.
 - **Firing, grenades and `cg_acidtrip` lights are not deterministic run to run, even on one renderer.** Two Metal runs of the same firing view differ in 44.8% of the pixels: muzzle-flash size, casings, ammo bar. `rand()` is process-global. Their views (`shot_dm6fx.cfg` views 4–7) are compared by eye; everything else in the cfgs is deterministic.
 - **Stencil shadows (`cg_shadows 2`) are a no-op on Metal, and GL1 dims the whole view: GL1's behavior isn't imitated.**
@@ -542,17 +569,18 @@ Session 3 result (2a):
 
 ### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 3b in session 7, 2026-10-17; next 3c).**
 Session 7 result (3b, world features):
-- **The local map-load crash: found, a compiler bug** (§3.2 "Added in session 7"). Proposed fix: `-mllvm -simplifycfg-merge-compatible-invokes=false` for C++ plus `-Wl,-mllvm,-simplifycfg-merge-compatible-invokes=false` at link, for AppleClang, in the macOS cmake. It's a build flag only: game logic, the protocol and timing don't change. **Not applied yet:** asked in session 7, no answer by the session's end. Until it's in, the committed build still crashes on those maps.
-- **Fixed views** (pixels of 921600 differing; >8 levels in brackets). The views for the new maps were run on a scratch build with the flag (`OMM_FLAVOR=metalfix`, build.noindex/metalfix*); the renderer code is the same as the committed build.
+- **The local map-load crash: found, a compiler bug** (§3.2 "Added in session 7"). Proposed fix: `-mllvm -simplifycfg-merge-compatible-invokes=false` for C++ plus `-Wl,-mllvm,-simplifycfg-merge-compatible-invokes=false` at link, for AppleClang, in the macOS cmake. It's a build flag only: game logic, the protocol and timing don't change. **The user agreed (2026-10-17), and it's applied** (§3.2 decision): every map that crashed now loads.
+- **Fixed views** (pixels of 921600 differing; >8 levels in brackets). These are the numbers of the final build, with the flag; a scratch build with the flag gave the same before it went in.
   - **`shot_dm6fx.cfg` (new, mohdm6):**
     - sun lens flare, looking up at the sun / past the roofs: **0 / 4**;
     - a soldier `script_model` with its blob shadow: **605 (18)**;
     - `cg_shadows 2`: 97.6% of pixels, GL1 dims the whole view (explained in §3.2: no volumes exist, GL1's stencil is never cleared);
     - firing the Thompson at a wall (muzzle-flash dlight, sparks, casings, bullet marks) and a frag grenade's explosion and smoke: alike by eye. Not comparable by pixels: not deterministic run to run.
-  - **`shot_m2l1.cfg` (portal sky, farplane fog 14500): 4260 (29) / 753 (4):** tree and terrain edges, plus the weapon bar's highlight.
+  - **`shot_m2l1.cfg` (portal sky, farplane fog 14500): 4253 (22) / 753 (4):** tree and terrain edges, plus the weapon bar's highlight.
   - **`shot_dm4.cfg` (terrain, farplane fog 5500, the map's `.dcl` decals loaded): 843 (18) / 1694 (9) / 323 (6) / 521 (0).**
   - **`shot_obj3.cfg` (Omaha: terrain, water, obstacles): 11389 (152) / 16 (0) / 14151 (340):** along terrain triangle edges, the depth ties of §3.2 session 4 (mohdm5's terrain shows the same).
-  - **dm6 and dm5: unchanged.** dm6: 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2441. dm5: 1732 / 1337 / 749 / 558.
+  - **dm6: unchanged:** 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2423.
+  - **dm5: 1763 (35) / 1363 (72) / 778 (35) / 588 (33)**, against 1732 (9) / 1337 (49) / 749 (8) / 558 (3) before the flag. The extra pixels are single snowflakes: with the flag, dm5's snow differs run to run in each renderer (24–73 pixels between two runs of one renderer). The build without the flag (the previous commit, exported into a scratch tree) gave bit-identical snow in two GL1 runs, so the miscompile touched something on that path too. `CG_Rain` draws from the process-global `rand()`, so what changed is what else draws from it, or when. The logs are identical; not traced further. dm5's >8 counts now include ~30 snowflake pixels of run-to-run noise.
   - So covered and matching: sky box and cloud layers (dm6, dm4, obj3), portal sky (m2l1), farplane fog in four maps, with the black/white fog of blended stages inside it; sun flare, blob shadow, terrain, decals.
   - Explained: stencil shadows; firing/grenade effects (by eye).
   - No retail content exists for: Q3 flares, mirrors/portals, ghost textures, swipes (§3.2 survey).
@@ -561,7 +589,11 @@ Session 7 result (3b, world features):
   - `port/shot.sh` takes `OMM_FLAVOR=<flavor>` to run another install;
   - `port/shots/shot_dm6fx.cfg` is new;
   - the dm4/obj3/m2l1 cfgs wait for the spawn fall to die out (§3.2).
-- **Bench** (screen unlocked, but the user was active: WindowServer 42%, Firefox GPU 27% CPU): GL1 **1.086 / 0.983 / 0.959 ms** work, Metal **0.485 / 0.410 / 0.443 ms**. Both are slower than session 6 by about the same factor with unchanged renderer code: noise from the load. GL1/Metal stays ~2.2×.
+- **Bench** (screen unlocked, the user active on the machine):
+  - with the flag (final build): GL1 **0.931 / 0.958 / 1.048 ms** work, Metal **0.409 / 0.443 / 0.408 ms**;
+  - before the flag, an earlier sitting: GL1 1.086 / 0.983 / 0.959, Metal 0.485 / 0.410 / 0.443.
+
+  Both sittings are noisier than session 6 (0.39–0.40 vs 0.92–0.94), with the user's apps busy; GL1/Metal stays ~2.2×. The flag costs nothing measurable.
 - **Not done in 3b:**
   - dlights compared pixel by pixel (no deterministic dlight source found: map lights are baked, and `models/items/camera.tik` only flashes when used);
   - mirrors (no content).
@@ -650,13 +682,8 @@ Where things stand (end of session 7):
   - stencil shadows are a no-op on Metal; GL1 dims the whole view from its never-cleared stencil;
   - firing and grenades are alike by eye (the game's randomness differs run to run).
 - **No Metal renderer bug was found in 3b**; renderer_metal is unchanged since 3a.
-- **The local map-load crash is an Apple clang 21 bug** (`MergeCompatibleInvokes`), not game code. The fix is a build flag. **It waits for the user's OK** (asked in session 7). If they agreed and it isn't in yet, apply it first:
-  - in `cmake/platforms/macos.cmake`, AppleClang only: `add_compile_options` for C++ and `add_link_options` (ThinLTO), with a comment pointing at §3.2;
-  - rebuild both flavors;
-  - check that mohdm1–4/7, obj_team1–4 and m2l1 load, and that the views run without `OMM_FLAVOR=metalfix`.
-
-  If they said no, the views for those maps keep using a scratch build with the flag.
-- **Bench:** Metal 0.41–0.49 ms work vs GL1 0.96–1.09 ms this sitting (the user was active; session 6: 0.39–0.40 vs 0.92–0.94).
+- **The local map-load crash is an Apple clang 21 bug** (`MergeCompatibleInvokes`), not game code. The fix is a build flag in `cmake/compilers/appleclang.cmake`. The user agreed (2026-10-17), and it's in: all maps load, and the views of mohdm4, obj_team3 and m2l1 run on the normal build. Re-check the bug with each new Xcode (§3.2 has the repro).
+- **Bench** (final build): Metal 0.41–0.44 ms work vs GL1 0.93–1.05 ms. The user was active; session 6 had 0.39–0.40 vs 0.92–0.94.
 - **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen. Borderless at the desktop resolution has the same latency as exclusive, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b).
 - Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
@@ -678,7 +705,7 @@ Gotchas found in session 7:
 - **Fixed views only compare deterministic things:**
   - `tele` keeps velocity: let a spawn fall die out in noclip first (`wait 2000`);
   - spawned actors walk off, so use `spawn script_model model <tiki>`. `spawn` places the entity 40 units ahead and 40 up: spawn from 40 below the floor to stand it on the floor;
-  - firing, grenades and `cg_acidtrip` differ run to run. Check a new view with two runs of one renderer (`port/shot.sh fixed metal <name>B …`) before reading a GL1 difference as a renderer one.
+  - firing, grenades, `cg_acidtrip` and (since the compiler flag) dm5's snow differ run to run. Check a new view with two runs of one renderer (`port/shot.sh fixed metal <name>B …`) before reading a GL1 difference as a renderer one.
 - **mohdm6's "spawned soldier" view (dm6 view 7) mostly shows a close wall:** the soldier is barely in it. `shot_dm6fx.cfg` view 2 is the real model view.
 - **`port/shot.sh` runs the `metal` install;** `OMM_FLAVOR=<flavor>` runs another one (e.g. a scratch build in build.noindex/).
 - **`lldb --batch` stops at a crash without running the following `-o` commands:** use `-k "bt 40"` (`--source-on-crash`).
@@ -728,7 +755,7 @@ Gotchas found in session 5:
 Open bugs:
 - **In the renderer:** the depth/stencil readback stubs (`mbReadPixels`). With them, Q3 flares always test as hidden with `r_flares 1`, and `r_measureOverdraw` reads zeros. Unreachable with retail data → 3c.
 - **Display path:** GL1's fullscreen still isn't direct (same window shadow; left alone, GL1 goes away in Phase 4). The window's latency depends on the compositor's mode (§2).
-- **Outside it:** the local map-load crash = the Apple clang 21 `MergeCompatibleInvokes` bug (§3.2 session 7). The fix (a build flag) is proposed and waits for the user's OK.
+- **Outside it:** none known. The local map-load crash was the Apple clang 21 `MergeCompatibleInvokes` bug; the build flag fixes it (§3.2 session 7). Drop the flag once Xcode fixes the bug.
 - **Untested:**
   - HiDPI input, DDS/BC uploads, cinematics;
   - swipes and mirrors (no retail content reaches them, §3.2 session 7);
