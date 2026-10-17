@@ -28,6 +28,8 @@
 	<string>@MACOS_APP_DEPLOYMENT_TARGET@</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
+	<key>GCSupportsGameMode</key>
+	<true/>
 
 	@MACOS_APP_PLIST_URL_TYPES@
 </dict>

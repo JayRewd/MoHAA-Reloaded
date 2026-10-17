@@ -23,9 +23,15 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // sdl_mtlimp.m -- the Metal renderer's window: an SDL window with a CAMetalLayer (SDL_Metal_CreateView).
 // Mode selection and fullscreen handling follow sdl_glimp.c; there is no GL context.
 //
-// Low latency (docs/METAL_PORT_PLAN.md 4b): the layer is opaque, has 2 drawables, presents immediately when
-// r_swapInterval is 0 (displaySyncEnabled NO) and never with a Core Animation transaction. The backend
-// acquires the drawable at the end of the frame and waits for frame slots only after committing.
+// Low latency (docs/METAL_PORT_PLAN.md 4b): the layer is opaque, has 2 drawables (3 for vsync in fullscreen),
+// presents immediately when r_swapInterval is 0 (displaySyncEnabled NO) and never with a Core Animation
+// transaction. The backend acquires the drawable at the end of the frame and waits for frame slots only after
+// committing.
+//
+// Fullscreen goes direct to display (the compositor is bypassed): r_fullscreen 1 is SDL's exclusive fullscreen
+// (a borderless window above everything, at the mode's size), r_fullscreen 1 + r_noborder 1 is borderless
+// fullscreen (a native macOS fullscreen Space at the desktop resolution, no display mode change). Fullscreen
+// windows have no shadow: a window shadow needs an offscreen pass over the layer, so the layer can't go direct.
 
 #ifdef USE_INTERNAL_SDL_HEADERS
 #	include "SDL.h"
@@ -33,6 +39,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #	include <SDL.h>
 #endif
 
+#import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <math.h>
@@ -59,7 +66,7 @@ cvar_t *r_allowResize; // make window resizable
 cvar_t *r_centerWindow;
 cvar_t *r_sdlDriver;
 cvar_t *r_displayIndex; // display to open the window on (0 = main)
-cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3)
+cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen, else 2)
 
 /*
 ===============
@@ -316,7 +323,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	ri.Printf (PRINT_ALL, "...setting mode %d:", mode );
 
 	// the mode is the window size in points; the drawable (glConfig) gets the pixel size below
-	if (mode == -2)
+	if (mode == -2 || ( fullscreen && noborder ))
 	{
 		// use desktop video resolution
 		if( desktopMode.h > 0 )
@@ -357,7 +364,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 
 	if( fullscreen )
 	{
-		flags |= SDL_WINDOW_FULLSCREEN;
+		flags |= noborder ? SDL_WINDOW_FULLSCREEN_DESKTOP : SDL_WINDOW_FULLSCREEN;
 		glConfig.isFullscreen = qtrue;
 	}
 	else
@@ -378,7 +385,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		return RSERR_INVALID_MODE;
 	}
 
-	if( fullscreen )
+	if( fullscreen && !noborder )
 	{
 		SDL_DisplayMode desiredMode;
 
@@ -414,7 +421,13 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	glConfig.vidHeight = drawableHeight;
 
 	layer.opaque = YES;
-	layer.maximumDrawableCount = r_metalDrawables->integer == 3 ? 3 : 2;
+	// Fullscreen goes direct to display, and there vsync with 2 drawables ran the game at half the refresh rate
+	// (125 fps at 240 Hz: every frame waited ~7 ms for a drawable). 3 keep the full rate at the same latency.
+	// Without vsync 2 are better: with 3, more presented frames are never shown and latency goes up.
+	if( r_metalDrawables->integer == 2 || r_metalDrawables->integer == 3 )
+		layer.maximumDrawableCount = r_metalDrawables->integer;
+	else
+		layer.maximumDrawableCount = fullscreen && r_swapInterval->integer ? 3 : 2;
 	layer.displaySyncEnabled = r_swapInterval->integer ? YES : NO;
 	layer.presentsWithTransaction = NO;
 	layer.drawableSize = CGSizeMake( drawableWidth, drawableHeight );
@@ -434,6 +447,12 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 			glConfig.colorBits, glConfig.depthBits, glConfig.stencilBits, glConfig.vidWidth, glConfig.vidHeight );
 
 	SDL_ShowWindow( SDL_window );
+
+	// after showing: that is when SDL makes the window fullscreen (and sets its style)
+	if( fullscreen )
+	{
+		( (__bridge NSView *)SDL_metalView ).window.hasShadow = NO;
+	}
 
 	GLimp_DetectAvailableModes();
 
@@ -547,7 +566,7 @@ void GLimp_Init( qboolean fixedFunction )
 	r_allowResize = ri.Cvar_Get( "r_allowResize", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_centerWindow = ri.Cvar_Get( "r_centerWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_displayIndex = ri.Cvar_Get( "r_displayIndex", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "2", CVAR_ARCHIVE | CVAR_LATCH );
+	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
 
 	if( ri.Cvar_VariableIntegerValue( "com_abnormalExit" ) )
 	{

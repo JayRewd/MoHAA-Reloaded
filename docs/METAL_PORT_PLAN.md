@@ -11,7 +11,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 0 | Survey, baseline, plan, decisions | **Done** (session 1) |
 | 1 | Build plumbing + Metal window layer + `renderer_metal` skeleton | **Done** (session 2; the 4K@2× HiDPI check done in session 4) |
 | 2 | Core draw path (textures, pipelines, 2D/UI, world, entities) | **Done** (2a session 3, 2b session 4, 2c session 5: the latency probe) |
-| 3 | Full feature parity + screenshot-compare harness + online smoke test | Not started; next (session 6: slice 3a) |
+| 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); next 3b (session 7) |
 | 4 | Delete OpenGL entirely | Not started |
 | 5 | Performance and input latency | Not started |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started |
@@ -160,6 +160,52 @@ Machine: Mac mini M4 (4P+6E, 10-core GPU, 16 GB), macOS 26.6.2, Xcode 27.1. Disp
   - **Commit → GPU done takes 0.35–0.45 ms** for ~0.12 ms of GPU work: the GPU starts ~0.3 ms after the commit (session 3 measured the same). So Metal's GPU done (0.75 ms p50 in a window) lands where GL1's EndFrame returns (0.68 ms, after its glFinish), although Metal commits at 0.31 ms. The submission gap is a Phase 5 target.
   - **event → pump** is the OS-side wait plus SDL's pump: ~0–2 ms for 1000 Hz events at 250 fps. The oldest and newest event of a pump are almost always the same: macOS coalesces mouse moves into one event per pump.
   - Caveat: on the local server, `SV_Frame` (the 20 Hz game frame) runs between the input pump and the usercmd on about 1 frame in 12 at 250 fps. Online clients don't do that work, so it can only inflate pump → commit's p95/p99.
+- **Metal, Phase 3a** (session 6, 2026-10-17, screen unlocked). `port/bench.sh run gl 3` and `port/bench.sh run metal 3 +set cl_renderer metal`, same sitting: GL1 **0.928 / 0.937 / 0.917 ms** work, Metal **0.395 / 0.397 / 0.391 ms**. The bench runs in a window, so the display-mode changes don't touch it.
+- **Input → present latency per display mode** (session 6, 2026-10-17, after the direct-to-display fix, §3.2 "Added in session 6"). Same setup as session 5 (`port/latency.sh`, 20 s of synthetic mouse, 2 frames in flight, screen unlocked), all three modes in one sitting:
+  - *window*: 1280×720, composited;
+  - *fullscreen*: exclusive, `r_fullscreen 1`, 1920×1080;
+  - *borderless*: `r_fullscreen 1` + `r_noborder 1`, a native fullscreen Space at the desktop's 1920×1080.
+
+  Drawables: 2, except fullscreen/borderless with vsync, where the new automatic choice uses 3. Values in ms, p50 / p95 / p99.
+
+  | Mode | Frames with input | pump → commit | pump → GPU done | **pump → present** | **event → present** |
+  |---|---|---|---|---|---|
+  | window, 250 fps | 4950 (98% own) | 0.31 / 0.44 / 0.56 | 0.89 / 1.30 / 1.45 | **2.86 / 11.77 / 12.27** (traced run: 2.38 / 9.85 / 11.85) | 3.94 / 12.85 / 13.34 |
+  | window, ~1000 fps | 16359 (20% own) | 0.26 / 0.35 / 0.43 | 0.58 / 0.75 / 0.85 | **12.91 / 14.78 / 15.10** (traced run: 4.91 / 8.36 / 10.06) | 13.64 / 15.34 / 15.48 |
+  | window, 250 fps, vsync | 4793 (100%) | 0.34 / 0.52 / 0.75 | 1.02 / 1.29 / 1.37 | **11.86 / 11.89 / 11.90** | 12.77 / 13.41 / 13.90 |
+  | window, ~1000 fps, vsync | 4793 (100%) | 0.34 / 0.47 / 0.56 | 1.18 / 1.38 / 1.46 | **11.86 / 11.89 / 11.90** | 12.78 / 13.34 / 13.84 |
+  | fullscreen, 250 fps | 4990 (100%) | 0.22 / 0.28 / 0.32 | 0.96 / 1.05 / 1.10 | **2.07 / 2.26 / 2.41** | 3.31 / 3.52 / 3.68 |
+  | fullscreen, ~1000 fps | 19809 (49% own) | 0.28 / 0.38 / 0.41 | 0.74 / 0.87 / 0.93 | **2.35 / 3.10 / 3.87** (traced run: 2.68 / 3.77 / 5.01) | 3.44 / 4.18 / 4.95 |
+  | fullscreen, 250 fps, vsync, 3 drawables | 4787 (100%) | 0.25 / 0.35 / 0.41 | 1.37 / 1.50 / 1.57 | **8.06 / 8.10 / 8.11** | 9.02 / 9.38 / 9.89 |
+  | fullscreen, ~1000 fps, vsync, 3 drawables | 4791 (100%) | 0.26 / 0.35 / 0.43 | 1.38 / 1.50 / 1.57 | **8.06 / 8.09 / 8.10** | 8.98 / 9.49 / 9.99 |
+  | borderless, 250 fps | 4936 (100%) | 0.22 / 0.26 / 0.31 | 0.95 / 1.04 / 1.12 | **2.06 / 2.27 / 2.36** | 2.96 / 3.24 / 3.99 |
+  | borderless, ~1000 fps | 16971 (51% own) | 0.29 / 0.38 / 0.44 | 0.75 / 0.88 / 0.94 | **2.20 / 3.15 / 3.86** | 3.19 / 4.24 / 5.03 |
+  | borderless, 250 fps, vsync, 3 drawables | 4745 (100%) | 0.28 / 0.37 / 0.44 | 1.38 / 1.51 / 1.60 | **8.06 / 8.09 / 8.10** | 9.05 / 9.38 / 9.88 |
+  | borderless, ~1000 fps, vsync, 3 drawables | 4792 (100%) | 0.25 / 0.32 / 0.40 | 1.36 / 1.48 / 1.54 | **8.06 / 8.09 / 8.10** | 8.98 / 9.36 / 9.85 |
+
+  - **Both fullscreen modes go direct to display, on every frame** (Instruments: "direct to display: Yes" for every swap with a game frame). With vsync off the display flips as soon as a frame arrives (tearing): 250 flips/s at 250 fps, ~480/s at ~1000 fps. **pump → present is 2.1 ms at 250 fps** (p99 2.4), against 10.0 ms in session 5's window, and fullscreen couldn't be measured at all before. Exclusive and borderless are the same.
+  - **Core Animation's present feedback is right once the layer is direct.** Every presented handler reports a time (status 2), and the probe's present times land exactly on the display's swaps:
+    - fullscreen 250 fps: 1661 of 1667 within 2 µs, 1657 showing that very frame;
+    - borderless 250 fps: 1632 of 1635;
+    - fullscreen ~1000 fps: 3082 of 3087;
+    - fullscreen with vsync: 829 of 831.
+
+    Session 5's "never shown" reports came from the composited fullscreen. The probe's fullscreen numbers are now real, at every rate.
+  - **Where the 2.1 ms goes (250 fps, vsync off):** commit at 0.22 ms; the GPU done 0.74 ms later, for ~0.12 ms of GPU work (session 5's submission gap); the flip ~1.1 ms after that. Both gaps are Phase 5 targets.
+  - **~1000 fps, vsync off:** only ~half the frames find a free drawable (the drawable that was flipped away comes back ~2 ms later). A frame without one skips its present, and its input waits for the next presented frame: p50 2.2–2.35 ms.
+    - **3 drawables don't help:** more frames are presented (24348 vs 19520 in 41 s), but 26% of them are never shown, and latency goes up (3.42 / 5.74 / 6.95).
+    - At 250 fps, 3 drawables also cost a little: 2.41 / 2.81 / 4.66.
+
+    So 2 stay the default without vsync.
+  - **Vsync direct to display needed a third drawable.** With 2, fullscreen and borderless ran at **125 fps** instead of 240:
+    - every frame waited 7.25 ms for a drawable;
+    - Instruments: 125 flips/s;
+    - pump → present was already 8.05 ms.
+
+    That would also have halved the command rate (§4b rule 7). With 3 drawables they run at 240 fps with the same 8.06 ms, constant; `r_metalDrawables` now defaults to 0 = automatic (§3.2 "Added in session 6"). This is two refreshes minus the frame's own work: the vsync queue is the Phase 5 low-latency-vsync target (part 4). Session 5's composited fullscreen with vsync took 11.9 ms.
+  - **The window is never direct** ("display rejected"), and today's compositor behaved differently from session 5's: it swapped the display at the game's present rate (249 swaps/s at 250 fps, 436/s at ~1000 fps) instead of 240 Hz. So the window's numbers swing between runs: at 250 fps p50 2.86 and 2.38 ms (p95 ~10–12); at ~1000 fps 12.91 and 4.91 ms. Session 5 measured 10.0 and 5.1. With vsync the window holds 11.86 ms (session 5: 7.7). **Fullscreen is the low-latency mode:** stable ~2 ms vs anything from 2.4 to 13 ms windowed.
+  - **event → pump depends on each run's phase** between the synthetic 1000 Hz events and the 4 ms frame (p50 0.44–1.28 ms, sometimes with p50 ≈ p95), not on the display mode. Compare modes on pump → present.
+  - **Game Mode turns on in both fullscreen modes** (gamepolicyd log), not in the window. It wasn't measured on vs off (Phase 5).
 - **What this means for Metal:** with frames in flight (no per-frame wait), one render pass per frame where possible, and no driver state validation, the frame cost should approach max(CPU, GPU) instead of their sum. **Phase 2 target: work ≤ 0.45 ms/frame (≥2× GL1 `r_primitives 2`) on this bench. Phase 5 stretch: ≤ 0.25 ms.** Beyond ~1000 fps the visible fps stays capped by the engine's 1 ms frame floor (see Phase 5).
 
 ---
@@ -187,7 +233,7 @@ Added in session 2 (Phase 1):
 - **Backend API shape (`renderer_metal/tr_mtl.h`):** the GL1 fixed-function state model with GL-free names: every `qglFoo` call became `mbFoo` (same arguments), every `GL_FOO` constant `MB_FOO`, and GL types plain C types (a perl pass outside string literals, then hand fixes). `MB_*` values equal the GL enums, so shader/texture data, decompiled literals and printouts stay identical; they are just numbers. Front-end diffs against renderergl1 stay mechanical (upstream fixes port by reversing the rename). The texenv combiner setups collapsed into modes: `mbTexEnv(MB_MODULATE | MB_REPLACE | MB_DECAL | MB_ADD | MB_COMBINE | MB_COMBINE4_NV)`. GL1's function-pointer checks became `mbMultitexture` (from `r_ext_multitexture`); compiled vertex arrays always exist (`mbLockArraysEXT` = one vertex copy for all stages), so `r_primitives 0` means indexed triangles. GL queries became `glConfig` fields filled by the window layer. `mbGetError` always returns `MB_NO_ERROR`. `glCallList` (display lists, unused) is gone.
 - **The pristine copy is its own commit** (`5d6b2dd6`): `git diff 5d6b2dd6 -- code/renderer_metal` shows exactly what the Metal port changed.
 - **Drawable acquisition (low latency without throttling the game loop).** Measured: acquiring the drawable inside the frame blocked 1.3 ms per frame in a 1280×720 window (the WindowServer holds drawables until its next 240 Hz composite), and acquiring it at the end of the previous frame blocked 1.9 ms (2 drawables) / 1.25 ms (3). A blocking present caps the engine loop below `com_maxfps` (350–680 fps instead of GL1's ~1000), which changes usercmd timing. So with `r_swapInterval 0` a helper thread (`QOS_CLASS_USER_INTERACTIVE`) waits in `nextDrawable` and keeps one drawable ready. The frame takes it without waiting, or skips its present when none is ready: the compositor couldn't have shown that frame, and GL1's non-blocking swap drops it too. With `r_swapInterval 1` the next drawable is acquired at the end of the frame, after commit, and blocks like GL1's swap. Either way nothing waits between input sampling and present. To revisit with the Phase 2c latency probe.
-- **Defaults: 2 drawables, 2 frames in flight** (`r_metalDrawables` 2/3, `r_metalFramesInFlight` 1–3, both LATCH). With 3 drawables more frames get presented (8600 vs 6069 in the bench run) but 1700 of them are never shown; with 2, 6067 of 6069 presented frames were shown.
+- **Defaults: 2 drawables, 2 frames in flight** (`r_metalDrawables` 2/3, `r_metalFramesInFlight` 1–3, both LATCH). With 3 drawables more frames get presented (8600 vs 6069 in the bench run) but 1700 of them are never shown; with 2, 6067 of 6069 presented frames were shown. *Session 6: `r_metalDrawables` defaults to 0 = automatic, 3 for vsync in fullscreen (direct to display), see "Added in session 6".*
 - **Window size and HiDPI:** `r_mode`/`r_customwidth` give the window size in points; `glConfig.vidWidth/vidHeight` = the drawable in pixels (`SDL_WINDOW_ALLOW_HIGHDPI` + `SDL_Metal_GetDrawableSize`). Identical on the 1080p main display. New `r_displayIndex` picks the display the window opens on.
 - **Fullscreen toggle = `vid_restart`.** `r_fullscreen` is LATCH, so Alt+Enter only stores the new value and GL1's in-place toggle in `GLimp_EndFrame` never fires (`->integer` doesn't change before a restart). The Metal window layer issues `vid_restart` when the latched value differs from the current mode.
 - **Gamma:** `glConfig.deviceSupportsGamma = !r_ignorehwgamma`; `GLimp_SetGamma` hands the same 256-entry table GL1 loads into the display's hardware ramp to the backend, which applies it in the final pass (also in a window, and without touching the rest of the desktop). Overbright parity per mode is still Phase 3.
@@ -236,6 +282,29 @@ Added in session 5 (Phase 2c, the latency probe):
   - `cl_latencyStatsFrames` (1000) sets how often it prints;
   - `cl_latencyStats 2` also logs every frame's raw times, which `port/display_trace.py` checks against the display.
 
+Added in session 6 (Phase 3a, display modes):
+- **Why fullscreen wasn't direct to display: the window shadow.** SDL's exclusive fullscreen is a borderless window at the shielding level that keeps `hasShadow = YES`. A shadow needs an offscreen pass over the window's layers, and Instruments' detachment columns say so: "layer requires a potential offscreen render", suggestion "edit the layer tree to prevent the extra rendering passes over the candidate detached". Found with a standalone SDL2 + `CAMetalLayer` test program (SDL's exact window, presenting clears) under Metal System Trace, one property at a time:
+  - exclusive fullscreen as SDL makes it: not direct;
+  - the `CAMetalLayer` as the content view's own layer instead of SDL's subview: not direct;
+  - no black background on SDL's content view: not direct;
+  - normal window level instead of shielding: not direct;
+  - **`hasShadow = NO`: direct on every frame;**
+  - SDL's desktop fullscreen (a native macOS fullscreen Space): direct on every frame, with or without the shadow;
+  - a borderless desktop-size window at the normal level, no shadow: "display rejected" (the menu bar sits on top).
+
+  The layer tree itself (SDL's content view with its black background, the Metal view as a subview, the zero-size `SDLTranslatorResponder` layer above it) was never the problem. `sdl_mtlimp.m` now clears `hasShadow` on fullscreen windows after `SDL_ShowWindow` (that is when SDL makes the window fullscreen and sets its style). GL1's fullscreen isn't direct for the same reason; GL1 is left alone (it goes away in Phase 4).
+- **Borderless fullscreen = `r_fullscreen 1` + `r_noborder 1`:** `SDL_WINDOW_FULLSCREEN_DESKTOP`, a native macOS fullscreen Space at the desktop resolution (`r_mode` ignored, no display mode change). It's the only borderless mode that can go direct on macOS: a borderless window at the normal level always sits under the menu bar. Alt+Enter (which toggles `r_fullscreen`) keeps `r_noborder`, so it switches between borderless fullscreen and a borderless window. `r_fullscreen 1` alone stays SDL's exclusive fullscreen at `r_mode`'s size. `glConfig.isFullscreen` is set in both, so the client ignores resize events and the front end allows overbright in both, as in GL1's fullscreen.
+- **Game Mode:** the Info.plist already had `LSApplicationCategoryType public.app-category.games` (upstream); `GCSupportsGameMode` is added (`cmake/Info.plist.in`). gamepolicyd logs show Game Mode turning on for both fullscreen modes ("Found game … labelReason=appStoreCategory", "Full screen gaming session is now active", "Game mode status is now on") and pausing when the game leaves fullscreen. The category alone triggers it, so session 5's fullscreen runs most likely had Game Mode on too.
+- **Exclusive fullscreen at the desktop's own mode still reconfigures the display when it exits** (one `kCGSDisplayWillReconfigure` at exit in gamepolicyd's log, none at entry): SDL restores the desktop mode. Harmless here; borderless fullscreen doesn't do it.
+- **Drawables: `r_metalDrawables` 0 (new default) = automatic: 3 for vsync in fullscreen or borderless, 2 otherwise;** 2 or 3 force a count. Direct to display with vsync and 2 drawables, the game ran at 125 fps on the 240 Hz display (each frame waited ~7 ms in `nextDrawable`), which would also halve the command rate. 3 keep 240 fps at the same latency. Without vsync, 3 make things worse (more presented frames never shown, higher latency), and a vsync'd window already runs at 240 with 2. Numbers in §2 "per display mode".
+- **Gamma and overbright per mode match GL1.** Both renderers run the same `R_SetColorMappings`, and `glConfig.deviceSupportsGamma` is true in both (GL1: SDL's gamma call succeeds on macOS 26; Metal: `!r_ignorehwgamma`). Checked with `+set r_gamma 1.5 +set r_overBrightBits 1 +gfxinfo`:
+  - GL1: 1 overbright bit in fullscreen, 0 in a window;
+  - Metal: 1 in fullscreen, 1 in borderless, 0 in a window.
+
+  MOHAA's default `r_overBrightBits` is 0, so by default nothing is overbright in any mode. The "GAMMA:" line in the startup log always says 0 bits: `GfxInfo_f` runs before `R_SetColorMappings` (upstream order). `gfxinfo` shows the real value.
+  - **Where the ramp goes:** GL1 loads it into the display's hardware table. Read back with `CGGetDisplayTransferByTable`, it holds gamma 1.5, plus the doubling in fullscreen. On this Mac it's back to identity within 0.05–0.45 s, most likely because of the user's display-tint daemon (`~/.local/bin/dusk tint`, left running), so here GL1 with overbright shows the half-bright scene. Metal applies the same table in its final pass: unaffected by other gamma tools, never touching the rest of the desktop, and working in a window too.
+  - **Color space:** the `CAMetalLayer` is tagged sRGB (its default; SDL also tags its windows sRGB, measured in the test program), and the display pipeline converts to the display's profile (DELL G2524H) without leaving direct-to-display. GL1's surface lives in the same sRGB-tagged SDL window (not checked separately).
+
 ---
 
 ## 4. Architecture of renderer_metal
@@ -253,7 +322,7 @@ client (cl_main, cgame, uilib)  --refexport_t/refimport_t (unchanged ABI)-->  re
 
 **Window layer (`sdl/sdl_mtlimp.m`, compiled into the renderer like sdl_glimp.c):**
 - Same mode/fullscreen logic as `sdl_glimp.c` (`r_mode`, `r_customwidth/height`, `r_fullscreen`, `r_noborder`, desktop mode `-2`, live fullscreen toggle, resize → `vid_restart`). Calls `ri.IN_Init(window)`.
-- `CAMetalLayer`: `BGRA8Unorm` (not sRGB: Q3 math is gamma-space), `framebufferOnly YES`, opaque, `maximumDrawableCount 2` (`r_metalDrawables`), `displaySyncEnabled = r_swapInterval`, `presentsWithTransaction NO`, `drawableSize` = window pixels.
+- `CAMetalLayer`: `BGRA8Unorm` (not sRGB: Q3 math is gamma-space), `framebufferOnly YES`, opaque, `maximumDrawableCount` 2, or 3 for vsync in fullscreen (`r_metalDrawables`, session 6), `displaySyncEnabled = r_swapInterval`, `presentsWithTransaction NO`, `drawableSize` = window pixels.
 - HiDPI: drawable size in pixels → `glConfig.vidWidth/vidHeight`. Check the HUD/UI scaling on the 4K@2× display.
 - Fills `glConfig` (renderer string "Apple M4 (Metal)", maxTextureSize 16384, stencil 8, no hardware gamma: gamma is applied in-shader).
 
@@ -288,7 +357,7 @@ mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_Send
 1. **Never block between input sampling and encoding.** Any wait for the GPU (frames-in-flight semaphore) or for a drawable happens at the *end* of the previous frame or right before the limiter sleep, never after `CL_SendCmd`. Acquire the drawable as late as possible (only for the final pass); present right after commit; `presentsWithTransaction NO`.
 2. **Minimal queueing.** Frames in flight is a cvar (`r_metalFramesInFlight`, 1–3), and `CAMetalLayer.maximumDrawableCount` is 2 by default (3 only if measured to help). With ~0.2 ms of GPU work per frame, 1–2 frames in flight cost almost no throughput; pick the default by measuring latency *and* work time.
 3. **`r_swapInterval 0` = immediate present** (`displaySyncEnabled NO`, tearing allowed in fullscreen) for the lowest latency. `1` = vsync, optionally paced with `CAMetalDisplayLink` (`preferredFrameLatency` 1) instead of blocking in `nextDrawable`.
-4. **Fullscreen must hit direct-to-display** (compositor bypass): opaque layer, drawable size = native display pixels, no overlays or transforms. Verify with the Metal Performance HUD ("Direct") and Metal System Trace. Offer a borderless-fullscreen mode that keeps direct-to-display, so the user doesn't pay compositor latency for "windowed fullscreen". Tell the user that a plain window is always composited (+1 refresh).
+4. **Fullscreen must hit direct-to-display** (compositor bypass): opaque layer, drawable size = native display pixels, no overlays or transforms. Verify with the Metal Performance HUD ("Direct") and Metal System Trace. Offer a borderless-fullscreen mode that keeps direct-to-display, so the user doesn't pay compositor latency for "windowed fullscreen". Tell the user that a plain window is always composited (+1 refresh). *Session 6: and no window shadow (a shadow forces an offscreen pass); measured with `display_trace.py`, which prints Instruments' reason when a frame isn't direct.*
 5. **Game Mode and scheduling.** Info.plist `LSApplicationCategoryType = public.app-category.games` + `GCSupportsGameMode` (macOS Game Mode in fullscreen: CPU/GPU priority, doubled Bluetooth sampling for controllers and AirPods). While in a game: `NSProcessInfo beginActivityWithOptions: NSActivityLatencyCritical | NSActivityUserInitiated` (no App Nap, minimal timer coalescing), and the main thread at `QOS_CLASS_USER_INTERACTIVE` (P-cores).
 6. **Low overhead in the hot path:** no per-frame heap allocations in the renderer or backend; one `@autoreleasepool` per frame; cached PSOs, depth/stencil and sampler states (no lookups by string); state changes filtered on the CPU; hidden visibility, LTO, and the renderer linked statically in Phase 4; no Objective-C in the front end; no GPU→CPU readbacks in the frame (flares/screenshots are async).
 7. **Gameplay feel is not ours to change silently.** Anything that alters frame pacing or usercmd timing (the 1 ms frame floor, `com_maxfps` precision, `Sys_Milliseconds` resolution) affects movement and online feel: measure, propose, and get the user's OK first. The facts players rely on, which must stay exact:
@@ -303,7 +372,7 @@ mouse HID → macOS → SDL event pump (`IN_Frame`, once per frame) → `CL_Send
 **Planned latency work, by phase:**
 - **Phase 1:** CAMetalLayer configured per rules 2–4 (drawable count, `displaySyncEnabled` from `r_swapInterval`, opaque layer, `presentsWithTransaction NO`); the wait-placement rule built into the frame loop from day one. *Done in session 2; drawables come from a helper thread with vsync off, see §3.2 "Drawable acquisition".*
 - **Phase 2:** **latency probe** `cl_latencyStats 1`. For each frame, the time from the newest mouse event folded into the usercmd (mach time stamped at pump time, µs) to the frame's real present time (`MTLDrawable addPresentedHandler` → `presentedTime`). Log p50/p95/p99 over N frames, plus input→commit. For GL1, only input→`SwapBuffers` return is available (a lower bound; documented). Record SDL+Metal numbers windowed and fullscreen in §2. *Done in session 5: §2 "Input → present latency" (numbers and the Instruments cross-check), §3.2 "Added in session 5" (design). It also reports GPU-done times and the OS event timestamps.*
-- **Phase 3:** direct-to-display verified in fullscreen and borderless fullscreen; Info.plist Game Mode keys; latency numbers per display mode recorded. *Session 5 found that neither renderer's fullscreen goes direct today ("layer requires a potential offscreen render" for Metal), and that Core Animation's present feedback is wrong in fullscreen with vsync off (§2).*
+- **Phase 3:** direct-to-display verified in fullscreen and borderless fullscreen; Info.plist Game Mode keys; latency numbers per display mode recorded. *Done in session 6: the window shadow kept fullscreen from going direct. Both fullscreen modes now go direct on every frame: pump → present 2.1 ms at 250 fps, and Core Animation's present feedback is right. Borderless fullscreen = `r_fullscreen 1` + `r_noborder 1`. Game Mode turns on in both. See §2 "per display mode" and §3.2 "Added in session 6". Tell the user: play in fullscreen or borderless, not in a window.*
 - **Phase 5 (performance and latency):**
   - targets the session 5 probe found (§2):
     - the compositor's two latency modes in a window (~5 vs ~9.7 ms at 250 fps);
@@ -449,7 +518,26 @@ Session 3 result (2a):
 - **2c:** the `cl_latencyStats` latency probe (§4b).
 - **Done when:** the bench demo plays fully on Metal; 5 fixed views match GL1 by eye and by screenshot diff; first Metal bench numbers are in §2's table (target work ≤ 0.45 ms/frame); first input→present latency numbers (windowed + fullscreen) recorded.
 
-### Phase 3: Full feature parity. **Status: not started.**
+### Phase 3: Full feature parity. **Status: in progress (3a done in session 6, 2026-10-17; next 3b).**
+Session 6 result (3a, display modes):
+- **Direct to display in fullscreen: fixed.** The cause was the window shadow on SDL's exclusive-fullscreen window (§3.2 "Added in session 6"); `sdl_mtlimp.m` clears it. **Borderless fullscreen** is new: `r_fullscreen 1` + `r_noborder 1`, a native fullscreen Space at the desktop resolution. Both go direct on every frame (Instruments).
+- **`r_metalDrawables` 0 = automatic** (3 for vsync in fullscreen): direct-to-display vsync with 2 drawables ran at 125 fps.
+- **Game Mode:** `GCSupportsGameMode` added to `cmake/Info.plist.in` (the games category was already there). gamepolicyd turns Game Mode on in both fullscreen modes, not in a window.
+- **Latency matrix** (window / fullscreen / borderless × 250 / ~1000 fps × vsync off / on) in §2 "per display mode". **Fullscreen and borderless: pump → present 2.1 ms p50 at 250 fps** (event → present 3.0–3.3 ms), 8.06 ms with vsync. The window ranges from 2.4 to 13 ms depending on the compositor's mode that run. Core Animation's present feedback is right when direct, at every rate.
+- **Gamma/overbright per mode match GL1** (fullscreen 1 bit, window 0, with `r_overBrightBits 1`). GL1's hardware ramp gets overridden on this Mac by the user's display-tint daemon; Metal's in-shader ramp doesn't (§3.2).
+- **Tools:**
+  - `port/display_trace.py` takes `PROCESS=<name>` to look at another process's frames;
+  - a standalone SDL2 + Metal test program for direct-to-display experiments in `build.noindex/experiments/dtd/` (not committed: build output, it may be deleted).
+- **Done criteria for 3a:**
+  - **Build: pass,** no new warnings.
+  - **Fixed views: unchanged.** `pair dm6`: 1454 / 135 / 496 / 2533 / 1404 / 152 / 117 / 1 / 2437 pixels (view 8 = the weapon bar's real-time highlight, 1979–2437 between sittings). `pair dm5`: 1732 / 1337 / 749 / 558, identical to sessions 4 and 5.
+  - **Bench: pass** (window, unchanged path): Metal 0.395 / 0.397 / 0.391 ms work vs GL1 0.928 / 0.937 / 0.917 in the same sitting (§2).
+- **Not done in 3a:**
+  - exclusive fullscreen at a non-native mode (a display mode change) is untested;
+  - the HiDPI 4K display in fullscreen is untested;
+  - GL1's fullscreen isn't direct either (same shadow), left as is;
+  - Game Mode and `NSActivityLatencyCritical` haven't been measured on vs off (Phase 5).
+
 - Sky box + cloud layers, portal sky, linear fog (all `GLS_FOG*` modes), mirrors/portals (clip distance).
 - Q3 flares + MOHAA sun/lens flares, dlights (lightmap ring uploads), stencil shadows (`r_shadows 2`) and blob shadows, ghost textures.
 - Cinematics (`DrawStretchRaw` ring), screenshots (`screenshot`, `screenshotJPEG`, levelshots; async readback), gamma/overbright final pass.
@@ -506,31 +594,36 @@ Session 3 result (2a):
 
 ## 6. Next session
 
-**Session 6 = Phase 3, slice 3a.** Start with CLAUDE.md, then §4b (rules 4–5 and the Phase 3/5 lines), §2 "Input → present latency" (session 5's findings), §3.2 "Added in session 5", and Phase 3.
+**Session 7 = Phase 3, slice 3b (the world features with fixed views).** Start with CLAUDE.md, then Phase 3 (bullets and the session 6 result), §3.2 "Added in session 4" (the fixed-view harness, HSR ties, the swipe/`SwipePoint` question, the map-load crash) and "Added in session 6", and Phase 2's session 4 result (what the views cover so far).
 
-Where things stand (end of session 5):
-- **Phase 2 is done** and pushed (`metal` on origin), together with session 1's four timing-plan docs commits.
-- **Metal:** 0.40 ms work/frame vs GL1 1.08 ms (session 5's sitting; GL1 measured 0.88–0.96 in session 4). The fixed views match GL1, with all remaining pixel differences explained (§3.2 "Added in session 4").
-- **The latency probe** works (`cl_latencyStats 1`; `port/latency.sh` runs it with synthetic mouse movement) and its present times are validated against the display (`TRACE=1`).
-- **Window, 250 fps:** pump → present 10.0 ms p50, bimodal ~5 / ~9.7 ms.
-- **Fullscreen** is composited, not direct-to-display, in both renderers, and with vsync off Core Animation reports most fullscreen frames as never shown.
-- All backend code is still `code/renderer_metal/tr_mtl.m` + `shaders/tr_mtl_stage.metal`; the window layer is `code/sdl/sdl_mtlimp.m`.
+Where things stand (end of session 6):
+- **Phase 3a is done** (display modes): committed on `metal`, not pushed. Pushes happen at the end of a phase (CLAUDE.md), so 3a goes out with the rest of Phase 3.
+- **Fullscreen and borderless fullscreen go direct to display** (the window shadow was the cause). Borderless = `r_fullscreen 1` + `r_noborder 1`.
+- **Latency, 250 fps, vsync off:** pump → present **2.1 ms** in both fullscreen modes, against 2.4–13 ms in a window, depending on the compositor's mode that run. With vsync: 8.06 ms at 240 fps (3 drawables, automatic). Core Animation's present feedback is right when direct, so the probe's fullscreen numbers are real at every rate.
+- **Game Mode** turns on in both fullscreen modes.
+- **Gamma/overbright per mode match GL1.**
+- **Bench:** Metal 0.39–0.40 ms work vs GL1 0.92–0.94 ms. The fixed views are unchanged (dm6 and dm5).
+- **For the user** (not yet told in a session report): play in fullscreen or borderless fullscreen. Borderless at the desktop resolution has the same latency as exclusive, plus Spaces/Cmd-Tab and no display reconfigure at exit. The user currently plays in a 1920×1080 window (§4b).
+- Code: the backend is `code/renderer_metal/tr_mtl.m` + `shaders/`; the window layer is `code/sdl/sdl_mtlimp.m`.
 
-Phase 3 is large. Suggested slices (adjust if something turns out bigger):
-- **3a (session 6): display modes, measured with the probe.**
-  - Fullscreen and borderless fullscreen hitting direct-to-display: find why Metal's layer "requires a potential offscreen render" and fix it (Phase 3 bullet).
-  - Info.plist Game Mode keys (§4b rule 5).
-  - Then the latency matrix per display mode: window, fullscreen, borderless; 250 and ~1000 fps; vsync off and on. Re-check Core Animation's fullscreen present feedback.
-  - Gamma/overbright per mode belongs with this too: GL1 only overbrights in fullscreen with hardware gamma (§1.3).
-- **3b: the world features with fixed views.**
-  - First the local map-load crash. It's game code: investigate, then propose any fix to the user before changing it (hard rules), because Phase 3's fixed view list needs maps beyond mohdm5/6.
-  - Then sky box, portal sky (m2l1), all fog modes, mirrors/portals, Q3 flares + sun/lens flares, dlights, stencil and blob shadows, ghost textures, marks, and the swipe check (throw a grenade, §3.2 "Added in session 4").
+Phase 3's remaining slices (adjust if something turns out bigger):
+- **3b (session 7): the world features with fixed views.**
+  - First the local map-load crash (`SimpleEntity::SetOrigin` with a NULL `this` from a map script setter at `Level::ServerSpawned`, both renderers and the upstream GL build; only mohdm5/6 load). It's game code: investigate, then propose any fix to the user before changing it (hard rules). Phase 3's fixed view list needs maps beyond mohdm5/6.
+  - Then sky box, portal sky (m2l1), all fog modes, mirrors/portals, Q3 flares + sun/lens flares, dlights, stencil and blob shadows, ghost textures, marks, and the swipe check (throw a grenade, §3.2 "Added in session 4"). Each gets fixed views in `port/shots/` and a `pair` diff against GL1.
 - **3c:**
   - cinematics (`RE_StretchRaw`), screenshot variants and levelshots (async readback);
   - `r_picmip`, `r_textureMode`/anisotropy, capability cvars, debug views (`r_showtris`, `r_speeds`, debug lines);
   - Spearhead/Breakthrough;
   - the `MTLBinaryArchive` pipeline cache.
-- **3d:** the user's look at the result, and an online smoke test on a real server.
+- **3d:** the user's look at the result, and an online smoke test on a real server. The session report should then also recommend fullscreen/borderless to the user (see above). Push at the end of Phase 3.
+
+Gotchas found in session 6:
+- **In zsh, `log` is a builtin:** use `/usr/bin/log show …` for the unified log (gamepolicyd: `--predicate 'process == "gamepolicyd"'`, look for "gaming session" and "Game mode status").
+- **Instruments' displayed-surfaces table has `detachment-reason` and `detachment-suggestion` columns** next to `direct-to-display`. `display_trace.py` prints the reason; `PROCESS=<name>` points it at another process.
+- **Window latency changes with the compositor's mode, from run to run** (2.4–13 ms p50 this session). Measure windows several times, or trace them; compare display modes in one sitting.
+- **The user's display-tint daemon (`~/.local/bin/dusk tint`) is running:** it overrides display gamma tables (GL1's hardware ramp), so don't judge GL1's gamma/overbright by eye on this Mac. Never stop it; it's the user's.
+- **`GAMMA:` in the startup log always says 0 overbright bits** (printed before `R_SetColorMappings`); run `gfxinfo` later in the run for the real value.
+- **Fullscreen runs reach Game Mode**, which may shift scheduling. Compare modes in one sitting (Phase 5 measures Game Mode on/off).
 
 Gotchas found in session 5:
 - **`port/latency.sh` takes over the mouse:** the game window grabs it, and synthetic moves are posted for the run's length, about 30 s per run. Every run in session 5 got the keyboard focus by itself. If the user clicks elsewhere, SDL ignores the mouse and the run has no input frames. Check the screen lock first (the script does).
@@ -541,7 +634,7 @@ Gotchas found in session 5:
 
   `port/display_trace.py` handles all of this.
 - Traces are ~0.3 GB each in `build.noindex/latency/`; `latency.sh` keeps them, so delete them after use.
-- **Core Animation's present feedback in fullscreen with vsync off is wrong** (§2): don't trust `r_metalPresentStats`' "shown" count or the probe's present lines in that mode until it goes direct and has been re-checked.
+- ~~Core Animation's present feedback in fullscreen with vsync off is wrong~~: fixed by going direct to display (session 6); still true for a composited fullscreen (GL1).
 - macOS `sed` has no `\|` in basic regexes (use `grep -E`/awk). In zsh, `${=var}` word-splits a string variable.
 - Session 4's gotchas still apply:
   - the Bash tool runs zsh (use arrays or `${=A}` for several args);
@@ -565,6 +658,9 @@ Gotchas found in session 5:
   - HiDPI input on 2× displays is untested (§6 of session 4: `SDL_WINDOWEVENT_RESIZED` compares points with pixels, relative mouse deltas are in points, `SDL_WarpMouseInWindow` expects points).
 
 Open bugs:
-- **In the renderer:** none known. Display-path findings: fullscreen isn't direct-to-display (both renderers), and Core Animation's fullscreen vsync-off present feedback is wrong.
+- **In the renderer:** none known.
+- **Display path:** GL1's fullscreen still isn't direct (same window shadow; left alone, GL1 goes away in Phase 4). The window's latency depends on the compositor's mode (§2).
 - **Outside it:** the local map-load crash (game code, upstream).
-- **Untested:** HiDPI input, DDS/BC uploads, cinematics, swipes at run time, borderless fullscreen.
+- **Untested:**
+  - HiDPI input, DDS/BC uploads, cinematics, swipes at run time;
+  - exclusive fullscreen at a non-native resolution (a display mode change), and fullscreen on the 4K@2× display.

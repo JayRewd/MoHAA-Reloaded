@@ -7,13 +7,17 @@ Per display: swaps per second, how many swaps showed an openmohaa frame, whether
 (and the reason Core Animation gives when not), and the status of openmohaa's presented handlers (2 = shown
 with a time, 3 = reported as never shown). With the game log, every present time the probe reported is matched
 to the display swap at that instant and its frame: the check that the probe's present times are real.
+PROCESS=<name> looks at another process's frames instead of openmohaa's (e.g. a test program).
 """
 import bisect
 import collections
+import os
 import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+
+PROCESS = os.environ.get('PROCESS', 'openmohaa')  # the process whose frames are looked at
 
 
 def table(trace, schema):
@@ -57,14 +61,14 @@ def main():
     for name, vs in sorted(by_display.items()):
         starts = [int(v['start'].text) for v in vs]
         span = (starts[-1] - starts[0]) / 1e9 if len(starts) > 1 else 0
-        ours = [v for v in vs if 'openmohaa' in fmt(v['event-label'])]
+        ours = [v for v in vs if PROCESS in fmt(v['event-label'])]
         direct = collections.Counter(fmt(v['direct-to-display']) for v in ours)
         reasons = collections.Counter()
         for v in ours:
-            for m in re.finditer(r'openmohaa \(\d+\):[^/]*?cannot go direct to display due to ([^/)]*)', fmt(v['event-label'])):
+            for m in re.finditer(re.escape(PROCESS) + r' \(\d+\):[^/]*?cannot go direct to display due to ([^/)]*)', fmt(v['event-label'])):
                 reasons[m.group(1).strip()] += 1
             t = round(epoch_us + int(v['start'].text) / 1000)
-            frames_at[t] = [int(f) for m in re.finditer(r'openmohaa \(\d+\):Frame ([\d,]+)', fmt(v['event-label']))
+            frames_at[t] = [int(f) for m in re.finditer(re.escape(PROCESS) + r' \(\d+\):Frame ([\d,]+)', fmt(v['event-label']))
                             for f in m.group(1).split(',')]
         res = collections.Counter(fmt(v['resolution']) for v in vs)
         print(f'{name} {", ".join(res)}: {len(vs)} swaps in {span:.2f} s ({len(vs) / span if span else 0:.0f}/s), '
@@ -72,14 +76,14 @@ def main():
         for r, c in reasons.most_common(3):
             print(f'    not direct ({c}x): {r}')
 
-    handlers = [v for v in table(trace, 'ca-client-presented-handler') if 'openmohaa' in fmt(v['process'])]
+    handlers = [v for v in table(trace, 'ca-client-presented-handler') if PROCESS in fmt(v['process'])]
     print('openmohaa presented handlers by status (2 = shown with a time, 3 = never shown):',
           dict(collections.Counter(v['status'].text for v in handlers)))
 
     if len(sys.argv) < 3:
         return
     requests = sorted(epoch_us + int(v['timestamp'].text) / 1000 for v in table(trace, 'ca-client-present-request')
-                      if 'openmohaa' in fmt(v['process']))
+                      if PROCESS in fmt(v['process']))
     probe = []
     for line in open(sys.argv[2], errors='replace'):
         m = re.match(r'cl_latencyStats frame: tag -?\d+ commit (\d+) gpu (-?\d+) present (-?\d+)', line)

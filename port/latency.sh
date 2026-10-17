@@ -8,6 +8,7 @@
 # as a real mouse; see that file) while the probe runs, and the game quits. Window: 1280x720, vsync off,
 # com_maxfps 250 (the user's setting) unless the engine args say otherwise, e.g.
 #   port/latency.sh metal metal-fs-250 20 +set r_fullscreen 1 +set r_customwidth 1920 +set r_customheight 1080
+#   port/latency.sh metal metal-bfs-250 20 +set r_fullscreen 1 +set r_noborder 1     (borderless fullscreen)
 # The screen must be unlocked: while it is locked the WindowServer composites nothing (checked first).
 # The game window must have the keyboard focus, or SDL ignores the mouse: don't click elsewhere during a run.
 # Environment:
