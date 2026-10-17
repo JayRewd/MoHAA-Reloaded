@@ -10,6 +10,17 @@ options:
   --renderers A,B   cl_renderer values (renderer_<name>.so of MOH_BINDIR),
                     default opengl1,vulkan; a copy of an older
                     renderer_vulkan.so under another name compares builds
+  --binaries A,B    engine executables of MOH_BINDIR (default openmohaa); a
+                    copy of an older openmohaa under another name compares
+                    engine builds: each runs every renderer, interleaved
+                    like them, named <renderer>-<binary> in the output
+  --caps N,...      com_maxfps values: every view is measured at each
+                    (named <view>_c<N>) instead of uncapped
+  --seconds S       with --caps: about S seconds per measurement (S x N
+                    frames, S x 1000 for 0) instead of --frames
+  --preload LIB,... libraries of MOH_BINDIR preloaded into the game:
+                    libinlat.so (input to present times, with --framelog),
+                    libglts.so (GL1's GPU time per frame, with --framelog)
   --runs N          measurements per renderer, view and size (default 5)
   --sizes WxH,...   window sizes (default 640x480)
   --pause PID,...   SIGSTOP these processes and their descendants while the
@@ -32,8 +43,10 @@ options:
                     and, for the renderers of --vklog, the Vulkan renderer's
                     frame log (r_vkFrameLog 1, vkframelog) in ...vk.txt;
                     tools/framelog.py reads them. The summary then gives
-                    the frame time percentiles. With libglts.so in
-                    LD_PRELOAD, GL1's GPU time per frame goes to ...gl.txt
+                    the frame time percentiles. With libglts.so preloaded,
+                    GL1's GPU time per frame goes to ...gl.txt, with
+                    libinlat.so every frame's input read and present to
+                    ...in.txt
   --vklog A,B       renderers run with r_vkFrameLog 1 (with --framelog); its
                     wrappers cost about 15 us per frame, so give it a copy
                     of renderer_vulkan.so under another name and compare
@@ -93,13 +106,16 @@ time with the lowest and highest, and the medians of rf and bk.
 Frame times are only comparable on an otherwise idle machine. Every
 measurement reports how many CPUs other processes kept busy while it ran
 (from /proc/stat minus the game's own CPU time; the compositor showing
-a thousand frames a second takes about one) and warns above 2.
+a thousand frames a second takes about one) and warns above 2. It also
+reports the game's own CPU use (all its threads, and its main thread
+alone), in CPUs: what a frame rate cap's sleeps and spins cost.
 
 Uses MOH_BASEPATH, MOH_HOMEPATH and MOH_BINDIR like the other tools; the
 window is 640x480 unless --sizes or the extra arguments say otherwise.
 """
 
 import argparse
+import copy
 import glob
 import json
 import os
@@ -130,6 +146,7 @@ GPU_BUSY = sorted(glob.glob("/sys/class/drm/card*/device/gpu_busy_percent"))
 class View:
     def __init__(self, name, map, x, y, z, pitch, yaw, roll, sp=False, setup=(), demo=None, frames=None):
         self.name, self.map, self.sp = name, map, sp
+        self.cap = None  # com_maxfps (--caps)
         self.pos = (x, y, z)
         self.angles = (pitch, yaw, roll)
         self.setup = list(setup)  # console commands run before the camera moves
@@ -236,6 +253,15 @@ def proc_cpu(pid):
         return 0
 
 
+def thread_cpu_ns(pid):
+    """CPU time of a process's main thread, ns (schedstat)"""
+    try:
+        with open(f"/proc/{pid}/task/{pid}/schedstat") as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
 def descendants(pids):
     """the processes and all their descendants that still exist"""
     children = {}
@@ -286,12 +312,13 @@ class Pauser:
 
 class Sampler(threading.Thread):
     """every 5 ms: amdgpu's gpu_busy_percent and the clock (MHz) of the
-    core the game's main thread runs on"""
+    core the game's main thread runs on, and which core that is (cores
+    boost differently: amd-pstate's preferred core ranking)"""
 
     def __init__(self, pid):
         super().__init__(daemon=True)
         self.pid = pid
-        self.gpu, self.mhz = [], []
+        self.gpu, self.mhz, self.cpus = [], [], []
         self.done = threading.Event()
 
     def run(self):
@@ -302,6 +329,7 @@ class Sampler(threading.Thread):
                         self.gpu.append(int(f.read()))
                 with open(f"/proc/{self.pid}/task/{self.pid}/stat") as f:
                     cpu = int(f.read().rsplit(")", 1)[1].split()[36])
+                self.cpus.append(cpu)
                 with open(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq") as f:
                     self.mhz.append(int(f.read()) / 1000)
             except (OSError, ValueError, IndexError):
@@ -310,8 +338,10 @@ class Sampler(threading.Thread):
     def stop(self):
         self.done.set()
         self.join()
+        core = max(set(self.cpus), key=self.cpus.count) if self.cpus else None
         return (statistics.mean(self.gpu) if self.gpu else None,
-                statistics.mean(self.mhz) if self.mhz else None)
+                statistics.mean(self.mhz) if self.mhz else None,
+                (core, self.cpus.count(core) / len(self.cpus)) if self.cpus else None)
 
 
 def parse_vkinfo(line):
@@ -324,7 +354,7 @@ RTIMER = re.compile(r"rtimer: (\d+) frames, ms per frame: interval ([\d.]+), ren
                     r"(?:, interval p99.9 ([\d.]+))?")
 
 
-def run(renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=False):
+def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=False, preload=()):
     for d in ("configs", "save"):
         shutil.rmtree(os.path.join(HOMEPATH, "main", d), ignore_errors=True)
     if cold:
@@ -336,23 +366,29 @@ def run(renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=F
     if os.path.exists(vkframes):
         os.remove(vkframes)
     env = dict(os.environ)
+    libs = [os.path.join(BINDIR, lib) for lib in preload] + ([os.path.join(BINDIR, "libstacks.so")] if stacks else [])
+    if libs:
+        env["LD_PRELOAD"] = " ".join(libs)
     if stacks:
-        env["LD_PRELOAD"] = os.path.join(BINDIR, "libstacks.so")
         env["STACKS_OUT"] = stacks
     if framelog:
         env["RTIMER_FRAMES"] = framelog + ".rt.txt"
         # GL1's GPU time per frame when libglts.so is preloaded (tools/rtimer/glts.c)
         env["GLTS_FRAMES"] = framelog + ".gl.txt"
+        # every frame's input read and present when libinlat.so is preloaded (tools/rtimer/inlat.c)
+        env["INLAT_FRAMES"] = framelog + ".in.txt"
     if TIMED:
         # renderer_timed.so (tools/rtimer) loads renderer_<renderer>.so
         env["MOH_TIMED_RENDERER"] = renderer
-    cmd = ["./openmohaa", "+set", "fs_basepath", BASEPATH, "+set", "fs_homepath", HOMEPATH,
+    cmd = ["./" + binary, "+set", "fs_basepath", BASEPATH, "+set", "fs_homepath", HOMEPATH,
            "+set", "cl_renderer", "timed" if TIMED else renderer, "+set", "r_fullscreen", "0", "+set", "r_mode", "3",
            "+set", "s_volume", "0", "+set", "s_musicvolume", "0", "+set", "s_ambientvolume", "0",
            "+set", "in_nograb", "1", "+set", "in_mouse", "0", "+set", "ui_gmbox", "0",
            "+set", "com_maxfps", "0", "+set", "r_swapInterval", "0", "+set", "r_vkValidation", "0"]
     if framelog and vklog:
         cmd += ["+set", "r_vkFrameLog", "1"]
+    if view.cap is not None:
+        cmd += ["+set", "com_maxfps", str(view.cap)]
     cmd += extra + ["+exec", cfg_name(view)]
     # a terminal makes the game's stdout line buffered, so the markers are
     # read when they are printed (a pipe would be block buffered)
@@ -361,7 +397,7 @@ def run(renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=F
     os.close(slave)
     start = end = None
     rf, bk, n = 0, 0, 0
-    timed, sampler, gpuBusy, mhz = None, None, None, None
+    timed, sampler, gpuBusy, mhz, core = None, None, None, None, None
     vkinfo = []
     try:
         for raw in lines(master):
@@ -370,13 +406,13 @@ def run(renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=F
                 pauser.stop()
             elif line == "perf_start":
                 start = time.monotonic()
-                cpu0, game0 = cpu_times(), proc_cpu(proc.pid)
+                cpu0, game0, main0 = cpu_times(), proc_cpu(proc.pid), thread_cpu_ns(proc.pid)
                 sampler = Sampler(proc.pid)
                 sampler.start()
             elif line == "perf_end":
                 end = time.monotonic()
-                cpu1, game1 = cpu_times(), proc_cpu(proc.pid)
-                gpuBusy, mhz = sampler.stop()
+                cpu1, game1, main1 = cpu_times(), proc_cpu(proc.pid), thread_cpu_ns(proc.pid)
+                gpuBusy, mhz, core = sampler.stop()
                 sampler = None
                 pauser.cont()
             elif line.startswith("vkinfo: frames="):
@@ -423,7 +459,8 @@ def run(renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=F
     load = vkinfo[0] if len(vkinfo) == 3 else None
     frames = vkinfo[2] if len(vkinfo) == 3 else None
     return {"secs": secs, "rf": rf / max(n, 1), "bk": bk / max(n, 1), "n": n, "others": others,
-            "gpu": gpuBusy, "mhz": mhz, "timed": timed, "vkload": load, "vkframes": frames}
+            "game_cpu": (game1 - game0) / HZ / secs, "main_cpu": (main1 - main0) / 1e9 / secs,
+            "gpu": gpuBusy, "mhz": mhz, "core": core, "timed": timed, "vkload": load, "vkframes": frames}
 
 
 def frame_dist(path):
@@ -476,6 +513,10 @@ def main():
     ap.add_argument("--sp", action="store_true")
     ap.add_argument("--frames", type=int, default=1000)
     ap.add_argument("--renderers", default="opengl1,vulkan")
+    ap.add_argument("--binaries", default="openmohaa")
+    ap.add_argument("--caps", default="")
+    ap.add_argument("--seconds", type=float)
+    ap.add_argument("--preload", default="")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--sizes", default="640x480")
     ap.add_argument("--pause", default="")
@@ -506,7 +547,20 @@ def main():
         views.append(View(args.view[0], *args.view, sp=args.sp))
     if not views:
         ap.error("no view")
-    renderers = args.renderers.split(",")
+    if args.caps:
+        capped = []
+        for v in views:
+            for cap in (int(c) for c in args.caps.split(",")):
+                vc = copy.copy(v)
+                vc.name, vc.cap = f"{v.name}_c{cap}", cap
+                if args.seconds:
+                    vc.frames = round(args.seconds * (cap or 1000))
+                capped.append(vc)
+        views = capped
+    binaries = args.binaries.split(",")
+    # what is measured: a renderer of a binary, named <renderer>-<binary> when there are several
+    renderers = [(b, r, r if len(binaries) == 1 else f"{r}-{b}") for b in binaries for r in args.renderers.split(",")]
+    preload = [lib for lib in args.preload.split(",") if lib]
     sizes = [parse_size(s) for s in args.sizes.split(",")]
     pauser = Pauser([int(p) for p in args.pause.split(",") if p])
     speeds = args.speeds or not TIMED
@@ -523,12 +577,13 @@ def main():
         for v in views:
             for size in sizes:
                 for k in range(len(renderers)):
-                    r = renderers[(i + k) % len(renderers)]
+                    b, rn, r = renderers[(i + k) % len(renderers)]
                     load = os.getloadavg()[0]
                     tag = f"{re.sub(r'[^A-Za-z0-9_]', '_', v.name)}_{size[0]}x{size[1]}_{r}_{i + 1}"
                     stacks = f"{args.stacks}_{tag}.txt" if args.stacks else None
                     framelog = os.path.join(args.framelog, tag) if args.framelog else None
-                    res = run(r, v, size_args(size) + extra, pauser, args.cold, stacks, framelog, r in args.vklog.split(","))
+                    res = run(b, rn, v, size_args(size) + extra, pauser, args.cold, stacks, framelog,
+                              r in args.vklog.split(","), preload)
                     if res is None:
                         continue
                     res.update(run=i, view=v.name, size="%dx%d" % size, renderer=r, load=load)
@@ -543,6 +598,8 @@ def main():
                              f"  rf {res['rf']:5.2f} bk {res['bk']:5.2f}")
                           + (f"  GPU {res['gpu']:3.0f} %" if res["gpu"] is not None else "")
                           + (f"  {res['mhz']:4.0f} MHz" if res["mhz"] is not None else "")
+                          + (f" (cpu{res['core'][0]} {100 * res['core'][1]:.0f} %)" if res["core"] else "")
+                          + f"  CPU {res['game_cpu']:4.2f} (main {res['main_cpu']:4.2f})"
                           + (f"  gpu frame {gpu_ms(vk, 'gpuFrameUs'):5.3f} (copy {gpu_ms(vk, 'gpuPresentUs'):5.3f})"
                              f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static, {per_frame(vk, 'skinDraws'):4.0f} skinned) {per_frame(vk, 'renderPasses'):4.2f} passes"
                              f" {per_frame(vk, 'vertexBytes', 1 / 1024):5.0f} KB" if vk and vk["gpuFrames"] else "")
@@ -563,7 +620,7 @@ def main():
              ", com_speeds rf/bk") + ", GPU busy")
     for v in views:
         for size in sizes:
-            for r in renderers:
+            for _, _, r in renderers:
                 rs = [x for x in results if x["view"] == v.name and x["size"] == "%dx%d" % size and x["renderer"] == r]
                 if not rs:
                     continue
@@ -586,6 +643,8 @@ def main():
                 ms_ = [x["mhz"] for x in rs if x["mhz"] is not None]
                 if ms_:
                     line += f" {statistics.median(ms_):4.0f} MHz"
+                line += (f"  CPU {statistics.median(x['game_cpu'] for x in rs):4.2f}"
+                         f" (main {statistics.median(x['main_cpu'] for x in rs):4.2f})")
                 vks = [x["vkframes"] for x in rs if x["vkframes"] and x["vkframes"]["gpuFrames"]]
                 if vks:
                     line += (f"  gpu frame {statistics.median(gpu_ms(x, 'gpuFrameUs') for x in vks):5.3f}"

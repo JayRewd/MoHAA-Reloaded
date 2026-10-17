@@ -42,6 +42,14 @@ which parts make the slow frames slow. The frame's events (pipelines,
 textures, uploads, allocations, flushes, a vertex buffer grown, the depth
 image or swapchain replaced) are counted too.
 
+Input to present: FILE can also be libinlat.so's $INLAT_FRAMES
+(tools/rtimer/inlat.c; perf.py --preload libinlat.so --framelog), every
+frame's first input poll and its present; --batch keeps the frames
+renderer_timed.so measured and prints, per renderer, the time from the
+input read to the present (what a frame limiter or the renderer must not
+lengthen) and the intervals between input reads (the frame starts) and
+between presents (what reaches the display).
+
 Percentiles: the value at index int(n * q) of the sorted frame times
 (p99 of 15000 frames is the 150th slowest, p99.9 the 15th). The last frame
 of an rtimer file is left out: its interval holds the console commands that
@@ -80,6 +88,8 @@ class Log:
                         self.kind = "rt"
                     elif "glts frames" in line and self.kind is None:
                         self.kind = "gl"
+                    elif "inlat frames" in line and self.kind is None:
+                        self.kind = "in"
                     m = re.match(r"# columns[^:]*: (.*)", line)
                     if m:
                         cols = m.group(1).split()
@@ -98,7 +108,7 @@ class Log:
             m = re.match(r"clock ([\d.]+):", h)
             if m:
                 self.clock = float(m.group(1))
-        if self.kind == "gl":
+        if self.kind in ("gl", "in"):
             return
         self.interval = self.cols["interval"]
         if self.kind == "vk":
@@ -238,7 +248,21 @@ def frame_text(log, i):
     return s
 
 
+def inlat_values(rows):
+    """input to present, read to read and present to present (us) of
+    libinlat.so's (read, present) pairs (read 0: none)"""
+    return {"input to present": [p - r for r, p in rows if r],
+            "read to read": [b[0] - a[0] for a, b in zip(rows, rows[1:]) if a[0] and b[0]],
+            "present to present": [b[1] - a[1] for a, b in zip(rows, rows[1:])]}
+
+
 def summary(log, worst=0, above=None):
+    if log.kind == "in":
+        print(f"{log.path}: {log.n} frames (libinlat.so)")
+        for name, v in inlat_values(list(zip(log.cols["read"], log.cols["present"]))).items():
+            if len(v) > 1:
+                print(f"  {name + ' ms:':22s} " + dist_line(dist(v)))
+        return
     print(f"{log.path}: {log.n} frames ({'Vulkan frame log' if log.kind == 'vk' else 'renderer_timed.so'})")
     for h in log.header[1:2]:
         print("  " + h)
@@ -262,7 +286,15 @@ def summary(log, worst=0, above=None):
 
 # --batch
 
-NAME = re.compile(r"(.+)_(\d+x\d+)_(.+)_(\d+)\.(rt|vk|gl)\.txt$")
+NAME = re.compile(r"(.+)_(\d+x\d+)_(.+)_(\d+)\.(rt|vk|gl|in)\.txt$")
+
+
+def inlat_window(inl, rt):
+    """the (read, present) pairs of libinlat.so's frames (all since startup)
+    whose present falls in the frames renderer_timed.so measured"""
+    t0 = rt.clock * 1000 + rt.cols["start"][0]
+    t1 = rt.clock * 1000 + rt.cols["start"][-1] + rt.interval[-1]
+    return [(r, p) for r, p in zip(inl.cols["read"], inl.cols["present"]) if t0 <= p < t1]
 
 
 def gl_window(gl, rt):
@@ -294,6 +326,13 @@ def batch(directory, above=None, svg=None, worst=0, labels=None):
             print(f"  {renderer:9s} frame time ms, medians of {len(ds)}: " + dist_line(med))
             print(f"  {'':9s} runs p99 " + " ".join(f"{d['p99']:.3f}" for d in ds)
                   + "  p99.9 " + " ".join(f"{d['p999']:.3f}" for d in ds) + "  max " + " ".join(f"{d['max']:.3f}" for d in ds))
+            ins = [inlat_values(inlat_window(r["in"], r["rt"])) for r in byrun.values()
+                   if "in" in r and "rt" in r and r["rt"].clock]
+            for name in ("input to present", "read to read", "present to present"):
+                ds_ = [dist(v[name]) for v in ins if len(v[name]) > 1]
+                if ds_:
+                    print(f"  {'':9s} {name} ms, medians of {len(ds_)}: "
+                          + dist_line({key: statistics.median(d[key] for d in ds_) for key in ds_[0]}))
         for renderer, byrun in rs.items():
             for run, r in sorted(byrun.items()):
                 if "vk" in r:

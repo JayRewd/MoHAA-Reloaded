@@ -43,6 +43,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <sys/wait.h>
 #include <time.h>
 #include <sys/resource.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 qboolean stdinIsATTY;
 
@@ -544,6 +547,20 @@ int Sys_Milliseconds (void)
 	curtime = (tp.tv_sec - sys_timeBase)*1000 + tp.tv_usec/1000;
 
 	return curtime;
+}
+
+/*
+================
+Sys_Microseconds
+================
+*/
+int64_t Sys_Microseconds (void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+
+	return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
 /*
@@ -1226,6 +1243,12 @@ void Sys_PlatformInit( void )
 	signal( SIGBUS, Sys_SigHandler );
 
 	Sys_SetFloatEnv();
+
+#ifdef __linux__
+	// the frame limiter sleeps until microsecond deadlines (Com_Frame), and
+	// the default timer slack of 50 us would make every sleep that much longer
+	prctl( PR_SET_TIMERSLACK, 1, 0, 0, 0 );
+#endif
 
 	stdinIsATTY = isatty( STDIN_FILENO ) &&
 		!( term && ( !strcmp( term, "raw" ) || !strcmp( term, "dumb" ) ) );

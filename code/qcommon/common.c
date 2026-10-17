@@ -2234,15 +2234,70 @@ int Com_TimeVal(int minMsec)
 
 /*
 =================
+Com_FrameWait
+
+Waits until the next frame may start: until Sys_Milliseconds has passed
+com_frameTime by minMsec and Sys_Microseconds has reached deadlineUs. The
+network is read as packets come (NET_SleepUs) and the local server sends
+its queued packets when they are due.
+
+Both are waited for the same way: asleep until COM_POLL_US before, then
+polling the network. Sleeps end late, by up to 0.9 ms on a Ryzen 7 8700GE
+when the core reached its deepest idle state; shorter sleeps instead of the
+polling used less CPU but let the core clock down, and the frame's work
+(input read to present) took longer. The millisecond clock is waited for in
+whole milliseconds, its last one polled (when it ticks is not known).
+=================
+*/
+#ifdef _WIN32
+#define COM_POLL_US		2000	// sleeps last whole timer ticks, 1 ms at best
+#else
+#define COM_POLL_US		1000
+#endif
+
+static void Com_FrameWait( int minMsec, int64_t deadlineUs )
+{
+	int64_t	sleepUs;
+	int		timeVal, timeValSV;
+
+	do {
+		sleepUs = deadlineUs - Sys_Microseconds() - COM_POLL_US;
+#ifdef _WIN32
+		sleepUs -= sleepUs % 1000;
+#endif
+
+		timeVal = Com_TimeVal( minMsec );
+		if ( sleepUs < ( timeVal - 1 ) * 1000LL ) {
+			sleepUs = ( timeVal - 1 ) * 1000LL;
+		}
+
+		if ( com_sv_running->integer ) {
+			timeValSV = SV_SendQueuedPackets();
+			if ( sleepUs > ( timeValSV - 1 ) * 1000LL ) {
+				sleepUs = ( timeValSV - 1 ) * 1000LL;
+			}
+		}
+
+		if ( com_busyWait->integer || sleepUs < 0 ) {
+			sleepUs = 0;
+		}
+		NET_SleepUs( sleepUs );
+	} while ( Com_TimeVal( minMsec ) || Sys_Microseconds() < deadlineUs );
+}
+
+/*
+=================
 Com_Frame
 =================
 */
 void Com_Frame( void ) {
 
 	int		msec, minMsec;
-	int		timeVal, timeValSV;
-	static int	lastTime = 0, bias = 0;
- 
+	static int	lastTime = 0;
+	static int64_t	nextFrameUs;	// deadline of the frame start
+	int64_t	periodUs, nowUs;
+	int		maxfps;
+
 	int		timeBeforeFirstEvents;
 	int		timeBeforeServer;
 	int		timeBeforeEvents;
@@ -2294,7 +2349,11 @@ void Com_Frame( void ) {
 		timeBeforeFirstEvents = Sys_Milliseconds ();
 	}
 
-    // Figure out how much time we have
+    // Figure out how much time we have: at least 1 ms of Sys_Milliseconds
+    // (no frame of 0 ms, so at most 1000 frames per second, also uncapped),
+    // a dedicated server's frame, and the period of a client's frame rate cap
+    minMsec = 1;
+    periodUs = 0;
     if (!com_timedemo->integer)
     {
         if (com_dedicated->integer)
@@ -2302,47 +2361,28 @@ void Com_Frame( void ) {
         else
         {
             if (com_minimized->integer && com_maxfpsMinimized->integer > 0)
-                minMsec = 1000 / com_maxfpsMinimized->integer;
+                maxfps = com_maxfpsMinimized->integer;
             else if (com_unfocused->integer && com_maxfpsUnfocused->integer > 0)
-                minMsec = 1000 / com_maxfpsUnfocused->integer;
-            else if (com_maxfps->integer > 0)
-                minMsec = 1000 / com_maxfps->integer;
+                maxfps = com_maxfpsUnfocused->integer;
             else
-                minMsec = 1;
+                maxfps = com_maxfps->integer;
 
-            timeVal = com_frameTime - lastTime;
-            bias += timeVal - minMsec;
-
-            if (bias > minMsec)
-                bias = minMsec;
-
-            // Adjust minMsec if previous frame took too long to render so
-            // that framerate is stable at the requested value.
-            minMsec -= bias;
+            // 1000 and more: minMsec alone, as uncapped
+            if (maxfps > 0 && maxfps < 1000)
+                periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
         }
     }
-    else
-        minMsec = 1;
 
-    do
-    {
-        if (com_sv_running->integer)
-        {
-            timeValSV = SV_SendQueuedPackets();
+    // The deadline advances by exactly one period, so that caps that don't
+    // divide 1000 are exact and frames evenly spaced. A frame late by less
+    // than a period is made up by the next one; after a later one, frames
+    // start again from now (no burst to catch up).
+    nowUs = Sys_Microseconds();
+    nextFrameUs += periodUs;
+    if (nowUs - nextFrameUs > periodUs)
+        nextFrameUs = nowUs;
 
-            timeVal = Com_TimeVal(minMsec);
-
-            if (timeValSV < timeVal)
-                timeVal = timeValSV;
-        }
-        else
-            timeVal = Com_TimeVal(minMsec);
-
-        if (com_busyWait->integer || timeVal < 1)
-            NET_Sleep(0);
-        else
-            NET_Sleep(timeVal - 1);
-    } while (Com_TimeVal(minMsec));
+    Com_FrameWait(minMsec, nextFrameUs);
 
     IN_Frame();
 

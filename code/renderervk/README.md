@@ -131,6 +131,17 @@ below are done.
   1.92 and 2.65, 1.95 and 2.69 against 2.71 and 3.52), and the causes of
   the slow frames are ranked in Plan, Remaining (see Performance, Frame
   spikes)
+- frame limiter (2026-10-17, an engine change outside this directory, for
+  both renderers): `com_maxfps` is a deadline in microseconds that advances
+  by one period instead of whole milliseconds since the last frame, so caps
+  that don't divide 1000 are exact (144, 165 and 240 ran at 167, 167 and
+  250 frames per second) and capped frames start evenly (the 99th
+  percentile of the interval between frame starts 2 to 10 µs above the
+  period, the old limiter's up to 83 µs above its whole milliseconds); the
+  median time from a frame's input read to its present is the same or
+  shorter at every cap with both renderers, the polled last millisecond of
+  the wait costs 0.4 to 0.7 ms of a core per frame (see Performance, Frame
+  limiter)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -175,7 +186,12 @@ renderers then shipping as `renderer_opengl1` and `renderer_vulkan` libraries
 next to the executable; artifacts kept 3 days) and the Windows installer
 (`misc/setup/windows/app/Package.wxs` lists both renderer DLLs), and the
 client's default `cl_renderer` (`vulkan` when `BUILD_RENDERER_VULKAN` is on:
-`cmake/client.cmake`, `code/client/cl_main.cpp`).
+`cmake/client.cmake`, `code/client/cl_main.cpp`), and the frame limiter
+(`Com_Frame` and `Com_FrameWait` in `code/qcommon/common.c`,
+`Sys_Microseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
+the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
+in `code/qcommon/net_ip.c`, their declarations in `code/qcommon/qcommon.h`:
+`com_maxfps` caps in microseconds, see Performance, Frame limiter).
 
 ## Build and run
 
@@ -402,16 +418,19 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
 - `perf.py`: frame time and renderer time of views with both renderers,
   uncapped, in interleaved runs (see Performance), also of demos played
   frame by frame (`demo` lines, `views/perf_demo.txt`) and with every
-  frame kept (`--framelog`); `rtimer/` builds the
+  frame kept (`--framelog`), at frame rate caps (`--caps`), and of other
+  engine builds (`--binaries`); `rtimer/` builds the
   `renderer_timed.so` wrapper it uses, `libstacks.so`, a stack sampler
-  whose output `stacks.py` sums up, and `libglts.so`, GPU timestamps of
-  GL1's frames (see Performance, GPU time at 3840x2160).
+  whose output `stacks.py` sums up, `libglts.so`, GPU timestamps of
+  GL1's frames (see Performance, GPU time at 3840x2160), and
+  `libinlat.so`, the time from each frame's input read to its present
+  (see Performance, Frame limiter).
 - `framelog.py`: frame time percentiles and the causes of the slow frames
   from the Vulkan renderer's frame log (`r_vkFrameLog`, `vkframelog`) or
   `renderer_timed.so`'s frame files, a `perf.py --framelog` directory as a
-  whole (GL1 against Vulkan frame by frame, an SVG of the distributions),
-  and the stack samples of the slow frames (see Performance, Frame
-  spikes).
+  whole (GL1 against Vulkan frame by frame, an SVG of the distributions,
+  the input to present times of `libinlat.so`), and the stack samples of
+  the slow frames (see Performance, Frame spikes).
 - `soldiers.py`: writes a view list of a multiplayer scene, soldier models
   around the camera and muzzle flash lights (see Test content).
 - `summary.py`: the worst view's numbers of several lists after
@@ -424,7 +443,9 @@ milestone 6) are best checked against the previous Vulkan build rather
 than GL1: copy the old `renderer_vulkan.so` to `renderer_<name>.so` in the
 binary directory, run the list with `run.sh <name> <list>` and compare
 its shots with `tgadiff.py`; the frames of a deterministic view are then
-identical to the bit, run after run.
+identical to the bit, run after run. For an engine change, copy the old
+`openmohaa` under another name and run the list with `MOH_BIN=<name>
+run.sh vulkan <list>`.
 
 With RADV and GL1 on radeonsi (same GPU) expect:
 
@@ -892,7 +913,10 @@ from outside the world, and GL1 sometimes saved a black or stale frame
 
 Other things learned:
 
-- `com_maxfps` does not cap the menus.
+- `com_maxfps` caps the menus too (this note used to say the opposite;
+  measured on 2026-10-17 with `libinlat.so`: the main menu presented 167
+  frames a second at `com_maxfps 144` with the old frame limiter, 144 with
+  the new one).
 - Commands appended while a script waits run after the whole script. The
   `vid_restart` that a window resize schedules is one of them, so a script
   with a long `wait` never sees it. The client also reads console commands
@@ -1851,6 +1875,202 @@ twice (the second has no frames), `vkframelog clear` and `vkframelog`;
 `renderer_vulkan.so` still imports no GL or Vulkan symbol and exports
 only `GetRefAPI`.
 
+Frame limiter (2026-10-17; an engine change, `Com_Frame` in
+`code/qcommon/common.c`, shared by both renderers): `com_maxfps` was
+applied in whole milliseconds. `Com_Frame` waited until
+`Sys_Milliseconds` had passed the last frame's start by `1000 /
+com_maxfps`, an integer, less a `bias` that took the previous frame's
+lateness off, so caps that don't divide 1000 were wrong (144 and 165 ran
+at 167 frames per second, 240 at 250, 334 to 499 at 500: players who cap
+just below their display's refresh rate for VRR got more), and frames
+started on the millisecond tick.
+
+Now a cap is a deadline in microseconds (`Sys_Microseconds`:
+`CLOCK_MONOTONIC`, `QueryPerformanceCounter` on Windows) that advances by
+exactly one period (1000000 / cap, rounded up so that the rate never
+exceeds the cap; a cap of 1000 or more has no deadline, only the
+millisecond below, like uncapped). A frame late by less than a period is
+made up by the next one; after a later one the deadline starts again from
+now (no burst of frames to catch up). As before, a frame also
+waits until `Sys_Milliseconds` has passed the previous frame's start
+(`com_frameTime`) by `minMsec`: 1 ms for a client, so that no frame lasts
+0 ms of game time (`Com_ModifyMsec` would make it 1 ms and the game would
+run ahead of real time) and uncapped still means at most 1000 frames per
+second; a dedicated server's frame (`SV_FrameMsec`). The game time of a
+frame alternates where the period isn't whole milliseconds (6 and 7 ms at
+144). `com_timedemo`, `com_busyWait`, `com_maxfpsUnfocused`,
+`com_maxfpsMinimized` and the local server's queued packets
+(`SV_SendQueuedPackets`) work as before. The order of a frame is the same:
+the wait, then the input (`IN_Frame`), the events, the server and client
+frames; nothing waits after the input is read, and the renderer has no
+part in it (no frame is held before its present).
+
+The wait (`Com_FrameWait`) sleeps in `select` on the network sockets
+(`NET_SleepUs`: packets are still read as they come) until 1 ms before the
+deadline and polls the network for the rest, as the old code did for the
+last millisecond before the tick. The millisecond (`Sys_Milliseconds`)
+condition is waited for as before. Sleeps end late, by more when the core
+had the time to reach a deep idle state; on this machine (Ryzen 7 PRO
+8700GE, `amd-pstate-epp`, the menu idle governor; C1 1 µs exit latency, C2
+18 µs, C3 350 µs with 700 µs target residency) a `select` on a UDP socket,
+idle machine, 2000 sleeps each, woke up this late (µs):
+
+| sleep asked | timer slack 50 µs (default): median, p99, p99.9, max | timer slack 1 µs |
+| --- | --- | --- |
+| 200 µs | 55, 80, 90, 251 | 6, 31, 38, 45 |
+| 1 ms | 56, 174, 517, 579 | 7, 62, 429, 466 |
+| 3 ms | 81, 667, 854, 907 | 35, 576, 741, 773 |
+| 6 ms | 83, 625, 814, 850 | 45, 641, 798, 813 |
+
+The timer slack is now 1 µs on Linux (`PR_SET_TIMERSLACK` in
+`Sys_PlatformInit`; threads created after inherit it). The long sleeps'
+late wake-ups (C3) are why the last millisecond is polled. Shorter sleeps
+in that millisecond instead were tried, in a simulation (a loop with 1 ms
+of work per frame, 10000 frames at 144 frames per second: sleeps of 100 µs
+and polling the last 150 µs started the frames as late as polling at the
+99th percentile, 4 µs, but 0.16 ms at the 99.9th against 0.02, for 2.8 %
+of a core instead of 13 %) and in the game, where they cost latency:
+the core clocks down when it sleeps more, and the frame's work, from its
+input read to its present, takes longer. `o2match` (see below) at
+1920x1080 with Vulkan, medians of 3 runs, in three batches (`libinlat.so`,
+below; CPU: the game's, in CPUs):
+
+| the wait's last millisecond | cap 144: input to present median, CPU, core clock | cap 240 |
+| --- | --- | --- |
+| old limiter (167 and 250 frames per second) | 0.685 to 0.696 ms, 0.20, 3191 to 3203 MHz | 0.616 to 0.631 ms, 0.27, 3271 to 3280 MHz |
+| polled (kept) | 0.666 to 0.671 ms, 0.27, 3247 to 3267 MHz | 0.578 to 0.586 ms, 0.42, 3345 to 3354 MHz |
+| sleeps of 100 µs, the last 150 µs polled | 0.713 to 0.723 ms, 0.16, 3185 to 3193 MHz | 0.619 to 0.631 ms, 0.24, 3211 to 3217 MHz |
+| sleeps of 30 µs (no C2) | 0.702 ms, 0.18, 3227 MHz | 0.621 ms, 0.26, 3262 MHz |
+| sleeps, the last 500 µs polled | 0.720 ms, 0.21, 3217 MHz | 0.619 ms, 0.31, 3270 MHz |
+| sleeps, the last 300 µs polled | 0.729 ms, 0.18, 3198 MHz | 0.621 ms, 0.26, 3226 MHz |
+
+Only polling the whole millisecond made the input to present time shorter
+than the old limiter's (by 0.02 to 0.05 ms); the sleeps saved CPU but
+made it up to 0.03 ms longer at 144. The polling costs no measurable GPU
+time on this APU, whose CPU and GPU share a power budget: at 3840x2160 and cap 144 the
+GPU's main pass took 2.17 to 2.20 ms per frame with it, 2.16 to 2.18 with
+the old limiter and 2.00 to 2.23 with 30 µs sleeps (input to present
+0.652, 0.676 and 0.686 ms). On Windows (untested: the CI builds it, this
+machine can't run it) a sleep lasts whole timer ticks, 1 ms at best
+(`Sys_PlatformInit` asks for 1 ms with `timeBeginPeriod`), so the wait
+sleeps whole milliseconds while more than 2 ms remain and polls the rest;
+`Sys_Microseconds` takes the whole seconds and the rest of
+`QueryPerformanceCounter` apart (the counter times a million overflows
+after a few days of uptime).
+
+Results (2026-10-17, idle machine: other processes 1.5 CPUs at most, load
+average under 2 with the game; 1920x1080 under Xwayland, the display at
+59.96 Hz; medians of 3 interleaved runs of 10 s with each renderer and the
+engine before ("old", left of the arrow) and after this change: `perf.py
+--binaries openmohaa_before,openmohaa --caps 60,125,144,165,240,333,500,1000,0
+--seconds 10 --preload libinlat.so --framelog DIR`, then `framelog.py
+--batch DIR`). Frames per second: from the mean interval between input
+reads, the frame starts the limiter sets; frame time: `renderer_timed.so`'s
+`BeginFrame` to `BeginFrame`; frame starts: the interval between input
+reads (`libinlat.so`); CPU: the game process in CPUs, its main thread in
+parentheses. `o2match` (`views/perf_demo.txt` from its start, 600 frames at
+60 to 10000 uncapped; the rows of 1000 and 0 come from a second batch,
+since a cap of 1000 now counts as uncapped):
+
+| `com_maxfps` | renderer | frames per second | frame time (ms): median, p99, p99.9, max, sd | frame starts (ms): p99, sd | input to present (ms): median, p99 | CPU (main thread) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60 | GL1 | 62.6 → 60.0 | 15.999, 16.089, 16.532, 16.53, 0.509 → 16.667, 16.731, 16.923, 16.92, 0.041 | 16.057, 0.480 → 16.671, 0.002 | 1.311, 2.821 → 1.277, 2.966 | 0.18 (0.12) → 0.20 (0.15) |
+| 60 | Vulkan | 62.6 → 60.0 | 15.999, 16.169, 16.368, 16.37, 0.502 → 16.667, 16.743, 16.861, 16.86, 0.048 | 16.070, 0.481 → 16.675, 0.003 | 1.017, 2.069 → 1.008, 2.093 | 0.11 (0.10) → 0.14 (0.13) |
+| 125 | GL1 | 125.1 → 125.0 | 8.000, 8.078, 8.356, 8.79, 0.193 → 8.000, 8.049, 8.151, 8.83, 0.055 | 8.056, 0.192 → 8.003, 0.063 | 0.899, 2.068 → 0.885, 2.097 | 0.27 (0.20) → 0.34 (0.26) |
+| 125 | Vulkan | 125.1 → 125.0 | 8.000, 8.074, 8.247, 8.34, 0.198 → 8.000, 8.047, 8.169, 8.32, 0.181 | 8.047, 0.198 → 8.003, 0.074 | 0.718, 1.559 → 0.682, 1.463 | 0.16 (0.15) → 0.24 (0.22) |
+| 144 | GL1 | 166.7 → 144.0 | 6.000, 6.072, 6.166, 9.00, 0.157 → 6.945, 6.996, 7.128, 8.98, 0.092 | 6.054, 0.157 → 6.950, 0.099 | 0.837, 1.917 → 0.843, 1.987 | 0.34 (0.24) → 0.38 (0.29) |
+| 144 | Vulkan | 166.7 → 144.0 | 6.000, 6.070, 6.178, 8.35, 0.150 → 6.945, 6.996, 7.121, 8.43, 0.083 | 6.047, 0.157 → 6.951, 0.094 | 0.695, 1.317 → 0.658, 1.322 | 0.20 (0.19) → 0.27 (0.25) |
+| 165 | GL1 | 166.7 → 165.1 | 6.000, 6.070, 6.157, 8.67, 0.143 → 6.061, 6.113, 6.293, 8.60, 0.153 | 6.053, 0.145 → 6.066, 0.110 | 0.852, 1.844 → 0.830, 1.849 | 0.35 (0.25) → 0.43 (0.33) |
+| 165 | Vulkan | 166.7 → 165.0 | 6.000, 6.063, 6.201, 8.26, 0.147 → 6.061, 6.104, 6.229, 8.31, 0.096 | 6.048, 0.144 → 6.064, 0.106 | 0.684, 1.326 → 0.643, 1.232 | 0.20 (0.18) → 0.30 (0.29) |
+| 240 | GL1 | 250.0 → 240.0 | 4.000, 4.066, 4.284, 8.93, 0.129 → 4.167, 4.205, 4.529, 8.87, 0.107 | 4.053, 0.137 → 4.170, 0.007 | 0.774, 1.650 → 0.744, 1.618 | 0.46 (0.33) → 0.58 (0.45) |
+| 240 | Vulkan | 250.0 → 239.9 | 4.000, 4.045, 4.401, 8.16, 0.111 → 4.167, 4.203, 4.498, 8.28, 0.098 | 4.036, 0.121 → 4.170, 0.098 | 0.620, 1.112 → 0.571, 1.033 | 0.27 (0.25) → 0.42 (0.40) |
+| 333 | GL1 | 333.2 → 332.9 | 3.000, 3.059, 3.259, 8.86, 0.115 → 3.004, 3.039, 3.271, 8.98, 0.107 | 3.051, 0.120 → 3.006, 0.019 | 0.748, 1.712 → 0.717, 1.653 | 0.59 (0.42) → 0.78 (0.62) |
+| 333 | Vulkan | 333.3 → 332.9 | 3.000, 3.042, 3.243, 8.23, 0.103 → 3.004, 3.038, 3.254, 8.23, 0.096 | 3.036, 0.112 → 3.006, 0.010 | 0.594, 1.150 → 0.545, 1.094 | 0.36 (0.34) → 0.57 (0.55) |
+| 500 | GL1 | 500.1 → 499.8 | 2.000, 2.060, 2.585, 8.65, 0.108 → 2.000, 2.048, 2.488, 8.61, 0.100 | 2.051, 0.037 → 2.002, 0.042 | 0.676, 1.600 → 0.655, 1.643 | 0.80 (0.57) → 1.09 (0.87) |
+| 500 | Vulkan | 499.8 → 499.6 | 2.000, 2.034, 2.198, 8.20, 0.092 → 2.000, 2.031, 2.190, 8.25, 0.092 | 2.017, 0.101 → 2.001, 0.101 | 0.508, 0.994 → 0.490, 1.018 | 0.52 (0.49) → 0.81 (0.79) |
+| 1000 | GL1 | 912.8 → 903.9 | 1.007, 1.967, 2.453, 11.27, 0.255 → 1.008, 1.987, 2.526, 11.47, 0.257 | 1.976, 0.243 → 1.999, 0.259 | 0.720, 1.738 → 0.724, 1.754 | 1.34 (0.92) → 1.33 (0.92) |
+| 1000 | Vulkan | 997.3 → 996.7 | 1.000, 1.215, 1.634, 8.62, 0.120 → 1.000, 1.215, 1.567, 8.40, 0.116 | 1.223, 0.124 → 1.216, 0.090 | 0.514, 1.127 → 0.515, 1.140 | 1.04 (0.99) → 1.04 (1.00) |
+| 0 | GL1 | 910.8 → 912.2 | 1.007, 1.973, 2.401, 11.38, 0.259 → 1.007, 1.913, 2.391, 11.24, 0.248 | 1.979, 0.263 → 1.927, 0.241 | 0.723, 1.750 → 0.708, 1.717 | 1.33 (0.92) → 1.33 (0.92) |
+| 0 | Vulkan | 997.3 → 996.5 | 1.000, 1.215, 1.597, 8.59, 0.117 → 1.000, 1.184, 1.553, 8.49, 0.114 | 1.233, 0.122 → 1.181, 0.119 | 0.516, 1.145 → 0.504, 1.106 | 1.04 (0.99) → 1.04 (1.00) |
+
+The `obj_team2` yard (a fixed view of `views/perf.txt`, the local server
+running):
+
+| `com_maxfps` | renderer | frames per second | frame time (ms): median, p99, p99.9, max, sd | frame starts (ms): p99, sd | input to present (ms): median, p99 | CPU (main thread) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60 | GL1 | 62.5 → 60.0 | 15.999, 16.224, 16.549, 16.55, 0.107 → 16.667, 16.893, 16.957, 16.96, 0.104 | 16.056, 0.013 → 16.671, 0.002 | 1.097, 2.128 → 1.114, 2.376 | 0.15 (0.12) → 0.18 (0.14) |
+| 60 | Vulkan | 62.5 → 60.0 | 16.001, 16.257, 16.682, 16.68, 0.119 → 16.667, 16.889, 17.137, 17.14, 0.105 | 16.083, 0.052 → 16.677, 0.004 | 0.960, 1.894 → 0.961, 2.063 | 0.11 (0.10) → 0.13 (0.13) |
+| 125 | GL1 | 125.0 → 125.0 | 8.000, 8.200, 8.402, 8.59, 0.102 → 8.000, 8.174, 8.227, 8.47, 0.091 | 8.061, 0.021 → 8.003, 0.001 | 0.877, 1.596 → 0.851, 1.533 | 0.25 (0.19) → 0.31 (0.25) |
+| 125 | Vulkan | 125.0 → 125.0 | 8.000, 8.198, 8.271, 8.47, 0.096 → 8.000, 8.172, 8.217, 8.42, 0.088 | 8.051, 0.013 → 8.003, 0.001 | 0.743, 1.320 → 0.682, 1.280 | 0.15 (0.14) → 0.23 (0.22) |
+| 144 | GL1 | 166.7 → 144.0 | 6.000, 6.184, 6.429, 6.48, 0.094 → 6.945, 7.115, 7.352, 7.39, 0.091 | 6.058, 0.022 → 6.949, 0.002 | 0.783, 1.382 → 0.821, 1.423 | 0.29 (0.22) → 0.34 (0.28) |
+| 144 | Vulkan | 166.7 → 144.0 | 5.999, 6.186, 6.234, 6.47, 0.092 → 6.945, 7.107, 7.174, 7.32, 0.088 | 6.042, 0.009 → 6.949, 0.002 | 0.677, 1.207 → 0.649, 1.240 | 0.19 (0.17) → 0.26 (0.25) |
+| 165 | GL1 | 166.7 → 165.0 | 6.000, 6.190, 6.400, 6.56, 0.097 → 6.060, 6.223, 6.410, 6.49, 0.087 | 6.065, 0.030 → 6.065, 0.002 | 0.791, 1.487 → 0.747, 1.334 | 0.29 (0.22) → 0.38 (0.31) |
+| 165 | Vulkan | 166.7 → 165.0 | 6.000, 6.171, 6.398, 6.51, 0.092 → 6.061, 6.216, 6.446, 6.47, 0.087 | 6.036, 0.008 → 6.065, 0.002 | 0.673, 1.223 → 0.625, 1.146 | 0.19 (0.18) → 0.30 (0.28) |
+| 240 | GL1 | 250.0 → 240.0 | 3.999, 4.133, 4.172, 4.23, 0.072 → 4.166, 4.296, 4.461, 4.71, 0.075 | 4.054, 0.019 → 4.170, 0.016 | 0.692, 1.110 → 0.644, 1.158 | 0.36 (0.26) → 0.51 (0.42) |
+| 240 | Vulkan | 250.0 → 240.0 | 4.000, 4.119, 4.155, 4.26, 0.070 → 4.166, 4.302, 4.458, 4.61, 0.075 | 4.007, 0.005 → 4.171, 0.002 | 0.587, 0.992 → 0.555, 1.014 | 0.26 (0.25) → 0.41 (0.39) |
+| 333 | GL1 | 333.3 → 332.9 | 3.000, 3.114, 3.147, 3.17, 0.065 → 3.004, 3.118, 3.169, 3.26, 0.066 | 3.041, 0.010 → 3.007, 0.012 | 0.634, 1.001 → 0.602, 1.023 | 0.44 (0.32) → 0.69 (0.57) |
+| 333 | Vulkan | 333.3 → 332.9 | 3.000, 3.111, 3.144, 3.16, 0.065 → 3.004, 3.114, 3.146, 3.19, 0.063 | 3.003, 0.004 → 3.007, 0.002 | 0.556, 0.902 → 0.520, 0.864 | 0.34 (0.32) → 0.55 (0.53) |
+| 500 | GL1 | 500.0 → 500.0 | 2.000, 2.098, 2.161, 2.73, 0.054 → 2.000, 2.096, 2.147, 2.30, 0.056 | 2.014, 0.015 → 2.002, 0.007 | 0.543, 0.890 → 0.533, 0.847 | 0.62 (0.46) → 0.97 (0.82) |
+| 500 | Vulkan | 500.0 → 500.0 | 2.000, 2.091, 2.121, 2.14, 0.050 → 2.000, 2.094, 2.122, 2.14, 0.051 | 2.002, 0.003 → 2.002, 0.001 | 0.457, 0.721 → 0.447, 0.706 | 0.50 (0.48) → 0.78 (0.76) |
+| 1000 | GL1 | 999.9 → 998.5 | 0.999, 1.189, 1.453, 2.00, 0.092 → 0.999, 1.201, 1.623, 2.89, 0.085 | 1.126, 0.038 → 1.164, 0.049 | 0.565, 0.877 → 0.563, 0.895 | 1.25 (0.94) → 1.24 (0.94) |
+| 1000 | Vulkan | 1000.0 → 1000.0 | 0.999, 1.105, 1.186, 1.29, 0.047 → 0.998, 1.102, 1.201, 1.29, 0.049 | 1.001, 0.004 → 1.002, 0.006 | 0.431, 0.616 → 0.433, 0.665 | 1.03 (1.00) → 1.03 (1.00) |
+| 0 | GL1 | 999.8 → 998.7 | 0.999, 1.180, 1.449, 1.71, 0.085 → 0.999, 1.184, 1.500, 1.96, 0.083 | 1.120, 0.037 → 1.116, 0.040 | 0.567, 0.878 → 0.559, 0.869 | 1.25 (0.94) → 1.25 (0.94) |
+| 0 | Vulkan | 1000.0 → 1000.0 | 0.999, 1.098, 1.177, 1.35, 0.047 → 0.999, 1.097, 1.178, 1.56, 0.047 | 1.002, 0.007 → 1.001, 0.012 | 0.438, 0.652 → 0.432, 0.656 | 1.03 (1.00) → 1.03 (1.00) |
+
+- The caps are exact: the mean interval between frame starts is the
+  period to the microsecond (6944.997 µs at 144 for a period of 6945,
+  16666.98 at 60), where the old limiter gave 62.5 frames per second at
+  60, 166.7 at 144 and 165 and 250 at 240. Caps that divide 1000 (125,
+  500) ran at their rate before too.
+- Frame starts are even: the 99th percentile of the interval between them
+  is 2 to 10 µs above the period at every cap up to 500 (the old limiter's
+  frames started on the millisecond tick, 2 to 83 µs above its whole
+  milliseconds), with a standard deviation of 0.001 to 0.016 ms in the
+  yard. In the demo what is left are the frames that take longer than a
+  period (models loaded in the middle of the match, 8 to 9 ms), followed
+  by one short interval that makes up for it when they were late by less
+  than a period.
+- The frame time and the presents still vary with each frame's own work
+  (the local server's frame, cgame, the renderer), relative to the period
+  about as before: the limiter starts frames evenly and holds nothing
+  after the input is read.
+- Input to present: the median is the same or shorter at every cap with
+  both renderers (in the yard Vulkan 0.649 against 0.677 ms at 144, 0.555
+  against 0.587 at 240; GL1 at 144 in a batch of 5 runs 0.789 against
+  0.788, at 60 1.103 against 1.105). At 60 and 144 the tail is longer, the
+  90th percentile up to 0.16 ms and the 99th up to 0.25 (GL1 in the yard,
+  5 runs: 1.638 against 1.450 ms at 144), all of it after `BeginFrame` (the
+  renderer, cgame and the driver; from the input read to `BeginFrame` the
+  same). It comes from the frame rate, not the wait: the new limiter at
+  the frame rates the old one gave (caps 62 and 167: 62.0 and 166.97 frames
+  per second, 4 runs) has the old tails within the run to run spread (99th
+  percentile, GL1 at 167: 1.425 against 1.438 ms, Vulkan 1.229 against
+  1.173, its runs 1.162 to 1.264 against 1.146 to 1.225; at 62: 2.346
+  against 2.237 and 1.991 against 1.925, the runs 2.081 to 2.474 against
+  2.135 to 2.337 and 1.871 to 2.028 against 1.756 to 1.960) and lower
+  medians, and the same binary at 144 the longer GL1 tail (1.589). How a
+  frame rate near a multiple of the display's (59.96 Hz here, frames shown
+  by the compositor) lands against its refreshes is the likely cause; a VRR
+  display, where caps are used most, wasn't available to test.
+- CPU: the polled last millisecond costs CPU at every cap below 1000, 0.4
+  to 0.7 ms of a core more per frame: Vulkan in the yard 0.11 to 0.13 CPUs at
+  60, 0.19 to 0.26 at 144, 0.26 to 0.41 at 240, 0.34 to 0.55 at 333 and
+  0.50 to 0.78 at 500; uncapped and at 1000, the same as before.
+- Uncapped and at 1000 the frame rates are the old ones within the run to
+  run spread (GL1 in the demo 903.9 and 912.2 frames per second with the
+  new binary at 1000 and 0, the same code, the old one 912.8 and 910.8).
+  The new limiter doesn't start a frame before `Sys_Milliseconds` has
+  ticked since the last one, where the old `bias` let a frame that
+  followed a late one start at once, with 0 ms of game time when the
+  millisecond hadn't changed (`Com_ModifyMsec` made it 1 ms).
+- The deterministic views (`run.sh`: `com_maxfps 60`, `fixedtime 16`) give
+  the same frames to the bit with both binaries: `dm/mohdm1`,
+  `obj/obj_team2`, `mohdm1_dlight`, `menus.txt` and `mp_mohdm1` with Vulkan
+  and `dm/mohdm1` with GL1 (33 views; `MOH_BIN=openmohaa_before run.sh`).
+  A dedicated server (`omohaaded`, `dm/mohdm1`) runs 20.00 and 40.00 frames
+  a second at `sv_fps` 20 and 40 with both binaries, its intervals 49.82 to
+  50.16 ms instead of 49.36 to 50.64.
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -2769,6 +2989,22 @@ Done:
     `tools/framelog.py`. The causes it found are the first entries of
     Remaining.
 
+12. Frame limiter (2026-10-17, an engine change, see Performance, Frame
+    limiter): `Com_Frame` waits for a deadline in microseconds that
+    advances by one period (`Sys_Microseconds`, `NET_SleepUs`, a timer
+    slack of 1 µs on Linux), sleeping until 1 ms before it and polling the
+    rest, instead of whole milliseconds since the last frame; the `bias`
+    is gone, the 1 ms floor (no frame of 0 ms, uncapped at most 1000 a
+    second) stays. Measured with both renderers in a match demo and a
+    fixed view at nine caps: exact caps, even frame starts, the median
+    input to present time the same or shorter, more CPU; shorter sleeps
+    instead of the polling saved CPU but cost latency (the core clocks
+    down). The deterministic views give the same frames to the bit. The
+    tools gained `perf.py --binaries`, `--caps`, `--seconds`, `--preload`
+    and the game's CPU use and core, `libinlat.so` (input read to present,
+    either renderer), its files in `framelog.py`, and `MOH_BIN` in
+    `run.sh`.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -2828,6 +3064,15 @@ Remaining:
      53 % of the slow frames at 3840x2160): GPU time, see the texture
      compression item below.
 
+- The frame limiter (see Performance, Frame limiter): at caps of 60 and
+  144 the tail of the input to present time is up to 0.25 ms longer than
+  with the old limiter's 62.5 and 166.7 frames per second, after
+  `BeginFrame` (renderer and driver), and the new limiter at those old
+  rates has the old tails: likely the frame rate against the 59.96 Hz
+  display, untested with a VRR display. Untested on Windows (whole
+  millisecond sleeps, the last 2 ms polled). The polled millisecond costs
+  0.4 to 0.7 ms of a core per frame; on this CPU sleeping through it cost
+  up to 0.03 ms of input to present at 144 (lower clocks).
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
   forests most batches still go through the CPU because of them: in
   `m6l1a`, `m3l3`, `dm/mohdm3` and `obj/obj_team2` a surface of the tree

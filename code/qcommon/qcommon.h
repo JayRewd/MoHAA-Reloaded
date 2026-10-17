@@ -245,7 +245,7 @@ int		NET_StringToAdr ( const char *s, netadr_t *a, netadrtype_t family);
 qboolean	NET_GetLoopPacket (netsrc_t sock, netadr_t *net_from, msg_t *net_message);
 void		NET_JoinMulticast6(void);
 void		NET_LeaveMulticast6(void);
-void		NET_Sleep(int msec);
+void		NET_SleepUs(int64_t usec);
 
 
 #define	MAX_MSGLEN				49152		// max length of a message, which may
@@ -1384,6 +1384,8 @@ void	Sys_Print( const char *msg );
 // Sys_Milliseconds should only be used for profiling purposes,
 // any game related timing information should come from event timestamps
 int		Sys_Milliseconds (void);
+// a monotonic clock in microseconds (the frame limiter's deadlines)
+int64_t	Sys_Microseconds (void);
 
 qboolean Sys_RandomBytes( byte *string, int len );
 
