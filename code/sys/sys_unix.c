@@ -547,6 +547,26 @@ int Sys_Milliseconds (void)
 }
 
 /*
+================
+Sys_Microseconds
+
+Sys_Milliseconds' clock in microseconds, so the frame limiter knows when the
+millisecond ticks (Metal port)
+================
+*/
+long long Sys_Microseconds (void)
+{
+	struct timeval tp;
+
+	gettimeofday(&tp, NULL);
+
+	if (!sys_timeBase)
+		sys_timeBase = tp.tv_sec;
+
+	return (long long)(tp.tv_sec - (long)sys_timeBase)*1000000 + tp.tv_usec;
+}
+
+/*
 ==================
 Sys_RandomBytes
 ==================

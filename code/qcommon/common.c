@@ -2218,22 +2218,34 @@ int Com_ModifyMsec( int msec ) {
 
 /*
 =================
-Com_TimeVal
+Com_FrameWait
+
+Waits until Sys_Microseconds reaches deadlineUs, with at least one look at the
+network: asleep until pollUs before the deadline (NET_SleepUs: packets are read
+as they come; a local server sends its queued packets when they are due), then
+polling (Metal port).
 =================
 */
-
-int Com_TimeVal(int minMsec)
+static void Com_FrameWait( long long deadlineUs, long long pollUs )
 {
-	int timeVal;
+	long long	sleepUs;
+	int			timeValSV;
 
-	timeVal = Sys_Milliseconds() - com_frameTime;
+	do {
+		sleepUs = deadlineUs - Sys_Microseconds() - pollUs;
 
-	if(timeVal >= minMsec)
-		timeVal = 0;
-	else
-		timeVal = minMsec - timeVal;
+		if ( com_sv_running->integer ) {
+			timeValSV = SV_SendQueuedPackets();
+			if ( sleepUs > ( timeValSV - 1 ) * 1000LL ) {
+				sleepUs = ( timeValSV - 1 ) * 1000LL;
+			}
+		}
 
-	return timeVal;
+		if ( com_busyWait->integer || sleepUs < 0 ) {
+			sleepUs = 0;
+		}
+		NET_SleepUs( sleepUs );
+	} while ( Sys_Microseconds() < deadlineUs );
 }
 
 /*
@@ -2258,9 +2270,10 @@ Com_Frame
 */
 void Com_Frame( void ) {
 
-	int		msec, minMsec;
-	int		timeVal, timeValSV;
-	static int	lastTime = 0, bias = 0;
+	int		msec, minMsec, maxfps;
+	static int	lastTime = 0;
+	static long long	nextFrameUs;	// the frame rate cap's deadline
+	long long	periodUs, deadlineUs, nowUs, pollUs;
 	long long	waitStartUsec;
  
 	int		timeBeforeFirstEvents;
@@ -2314,7 +2327,11 @@ void Com_Frame( void ) {
 		timeBeforeFirstEvents = Sys_Milliseconds ();
 	}
 
-    // Figure out how much time we have
+    // Figure out how much time we have: at least 1 ms of Sys_Milliseconds (no
+    // frame of 0 ms, so at most 1000 frames a second, also uncapped), a
+    // dedicated server's frame, and the period of a client's frame rate cap
+    minMsec = 1;
+    periodUs = 0;
     if (!com_timedemo->integer)
     {
         if (com_dedicated->integer)
@@ -2322,49 +2339,52 @@ void Com_Frame( void ) {
         else
         {
             if (com_minimized->integer && com_maxfpsMinimized->integer > 0)
-                minMsec = 1000 / com_maxfpsMinimized->integer;
+                maxfps = com_maxfpsMinimized->integer;
             else if (com_unfocused->integer && com_maxfpsUnfocused->integer > 0)
-                minMsec = 1000 / com_maxfpsUnfocused->integer;
-            else if (com_maxfps->integer > 0)
-                minMsec = 1000 / com_maxfps->integer;
+                maxfps = com_maxfpsUnfocused->integer;
             else
-                minMsec = 1;
+                maxfps = com_maxfps->integer;
 
-            timeVal = com_frameTime - lastTime;
-            bias += timeVal - minMsec;
-
-            if (bias > minMsec)
-                bias = minMsec;
-
-            // Adjust minMsec if previous frame took too long to render so
-            // that framerate is stable at the requested value.
-            minMsec -= bias;
+            // 1000 and more: no cap, only the 1 ms (as uncapped)
+            if (maxfps > 0 && maxfps < 1000)
+                periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
         }
     }
-    else
-        minMsec = 1;
+
+    deadlineUs = (com_frameTime + minMsec) * 1000LL;
+
+    // The cap's deadline advances by exactly one period (Metal port, ideas
+    // from the Vulkan port's 413c50d1 and e43e3e1d): caps that don't divide
+    // 1000 are exact (240 runs at 240, no longer 250). A frame late by less
+    // than a period is made up by the next one; after a later one, frames
+    // start again from now (no burst to catch up). Caps that divide 1000 keep
+    // the deadline on the millisecond tick: every frame is then 1000 / cap ms
+    // of game time, one usercmd, as before. A deadline inside the millisecond
+    // would put some reads of com_frameTime in the next one (3 and 5 ms
+    // frames at 250).
+    if (periodUs)
+    {
+        nowUs = Sys_Microseconds();
+        nextFrameUs += periodUs;
+        if (nowUs - nextFrameUs > periodUs)
+            nextFrameUs = nowUs;
+        if (periodUs % 1000 == 0)
+            nextFrameUs -= nextFrameUs % 1000;
+        if (deadlineUs < nextFrameUs)
+            deadlineUs = nextFrameUs;
+    }
+
+    // The wait polls its last millisecond, a focused client the second half
+    // of its frame: macOS runs a thread that sleeps longer than it works on
+    // the efficiency cores, where a frame takes ~1.5 ms from input to commit
+    // instead of ~0.2 (at 125 to 250 frames a second; Metal port).
+    pollUs = 1000;
+    if (periodUs / 2 > pollUs && !com_unfocused->integer && !com_minimized->integer)
+        pollUs = periodUs / 2;
 
     waitStartUsec = com_timedemo->integer ? Com_Microseconds() : 0;
 
-    do
-    {
-        if (com_sv_running->integer)
-        {
-            timeValSV = SV_SendQueuedPackets();
-
-            timeVal = Com_TimeVal(minMsec);
-
-            if (timeValSV < timeVal)
-                timeVal = timeValSV;
-        }
-        else
-            timeVal = Com_TimeVal(minMsec);
-
-        if (com_busyWait->integer || timeVal < 1)
-            NET_Sleep(0);
-        else
-            NET_Sleep(timeVal - 1);
-    } while (Com_TimeVal(minMsec));
+    Com_FrameWait(deadlineUs, pollUs);
 
     if (com_timedemo->integer) {
         com_timedemoWaitUsec += Com_Microseconds() - waitStartUsec;

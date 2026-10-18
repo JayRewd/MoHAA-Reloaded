@@ -80,6 +80,9 @@ static qboolean	winsockInitialized = qfalse;
 #	include <sys/types.h>
 #	include <sys/time.h>
 #	include <unistd.h>
+#	ifdef __APPLE__
+#		include <sys/event.h>
+#	endif
 #	if !defined(__sun) && !defined(__sgi)
 #		include <ifaddrs.h>
 #	endif
@@ -1619,7 +1622,7 @@ void NET_Shutdown( void ) {
 ====================
 NET_Event
 
-Called from NET_Sleep which uses select() to determine which sockets have seen action.
+Called from NET_SleepUs which uses select() to determine which sockets have seen action.
 ====================
 */
 
@@ -1654,20 +1657,51 @@ void NET_Event(fd_set *fdr)
 
 /*
 ====================
-NET_Sleep
+NET_SleepUs
 
-Sleeps msec or until something happens on the network
+Sleeps usec or until something happens on the network
+
+On macOS the sleep is a kqueue timer of critical urgency and select only polls:
+select's timeout is coalesced there and ends late by about a fifth of it (a
+2 ms select ~0.4 ms, a long one up to 5 ms), the timer by ~25 us (Metal port).
 ====================
 */
-void NET_Sleep(int msec)
+#ifdef __APPLE__
+static int net_kqueue = -1;
+#endif
+
+void NET_SleepUs(long long usec)
 {
 	struct timeval timeout;
 	fd_set fdr;
 	int retval;
 	SOCKET highestfd = INVALID_SOCKET;
 
-	if(msec < 0)
-		msec = 0;
+	if(usec < 0)
+		usec = 0;
+
+#ifdef __APPLE__
+	if(usec > 0)
+	{
+		struct kevent64_s changes[3], event;
+		int numChanges = 0;
+
+		if(net_kqueue == -1)
+			net_kqueue = kqueue();
+
+		// a packet ends the sleep; adding the timer again clears an old one
+		if(ip_socket != INVALID_SOCKET)
+			EV_SET64(&changes[numChanges++], ip_socket, EVFILT_READ, EV_ADD, 0, 0, 0, 0, 0);
+		if(ip6_socket != INVALID_SOCKET)
+			EV_SET64(&changes[numChanges++], ip6_socket, EVFILT_READ, EV_ADD, 0, 0, 0, 0, 0);
+		EV_SET64(&changes[numChanges++], 0, EVFILT_TIMER, EV_ADD | EV_ONESHOT,
+			NOTE_USECONDS | NOTE_CRITICAL | NOTE_LEEWAY, usec, 0, 0, 0);	// no leeway
+
+		// select sleeps instead if kqueue fails
+		if(net_kqueue != -1 && kevent64(net_kqueue, changes, numChanges, &event, 1, 0, NULL) != -1)
+			usec = 0;
+	}
+#endif
 
 	FD_ZERO(&fdr);
 
@@ -1689,13 +1723,13 @@ void NET_Sleep(int msec)
 	if(highestfd == INVALID_SOCKET)
 	{
 		// windows ain't happy when select is called without valid FDs
-		SleepEx(msec, 0);
+		SleepEx((DWORD)(usec/1000), 0);
 		return;
 	}
 #endif
 
-	timeout.tv_sec = msec/1000;
-	timeout.tv_usec = (msec%1000)*1000;
+	timeout.tv_sec = usec/1000000;
+	timeout.tv_usec = usec%1000000;
 
 	retval = select(highestfd + 1, &fdr, NULL, NULL, &timeout);
 
