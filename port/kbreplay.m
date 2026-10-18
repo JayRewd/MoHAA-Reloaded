@@ -14,6 +14,16 @@
 // eventWithCGEvent:], [NSApp postEvent:atStart:]; never CGEventPost), around the capture changes (the menu, the
 // console), and logs SE_MOUSE too, with the UI's cursor position at every step where it is used (released, or a
 // captured menu). A capture still takes the real cursor (warped to the window's center and hidden).
+//
+// `dlgtest <name>` checks Sys_Dialog with the game up (Phase 6e): once the game has the mouse it opens an OK/Cancel
+// dialog through Sys_Dialog, logs what the screen shows meanwhile (the dialog's window and every on-screen window in
+// front of it that covers it, the cursor, the display mode and capture), dismisses it from a timer (Cancel), then
+// logs the game's state for a few frames and quits. With OMM_DLGTEST=<log path> in the environment, a timer installed
+// before main does the same for a dialog without a window: the startup's "Abnormal Exit" question (No).
+//
+// `urltest <name>` (built with PROTOCOL_HANDLER only: the kburl flavor) checks the openmohaa:// handler: it replaces
+// the connect command with one that only logs its arguments, sends the game's own process kAEGetURL Apple events
+// with good and bad links (nothing leaves the process, nothing connects), logs what reached connect and quits.
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -734,6 +744,354 @@ static void MsReplay_Frame( void )
 }
 
 /*
+==============================================================================
+
+THE DIALOG CHECK (dlgtest)
+
+==============================================================================
+*/
+
+static int		dlg_state;		// 1 = waiting for the game, 2 = the dialog is done: frames counted, 0 = idle
+static int		dlg_frames;
+
+static const char *DlgRect( CGRect r )
+{
+	return va( "%.0f,%.0f %.0fx%.0f", r.origin.x, r.origin.y, r.size.width, r.size.height );
+}
+
+/*
+===============
+DlgProbe
+
+What the screen shows: the game window, the dialog, and the on-screen windows in front of the dialog that overlap
+it (CGWindowList, front to back, global top-left coordinates). Window names need a permission the tools don't have;
+the owner, level and bounds don't.
+===============
+*/
+static void DlgProbe( FILE *log, const char *label, NSWindow *game )
+{
+	NSWindow *modal = NSApp.modalWindow;
+	CGDirectDisplayID display = CGMainDisplayID( );
+	CGDisplayModeRef mode = CGDisplayCopyDisplayMode( display );
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	fprintf( log, "%s: app active %d, presentation 0x%lx, main display %zux%zu captured %d, cursor visible %d, "
+		"IN_IsCursorActive %d, catcher 0x%x\n", label, NSApp.active, (unsigned long)NSApp.presentationOptions,
+		CGDisplayModeGetWidth( mode ), CGDisplayModeGetHeight( mode ), CGDisplayIsCaptured( display ),
+		CGCursorIsVisible( ), IN_IsCursorActive( ), Key_GetCatcher( ) );
+#pragma clang diagnostic pop
+	CGDisplayModeRelease( mode );
+
+	if( game )
+		fprintf( log, "  game window %ld: level %ld, visible %d, minimized %d, key %d, on the active space %d\n",
+			(long)game.windowNumber, (long)game.level, game.visible, game.miniaturized, game.keyWindow,
+			game.onActiveSpace );
+
+	if( modal )
+	{
+		CFArrayRef list = CGWindowListCopyWindowInfo( kCGWindowListOptionOnScreenOnly, kCGNullWindowID );
+		NSArray *windows = (__bridge_transfer NSArray *)list;
+		CGRect dialogRect = CGRectNull;
+		int over = 0;
+
+		fprintf( log, "  dialog %ld: level %ld, visible %d, key %d, on the active space %d\n",
+			(long)modal.windowNumber, (long)modal.level, modal.visible, modal.keyWindow, modal.onActiveSpace );
+
+		for( NSDictionary *w in windows )
+		{
+			if( [w[ (id)kCGWindowNumber ] longValue] == modal.windowNumber )
+				CGRectMakeWithDictionaryRepresentation( (__bridge CFDictionaryRef)w[ (id)kCGWindowBounds ],
+					&dialogRect );
+		}
+		if( CGRectIsNull( dialogRect ) )
+		{
+			fprintf( log, "  dialog not in the on-screen window list\n" );
+			return;
+		}
+
+		fprintf( log, "  dialog on screen at %s\n", DlgRect( dialogRect ) );
+		for( NSDictionary *w in windows )
+		{
+			CGRect r;
+
+			if( [w[ (id)kCGWindowNumber ] longValue] == modal.windowNumber )
+				break;
+			CGRectMakeWithDictionaryRepresentation( (__bridge CFDictionaryRef)w[ (id)kCGWindowBounds ], &r );
+			if( !CGRectIntersectsRect( r, dialogRect ) )
+				continue;
+			over++;
+			fprintf( log, "  in front of it: %s (pid %d) window %ld, layer %ld, alpha %.2f, %s\n",
+				[w[ (id)kCGWindowOwnerName ] UTF8String], [w[ (id)kCGWindowOwnerPID ] intValue],
+				[w[ (id)kCGWindowNumber ] longValue], [w[ (id)kCGWindowLayer ] longValue],
+				[w[ (id)kCGWindowAlpha ] doubleValue], DlgRect( r ) );
+		}
+		fprintf( log, "  %d window(s) in front of the dialog over it\n", over );
+	}
+	fflush( log );
+}
+
+/*
+===============
+DlgButton
+
+The dialog's button with that title (NSAlert's own views).
+===============
+*/
+static NSButton *DlgButton( NSView *view, NSString *title )
+{
+	if( [view isKindOfClass:[NSButton class]] && [((NSButton *)view).title isEqualToString:title] )
+		return (NSButton *)view;
+
+	for( NSView *subview in view.subviews )
+	{
+		NSButton *button = DlgButton( subview, title );
+
+		if( button )
+			return button;
+	}
+	return nil;
+}
+
+/*
+===============
+DlgAnswer
+
+Answers the dialog with its second button, pressed as a click presses it (performClick: runs the button's action,
+NSAlert's own stop). Without the button, the modal loop is stopped directly; a timer isn't an event, so an empty
+event then wakes the loop to see the stop.
+===============
+*/
+static void DlgAnswer( FILE *log )
+{
+	NSWindow *modal = NSApp.modalWindow;
+	NSButton *button = DlgButton( modal.contentView, @"Cancel" ) ?: DlgButton( modal.contentView, @"No" );
+
+	fprintf( log, "  answered: %s\n", button ? button.title.UTF8String : "no button found, the loop stopped" );
+	fflush( log );
+	if( button )
+	{
+		[button performClick:nil];
+		return;
+	}
+	[NSApp stopModalWithCode:NSAlertSecondButtonReturn];
+	[NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
+		modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:YES];
+}
+
+/*
+===============
+DlgDismissLater
+
+A timer that runs inside the dialog's modal loop: probes, then answers.
+===============
+*/
+static void DlgDismissLater( FILE *log, NSWindow *game )
+{
+	NSTimer *timer = [NSTimer timerWithTimeInterval:1.5 repeats:NO block:^( NSTimer *t )
+	{
+		DlgProbe( log, "during the dialog", game );
+		if( NSApp.modalWindow )
+			DlgAnswer( log );
+	}];
+
+	[[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+}
+
+/*
+===============
+DlgTest_f
+===============
+*/
+static void DlgTest_f( void )
+{
+	char path[ MAX_OSPATH ];
+
+	if( Cmd_Argc( ) != 2 )
+	{
+		Com_Printf( "dlgtest <name>: Sys_Dialog in the game, logs to <fs_homepath>/kbreplay-<name>.log\n" );
+		return;
+	}
+
+	Com_sprintf( path, sizeof( path ), "%s/kbreplay-%s.log", Cvar_VariableString( "fs_homepath" ), Cmd_Argv( 1 ) );
+	kb_log = fopen( path, "w" );
+	if( !kb_log )
+	{
+		Com_Printf( "dlgtest: can't write %s\n", path );
+		return;
+	}
+
+	kb_gameWindow = NSApp.keyWindow ?: NSApp.mainWindow;
+	fprintf( kb_log, "dlgtest %s: r_fullscreen %d, r_noborder %d, r_borderlessWindow %d\n", Cmd_Argv( 1 ),
+		Cvar_VariableIntegerValue( "r_fullscreen" ), Cvar_VariableIntegerValue( "r_noborder" ),
+		Cvar_VariableIntegerValue( "r_borderlessWindow" ) );
+	fflush( kb_log );
+
+	dlg_state = 1;
+	dlg_frames = 0;
+}
+
+/*
+===============
+DlgTest_Frame
+===============
+*/
+static void DlgTest_Frame( void )
+{
+	dialogResult_t result;
+
+	if( dlg_state == 2 )
+	{
+		dlg_frames++;
+		if( dlg_frames == 1 || dlg_frames == 50 || dlg_frames == 250 )
+			DlgProbe( kb_log, va( "%d frame(s) after the dialog", dlg_frames ), kb_gameWindow );
+		if( dlg_frames == 260 )
+		{
+			dlg_state = 0;
+			Cbuf_AddText( "quit\n" );
+		}
+		return;
+	}
+
+	// the game has the mouse (in the map, no catcher, captured) for 100 frames, or 10 s went by
+	if( clc.state == CA_ACTIVE && Key_GetCatcher( ) == 0 && IN_IsCursorActive( ) )
+		dlg_frames++;
+	if( dlg_frames < 100 && ++kb_startWait < 2500 )
+		return;
+
+	DlgProbe( kb_log, "before the dialog", kb_gameWindow );
+	DlgDismissLater( kb_log, kb_gameWindow );
+	result = Sys_Dialog( DT_OK_CANCEL, "dlgtest: Sys_Dialog with the game up. It closes by itself.", "dlgtest" );
+	fprintf( kb_log, "Sys_Dialog returned %s\n", result == DR_CANCEL ? "DR_CANCEL (the second button)" :
+		result == DR_OK ? "DR_OK" : "something else" );
+	DlgProbe( kb_log, "right after Sys_Dialog", kb_gameWindow );
+
+	dlg_state = 2;
+	dlg_frames = 0;
+}
+
+/*
+===============
+DlgStartupWatch
+
+OMM_DLGTEST=<log path>: before main, a timer that answers the first dialog (the startup's "Abnormal Exit"
+question, before any window) with its second button, No, after probing it.
+===============
+*/
+__attribute__((constructor)) static void DlgStartupWatch( void )
+{
+	const char *path = getenv( "OMM_DLGTEST" );
+	__block FILE *log;
+	__block int fires = 0;
+	CFRunLoopTimerRef timer;
+
+	if( !path || !( log = fopen( path, "w" ) ) )
+		return;
+
+	timer = CFRunLoopTimerCreateWithHandler( NULL, CFAbsoluteTimeGetCurrent( ) + 1.5, 0.5, 0, 0,
+		^( CFRunLoopTimerRef t )
+	{
+		if( NSApp.modalWindow )
+		{
+			DlgProbe( log, "the startup dialog", nil );
+			DlgAnswer( log );
+			CFRunLoopTimerInvalidate( t );
+		}
+		else if( ++fires == 60 )
+		{
+			fprintf( log, "no dialog in 30 s\n" );
+			fflush( log );
+			CFRunLoopTimerInvalidate( t );
+		}
+	} );
+	CFRunLoopAddTimer( CFRunLoopGetMain( ), timer, kCFRunLoopCommonModes );
+	CFRelease( timer );
+}
+
+#ifdef PROTOCOL_HANDLER
+/*
+==============================================================================
+
+THE LINK CHECK (urltest)
+
+==============================================================================
+*/
+
+/*
+===============
+UrlConnect_f
+
+Stands in for connect: logs, connects nowhere.
+===============
+*/
+static void UrlConnect_f( void )
+{
+	fprintf( kb_log, "  connect: %s\n", Cmd_Args( ) );
+	fflush( kb_log );
+}
+
+/*
+===============
+UrlTest_f
+===============
+*/
+static void UrlTest_f( void )
+{
+	static const char *links[] =
+	{
+		"openmohaa://connect/203.0.113.7:12203",			// documentation addresses (RFC 5737, RFC 3849)
+		"openmohaa:connect/[2001:db8::1]:12203",
+		"openmohaa://connect/example.test?password=abc",	// the query is dropped
+		"openmohaa://connect/bad;host",						// refused: a character outside a-zA-Z0-9.:-[]
+		"openmohaa://connect/",								// refused: no argument
+		"openmohaa://status",								// refused: only connect
+		"quake3://connect/203.0.113.7",						// another scheme: ignored
+	};
+	char path[ MAX_OSPATH ];
+	int i;
+
+	if( Cmd_Argc( ) != 2 )
+	{
+		Com_Printf( "urltest <name>: the openmohaa:// handler, logs to <fs_homepath>/kbreplay-<name>.log\n" );
+		return;
+	}
+
+	Com_sprintf( path, sizeof( path ), "%s/kbreplay-%s.log", Cvar_VariableString( "fs_homepath" ), Cmd_Argv( 1 ) );
+	kb_log = fopen( path, "w" );
+	if( !kb_log )
+	{
+		Com_Printf( "urltest: can't write %s\n", path );
+		return;
+	}
+	fprintf( kb_log, "urltest %s: PROTOCOL_HANDLER \"%s\"\n", Cmd_Argv( 1 ), PROTOCOL_HANDLER );
+
+	Cmd_RemoveCommand( "connect" );
+	Cmd_AddCommand( "connect", UrlConnect_f );
+
+	for( i = 0; i < ARRAY_LEN( links ); i++ )
+	{
+		NSAppleEventDescriptor *event = [NSAppleEventDescriptor appleEventWithEventClass:kInternetEventClass
+			eventID:kAEGetURL targetDescriptor:[NSAppleEventDescriptor currentProcessDescriptor]
+			returnID:kAutoGenerateReturnID transactionID:kAnyTransactionID];
+		NSError *error = nil;
+
+		[event setParamDescriptor:[NSAppleEventDescriptor descriptorWithString:@( links[ i ] )]
+			forKeyword:keyDirectObject];
+		fprintf( kb_log, "link %s\n", links[ i ] );
+		fflush( kb_log );
+		if( ![event sendEventWithOptions:NSAppleEventSendNoReply timeout:5 error:&error] )
+			fprintf( kb_log, "  not sent: %s\n", error.description.UTF8String );
+		// the handler appends connect to the command buffer: run it now, under this link
+		Cbuf_Execute( 0 );
+	}
+
+	fprintf( kb_log, "done\n" );
+	fflush( kb_log );
+	Cbuf_AddText( "quit\n" );
+}
+#endif
+
+/*
 ===============
 KbReplay_Frame
 
@@ -750,7 +1108,17 @@ void KbReplay_Frame( void )
 		Cmd_AddCommand( "kbreplay", KbReplay_f );
 		Cmd_AddCommand( "msreplay", MsReplay_f );
 		Cmd_AddCommand( "mslog", MsLog_f );
+		Cmd_AddCommand( "dlgtest", DlgTest_f );
+#ifdef PROTOCOL_HANDLER
+		Cmd_AddCommand( "urltest", UrlTest_f );
+#endif
 		registered = qtrue;
+	}
+
+	if( dlg_state )
+	{
+		DlgTest_Frame( );
+		return;
 	}
 
 	if( ms_logFrames >= 0 )
