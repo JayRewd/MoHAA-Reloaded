@@ -11,11 +11,6 @@ option(BUILD_MACOS_APP "Deploy as a macOS .app" ON)
 # is the baseline the native one is measured against.
 option(USE_SDL "SDL2 for the window and input (OFF: the native AppKit layer, code/macos)" ON)
 
-# HTTP only serves upstream's update checker (it asks GitHub for upstream OpenMoHAA releases, whose builds are not
-# this port's), and it never ran: HAS_LIBCURL, which loads libcurl, is defined nowhere. Without HTTP the checker,
-# its cvars, its per-frame call and the cURL loader are not compiled.
-set(USE_HTTP OFF CACHE INTERNAL "")
-
 # openal-soft is built from code/thirdparty (cmake/libraries/openal.cmake) and linked directly: the client calls
 # it without function pointers, and the app carries its own copy in Contents/Frameworks (finish_macos_app)
 set(USE_OPENAL_DLOPEN OFF CACHE INTERNAL "")

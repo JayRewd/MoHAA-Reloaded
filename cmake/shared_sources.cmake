@@ -66,13 +66,6 @@ list(APPEND SYSTEM_SOURCES
     ${SOURCE_DIR}/sys/win_localization.cpp
 )
 
-if(USE_HTTP)
-    list(APPEND SYSTEM_SOURCES
-        ${SOURCE_DIR}/sys/sys_curl.c
-        ${SOURCE_DIR}/sys/sys_update_checker.cpp
-    )
-endif()
-
 # Append TIKI sources
 
 list(APPEND COMMON_SOURCES

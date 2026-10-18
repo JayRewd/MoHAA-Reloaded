@@ -39,10 +39,6 @@ void Sys_PrepareBackTrace();
 void Sys_PrintBackTrace();
 void Sys_PlatformInit_New();
 
-void Sys_UpdateChecker_Init();
-void Sys_UpdateChecker_Process();
-void Sys_UpdateChecker_Shutdown();
-
 #ifdef __cplusplus
 }
 #endif
