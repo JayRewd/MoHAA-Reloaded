@@ -4,6 +4,10 @@
 #   port/build.sh native    the Metal game with the native AppKit layer instead of SDL2 (-DUSE_SDL=OFF; Phase 6,
 #                           built next to the SDL one until SDL goes)
 #   port/build.sh metalref  the Metal game at the last commit (METAL_REF=<ref> for another), for before/after benches
+#   port/build.sh sdlref    the Metal game with SDL2 as it was in the last commit that had it (SDL_REF below), from a
+#                           `git archive` export in build.noindex/sdlref-src: the SDL baseline of Phase 6f (the
+#                           user's feel test and their mouse against SDL), kept apart from metalref so a before/after
+#                           bench never overwrites it.
 #   port/build.sh gl        the GL1 reference: upstream's GL1 renderer as it was in the last commit that had it
 #                           (GL1_REF below), built from a `git archive` export in build.noindex/gl-src, plus the client
 #                           hunks of GL1_PATCHES (benchmark logging only). OpenGL is gone from the tree (Phase 4); the
@@ -25,6 +29,8 @@ GL1_REF=c9dddadd22cf775766b34c118e9ce414290efbb6
 # Client-only commits applied on top of the GL1 export, so the reference reports what the Metal build reports:
 # the timedemo's per-frame work log (Phase 5b). The renderer stays as it was at GL1_REF.
 GL1_PATCHES=(ae894bcf)
+# The last commit with SDL2 (Phase 6g removed it after this one): its code is db88239d's, the 6f baseline.
+SDL_REF=fd94160b617a8afa34e4acac8faa3ca8fc306eed
 
 case "$FLAVOR" in
 	gl)
@@ -45,11 +51,12 @@ case "$FLAVOR" in
 		FLAVOR_ARGS=() ;;
 	metal) omm_mount_metal; FLAVOR_ARGS=() ;;
 	native) omm_mount_metal; FLAVOR_ARGS=(-DUSE_SDL=OFF) ;;
-	metalref)
-		# The Metal game at a commit (METAL_REF, default HEAD: the last commit without the work tree's changes),
-		# from a `git archive` export like gl, for before/after benchmarks in one sitting (bench.sh run metalref).
-		REF="$(git -C "$OMM_ROOT" rev-parse "${METAL_REF:-HEAD}")"
-		SRC_DIR="$OMM_BUILD/metalref-src"
+	metalref|sdlref)
+		# The Metal game at a commit, from a `git archive` export like gl: metalref at METAL_REF (default HEAD: the
+		# last commit without the work tree's changes), for before/after benchmarks in one sitting (bench.sh run
+		# metalref); sdlref at SDL_REF, always.
+		if [ "$FLAVOR" = sdlref ]; then REF="$SDL_REF"; else REF="$(git -C "$OMM_ROOT" rev-parse "${METAL_REF:-HEAD}")"; fi
+		SRC_DIR="$OMM_BUILD/$FLAVOR-src"
 		if [ "$(cat "$SRC_DIR/.metal-ref" 2>/dev/null)" != "$REF" ]; then
 			rm -rf "$SRC_DIR"
 			mkdir -p "$SRC_DIR"
