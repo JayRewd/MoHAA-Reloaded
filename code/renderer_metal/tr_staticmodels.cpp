@@ -441,6 +441,7 @@ void R_AddStaticModelSurfaces(void)
     float                   tiki_scale;
     vec3_t                  tiki_localorigin;
     vec3_t                  tiki_worldorigin;
+    cStaticModelUnpacked_t *unrotated = NULL;
 
     if (!tr.world->numStaticModels) {
         return;
@@ -464,7 +465,11 @@ void R_AddStaticModelSurfaces(void)
         tr.currentEntityNum = i;
         tr.shiftedEntityNum = i << QSORT_ENTITYNUM_SHIFT;
 
-        R_RotateForStaticModel(SM, &tr.viewParms, &tr.ori);
+        // the culling reads only the orientation's origin and axes: the model-view matrix
+        // (R_RotateForStaticModel) waits until the model is visible
+        VectorCopy(SM->origin, tr.ori.origin);
+        AxisCopy(SM->axis, tr.ori.axis);
+        unrotated = SM;
 
         ofsStaticData = 0;
 
@@ -489,6 +494,9 @@ void R_AddStaticModelSurfaces(void)
         if (iRadiusCull != CULL_OUT
             && (iRadiusCull != CULL_CLIP || R_CullStaticModel(SM->tiki, tiki_scale, tiki_localorigin) != CULL_OUT)) {
             dtikisurface_t *dsurf;
+
+            R_RotateForStaticModel(SM, &tr.viewParms, &tr.ori);
+            unrotated = NULL;
 
             if (tr.viewParms.isPortal) {
                 SM->lodpercentage[1] = R_CalcLod(tiki_worldorigin, SM->cull_radius / SM->scale);
@@ -597,6 +605,11 @@ void R_AddStaticModelSurfaces(void)
                 }
             }
         }
+    }
+
+    // the orientation as the last model left it
+    if (unrotated) {
+        R_RotateForStaticModel(unrotated, &tr.viewParms, &tr.ori);
     }
 
     tr.shiftedIsStatic = 0;
