@@ -60,6 +60,14 @@ function(finish_macos_app)
     add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${RESOURCES_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy ${MACOS_ICON_PATH} ${RESOURCES_DIR})
+
+    # The bundle is arm64 only: keep just the arm64 slice of the libraries copied into it (the internal SDL2
+    # is universal). POST_BUILD commands run in the order they were added, so this follows client.cmake's copy.
+    foreach(LIBRARY IN LISTS CLIENT_DEPLOY_LIBRARIES)
+        get_filename_component(LIBRARY_NAME ${LIBRARY} NAME)
+        add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
+            COMMAND lipo ${LIBRARY} -thin arm64 -output $<TARGET_FILE_DIR:${CLIENT_BINARY}>/${LIBRARY_NAME})
+    endforeach()
 endfunction()
 
 if(NOT "$ENV{APPLE_CERTIFICATE_ID}" STREQUAL "")
