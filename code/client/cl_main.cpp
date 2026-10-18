@@ -581,9 +581,10 @@ void CL_DemoCompleted( void )
 				if( f )
 				{
 					FS_Printf( f, "# %s", buffer );
+					FS_Printf( f, "# frame ms, frame work usec (wall minus frame limiter wait)\n" );
 
 					for( i = 0; i < numFrames; i++ )
-						FS_Printf( f, "%d\n", clc.timeDemoDurations[ i ] );
+						FS_Printf( f, "%d %d\n", clc.timeDemoDurations[ i ], clc.timeDemoWorkUsec[ i ] );
 
 					FS_FCloseFile( f );
 					Com_Printf( "%s written\n", cl_timedemoLog->string );

@@ -1294,18 +1294,25 @@ void CL_SetCGameTime( void ) {
 	// each time it is played back
 	if ( cl_timedemo->integer ) {
 		int now = Sys_Milliseconds( );
+		long long nowUsec = Com_Microseconds( );
 		int frameDuration;
+		int frameWorkUsec;
 
 		if (!clc.timeDemoStart) {
 			clc.timeDemoStart = clc.timeDemoLastFrame = now;
-			clc.timeDemoStartUsec = Com_Microseconds();
-			clc.timeDemoStartWaitUsec = com_timedemoWaitUsec;
+			clc.timeDemoStartUsec = clc.timeDemoLastUsec = nowUsec;
+			clc.timeDemoStartWaitUsec = clc.timeDemoLastWaitUsec = com_timedemoWaitUsec;
 			clc.timeDemoMinDuration = INT_MAX;
 			clc.timeDemoMaxDuration = 0;
 		}
 
 		frameDuration = now - clc.timeDemoLastFrame;
 		clc.timeDemoLastFrame = now;
+
+		// Frame work: the frame's wall time minus the frame limiter's wait (Metal port benchmark)
+		frameWorkUsec = (int)( ( nowUsec - clc.timeDemoLastUsec ) - ( com_timedemoWaitUsec - clc.timeDemoLastWaitUsec ) );
+		clc.timeDemoLastUsec = nowUsec;
+		clc.timeDemoLastWaitUsec = com_timedemoWaitUsec;
 
 		// Ignore the first measurement as it'll always be 0
 		if( clc.timeDemoFrames > 0 )
@@ -1322,6 +1329,8 @@ void CL_SetCGameTime( void ) {
 
 			clc.timeDemoDurations[ ( clc.timeDemoFrames - 1 ) %
 				MAX_TIMEDEMO_DURATIONS ] = frameDuration;
+			clc.timeDemoWorkUsec[ ( clc.timeDemoFrames - 1 ) %
+				MAX_TIMEDEMO_DURATIONS ] = frameWorkUsec;
 		}
 
 		clc.timeDemoFrames++;
