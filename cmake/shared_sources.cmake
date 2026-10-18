@@ -64,9 +64,14 @@ list(APPEND SYSTEM_SOURCES
     ${SOURCE_DIR}/sys/new/sys_main_new.c
     ${SOURCE_DIR}/sys/win_bounds.cpp
     ${SOURCE_DIR}/sys/win_localization.cpp
-    ${SOURCE_DIR}/sys/sys_curl.c
-    ${SOURCE_DIR}/sys/sys_update_checker.cpp
 )
+
+if(USE_HTTP)
+    list(APPEND SYSTEM_SOURCES
+        ${SOURCE_DIR}/sys/sys_curl.c
+        ${SOURCE_DIR}/sys/sys_update_checker.cpp
+    )
+endif()
 
 # Append TIKI sources
 

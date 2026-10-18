@@ -304,17 +304,23 @@ void VM_Forced_Unload_Done(void) {
 void Sys_InitEx()
 {
     Sys_InitLocalization();
+#ifdef USE_HTTP
     Sys_InitCurl();
     Sys_UpdateChecker_Init();
+#endif
 }
 
 void Sys_ShutdownEx()
 {
+#ifdef USE_HTTP
     Sys_UpdateChecker_Shutdown();
     Sys_ShutdownCurl();
+#endif
 }
 
 void Sys_ProcessBackgroundTasks()
 {
+#ifdef USE_HTTP
     Sys_UpdateChecker_Process();
+#endif
 }

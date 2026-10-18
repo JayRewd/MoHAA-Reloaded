@@ -173,7 +173,9 @@ void CL_ServerStatus_f(void);
 void CL_ServerStatusResponse( netadr_t from, msg_t *msg );
 
 static qboolean cl_bCLSystemStarted = qfalse;
+#ifdef USE_HTTP
 static qboolean cl_updateNotified = qfalse;
+#endif
 
 /*
 ===============
@@ -2661,6 +2663,7 @@ when a new version is available
 ==================
 */
 void CL_VerifyUpdate() {
+#ifdef USE_HTTP
     if (cl_updateNotified) {
         return;
     }
@@ -2680,6 +2683,7 @@ void CL_VerifyUpdate() {
 
         UIMessageDialog::ShowMessageBox("Update available", updateText);
     }
+#endif
 }
 
 /*

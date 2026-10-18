@@ -6,6 +6,11 @@ endif()
 
 option(BUILD_MACOS_APP "Deploy as a macOS .app" ON)
 
+# HTTP only serves upstream's update checker (it asks GitHub for upstream OpenMoHAA releases, whose builds are not
+# this port's), and it never ran: HAS_LIBCURL, which loads libcurl, is defined nowhere. Without HTTP the checker,
+# its cvars, its per-frame call and the cURL loader are not compiled.
+set(USE_HTTP OFF CACHE INTERNAL "")
+
 enable_language(OBJC)
 
 list(APPEND SYSTEM_PLATFORM_SOURCES ${SOURCE_DIR}/sys/sys_osx.m)
