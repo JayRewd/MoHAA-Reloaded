@@ -8,4 +8,4 @@ cc -O2 -Wall -Wno-unused-variable -Wno-unused-function -DUSE_RENDERER_DLOPEN -sh
 	-o "$MOH_BINDIR/renderer_timed.so" "$DIR/rtimer.c" -ldl -lm
 cc -O2 -Wall -shared -fPIC -o "$MOH_BINDIR/libstacks.so" "$DIR/stacks.c" -lpthread
 cc -O2 -Wall -shared -fPIC -o "$MOH_BINDIR/libglts.so" "$DIR/glts.c" -ldl
-cc -O2 -Wall -shared -fPIC -o "$MOH_BINDIR/libinlat.so" "$DIR/inlat.c" -ldl
+cc -O2 -Wall -shared -fPIC -I/usr/include/libdrm -o "$MOH_BINDIR/libinlat.so" "$DIR/inlat.c" -ldl -ldrm -lpthread

@@ -11,6 +11,13 @@
                                   frame times of the first run of each view and size
                                   (--labels opengl1=GL1,vulkan=Vulkan,...: the renderers
                                   drawn, their names and the order of the colors)
+  framelog.py --display DIR       when each frame reached the display: a perf.py --framelog
+                                  directory of runs with libinlat.so and INLAT_DISPLAY=1
+                                  (its .pt.txt files), per view and variant the input to
+                                  present, GPU done, X11 completion and display times, the
+                                  share of frames shown, direct scanout, tearing and the
+                                  slack before the compositor's latch (--table: markdown,
+                                  --labels variant=name,...; --json OUT: every value)
   framelog.py --stacks S RT       what the main thread was doing in the slow frames of
                                   renderer_timed.so's frame file RT, from the stack
                                   samples S of the same run (perf.py --stacks and
@@ -50,6 +57,12 @@ input read to the present (what a frame limiter or the renderer must not
 lengthen) and the intervals between input reads (the frame starts) and
 between presents (what reaches the display).
 
+Present timing (--display, see code/renderervk/README.md, Performance,
+Present timing): display_times() says how each case is worked out (Wayland
+presentation feedback, X11 completions and frame callbacks, the vblanks,
+the framebuffer changes with tearing) and scanout_agreement() how direct
+scanout checks it.
+
 Percentiles: the value at index int(n * q) of the sorted frame times
 (p99 of 15000 frames is the 150th slowest, p99.9 the 15th). The last frame
 of an rtimer file is left out: its interval holds the console commands that
@@ -57,7 +70,11 @@ stopped the recording.
 """
 
 import argparse
+import bisect
+import collections
 import glob
+import itertools
+import json
 import math
 import os
 import re
@@ -166,7 +183,7 @@ def dist(values):
     v = sorted(values)
     n = len(v)
     mean = sum(v) / n
-    return {"n": n, "mean": mean / 1000, "median": pct(v, 0.5) / 1000, "p90": pct(v, 0.9) / 1000,
+    return {"n": n, "mean": mean / 1000, "p1": pct(v, 0.01) / 1000, "median": pct(v, 0.5) / 1000, "p90": pct(v, 0.9) / 1000,
             "p99": pct(v, 0.99) / 1000, "p999": pct(v, 0.999) / 1000, "max": v[-1] / 1000,
             "sd": math.sqrt(sum((x - mean) ** 2 for x in v) / n) / 1000}
 
@@ -286,7 +303,7 @@ def summary(log, worst=0, above=None):
 
 # --batch
 
-NAME = re.compile(r"(.+)_(\d+x\d+)_(.+)_(\d+)\.(rt|vk|gl|in)\.txt$")
+NAME = re.compile(r"(.+)_(\d+x\d+)_(.+)_(\d+)\.(rt|vk|gl|in|pt)\.txt$")
 
 
 def inlat_window(inl, rt):
@@ -313,6 +330,8 @@ def batch(directory, above=None, svg=None, worst=0, labels=None):
         if not m:
             continue
         view, size, renderer, run, kind = m.groups()
+        if kind == "pt":
+            continue  # --display
         runs.setdefault((view, size), {}).setdefault(renderer, {}).setdefault(int(run), {})[kind] = Log(path)
     for (view, size), rs in sorted(runs.items(), key=lambda x: (x[0][0], int(x[0][1].split("x")[0]))):
         print(f"== {view} {size}")
@@ -691,6 +710,382 @@ def stack_attribution(log, path, above=None, worst=0):
                 print("    " + " < ".join(s[:8]))
 
 
+
+# --display: present timing (libinlat.so with INLAT_DISPLAY=1)
+
+# KWin's composited frames on the dev machine; any other framebuffer on the
+# primary plane is a client's buffer scanned out directly
+COMPOSITOR_FORMATS = ("AR30", "XR30")
+# the longest a composite is assumed to take (from its start to the frame
+# callbacks it sends), for the upper bound of asynchronous X11 presents
+R_MAX = 1500
+
+
+class Timing:
+    """libinlat.so's present timing file (.pt.txt, see rtimer/inlat.c)"""
+
+    def __init__(self, path):
+        self.path = path
+        self.header = []
+        self.frames, self.swapchains, self.feedback, self.gpu, self.fbs = {}, {}, {}, {}, {}
+        self.completes, self.vblanks, self.polls = [], [], []
+        with open(path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    self.header.append(line[1:].strip())
+                    continue
+                w = line.split()
+                if not w:
+                    continue
+                t, v = w[0], w[1:]
+                if t == "F":  # frame: image swapchain serial id gpu
+                    self.frames[int(v[0])] = tuple(int(x) for x in v[1:6])
+                elif t == "S":  # swapchain: mode eid fullscreen width height
+                    self.swapchains[int(v[0])] = (v[1], int(v[2]), int(v[3]) if len(v) > 3 else 0)
+                elif t == "C":  # recv eid serial kind mode ust msc
+                    self.completes.append(tuple(int(x) for x in v[:7]))
+                elif t == "P":  # frame: recv presented refresh flags
+                    self.feedback[int(v[0])] = tuple(int(x) for x in v[1:5])
+                elif t == "V":  # seq time wake fb format overlay format
+                    self.vblanks.append((int(v[0]), int(v[1]), int(v[2]), int(v[3]), v[4]))
+                elif t == "B":  # fb: width height format modifier
+                    self.fbs[int(v[0])] = (int(v[1]), int(v[2]), v[3], int(v[4]))
+                elif t == "G":  # submission: GPU done
+                    self.gpu[int(v[0])] = int(v[1])
+                elif t == "U":  # time fb format
+                    self.polls.append((int(v[0]), int(v[1]), v[2]))
+        self.complete = {(c[1], c[2]): c for c in reversed(self.completes)}
+        self.wakes = [v[2] for v in self.vblanks]
+        self.times = [v[1] for v in self.vblanks]
+        self.poll_times = [p[0] for p in self.polls]
+
+    def gpu_done(self, frame):
+        """when the GPU finished the frame's last submission (None: unknown)"""
+        fr = self.frames.get(frame)
+        return self.gpu.get(fr[4]) if fr and len(fr) > 4 and fr[4] else None
+
+    def vblank_after(self, t, k=1):
+        """the timestamp of the k-th vblank that starts after t (the flip
+        latches at the start of vblank; the timestamp is the start of scanout)"""
+        i = bisect.bisect_right(self.wakes, t) + k - 1
+        return self.times[i] if i < len(self.times) else None
+
+    def change_before(self, t):
+        """the last framebuffer change on the primary plane at or before t"""
+        i = bisect.bisect_right(self.poll_times, t) - 1
+        return self.poll_times[i] if i >= 0 else None
+
+
+def game_fb(v):
+    """a vblank (or poll) record that shows a client's buffer on the primary plane"""
+    return v[3] and v[4] not in COMPOSITOR_FORMATS + ("-",)
+
+
+def window_frames(inl, rt):
+    """the frames (lines of libinlat.so's file) presented while renderer_timed.so measured"""
+    t0 = rt.clock * 1000 + rt.cols["start"][0]
+    t1 = rt.clock * 1000 + rt.cols["start"][-1] + rt.interval[-1]
+    return [i for i, (r, p) in enumerate(zip(inl.cols["read"], inl.cols["present"])) if r and t0 <= p < t1]
+
+
+def scanout_agreement(pt, presents, frames, vblanks, disp):
+    """direct scanout: a game framebuffer on the primary plane at a vblank
+    is one of the swapchain images, but which isn't reported. For each
+    mapping of the framebuffers to the images, the frame a vblank shows is
+    the newest presented with its image; the share of the vblanks (of a new
+    framebuffer) where that frame is the one `disp` puts there, for the best
+    mapping: high only if `disp` is right (24 mappings for 4 images)"""
+    fbs = sorted({v[3] for v in vblanks if game_fb(v)})
+    images = sorted({pt.frames[f][0] for f in frames if f in pt.frames})
+    if not fbs or len(fbs) > len(images) or len(images) > 7:
+        return None, 0
+    by_image = {i: [f for f in frames if f in pt.frames and pt.frames[f][0] == i] for i in images}
+    by_image_t = {i: [presents[f] for f in fs] for i, fs in by_image.items()}
+    # the frame disp shows at each vblank: the newest shown at or before it
+    shown = sorted((t, f) for f, t in disp.items())
+    times = [t for t, f in shown]
+    checks = []
+    last = None
+    for v in vblanks:
+        if v[3] != last and v[3] in fbs:
+            j = bisect.bisect_right(times, v[1]) - 1
+            if j >= 0:
+                checks.append((v, shown[j][1]))
+        last = v[3]
+    best = 0
+    for perm in itertools.permutations(images, len(fbs)):
+        m = dict(zip(fbs, perm))
+        ok = 0
+        for v, f in checks:
+            ts = by_image_t[m[v[3]]]
+            j = bisect.bisect_left(ts, v[2]) - 1
+            ok += j >= 0 and by_image[m[v[3]]][j] == f
+        best = max(best, ok)
+    return best / max(len(checks), 1), len(checks)
+
+
+def newest_ready(order, ready, limit):
+    """the newest frame of `order` (sorted by present) ready before `limit`"""
+    for f in reversed(order):
+        if ready[f] < limit:
+            return f
+    return None
+
+
+def display_times(inl, pt, frames):
+    """when each frame of `frames` reached the display (us: the start of the
+    scanout that shows it, or the tearing flip; frames never shown are left
+    out), an upper bound where that is a lower one, and how they were found.
+    KWin (6.6) composites on its main thread, latching each surface's newest
+    commit whose buffer is ready (its fence signaled), and sends frame
+    callbacks at the end of a composite; its commit thread commits a frame to
+    the kernel once its buffers are ready, so with tearing the framebuffer
+    change on the primary plane (INLAT_FBPOLL_US) is the flip. A frame is
+    ready when its last submission is done on the GPU (libinlat.so's
+    timeline semaphore), and on X11 also completed by Xwayland.
+    - Wayland, vsync: the presentation feedback's time (KWin: the kernel's
+      page flip timestamp), exact. Tearing (no vsync flag): KWin reports the
+      last vblank's timestamp instead; each framebuffer change shows the
+      newest frame ready before it.
+    - X11, FIFO: Xwayland completes a present at the frame callback of the
+      composite that latched it (its UST), flipped at the next vblank.
+    - X11, asynchronous (immediate, mailbox): Xwayland completes a present
+      when the compositor has its commit, with the UST of the last frame
+      callback, so the presents completed with an earlier UST than a frame
+      callback F were committed before the composite that ends with F; the
+      composite started at F - r and latched the newest of them ready by
+      then, r unknown: r = 0 gives a lower bound, r = R_MAX an upper one.
+      With tearing (many frame callbacks per refresh, or KWin's rule: a
+      fullscreen window presenting with AsyncMayTear, Mesa's immediate) as
+      for Wayland.
+    - direct scanout (a game buffer on the primary plane at the vblanks):
+      the frames each vblank can show are known, which checks the above
+      (scanout_agreement)."""
+    reads, presents = inl.cols["read"], inl.cols["present"]
+    t0, t1 = presents[frames[0]], presents[frames[-1]]
+    vin = [v for v in pt.vblanks if t0 <= v[2] <= t1]
+    info = {"refreshes": len(vin), "frames": len(frames)}
+    info["direct scanout"] = sum(1 for v in vin if game_fb(v)) / max(len(vin), 1)
+    pin = [p for p in pt.polls if t0 <= p[0] <= t1]
+    if pin:
+        info["fb changes per refresh"] = len(pin) / max(len(vin), 1)
+    disp, upper, comp = {}, {}, {}
+    gpu = {f: pt.gpu_done(f) for f in frames}
+    info["gpu done known"] = sum(1 for f in frames if gpu[f]) / len(frames)
+
+    def tearing_rule(order, ready):
+        """each framebuffer change shows the newest frame ready before it
+        (KWin composites with tearing as soon as a frame is ready, and its
+        commit thread flips at once: about 0.45 ms from the frame's GPU work
+        done to the change; with Wayland's feedback, the frames found are
+        those KWin reports presented)"""
+        ptimes = [presents[x] for x in order]
+        last = None
+        for p in pin:
+            j = bisect.bisect_left(ptimes, p[0])
+            f = newest_ready(order[max(0, j - 64):j], ready, p[0])
+            if f is not None and f != last:
+                disp.setdefault(f, p[0])
+                last = f
+
+    if pt.feedback:
+        fb = {f: pt.feedback[f] for f in frames if f in pt.feedback}
+        shown = [f for f in frames if f in fb and fb[f][1] >= 0]
+        info["discarded"] = sum(1 for x in fb.values() if x[1] < 0) / len(frames)
+        info["tearing"] = sum(1 for f in shown if not fb[f][3] & 1) / max(len(shown), 1)
+        if info["tearing"] < 0.5:
+            info["method"] = "wayland feedback"
+            disp = {f: fb[f][1] for f in shown}
+        elif pin:
+            # KWin reports the last vblank's timestamp for a tearing flip
+            info["method"] = "wayland tearing: fb changes, frames ready before them"
+            order = [f for f in frames if gpu[f]]
+            tearing_rule(order, {f: max(presents[f], gpu[f]) for f in order})
+            info["feedback agreement"] = sum(1 for f in disp if f in shown) / max(len(disp), 1)
+        else:
+            info["method"] = "wayland tearing: no fb polls"
+    else:
+        for f in frames:
+            fr = pt.frames.get(f)
+            sc = pt.swapchains.get(fr[1]) if fr else None
+            c = pt.complete.get((sc[1], fr[2])) if sc else None
+            if c:
+                comp[f] = c
+        names = {0: "copy", 1: "flip", 2: "skip", 3: "suboptimal copy"}
+        info["completion modes"] = dict(collections.Counter(names.get(c[4], c[4]) for c in comp.values()))
+        sc = pt.swapchains[pt.frames[frames[-1]][1]] if frames[-1] in pt.frames else ("?", 0, 0)
+        mode = sc[0]
+        info["present mode"] = mode
+        info["fullscreen"] = sc[2]
+        order = sorted(comp, key=lambda f: presents[f])
+        if mode == "fifo":
+            info["method"] = "x11 fifo: vblank after the completion"
+            for f in order:
+                disp[f] = pt.vblank_after(comp[f][5])
+        else:
+            ready = {f: max(gpu[f] or comp[f][0], comp[f][0]) for f in comp}
+            usts = sorted({comp[f][5] for f in comp})
+            info["frame callbacks per refresh"] = len(usts) / max(len(vin), 1)
+            # tearing: seen as many frame callbacks per refresh when frames
+            # come faster than the refresh; near or below it, KWin's rule
+            # (allowTearing on): a fullscreen window presenting with
+            # PresentOptionAsyncMayTear, Mesa's immediate mode
+            if info["frame callbacks per refresh"] > 1.5:
+                info["tearing"] = "seen"
+            elif mode == "immediate" and sc[2]:
+                info["tearing"] = "fullscreen immediate"
+            if "tearing" in info and pin:
+                info["method"] = "x11 async tearing: fb changes, frames ready before them"
+                tearing_rule(order, ready)
+            else:
+                info["method"] = "x11 async: frame callbacks, frames committed and ready before them"
+                for r, out in ((0, disp), (R_MAX, upper)):
+                    last, j = None, 0
+                    for u in usts:
+                        # the newest frame Xwayland committed before u, ready before u - r
+                        while j < len(order) and comp[order[j]][5] < u:
+                            j += 1
+                        f = newest_ready(order[max(0, j - 64):j], ready, u - r)
+                        if f is not None and f != last:
+                            out.setdefault(f, pt.vblank_after(u))
+                            last = f
+    disp = {f: t for f, t in disp.items() if t}
+    upper = {f: t for f, t in upper.items() if t}
+    if info["direct scanout"] > 0.5:
+        info["scanout agreement"], info["scanout checks"] = scanout_agreement(pt, presents, frames, vin, disp)
+    return disp, upper, comp, info
+
+
+def display_values(inl, pt, frames):
+    reads, presents = inl.cols["read"], inl.cols["present"]
+    disp, upper, comp, info = display_times(inl, pt, frames)
+    shown = sorted((t, f) for f, t in disp.items())
+    times = [t for t, f in shown]
+    # the age of what each refresh of the window shows: from the input read
+    # of the newest frame shown at or before it
+    age = []
+    for v in pt.vblanks:
+        if presents[frames[0]] + 50000 <= v[1] <= presents[frames[-1]]:
+            j = bisect.bisect_right(times, v[1]) - 1
+            if j >= 0:
+                age.append(v[1] - reads[shown[j][1]])
+    vals = {
+        "input to present": [presents[f] - reads[f] for f in frames],
+        "input to display": [disp[f] - reads[f] for f in frames if f in disp],
+        "present to display": [disp[f] - presents[f] for f in frames if f in disp],
+        "age at each refresh": age,
+    }
+    if upper:
+        vals["input to display, upper"] = [upper[f] - reads[f] for f in frames if f in upper]
+    if comp:
+        vals["input to completion"] = [comp[f][0] - reads[f] for f in frames if f in comp]
+    gpu = [(f, pt.gpu_done(f)) for f in frames]
+    vals["input to GPU done"] = [g - reads[f] for f, g in gpu if g]
+    # from the frame's image ready (GPU done; on X11 also completed by
+    # Xwayland) to its display: above its run's floor (the compositor's
+    # latch to the scanout), how long the finished frame waited for the
+    # latch, the most a later start of the frame could take off
+    # (a FIFO completion comes after the composite: not a readiness)
+    async_x11 = info.get("present mode") not in (None, "fifo")
+    ready = {f: max(g, comp[f][0] if f in comp and async_x11 else g) for f, g in gpu if g}
+    vals["ready to display"] = [disp[f] - ready[f] for f in frames if f in disp and f in ready]
+    info["shown"] = len(vals["input to display"]) / len(frames)
+    return vals, info
+
+
+def display_batch(directory, out_json=None):
+    runs = {}
+    for path in sorted(glob.glob(os.path.join(directory, "*.pt.txt"))):
+        m = NAME.match(os.path.basename(path))
+        if not m:
+            continue
+        view, size, variant, run, _ = m.groups()
+        base = path[:-len(".pt.txt")]
+        if not (os.path.exists(base + ".in.txt") and os.path.exists(base + ".rt.txt")):
+            continue
+        runs.setdefault((view, size), {}).setdefault(variant, {})[int(run)] = base
+    dump = {}
+    order = ("input to present", "input to GPU done", "input to completion", "input to display",
+             "input to display, upper", "present to display", "ready to display", "age at each refresh")
+    for (view, size), variants in sorted(runs.items()):
+        print(f"== {view} {size}")
+        for variant, byrun in variants.items():
+            per_run, infos = [], []
+            for run, base in sorted(byrun.items()):
+                inl, rt, pt = Log(base + ".in.txt"), Log(base + ".rt.txt"), Timing(base + ".pt.txt")
+                frames = window_frames(inl, rt) if rt.clock else []
+                if len(frames) < 10:
+                    continue
+                vals, info = display_values(inl, pt, frames)
+                per_run.append(vals)
+                infos.append(info)
+            if not per_run:
+                continue
+            print(f"  {variant}: {len(per_run)} runs, {infos[0]['method']}")
+            for name in order:
+                ds = [dist(v[name]) for v in per_run if len(v.get(name, [])) > 1]
+                if ds:
+                    med = {k: statistics.median(d[k] for d in ds) for k in ds[0]}
+                    runs_ = " ".join("%.3f" % d["median"] for d in ds)
+                    print(f"    {name + ' ms:':28s} median {med['median']:6.3f}  p90 {med['p90']:6.3f}  p99 {med['p99']:6.3f}"
+                          f"  p99.9 {med['p999']:6.3f}  max {med['max']:6.3f}  mean {med['mean']:6.3f}  (run medians {runs_})")
+            keys = sorted({k for i in infos for k in i} - {"method"})
+            for k in keys:
+                vs = [i[k] for i in infos if k in i]
+                if all(isinstance(x, (int, float)) for x in vs):
+                    print(f"    {k}: " + " ".join(f"{x:.3f}" if isinstance(x, float) else str(x) for x in vs))
+                else:
+                    print(f"    {k}: " + " | ".join(str(x) for x in vs))
+            dump.setdefault(f"{view} {size}", {})[variant] = {
+                "values": {name: [x for v in per_run for x in v.get(name, [])] for name in order},
+                "runs": [{name: dist(v[name]) for name in order if len(v.get(name, [])) > 1} for v in per_run],
+                "info": infos}
+    if out_json:
+        with open(out_json, "w") as f:
+            json.dump(dump, f)
+    return dump
+
+
+def pooled(values, q):
+    v = sorted(values)
+    return pct(v, q) / 1000 if v else None
+
+
+def display_table(dump, labels=None):
+    """markdown tables of --display results: per view and cap, each variant's
+    medians over its runs for the input to present time, and the display
+    times of all runs pooled (a run of 10 s at 60 Hz shows about 600 frames)"""
+    labels = labels or {}
+    views = collections.OrderedDict()
+    for key in dump:
+        name, size = key.rsplit(" ", 1)
+        m = re.match(r"(.*)_c(\d+)$", name)
+        view, cap = (m.group(1), int(m.group(2))) if m else (name, None)
+        views.setdefault((view, size), []).append((cap, key))
+    for (view, size), caps in views.items():
+        print(f"\n{view} {size}\n")
+        print("| `com_maxfps` | variant | input to present: median, p99 | input to display: median, p90, p99, p99.9 (pooled) | upper bound median | frames shown | direct scanout | tearing | ready to latch slack: median |")
+        print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for cap, key in sorted(caps, key=lambda x: (x[0] is None, x[0] if x[0] is not None else 0)):
+            for variant, d in dump[key].items():
+                runs, vals, infos = d["runs"], d["values"], d["info"]
+                ip = [r["input to present"] for r in runs if "input to present" in r]
+                disp = vals.get("input to display") or []
+                up = vals.get("input to display, upper") or []
+                rd = vals.get("ready to display") or []
+                cells = [str(cap if cap is not None else ""), labels.get(variant, variant)]
+                cells.append("%.3f, %.3f" % (statistics.median(x["median"] for x in ip), statistics.median(x["p99"] for x in ip)) if ip else "")
+                cells.append(", ".join("%.2f" % pooled(disp, q) for q in (0.5, 0.9, 0.99, 0.999)) if len(disp) > 10 else "")
+                cells.append("%.2f" % pooled(up, 0.5) if len(up) > 10 and abs(pooled(up, 0.5) - pooled(disp, 0.5)) > 0.005 else "")
+                cells.append("%.0f %%" % (100 * statistics.median(i.get("shown", 0) for i in infos)))
+                cells.append("%.0f %%" % (100 * statistics.median(i.get("direct scanout", 0) for i in infos)))
+                t = [i.get("tearing") for i in infos]
+                cells.append("yes" if any(x not in (None, 0, 0.0) for x in t) else "no")
+                per_run = [d_["ready to display"] for d_ in runs if "ready to display" in d_]
+                cells.append("%.2f" % statistics.median(x["median"] - x["p1"] for x in per_run) if per_run and "p1" in per_run[0] else "")
+                print("| " + " | ".join(cells) + " |")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("files", nargs="*")
@@ -700,7 +1095,15 @@ def main():
     ap.add_argument("--svg")
     ap.add_argument("--stacks")
     ap.add_argument("--labels", default="", help="for --svg: renderer=name,... in the order of the colors")
+    ap.add_argument("--display", help="a perf.py --framelog directory of runs with libinlat.so and INLAT_DISPLAY=1")
+    ap.add_argument("--json", help="with --display: every run's values and distributions")
+    ap.add_argument("--table", action="store_true", help="with --display: markdown tables (--labels: variant names)")
     args = ap.parse_args()
+    if args.display:
+        dump = display_batch(args.display, args.json)
+        if args.table:
+            display_table(dump, dict(x.split("=", 1) for x in args.labels.split(",") if "=" in x))
+        return
     labels = dict(x.split("=", 1) for x in args.labels.split(",") if "=" in x)
     if args.stacks:
         for p in args.files:

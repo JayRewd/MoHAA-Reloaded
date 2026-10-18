@@ -46,7 +46,9 @@ options:
                     the frame time percentiles. With libglts.so preloaded,
                     GL1's GPU time per frame goes to ...gl.txt, with
                     libinlat.so every frame's input read and present to
-                    ...in.txt
+                    ...in.txt; with INLAT_DISPLAY=1 in the environment
+                    libinlat.so also writes ...pt.txt, what happened to
+                    each present after the call (framelog.py --display)
   --vklog A,B       renderers run with r_vkFrameLog 1 (with --framelog); its
                     wrappers cost about 15 us per frame, so give it a copy
                     of renderer_vulkan.so under another name and compare

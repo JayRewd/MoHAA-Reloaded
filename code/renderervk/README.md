@@ -146,6 +146,19 @@ below are done.
   game time (one usercmd): with the deadline in microseconds anywhere in
   the millisecond, up to half of the frames at 250 were 3 and 5 ms (see
   Performance, Frame limiter)
+- present timing (2026-10-17, measurement only): when frames reach the
+  display after their present, under KWin with Xwayland and as a native
+  Wayland client, from the X11 completion events, Wayland's presentation
+  feedback, the kernel's vblank timestamps and the framebuffer the primary
+  plane scans out (`libinlat.so` with `INLAT_DISPLAY=1`,
+  `framelog.py --display`). From input read to display at 1920x1080 on
+  the 60 Hz display: fullscreen immediate (tearing) 1.5 ms uncapped and
+  2.1 at 250, fullscreen mailbox (direct scanout, KWin bypassed) 4.6 to
+  5.7 and 6.7 to 7.5, a window (composited) 6.6 to 7.3 and 8.6 to 8.9,
+  FIFO 50.5 (three frames queued) and 71 in a window; Xwayland costs
+  nothing measurable. The pacing changes that could lower it without
+  adding lag, with their measured upside, are in Plan, Remaining (see
+  Performance, Present timing)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -429,13 +442,16 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   whose output `stacks.py` sums up, `libglts.so`, GPU timestamps of
   GL1's frames (see Performance, GPU time at 3840x2160), and
   `libinlat.so`, the time from each frame's input read to its present
-  (see Performance, Frame limiter).
+  (see Performance, Frame limiter) and, with `INLAT_DISPLAY=1`, what the
+  presentation engine, the compositor and the display did with it (see
+  Performance, Present timing).
 - `framelog.py`: frame time percentiles and the causes of the slow frames
   from the Vulkan renderer's frame log (`r_vkFrameLog`, `vkframelog`) or
   `renderer_timed.so`'s frame files, a `perf.py --framelog` directory as a
   whole (GL1 against Vulkan frame by frame, an SVG of the distributions,
-  the input to present times of `libinlat.so`), and the stack samples of
-  the slow frames (see Performance, Frame spikes).
+  the input to present times of `libinlat.so`), the stack samples of
+  the slow frames (see Performance, Frame spikes), and when each frame
+  reached the display (`--display`, see Performance, Present timing).
 - `soldiers.py`: writes a view list of a multiplayer scene, soldier models
   around the camera and muzzle flash lights (see Test content).
 - `summary.py`: the worst view's numbers of several lists after
@@ -2200,6 +2216,235 @@ first results, in ms; CPU of the game process):
   comparisons). A dedicated server runs 20.00 and 40.00 frames a second at
   `sv_fps` 20 and 40 as with 413c50d1 (its wait doesn't use the tick).
 
+Present timing (2026-10-17): everything measured above ends at the
+present call. What happens after it, until the frame is on the screen,
+was measured on this machine's path: KWin 6.6.6 (Plasma Wayland session,
+atomic modesetting, `allowTearing` on, its default), Xwayland 24.1.10,
+RADV (Mesa 26.0.8), SDL 2.32.10, the display 1920x1080 on HDMI at 59.975
+Hz (the mean interval of the kernel's vblank timestamps, 16.6735 ms), no
+VRR. The game runs under Xwayland (SDL's default video driver, x11) and,
+with `SDL_VIDEODRIVER=wayland`, as a native Wayland client: this build
+works both ways. A 240 Hz display isn't available here, so these numbers
+show the mechanisms (what the compositor costs, what each present mode
+queues, latency against the cap), not a 240 Hz player's numbers.
+
+What a client is told (`vulkaninfo`; read in the sources: Mesa's
+`src/vulkan/wsi/wsi_common_x11.c`, `wsi_common_wayland.c`, `wsi_common.c`
+and `src/loader/loader_wayland_helper.c` at `mesa-26.0.8`, Xwayland's
+`hw/xwayland/xwayland-present.c` at `xwayland-24.1.10`, KWin's
+`src/compositor.cpp`, `src/core/renderloop.cpp`,
+`src/backends/drm/drm_commit_thread.cpp`, `drm_commit.cpp` and
+`src/wayland/presentationtime.cpp` at `v6.6.6`):
+
+- RADV has `VK_KHR_present_id` and `VK_KHR_present_wait` (and their `2`
+  versions) on X11 (Xwayland) and Wayland surfaces; not
+  `VK_EXT_present_timing` or `VK_GOOGLE_display_timing`.
+- X11: `vkWaitForPresentKHR` returns once the frame's GPU work is done (a
+  timeline semaphore of the WSI) and Xwayland's `PresentCompleteNotify`
+  for it has arrived. Xwayland hands the game's buffer to KWin (mode
+  "flip", in a window too) and completes an asynchronous present
+  (immediate; mailbox, which Mesa sends to Xwayland as asynchronous too;
+  FIFO relaxed) once a `wl_display.sync` round trip shows KWin has the
+  commit, with the UST of the last frame callback; a FIFO present at the
+  next frame callback, which KWin sends at the end of the composite that
+  latched the frame, before its page flip. Neither is the time the frame
+  is shown.
+- Wayland: Mesa asks for presentation feedback (`wp_presentation`) for the
+  presents that carry a present id; `vkWaitForPresentKHR` returns when it
+  says "presented" or "discarded". KWin gives the kernel's page flip
+  timestamp (flags hardware clock, hardware completion, vsync), never
+  "zero copy" (direct scanout isn't reported), and for a tearing flip the
+  timestamp of the vblank before it.
+- So only a native Wayland client is told when its frame was shown, and
+  not with tearing. What an unprivileged process can see besides: the
+  kernel's vblank timestamps (`DRM_IOCTL_WAIT_VBLANK` on `/dev/dri/card1`
+  needs no DRM master), which framebuffer the primary plane scans out
+  (`GETPLANE`, `GETFB2`: KWin composites into AR30 buffers, the game's
+  swapchain images are XR24, so one of them there is direct scanout, the
+  compositor bypassed) and when that changes (KWin's commit; with tearing,
+  the flip), and when the GPU finished each frame.
+- Calling `vkWaitForPresentKHR` on a second thread while the game acquires
+  and presents is invalid (the swapchain is externally synchronized for
+  all three): a first version of the tool did, and with the Wayland WSI
+  the heap got corrupted.
+
+The tool: `libinlat.so` with `INLAT_DISPLAY=1` (nothing of it runs
+otherwise; no renderer change) records, besides each frame's input read
+and present call, the X11 completion events (`xcb_wait_for_special_event`
+wrapped in Mesa's event thread), the Wayland presentation feedback (it
+enables `VK_KHR_present_id`, numbers every present and wraps the
+feedback's listener), when the GPU finished each submission (a timeline
+semaphore of its own that every `vkQueueSubmit` also signals, waited for
+by a thread), every vblank with the primary plane's framebuffer and its
+format, the framebuffer changes (polled every 250 µs with
+`INLAT_FBPOLL_US=250`, for the tearing variants), and whether the SDL
+window is fullscreen. `INLAT_PRESENT_MODE=mailbox` forces mailbox (the
+renderer asks for immediate with `r_swapInterval 0`, FIFO with `1`).
+`framelog.py --display DIR` (`--table`, `--json`) works out when each
+frame was shown, the start of the scanout that shows it or the tearing
+flip:
+
+- Wayland without tearing: the feedback's time, exact.
+- X11 FIFO: the vblank after the completion (the frame callback).
+- Tearing (Wayland: no vsync flag; X11: more frame callbacks than
+  refreshes, or KWin's rule, a fullscreen window presenting with
+  `PresentOptionAsyncMayTear`, which Mesa's immediate mode sets): each
+  framebuffer change shows the newest frame ready before it (KWin
+  composites as soon as a frame is ready and its commit thread flips at
+  once).
+- X11 asynchronous without tearing: KWin latches, when a composite starts,
+  the newest commit whose buffer is ready, and sends frame callbacks at
+  its end; a present completed with a UST older than a frame callback
+  reached KWin before that composite. When the composite started isn't
+  reported: taking its frame callback gives a lower bound, 1.5 ms before
+  it an upper one ("to" in the table).
+
+Checks: with direct scanout, the frames the primary plane showed (for the
+best of the 24 ways to assign the 4 framebuffers to the swapchain images)
+are the ones the rules put there at 95 to 100 % of the vblanks, for
+Xwayland (mailbox: the lower bound; FIFO) and Wayland alike (78 % in one
+Wayland FIFO run at 60 that was composited at 16 % of its vblanks); with
+Wayland's tearing, the frames found are those KWin reported presented;
+in a window, Wayland's exact times and Xwayland's lower bound agree within
+0.35 ms uncapped and at 250 (at 59 the lower bound is 1.1 to 1.8 ms
+under). The probes cost nothing measurable: the input to present medians
+with them and without (`INLAT_DISPLAY=0`) within 0.025 ms.
+
+Results (idle machine: other processes 1.9 CPUs at most; Vulkan,
+1920x1080; `perf.py --list ... --binaries <variant wrappers> --caps
+0,59,250 --seconds 10 --runs 3 --preload libinlat.so --framelog DIR` with
+`INLAT_DISPLAY=1`, FIFO with `--frames 600`, cap 60 one run of 40 s: a cap
+of 60 drifts against the 59.975 Hz display by one refresh in 40 s, so a
+shorter run sees one phase; then `framelog.py --display DIR --table`). A
+variant is a wrapper script in the binary directory, for example
+`SDL_VIDEODRIVER=wayland INLAT_FBPOLL_US=250 exec ./openmohaa "$@" +set
+r_fullscreen 1 +set in_nograb 0` (fullscreen needs `in_nograb 0`: with
+`in_nograb 1`, perf.py's default, the first frame turns it off again).
+Input to present: the median of the runs' medians; input to display: the
+frames shown in all runs pooled (about 600 per 10 s run at 60 Hz, 2400 in
+the 40 s run), ms; shown: the share of the presented frames that reached
+the display; slack: the median time a finished frame waited for the
+compositor's latch (its ready-to-display time above its run's 1st
+percentile), the most a later frame start could take off:
+
+| `com_maxfps` | variant | `o2match`: input to present, median | input to display: median, p90, p99, p99.9 | shown | slack | yard: input to present, median | input to display: median, p90, p99, p99.9 | slack |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | Xwayland, window, immediate | 0.514 | 7.29, 7.81, 8.22, 10.01 (to 8.41) | 6 % | 1.36 | 0.431 | 6.61, 7.48, 7.77, 7.86 (to 7.71) | 0.97 |
+| 0 | Wayland, window, immediate | 0.516 | 7.33, 7.90, 8.89, 9.36 | 6 % | 1.35 | 0.430 | 6.94, 7.58, 7.78, 8.12 | 1.10 |
+| 0 | Xwayland, fullscreen, mailbox | 0.516 | 4.63, 5.67, 6.21, 13.85 (to 6.33) | 6 % | 0.92 | 0.440 | 5.44, 6.73, 7.66, 7.76 (to 7.25) | 1.01 |
+| 0 | Wayland, fullscreen, mailbox | 0.520 | 4.77, 5.71, 6.61, 12.32 | 6 % | 1.14 | 0.438 | 5.69, 7.06, 7.68, 7.90 | 0.99 |
+| 0 | Xwayland, fullscreen, immediate | 0.532 | 1.57, 2.19, 3.09, 3.46 | 96 % | 0.40 | 0.465 | 1.52, 1.76, 2.01, 2.42 | 0.45 |
+| 0 | Wayland, fullscreen, immediate | 0.541 | 1.56, 2.19, 3.12, 3.57 | 96 % | 0.39 | 0.473 | 1.52, 1.76, 2.01, 2.85 | 0.45 |
+| 0 | Xwayland, window, FIFO | 1.008 | 70.97, 71.16, 71.79, 72.13 | 100 % | 2.41 | 0.941 | 71.00, 71.23, 72.11, 72.25 | 1.75 |
+| 0 | Wayland, window, FIFO | 1.070 | 71.27, 72.23, 72.38, 72.44 | 100 % | 2.15 | 1.010 | 71.22, 72.09, 72.35, 72.43 | 1.54 |
+| 0 | Xwayland, fullscreen, FIFO | 1.013 | 50.50, 50.53, 50.55, 50.56 | 100 % | 1.58 | 0.951 | 50.49, 50.52, 50.54, 50.56 | 1.41 |
+| 0 | Wayland, fullscreen, FIFO | 1.011 | 50.49, 50.53, 50.55, 50.56 | 100 % | 1.63 | 0.947 | 50.49, 50.52, 50.55, 50.56 | 1.52 |
+| 250 | Xwayland, window, immediate | 0.589 | 8.60, 10.34, 10.94, 11.17 (to 9.54) | 24 % | 2.25 | 0.561 | 8.59, 10.36, 10.90, 11.54 (to 9.57) | 2.35 |
+| 250 | Wayland, window, immediate | 0.579 | 8.94, 10.61, 11.61, 12.03 | 24 % | 2.55 | 0.558 | 8.66, 10.43, 11.07, 11.82 | 2.52 |
+| 250 | Xwayland, fullscreen, mailbox | 0.576 | 6.80, 8.50, 9.04, 10.11 (to 8.36) | 24 % | 2.66 | 0.551 | 7.49, 9.34, 10.74, 11.40 (to 9.24) | 2.48 |
+| 250 | Wayland, fullscreen, mailbox | 0.575 | 6.74, 8.48, 9.38, 10.17 | 24 % | 2.60 | 0.562 | 7.45, 9.26, 10.52, 11.14 | 2.50 |
+| 250 | Xwayland, fullscreen, immediate | 0.580 | 2.04, 2.53, 3.03, 3.42 | 100 % | 0.16 | 0.563 | 2.10, 2.35, 2.65, 2.90 | 0.17 |
+| 250 | Wayland, fullscreen, immediate | 0.580 | 2.10, 2.42, 2.89, 3.36 | 100 % | 0.17 | 0.565 | 2.17, 2.42, 2.69, 3.17 | 0.16 |
+| 59 | Xwayland, window, immediate | 0.996 | 11.95, 18.60, 21.07, 22.35 (to 16.02) | 100 % | 8.31 | 0.955 | 11.30, 18.09, 19.71, 20.68 (to 16.27) | 7.94 |
+| 59 | Wayland, window, immediate | 1.023 | 13.08, 19.61, 21.34, 21.93 | 100 % | 8.15 | 0.964 | 13.13, 19.64, 21.14, 21.65 | 8.21 |
+| 59 | Xwayland, fullscreen, mailbox | 0.977 | 11.30, 17.99, 20.00, 21.74 (to 15.27) | 100 % | 8.32 | 0.916 | 11.25, 17.97, 20.28, 21.75 (to 15.47) | 7.89 |
+| 59 | Wayland, fullscreen, mailbox | 0.985 | 11.36, 17.97, 19.82, 20.88 | 100 % | 8.09 | 0.925 | 11.36, 18.01, 19.75, 21.43 | 7.99 |
+| 59 | Xwayland, fullscreen, immediate | 0.991 | 2.83, 3.50, 4.40, 10.49 | 100 % | 0.19 | 0.923 | 2.67, 3.34, 4.13, 4.84 | 0.18 |
+| 59 | Wayland, fullscreen, immediate | 0.984 | 2.80, 3.48, 4.40, 10.49 | 100 % | 0.21 | 0.929 | 2.69, 3.47, 4.26, 4.92 | 0.19 |
+| 59 | Xwayland, window, FIFO | 0.993 | 14.41, 22.78, 39.92, 44.34 | 100 % | 9.85 | 0.929 | 12.53, 19.22, 22.43, 23.71 | 8.66 |
+| 59 | Wayland, window, FIFO | 1.013 | 14.02, 21.36, 35.93, 38.13 | 100 % | 8.95 | 0.946 | 13.11, 19.72, 21.28, 21.65 | 8.12 |
+| 59 | Xwayland, fullscreen, FIFO | 0.974 | 12.53, 20.45, 36.37, 40.79 | 100 % | 9.41 | 0.941 | 11.05, 17.75, 19.31, 20.55 | 8.17 |
+| 59 | Wayland, fullscreen, FIFO | 0.991 | 12.91, 22.26, 39.04, 43.02 | 100 % | 9.46 | 0.939 | 11.27, 17.92, 19.53, 19.90 | 8.03 |
+| 60 | Xwayland, window, immediate | 0.856 | 15.68, 21.84, 23.32, 23.61 (to 17.02) | 98 % | 8.47 | 0.958 | 15.29, 21.52, 23.02, 23.16 (to 16.01) | 7.53 |
+| 60 | Wayland, window, immediate | 0.885 | 13.84, 21.09, 22.50, 22.69 | 100 % | 7.65 | 0.951 | 14.89, 22.13, 23.54, 23.70 | 7.45 |
+| 60 | Xwayland, fullscreen, mailbox | 0.822 | 11.87, 19.02, 20.53, 20.77 (to 15.60) | 98 % | 7.72 | 0.921 | 12.87, 19.12, 20.53, 20.79 (to 15.35) | 8.58 |
+| 60 | Wayland, fullscreen, mailbox | 0.837 | 11.97, 19.21, 20.64, 20.77 | 100 % | 7.47 | 0.905 | 13.65, 19.91, 21.54, 21.68 | 9.13 |
+| 60 | Xwayland, fullscreen, immediate | 0.836 | 2.56, 3.21, 3.99, 4.54 | 100 % | 0.18 | 0.915 | 2.68, 3.38, 4.16, 4.61 | 0.17 |
+| 60 | Wayland, fullscreen, immediate | 0.834 | 2.54, 3.18, 3.93, 4.62 | 100 % | 0.20 | 0.917 | 2.61, 3.32, 4.14, 4.93 | 0.17 |
+| 60 | Xwayland, window, FIFO | 0.870 | 43.66, 49.94, 51.35, 51.48 | 100 % | 7.76 | 0.942 | 43.03, 49.32, 50.73, 50.88 | 7.84 |
+| 60 | Wayland, window, FIFO | 0.873 | 51.58, 57.86, 59.28, 59.42 | 100 % | 8.00 | 0.947 | 30.70, 36.97, 38.39, 38.53 | 7.59 |
+| 60 | Xwayland, fullscreen, FIFO | 0.832 | 44.20, 50.36, 50.53, 50.55 | 100 % | 7.92 | 0.907 | 41.11, 47.38, 48.80, 48.94 | 7.77 |
+| 60 | Wayland, fullscreen, FIFO | 0.829 | 32.31, 38.60, 40.01, 40.15 | 100 % | 7.88 | 0.986 | 41.18, 47.52, 48.92, 49.06 | 7.53 |
+
+What the compositor costs. From the frame's GPU work done to the display
+(the `obj_team2` yard, uncapped, medians; first percentile in
+parentheses): 5.4 to 5.8 ms (4.6) composited in a window, 4.2 to 4.5 ms
+(2.6 to 3.5) with direct scanout, 0.5 ms (0.06) tearing; input to present
+is 0.43 to 0.47 ms and the GPU is done 0.6 to 0.8 ms later. KWin's frame
+callbacks, sent at the end of its composite, reach Xwayland 3.9 ms (in a
+window) and 3.3 ms (direct scanout) before the vblank on the median (it
+starts a composite its render time estimate, a safety margin and 1 ms
+before the vblank), and the scanout starts 0.6 ms after the vblank
+does; a frame waits for the latch about half a frame period (the slack
+column). So composition itself (a window against direct scanout) costs
+about 1 to 1.5 ms; the vsync latch at least 2.6 to 3.5 ms more than
+tearing, plus the wait for it.
+
+- Direct scanout: KWin scans the game's swapchain image out in fullscreen
+  with mailbox and FIFO, under Xwayland and Wayland alike (a game buffer
+  on the primary plane at every vblank); never in a window, and never with
+  tearing: it then composites every frame into its own buffer and flips
+  that at once (its AR30 buffers on the primary plane).
+- Xwayland costs nothing measurable: fullscreen it gives the native
+  Wayland numbers within 0.4 ms in every mode at 0, 59 and 250 (the single
+  runs at 60 differ by up to 0.8 ms, and with FIFO by how full the queue
+  got); its completion comes 0.1 ms after the present call.
+- The lowest input to display is fullscreen immediate (`r_fullscreen 1`,
+  `r_swapInterval 0`, the default), with tearing: 1.5 ms uncapped, 2.0 to
+  2.2 at 250, 2.5 to 2.8 at 59 and 60 (the frame's own CPU and GPU time,
+  and KWin's 0.45 ms). Without tearing the lowest is fullscreen mailbox
+  (direct scanout), 4.6 to 5.7 ms uncapped, 6.7 to 7.5 at 250, 11.3 to
+  13.7 at 59 and 60, rendering frames that are never shown (6 % are
+  uncapped, 24 % at 250). A window adds 1.1 to 2.7 ms to that at the high
+  caps. In a window or with mailbox, a higher cap shortens the wait for
+  the latch (half a frame period on average): 250 is 1.3 to 2.2 ms worse
+  than uncapped there, 0.5 to 0.6 ms with tearing.
+- FIFO queues: uncapped, three frames wait (four swapchain images) and
+  input to display is 50.5 ms fullscreen, 71 ms in a window (a refresh
+  more: the composite). Capped at 59, just below the refresh, the queue
+  stays empty, 11 to 14 ms on the median; but frames queued once drain
+  by only 0.28 ms a frame (59 against 59.975 Hz): in `o2match` the first
+  35 frames measured came 25 to 35 ms after their input (frames queued at
+  the demo's start), the 99th percentile 36 to 40 ms (19 to 22 in the
+  yard). A slow frame that the limiter makes up would queue one the same
+  way. At 60, above the refresh, the queue fills: 31 to 52 ms within 40 s.
+- At caps near the refresh (59, 60) every vsync mode shows 100 % of the
+  frames but each waits a random part of a refresh for the latch (slack
+  7.5 to 9.9 ms).
+
+Pacing changes that could lower input to display without adding lag
+(none implemented: the frame limiter is left as it is in this step):
+
+1. FIFO: keep at most one frame queued. Wait, before the next input read
+   (after the present, where the acquire of the next image already
+   blocks, or in `Com_Frame`'s wait), until the previous frame's present
+   has completed (`vkWaitForPresentKHR` on the
+   main thread is valid; on X11 it returns at KWin's composite, early
+   enough). Measured upside: FIFO uncapped 50.5 and 71 ms against 11 to 14
+   ms at a cap below the refresh, so 38 to 59 ms; it also removes what
+   stays queued at 59. Latency effect: lower, never higher (it waits
+   before the input is read; nothing is held after it). Fewer swapchain
+   images with FIFO (3, the minimum) should take one refresh off without
+   it (not measured).
+2. Vsync modes (mailbox, a window, FIFO): start the frame just in time, so
+   that its image is ready right before the compositor's latch. Measured
+   upside: the slack, 0.9 to 1.4 ms uncapped, 2.3 to 2.7 ms at 250, 7.5
+   to 9.9 ms at 59 and 60 (with FIFO on top of the queue). Latency effect:
+   lower by up to the slack when the latch is predicted right, a whole
+   refresh higher for a frame that misses it. It needs the latch time,
+   which KWin doesn't report (3.3 to 3.9 ms before the vblank here, and it
+   adapts: its safety margin grows after a late commit); the vblank grid
+   is known (the kernel's timestamps, or Wayland's feedback). An engine
+   change (when `Com_Frame` starts a frame), not a renderer one.
+3. With tearing nothing is left to pace: the slack is 0.16 to 0.45 ms, and
+   input to display is the frame's own CPU and GPU time plus KWin's 0.45
+   ms; only less CPU or GPU time per frame lowers it. For the user's setup
+   (250 on a 240 Hz display, no VRR) fullscreen immediate is the lowest,
+   with tearing; on that display vsync through KWin should cost about what
+   it costs here at 250, 4.6 to 5.4 ms over tearing (KWin's margins are
+   times, not refreshes, and the frames come as often), and a full FIFO
+   queue 12.5 ms (not measured).
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -3144,6 +3389,23 @@ Done:
     deadline in microseconds; the old way alone of waiting for the tick
     cost 0.02 to 0.05 ms of input to present.
 
+13. Present timing, measurement only (2026-10-17, see Performance,
+    Present timing): `libinlat.so` with `INLAT_DISPLAY=1` records what
+    happens to each present after the call (Xwayland's completion events,
+    Wayland's presentation feedback with present ids it enables, the GPU
+    completion of every submission through a timeline semaphore of its
+    own, the kernel's vblanks and the framebuffer on the primary plane,
+    the window's fullscreen state; `INLAT_PRESENT_MODE` forces a present
+    mode) and `framelog.py --display` works out each frame's time to the
+    display; no renderer change. Measured at 1920x1080 with Xwayland and
+    native Wayland, in a window and fullscreen, immediate, mailbox and
+    FIFO, at caps 0, 59, 60 and 250, in the `obj_team2` yard and the
+    `o2match` demo: vsync through KWin costs 3 to 7 ms over tearing
+    uncapped and at 250 (8.5 to 11 ms at 59 and 60), composition 1 to 1.5
+    ms of it; KWin bypasses itself (direct
+    scanout) for fullscreen mailbox and FIFO but composites with tearing;
+    FIFO queues three frames; Xwayland costs nothing measurable.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -3203,6 +3465,27 @@ Remaining:
      53 % of the slow frames at 3840x2160): GPU time, see the texture
      compression item below.
 
+- Present timing (see Performance, Present timing), pacing changes not
+  made, each lowering input to display without adding lag (the waits come
+  before the input read): (1) with FIFO, wait before the input read until
+  the previous present has completed (`vkWaitForPresentKHR` on the main
+  thread), so at most one frame is queued: 38 to 59 ms less uncapped at
+  60 Hz, and no queue left at a cap below the refresh; (2) with vsync
+  (mailbox, a window, FIFO), start each frame just in time for the
+  compositor's latch: up to the measured slack, 0.9 to 1.4 ms uncapped,
+  2.3 to 2.7 ms at 250 and 7.5 to 9.9 ms at 59 and 60, but KWin doesn't
+  report its latch (3.3 to 3.9 ms before the vblank here, adaptive) and a
+  frame that misses it waits a whole refresh; an engine change (when
+  `Com_Frame` starts a frame). With tearing (fullscreen immediate, the
+  lowest: 1.5 ms uncapped, 2.1 at 250) the slack is under 0.5 ms: only
+  less CPU and GPU time per frame lowers it. Not measured: a VRR or 240 Hz
+  display, other compositors (GNOME's, wlroots), NVIDIA.
+- The engine's error dialog can hang a game that has loaded the Vulkan
+  driver: `Sys_Exec` (`code/sys/sys_unix.c`) forks and calls `exit(-1)`
+  in the child when `execvp` fails (no `zenity`: KDE without it), which
+  runs the parent's exit handlers in the child, and one of them (Mesa's
+  threads) waits forever; the parent waits for the child. `_exit` in the
+  child would fix it (upstream code; seen once in this step's tests).
 - The frame limiter (see Performance, Frame limiter): at caps of 60 and
   144 the tail of the input to present time is up to 0.25 ms longer than
   with the old limiter's 62.5 and 166.7 frames per second, after
