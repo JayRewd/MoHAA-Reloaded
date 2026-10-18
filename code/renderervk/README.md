@@ -63,7 +63,13 @@ below are done.
   `mohdm1_dlight`, `m6l1a` and `r_measureOverdraw` turned on and off on
   `dm/mohdm1` (the depth image becomes readable, then not 300 frames
   later; overdraw counts equal to GL1's from the first frame), with 1 and 4
-  samples
+  samples; after the known risks' fixes (2026-10-18), none with
+  synchronization validation through startup, map loads, `vid_restart`
+  with mode changes, live resizes (a burst of 11 swapchains replaced),
+  minimize and restore (also a simulated window without area, the Windows
+  path), fullscreen toggles and shutdown, with present fences and with
+  every fallback forced (`r_vkFallbacks 15`), and none in the 41 lists'
+  runs of the build-against-build check (`r_vkValidation 1`)
 - performance (milestone 6, see [Performance](#performance)): on an idle
   machine Vulkan spends 13 to 28 % less main-thread time in the renderer
   than GL1 in the measured views at 1920x1080 (fence waits left out; after
@@ -171,6 +177,15 @@ below are done.
   frames to the bit; the renderer's CPU time 2 to 10 % lower in the yard,
   4 to 5 % in `o2match`, 1 to 2 % in `o4match`, the same within the noise
   in the `dm/mohdm3` overview (see Performance, World culling)
+- known risks before shipping (2026-10-18): presentation semaphores
+  belong to their swapchain and go only once the presentation engine is
+  done with them (present fences with `VK_KHR/EXT_swapchain_maintenance1`,
+  otherwise the device wait that comes before), MoltenVK's portability
+  subset has fallbacks for the view swizzle and the bindings of stride 0,
+  lines without `VK_KHR/EXT_line_rasterization` were checked; every
+  fallback can be forced (`r_vkFallbacks`) and gives the same frames, the
+  input read to present time is unchanged, and Windows has a test
+  checklist ([WINDOWS_TESTING.md](WINDOWS_TESTING.md); see Plan 15)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -182,7 +197,7 @@ below are done.
 | --- | --- |
 | `vk.h` | backend interface (the contract below) |
 | `vk_local.h` | definitions shared by the backend files: `qvk*` function pointers, frame, texture and pipeline-key types |
-| `vk_instance.c` | Vulkan loading through SDL, instance, validation messenger, device selection, swapchain |
+| `vk_instance.c` | Vulkan loading through SDL, instance, validation messenger, device selection, swapchain, present fences and retired swapchains |
 | `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file |
@@ -194,6 +209,7 @@ below are done.
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | GL1/Vulkan screenshot comparison and performance scripts, view lists (see Testing) |
+| `WINDOWS_TESTING.md` | a tester's checklist for Windows: commands, cvars, what to send back |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
 | `tr_backend.c` | renderer-side state tracking (`GL_State`, `GL_Bind`, `GL_Cull`, `GL_TexEnv`, matrices, vertex arrays, current color) |
 | `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged but for the performance work (see Performance) and the static geometry hooks of the surface functions and stage iterators |
@@ -257,6 +273,7 @@ Cvars of the backend:
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
+| `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
 call: frames, render passes, submissions, mid-frame flushes, draws,
@@ -638,6 +655,47 @@ Test content:
   unclipped frame with the fragment shader fallback and identical except ±1
   on the triangles crossing the plane with `gl_ClipDistance`, and a plane at
   400 units removed the near geometry.
+- Fallbacks (2026-10-18; RADV has every feature they replace, so they are
+  forced with `r_vkFallbacks`, see Build and run): run a list with `+set
+  r_vkFallbacks 3` (no view swizzle, no stride 0 bindings) against the
+  default build; the frames must be the same to the bit. The game's RGB
+  textures have alpha 255 in their data anyway (GL1 makes a texture RGB
+  when every alpha is 255), so that alone doesn't show the shader's alpha
+  at work: a temporary build that wrote alpha 0 into the uploads of RGB
+  textures gave the same frames as before with the swizzle and with the
+  shader setting it (`mohdm1`, `obj_team2`), and without either 0.3 to 100
+  % of the pixels differed in every view (the sky boxes are RGB). `4`
+  (lines without `VK_KHR/EXT_line_rasterization`) gives the same frames on
+  RADV; on llvmpipe (`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`,
+  a device with `strictLines`) it moves line pixels (see Fragment pipeline).
+  `8` (no present fences) changes no pixel. The presentation paths were
+  run with synchronization validation (`r_vkValidation 2`) and every
+  combination of the bits: startup, map loads, `vid_restart` (with mode
+  changes), live resizes with `r_allowResize 1` (`xdotool windowsize`, a
+  burst of 11 sizes 50 ms apart: 11 swapchains replaced before the
+  `vid_restart` the resize schedules), minimize and restore (Xwayland keeps
+  the window's size: a temporary build reported no area for 60 frames out
+  of every 200, the path of a minimized window on Windows, where the
+  swapchain is destroyed and created again), fullscreen toggles (`set
+  r_fullscreen 1`, `0`, with `in_nograb 0`; KWin under Xwayland) and quit:
+  no message. The validation layer (1.4.341) doesn't check present fences
+  against the destruction of swapchains and semaphores, though: a
+  temporary build that left the fences out with the extension enabled gave
+  no message either, so this rests on reading the specification (see
+  Implementation notes, Presentation semaphores and swapchains), not on
+  validation. Build against build: the 41 view lists (177 views,
+  640x480, `r_vkValidation 1`) with this build and with `r_vkFallbacks 15`
+  against the build before: 143 views the same to the bit with both; the
+  other 34 are in the lists with random content (`m1l1`, `m1l2a`, `m1l3a`,
+  `m2l1_skyportal`, `m3l1a`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m5l3`,
+  `m6l1a`, `mohdm5_fog`, `mohdm7`, `mp_mohdm7`: AI, vehicles, the landing
+  craft's camera shake, snow, the known 1-pixel noise near the camera), and
+  each of them also differs between two runs of the build before (a
+  second pass with it twice); no validation message. GL1 against this
+  build with `compare.sh` (`mohdm1`, `obj_team2`, `menus`,
+  `mohdm1_debug`, `mohdm1_dlight`, at 640x480 and `WIDE=1`) gives the
+  numbers of before. Windows: see [WINDOWS_TESTING.md](WINDOWS_TESTING.md),
+  the checklist for a tester.
 
 Results of the milestone 5 tests with `WIDE=1` (GL1 vs Vulkan, worst view
 of each list; per channel max R/G/B and the share of differing pixels):
@@ -2711,6 +2769,68 @@ have no dynamic lights.)
   fields, 1.1 %; the back end reads the face anyway), the culling (1.4 %)
   and the box tests (3.1 %).
 
+Present fences (2026-10-18, Plan 15; see Implementation notes,
+Presentation semaphores and swapchains): what the known risks' fixes cost
+on the main path is the present fence in `VkPresentInfoKHR` (Mesa adds it
+to the submission it makes for every present anyway) and, after the
+present and the acquire of the next image, one `vkGetFenceStatus` and one
+`vkResetFences` for the next present's fence (two slots in use on RADV);
+nothing between a frame's input read and its present, the acquire where it
+was, no frame more in flight. The fallbacks are off on RADV. Measured on
+the idle machine (other processes 0.7 to 1.9 CPUs, no Plex transcoding),
+1920x1080 under Xwayland, the build before (`base`) and this one
+(`new`) interleaved, 5 runs of 10 s each (`perf.py --list ... --binaries
+openmohaa,openmohaa_fs --caps 0,250 --seconds 10 --runs 5 --preload
+libinlat.so --framelog DIR`, `openmohaa_fs` a wrapper adding `+set
+r_fullscreen 1 +set in_nograb 0`; fullscreen is immediate, with tearing).
+Input read to present (`libinlat.so`), ms: the median of the runs'
+medians (their range), the median of their 99th percentiles:
+
+| view | `com_maxfps` | variant | base: median (runs), p99 | new: median (runs), p99 |
+| --- | --- | --- | --- | --- |
+| `obj_team2` yard | 0 | window | 0.410 (0.399 to 0.416), 0.631 | 0.411 (0.402 to 0.425), 0.618 |
+| | 0 | fullscreen | 0.445 (0.438 to 0.462), 0.769 | 0.444 (0.433 to 0.457), 0.735 |
+| | 250 | window | 0.540 (0.535 to 0.542), 0.929 | 0.529 (0.524 to 0.570), 0.944 |
+| | 250 | fullscreen | 0.535 (0.530 to 0.549), 0.921 | 0.541 (0.526 to 0.545), 0.917 |
+| `o2match` | 0 | window | 0.499 (0.489 to 0.517), 1.124 | 0.498 (0.484 to 0.506), 1.164 |
+| | 0 | fullscreen | 0.524 (0.487 to 0.534), 1.299 | 0.533 (0.516 to 0.577), 1.326 |
+| | 250 | window | 0.566 (0.555 to 0.576), 1.062 | 0.551 (0.547 to 0.565), 1.025 |
+| | 250 | fullscreen | 0.568 (0.549 to 0.576), 1.046 | 0.562 (0.546 to 0.571), 1.026 |
+
+The medians differ by -0.015 to +0.009 ms, inside the spread of the runs
+either way: no change to measure. The build timed here had the stride 0
+bindings follow `vertexAttributeAccessBeyondStride` on portability
+devices; the final one differs from it only in `VK_CreateLogicalDevice`
+(and the function it is inlined into): every other function is the same
+code, instruction for instruction (`objdump -d`, addresses left out).
+
+Frame time and the renderer's time uncapped (`perf.py --list ...
+--sizes 1920x1080,3840x2160 --renderers base,final --runs 3`, medians of
+3 interleaved runs with their range, ms; GPU: the main command buffer,
+timestamps; end: `EndFrame`, which submits, presents, acquires the next
+image and now chooses the next present's fence; other processes 0.9 to
+2.0 CPUs):
+
+| view | size | frame base | frame new | renderer base | renderer new | end base / new | GPU base / new |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 1920x1080 | 0.999 | 0.999 | 0.380 (0.372 to 0.403) | 0.394 (0.381 to 0.410) | 0.069 / 0.075 | 0.621 / 0.624 |
+| | 3840x2160 | 1.724 (1.719 to 1.732) | 1.713 (1.710 to 1.714) | 1.567 | 1.569 | 0.125 / 0.122 | 1.708 / 1.697 |
+| `o2match` | 1920x1080 | 1.005 | 1.005 | 0.376 (0.370 to 0.379) | 0.373 (0.373 to 0.376) | 0.073 / 0.076 | 0.551 / 0.552 |
+| | 3840x2160 | 1.326 | 1.330 | 0.907 | 0.906 | 0.085 / 0.091 | 1.261 / 1.265 |
+| `o4match` | 1920x1080 | 1.121 (1.121 to 1.135) | 1.139 (1.123 to 1.162) | 0.843 (0.843 to 0.856) | 0.860 (0.844 to 0.883) | 0.075 / 0.080 | 0.729 / 0.738 |
+| | 3840x2160 | 2.240 | 2.236 | 1.959 | 1.963 | 0.102 / 0.105 | 2.203 / 2.200 |
+
+The yard again with 5 runs of 5000 frames: renderer 0.355 (0.351 to
+0.362) against 0.362 (0.360 to 0.367) at 640x480, 0.391 (0.387 to 0.394)
+against 0.388 (0.380 to 0.395) at 1920x1080. In every case the present
+call (`vkinfo`'s `presentUs`) takes 1.1 µs more, 11.0 to 13.4 µs against
+12.1 to 14.6 (Mesa signals one fence more in the submission it makes
+there), and `EndFrame` 3 to 6 µs more in all (the fence's status and its
+reset after the present); the rest moves both ways within the noise.
+That is the cost: about 4 µs a frame after the input's present, of which
+1 µs inside the present call, after the moment `libinlat.so` takes as
+the present.
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -2790,7 +2910,9 @@ of `obj_team2`), and blending reads the target anyway.
    texture env, unit 1 (if `st[1]` is set) combines with the result of unit 0.
    The formulas are next to `texEnv_t` in `vk.h`; `TEXENV_ADD` clamps the sum
    to 1 like GL. For `TEXFMT_RGB8/RGB5` (and `BC1_RGB`) textures alpha samples
-   as 1 (`A = ONE` swizzle); with `TEXENV_REPLACE` GL then keeps the previous
+   as 1 (`A = ONE` swizzle, or, on a portability subset device without
+   `imageViewFormatSwizzle`, the shader sets it: see Implementation notes,
+   Textures); with `TEXENV_REPLACE` GL then keeps the previous
    alpha instead of 1. `TEXENV_COMBINE4` is drawn as modulate (no shader
    produces it).
 3. Alpha test.
@@ -2828,7 +2950,16 @@ mode (`VK_KHR_line_rasterization` or `VK_EXT_line_rasterization` with
 (factor clamped to [1, 256], 0 disables it; needs `stippledBresenhamLines`);
 the stipple counter restarts at each segment of a line list, as GL does for
 `GL_LINES`. Line width above 1 needs `wideLines`. All of this only affects
-debug drawing and is ignored when unsupported.
+debug drawing and is ignored when unsupported: without the extension (or
+`bresenhamLines`) lines have the device's default rule, the same pixels on
+RADV (`strictLines` false, its lines follow the diamond-exit rule anyway;
+`r_vkFallbacks 4` gives the same frames as before in `mohdm1_debug`), and on a
+device with `strictLines` (rectangular lines: llvmpipe) a pixel here and
+there on nearly diagonal lines moves by one (`r_showtris` 1 and 2 and
+`r_shownormals` in `mohdm1_debug` on llvmpipe: 0.5 to 1.4 % of the pixels,
+isolated pixels along the lines; the triangles under them are the same);
+without `stippledBresenhamLines` lines aren't stippled (only the game's
+debug lines are, and the view covers them, see Testing).
 
 ### Clears
 
@@ -2998,9 +3129,15 @@ selects the sample count (see Implementation notes).
   else `VK_EXT_line_rasterization` (with `bresenhamLines`, and
   `stippledBresenhamLines` for line stipple; `vkCmdSetLineStipple*` is
   loaded under the enabled extension's name), `VK_KHR_portability_subset`
-  (MoltenVK, with `VK_KHR_portability_enumeration` on the instance),
-  `VK_KHR_create_renderpass2` with `VK_KHR_depth_stencil_resolve`
-  (multisampling).
+  (MoltenVK, with `VK_KHR_portability_enumeration` on the instance; its
+  `imageViewFormatSwizzle` is enabled when it has it, with a fallback
+  otherwise, and the bindings of stride 0, which it never allows, have one:
+  see Textures and Draws), `VK_KHR_create_renderpass2` with `VK_KHR_depth_stencil_resolve`
+  (multisampling), `VK_KHR_swapchain_maintenance1` or else
+  `VK_EXT_swapchain_maintenance1` (`swapchainMaintenance1`: present fences,
+  see Frames; on the instance `VK_KHR_get_surface_capabilities2` and
+  `VK_KHR_surface_maintenance1` or `VK_EXT_surface_maintenance1`, which they
+  need). `r_vkFallbacks` turns these off for tests (see Build and run).
 - **Render target.** The color target of a frame is the swapchain image it
   presents (`VK_SelectTarget`, at the frame's first render pass, readback or
   present), when the swapchain has the size of the render target
@@ -3067,10 +3204,42 @@ selects the sample count (see Implementation notes).
   fence; the image goes to `PRESENT_SRC` at the end of the main command
   buffer. A frame drawn offscreen submits the rendering, then the present
   command buffer (blit and layout transitions) with the frame fence. The
-  semaphores signaled for presentation are per swapchain image (presents
-  have no fence). The swapchain is recreated when the drawable size changes
+  swapchain is recreated when the drawable size changes
   or on `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR`; with no area
   (minimized) the frame is submitted without presenting.
+- **Presentation semaphores and swapchains** (`vk_instance.c`, present
+  fences and retired swapchains). The semaphores that presents wait for
+  belong to the swapchain, one per image, created with it: the semaphore of
+  an image is only signaled again once the image has been acquired again
+  and its acquire semaphore waited for, which guarantees that the image's
+  previous present has completed, its semaphore wait included (Khronos'
+  Vulkan Guide, Swapchain Semaphore Reuse). A swapchain that is replaced
+  (resize, out of date), or destroyed (minimized, shutdown), is retired with
+  its semaphores: nothing is presented to it any more, but the presentation
+  engine may still hold them. With `swapchain_maintenance1` every present
+  signals a fence (`VkSwapchainPresentFenceInfoKHR`) once the presentation
+  engine is done with its wait semaphore; a present's semaphores can be
+  destroyed once its fence has signaled, the swapchain once the fences of
+  all its presents have, and those of one swapchain signal in present order,
+  so a retired swapchain and its semaphores are destroyed once the fence of
+  its last present has signaled: checked after each frame's present, waited
+  for (at most 1 s each) at shutdown and `vid_restart`, and when 8 retired
+  swapchains are pending (not seen). The fences come from up to 16 slots,
+  taken in turn; the next present's is chosen and reset right after the
+  present before it (`VK_PreparePresentFence`, a slot whose present is done,
+  or a new one): nothing is waited for or reset between a frame's input
+  and its present, which only adds the fence to its `VkPresentInfoKHR`. On
+  RADV two slots are used: Mesa signals the fence in the submission it makes
+  for the present anyway (`wsi_common_queue_present`), with the frame's GPU
+  work. Without the extension a retired swapchain and its semaphores are
+  destroyed when it is retired, which always follows a `vkDeviceWaitIdle`
+  after its last present: per the Vulkan specification `vkQueueWaitIdle`
+  waits for the queue operations of presents too (`vkQueuePresentKHR`
+  "behaves as if it signals a fence payload" for it; the semaphore waits are
+  such operations). Before, the 16 semaphores were created with the frames,
+  reused by every swapchain and destroyed at shutdown before the swapchain,
+  which relied on that wait for both. `vkinfo` prints the number of present
+  fence slots and of retired swapchains still pending.
 - **Frame pacing.** Right after presenting a frame drawn into the swapchain
   image, `vk_end_frame` acquires the image of the next frame
   (`VK_AcquireNextImage`, the image is "held" until a frame uses it). With
@@ -3084,7 +3253,11 @@ selects the sample count (see Implementation notes).
   frame slot, since an image is acquired before its frame starts; a
   semaphore is reused once the submission that waited for it has
   completed. A held image's semaphore is waited for by an empty submission
-  before the swapchain is recreated or destroyed.
+  before the swapchain is recreated or destroyed, and with
+  `swapchain_maintenance1` the image is then released
+  (`vkReleaseSwapchainImagesKHR`), so a retired swapchain can free it. The
+  acquire stays right after the present, and present fences add no wait
+  (see Presentation semaphores and swapchains).
 - **Mid-frame flush.** `vk_read_pixels`, and uploads that don't fit in the
   staging buffer, submit what the frame recorded so far, wait for it and
   continue in the same command buffers (a new main-buffer "segment").
@@ -3105,7 +3278,11 @@ selects the sample count (see Implementation notes).
   plus a per-slot generation, so a handle is only reused after 2^20 images
   went through the same slot. Each storage is a `VkImage`, a view (with the
   `A = ONE` swizzle for RGB formats) and a descriptor set holding view and
-  sampler. Images are placed in 64 MB blocks of device memory, first fit
+  sampler. A portability subset device without `imageViewFormatSwizzle`
+  (MoltenVK can lack it) gets identity views, and the pipelines of draws
+  with an RGB texture have `VK_PIPE_TEX*_RGB` set with every texture env (not
+  only `TEXENV_REPLACE`), whose fragment shader then sets the texel's alpha
+  to 1: the same 1.0 (`r_vkFallbacks 1`, see Testing). Images are placed in 64 MB blocks of device memory, first fit
   in a sorted list of free ranges per block with merging on release (one
   block per memory type to start; an image larger than 16 MB gets memory of
   its own); a released range goes through the deferred destruction lists
@@ -3133,7 +3310,19 @@ selects the sample count (see Implementation notes).
   previous one binds the copy made for it (the indexes too when they are
   the same array and count; the dlight pass has its own). The copy is valid
   until the frame's vertex buffer is reused from its start (new frame,
-  mid-frame flush). In the measured views this saves 1 to 4 % of the
+  mid-frame flush). A constant color, and the texture coordinates of a
+  unit that isn't used (the positions, which the shader ignores), are read
+  with a binding stride of 0. The portability subset allows no stride of 0:
+  a stride must be at least `minVertexInputBindingStrideAlignment` (4 on
+  MoltenVK; VUID-VkVertexInputBindingDescription-stride-04456), whatever
+  `vertexAttributeAccessBeyondStride` says, so on such a device those
+  bindings are read per instance (`VK_VERTEX_INPUT_RATE_INSTANCE`, the
+  attribute's size as the stride, so no attribute reaches beyond it either):
+  every draw has one instance, the first, so they read the same bytes
+  (`r_vkFallbacks 2` forces it; the other strides are 4, 8 and 12 bytes, and
+  a larger alignment is reported with a warning). A push constant for the
+  color, the first idea, would need 16 bytes more than the 128 that are
+  guaranteed and all used, and wouldn't cover the texture coordinates. In the measured views this saves 1 to 4 % of the
   vertex bytes (most surfaces are one multitextured pass). Draws from the
   static geometry (below) copy nothing but, when they need them, their
   indexes and a constant color, skinned draws (Skeletal models) nothing
@@ -3345,7 +3534,7 @@ selects the sample count (see Implementation notes).
   test/write/func, polygon mode, cull mode, topology, RGB color mask, alpha
   function (and its reference value), polygon offset on/off, color array or
   constant color, texture env per unit (0 for an unused unit), "RGB texture
-  with TEXENV_REPLACE" per unit, the stencil function and ops, fog on/off
+  with TEXENV_REPLACE" per unit (with any env without the view swizzle), the stencil function and ops, fog on/off
   clip plane on/off, line stipple on/off, the unit whose texture gets the
   dynamic lights (0 for none), `r_dlightBacks 0`'s test and whether the
   draw is skinned (no vertex input, `shaders/skinned.vert`). Viewport, scissor, depth bias,
@@ -3387,9 +3576,12 @@ selects the sample count (see Implementation notes).
   serial). Nothing of the frames, submissions, presents or acquires
   changes; the wrappers cost about 15 µs per frame (two clock reads around
   each of the ~300 2D calls of the HUD) while the log is on.
-- **Shutdown and `vid_restart`.** `vk_shutdown` waits for the device and
-  destroys everything, including the instance; `vid_restart` recreates the
-  window, so the backend starts from scratch.
+- **Shutdown and `vid_restart`.** `vk_shutdown` waits for the device,
+  releases the held image and retires the swapchain, destroys the retired
+  swapchains and their semaphores once their presents are done (present
+  fences, see Presentation semaphores and swapchains), then the present
+  fences and everything else, including the instance; `vid_restart`
+  recreates the window, so the backend starts from scratch.
 
 ## GL1 quirks kept on purpose
 
@@ -3725,6 +3917,32 @@ Done:
     overview; the slowest 1 % of the demos' frames, compared frame by
     frame, change by -0.05 to +0.02 ms.
 
+15. The known risks before shipping (2026-10-18, see Remaining, Known
+    risks, Implementation notes, Presentation semaphores and swapchains,
+    Textures and Draws, and Performance, Present fences). Presentation:
+    the semaphores presents wait for belong to their swapchain (one per
+    image, reused once the image is acquired again), and a replaced or
+    destroyed swapchain is retired with them and destroyed once the
+    presentation engine is done with them: with
+    `VK_KHR/EXT_swapchain_maintenance1` when the fence of its last present
+    has signaled (present fences, chosen and reset after the present before:
+    nothing between a frame's input and its present), otherwise after the
+    `vkDeviceWaitIdle` that comes before (which, per the specification,
+    waits for the presents' queue operations); the image acquired ahead is
+    also handed back (`vkReleaseSwapchainImagesKHR`), and shutdown destroys
+    the swapchains before their semaphores, not after. MoltenVK:
+    `imageViewFormatSwizzle` is queried and enabled; without it the shader
+    sets the alpha of RGB textures; the bindings of stride 0, which the
+    portability subset never allows, are read per instance there. Lines
+    without `VK_KHR/EXT_line_rasterization`: checked. `r_vkFallbacks`
+    forces each fallback: the same frames to the bit as the build before
+    (a temporary build with alpha 0 in RGB textures showed that the
+    shader's alpha is what keeps them so), checked on RADV and llvmpipe,
+    and every presentation path ran clean under synchronization
+    validation. Input read to present the same within the noise, uncapped
+    and at 250, in a window and fullscreen. A checklist for testing on
+    Windows: [WINDOWS_TESTING.md](WINDOWS_TESTING.md).
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -3929,23 +4147,34 @@ Remaining:
   (see Performance, Second round); it now takes 0.19 against GL1's 0.32
   ms per frame there at 1080p.
 
-Known risks, not seen on RADV but worth handling before shipping:
+Known risks before shipping, handled (2026-10-18, Plan 15), and what is
+left of them:
 
-- Presentation semaphores (one per swapchain image) are reused across
-  swapchain recreation and destroyed at shutdown after `vkDeviceWaitIdle`,
-  which formally doesn't cover a queued present's semaphore wait. Drivers
-  that defer presentation (NVIDIA, MoltenVK) are the likeliest to object.
-  `VK_EXT_swapchain_maintenance1` present fences would make it exact. The
-  same holds for the swapchain image acquired ahead (Frame pacing), released
-  with an empty submission before the swapchain goes.
-- MoltenVK (portability subset): the `A = ONE` view swizzle needs
-  `imageViewFormatSwizzle` and the stride-0 vertex bindings need
-  `vertexAttributeAccessBeyondStride`; neither is queried. The fallbacks
-  are forcing alpha to 1 in the shader for RGB textures and pushing the
-  constant color as a push constant.
-- Without `VK_KHR/EXT_line_rasterization` (or without `bresenhamLines`)
-  lines use the driver's default rule, which may differ from GL's by a pixel
-  here and there; only debug drawing has lines.
+- Presentation semaphores: they belong to their swapchain now, and a
+  replaced or destroyed swapchain and its semaphores are destroyed once
+  the presentation engine is done with them, known from present fences
+  (`VK_KHR/EXT_swapchain_maintenance1`) or, without them, from the
+  `vkDeviceWaitIdle` before the swapchain is replaced, which the
+  specification makes wait for presents too (see Implementation notes,
+  Presentation semaphores and swapchains). The image acquired ahead is
+  still released with an empty submission (that is correct: the
+  submission waits for its semaphore and completes before the swapchain
+  goes) and now also handed back with `vkReleaseSwapchainImagesKHR`. Left:
+  not run on a driver that defers presentation (NVIDIA, MoltenVK) or on
+  Windows (see [WINDOWS_TESTING.md](WINDOWS_TESTING.md)); the validation
+  layer doesn't check this part (see Testing, Fallbacks).
+- MoltenVK (portability subset): `imageViewFormatSwizzle` is queried and
+  enabled; without it the fragment shader sets the alpha of RGB textures.
+  The bindings of stride 0 aren't allowed by the portability subset at
+  all (not only without `vertexAttributeAccessBeyondStride`: a stride must
+  be at least `minVertexInputBindingStrideAlignment`), so on such a device
+  they are read per instance with a real stride (see Implementation
+  notes, Draws). Both forced on RADV and llvmpipe (`r_vkFallbacks 3`): the
+  same frames. Left: not run on MoltenVK.
+- Lines without `VK_KHR/EXT_line_rasterization` or `bresenhamLines`:
+  forced with `r_vkFallbacks 4`, the same frames on RADV, line pixels
+  moved here and there on llvmpipe (strict lines), no stipple (see
+  Fragment pipeline). Debug drawing only.
 
 Windows: the same code applies; the CI build fetches Khronos' Vulkan-Headers
 (see Build and run), so no Vulkan SDK is needed. The Vulkan-specific files

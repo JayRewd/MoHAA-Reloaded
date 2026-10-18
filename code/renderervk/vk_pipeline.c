@@ -183,6 +183,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 
 	// vertex streams, each in its own binding (see VK_UploadGeometry);
 	// constant colors and missing texture coordinates use a stride of 0
+	// (but see vk.strideZero)
 	for ( i = 0; i < 4; i++ ) {
 		bindings[i].binding = i;
 		bindings[i].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
@@ -203,6 +204,21 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
 	bindings[3].stride = specData.texEnv1 ? sizeof( float ) * 2 : 0;
 	attributes[3].format = VK_FORMAT_R32G32_SFLOAT;
+	if ( !vk.strideZero ) {
+		// the portability subset allows no stride of 0 (nor an attribute
+		// beyond the stride without vertexAttributeAccessBeyondStride): those
+		// bindings are read per instance with the size of their attribute as
+		// the stride. Every draw has one instance, the first, so they read
+		// the same bytes
+		bindings[1].stride = bindings[1].stride ? bindings[1].stride : sizeof( float ) * 4;
+		bindings[1].inputRate = ( bits & VK_PIPE_COLOR_ARRAY ) ? VK_VERTEX_INPUT_RATE_VERTEX : VK_VERTEX_INPUT_RATE_INSTANCE;
+		for ( i = 2; i < 4; i++ ) {
+			if ( !bindings[i].stride ) {
+				bindings[i].stride = sizeof( float ) * 2;
+				bindings[i].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+			}
+		}
+	}
 
 	Com_Memset( &vertexInput, 0, sizeof( vertexInput ) );
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;

@@ -589,8 +589,10 @@ static vkTexture_t *VK_CreateTextureStorage( int width, int height, int mipLevel
 	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
 	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
 	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	// GL ignores the alpha of textures with an RGB internal format
-	viewInfo.components.a = texture->rgb ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_IDENTITY;
+	// GL ignores the alpha of textures with an RGB internal format; without
+	// imageViewFormatSwizzle (portability subset) the fragment shader sets
+	// it (VK_PIPE_TEX*_RGB)
+	viewInfo.components.a = ( texture->rgb && vk.viewSwizzle ) ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_IDENTITY;
 	viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	viewInfo.subresourceRange.levelCount = texture->mipLevels;
 	viewInfo.subresourceRange.layerCount = 1;

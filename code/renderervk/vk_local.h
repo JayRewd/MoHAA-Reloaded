@@ -36,6 +36,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #pragma once
 
 #define VK_NO_PROTOTYPES
+// VkPhysicalDevicePortabilitySubsetFeaturesKHR (MoltenVK) is in vulkan_beta.h
+#define VK_ENABLE_BETA_EXTENSIONS
 #include <vulkan/vulkan.h>
 
 #include "tr_local.h"
@@ -43,6 +45,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define VK_MAX_FRAMES				2		// frames in flight
 #define VK_ACQUIRE_SEMAPHORES		( VK_MAX_FRAMES + 1 )	// see VK_AcquireNextImage in vk.c
 #define VK_MAX_SWAPCHAIN_IMAGES		16
+#define VK_PRESENT_FENCES			16		// presents whose fence may be pending (swapchain_maintenance1)
+#define VK_MAX_RETIRED_SWAPCHAINS	8		// replaced swapchains whose presents may be pending
 #define VK_MAX_TEXTURES				4096	// live texture handles
 #define VK_MAX_DEPTH_READS			256		// vk_queue_depth_reads per frame
 #define VK_DEPTH_READ_FRAMES		300		// the depth image stays readable this many frames after the last read
@@ -161,6 +165,7 @@ FUNCTION POINTERS
 	X( vkFreeMemory ) \
 	X( vkGetBufferMemoryRequirements ) \
 	X( vkGetDeviceQueue ) \
+	X( vkGetFenceStatus ) \
 	X( vkGetImageMemoryRequirements ) \
 	X( vkGetPipelineCacheData ) \
 	X( vkGetQueryPoolResults ) \
@@ -175,11 +180,14 @@ FUNCTION POINTERS
 	X( vkWaitForFences )
 
 // optional device functions, NULL when the extension is not enabled;
-// vkCmdSetLineStippleEXT is loaded under the name of the enabled
-// extension (VK_KHR_line_rasterization or VK_EXT_line_rasterization)
+// vkCmdSetLineStippleEXT and vkReleaseSwapchainImagesEXT are loaded under
+// the name of the enabled extension (VK_KHR_line_rasterization or
+// VK_EXT_line_rasterization, VK_KHR_swapchain_maintenance1 or
+// VK_EXT_swapchain_maintenance1)
 #define VK_DEVICE_FUNCTIONS_OPTIONAL( X ) \
 	X( vkCmdSetLineStippleEXT ) \
-	X( vkCreateRenderPass2KHR )
+	X( vkCreateRenderPass2KHR ) \
+	X( vkReleaseSwapchainImagesEXT )
 
 #define VK_DECLARE_FUNCTION( name ) extern PFN_##name q##name;
 VK_GLOBAL_FUNCTIONS( VK_DECLARE_FUNCTION )
@@ -333,6 +341,26 @@ typedef struct {
 	uint64_t	gpuFrameUs;			// start of the main command buffer to the end of the copy
 } vkStats_t;
 
+// a fence that a present signals (VK_KHR/EXT_swapchain_maintenance1) once
+// its wait semaphore can be reused or destroyed; the fences of the presents
+// to one swapchain signal in present order
+typedef struct {
+	VkFence			fence;
+	qboolean		pending;		// given to a present, not seen signaled since
+	uint32_t		uses;			// presents it was given to
+} vkPresentFence_t;
+
+// a swapchain replaced by a new one (or destroyed while minimized) and the
+// semaphores its presents waited for, destroyed once its presents are done
+// (VK_DestroyRetiredSwapchains in vk_instance.c)
+typedef struct {
+	VkSwapchainKHR	swapchain;
+	uint32_t		numSemaphores;
+	VkSemaphore		semaphores[VK_MAX_SWAPCHAIN_IMAGES];
+	int				lastFence;		// vk.presentFences slot of its last present, -1 for none
+	uint32_t		lastFenceUse;	// the slot's uses after that present
+} vkRetiredSwapchain_t;
+
 // GPU timestamps of a frame
 #define VK_TS_MAIN_START		0
 #define VK_TS_MAIN_END			1
@@ -352,6 +380,18 @@ typedef struct {
 	qboolean			bresenhamLines;		// VK_KHR/EXT_line_rasterization: GL's diamond-exit line rule
 	qboolean			lineStipple;		// stippledBresenhamLines
 	qboolean			depthStencilResolve;	// VK_KHR_depth_stencil_resolve (and create_renderpass2), for multisampling
+	// VK_KHR/EXT_swapchain_maintenance1: presents signal fences (vk.presentFences)
+	qboolean			presentFences;
+	// imageViewFormatSwizzle (always outside of the portability subset): RGB
+	// textures sample alpha 1 from an A = ONE view swizzle, otherwise the
+	// fragment shader sets it (VK_PIPE_TEX*_RGB with every texture env)
+	qboolean			viewSwizzle;
+	// outside of the portability subset (which requires strides of at
+	// least minVertexInputBindingStrideAlignment): constant colors and unused
+	// texture coordinates are read with a binding stride of 0, otherwise per
+	// instance (see vk_pipeline.c)
+	qboolean			strideZero;
+	int					fallbacks;			// r_vkFallbacks: VK_FALLBACK_* forced at startup
 	VkPhysicalDeviceMemoryProperties memoryProperties;
 	VkDevice			device;
 	uint32_t			queueFamily;
@@ -365,7 +405,15 @@ typedef struct {
 	VkPresentModeKHR	presentMode;
 	uint32_t			swapchainImageCount;
 	VkImage				swapchainImages[VK_MAX_SWAPCHAIN_IMAGES];
-	VkSemaphore			presentSemaphores[VK_MAX_SWAPCHAIN_IMAGES];	// one per image: presentation has no fence
+	// the semaphores the presents wait for, one per image of this swapchain:
+	// the one of an image is signaled again once the image has been acquired
+	// again and the acquire semaphore waited for, which guarantees that the
+	// image's previous present is done with it; they go with the swapchain
+	// (vkRetiredSwapchain_t)
+	VkSemaphore			presentSemaphores[VK_MAX_SWAPCHAIN_IMAGES];
+	uint32_t			numPresentSemaphores;
+	int					lastPresentFence;		// vk.presentFences slot of the last present, -1 for none
+	uint32_t			lastPresentFenceUse;
 	VkImageUsageFlags	swapchainUsage;
 	// frames are drawn into the swapchain images directly when they can be
 	// color attachments and readback sources of the render target's format
@@ -376,6 +424,16 @@ typedef struct {
 	qboolean			swapchainOutOfDate;
 	int					swapchainDrawableWidth;		// window size the swapchain was created for
 	int					swapchainDrawableHeight;
+	vkRetiredSwapchain_t retiredSwapchains[VK_MAX_RETIRED_SWAPCHAINS];
+	int					numRetiredSwapchains;
+	// present fences (vk.presentFences): slots created when every other one
+	// is pending; the next present's is reset after the present before it
+	// (VK_PreparePresentFence), so nothing waits between a frame's input and
+	// its present
+	vkPresentFence_t	presentFenceSlots[VK_PRESENT_FENCES];
+	int					numPresentFences;
+	int					nextPresentFence;		// unsignaled, for the next present; -1 for none
+	int					presentFenceScan;		// the slot after the last one taken: usually the oldest
 
 	// render target of glConfig.vidWidth x vidHeight: the color target of a
 	// frame is the swapchain image it will present (vk.target), or, when the
@@ -468,11 +526,21 @@ FUNCTIONS
 ====================================================================
 */
 
+// r_vkFallbacks: what the device has is ignored, to test the fallbacks
+#define VK_FALLBACK_VIEW_SWIZZLE	1	// no imageViewFormatSwizzle
+#define VK_FALLBACK_STRIDE_ZERO		2	// no binding stride of 0 (as with the portability subset)
+#define VK_FALLBACK_LINES			4	// no VK_KHR/EXT_line_rasterization
+#define VK_FALLBACK_PRESENT_FENCES	8	// no VK_KHR/EXT_swapchain_maintenance1
+
 // vk_instance.c
 void		VK_CreateDevice( void );
 void		VK_DestroyDevice( void );
 void		VK_CreateSwapchain( void );
 void		VK_DestroySwapchain( void );
+void		VK_DestroyRetiredSwapchains( qboolean wait );
+void		VK_PreparePresentFence( void );
+void		VK_PresentFenceUsed( void );
+void		VK_DestroyPresentFences( void );
 const char	*VK_SwapchainPresentModeName( void );
 void		VK_GetDrawableSize( int *width, int *height );
 const char	*VK_ResultString( VkResult result );
@@ -601,4 +669,5 @@ extern const size_t		vk_spirv_skinned_clip_vert_size;
 
 // cvars
 extern cvar_t	*r_vkValidation;
+extern cvar_t	*r_vkFallbacks;
 extern cvar_t	*r_ext_multisample;

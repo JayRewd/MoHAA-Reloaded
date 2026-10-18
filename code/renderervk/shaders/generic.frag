@@ -30,8 +30,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // texture env of each unit, texEnv_t values from vk.h; 0 disables the unit
 layout(constant_id = 0) const int TEX_ENV0 = 0;
 layout(constant_id = 1) const int TEX_ENV1 = 0;
-// the texture of the unit has no alpha channel: it samples as 1 (the image
-// view swizzle does that) and TEXENV_REPLACE keeps the previous alpha
+// the texture of the unit has no alpha channel: it samples as 1 and
+// TEXENV_REPLACE keeps the previous alpha. The image view swizzle gives the
+// 1, or, without imageViewFormatSwizzle (portability subset), the shader:
+// the pipelines then have it set with every texture env
 layout(constant_id = 2) const bool TEX0_RGB = false;
 layout(constant_id = 3) const bool TEX1_RGB = false;
 // alpha test: 0 off, 1 keep alpha > ref, 2 keep alpha < ref, 3 keep alpha >= ref
@@ -154,6 +156,9 @@ void main() {
 	if ( TEX_ENV0 != 0 ) {
 		vec4 texel = texture( u_texture0, v_st0 );
 
+		if ( TEX0_RGB ) {
+			texel.a = 1.0;
+		}
 		if ( DLIGHT_UNIT == 1 ) {
 			texel.rgb = AddDlights( texel.rgb, normal );
 		}
@@ -162,6 +167,9 @@ void main() {
 	if ( TEX_ENV1 != 0 ) {
 		vec4 texel = texture( u_texture1, v_st1 );
 
+		if ( TEX1_RGB ) {
+			texel.a = 1.0;
+		}
 		if ( DLIGHT_UNIT == 2 ) {
 			texel.rgb = AddDlights( texel.rgb, normal );
 		}

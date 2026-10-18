@@ -60,6 +60,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 vkInstance_t	vk;
 cvar_t			*r_vkValidation;
+cvar_t			*r_vkFallbacks;
 
 // render state recorded by the vk_set_* functions
 typedef struct {
@@ -610,7 +611,8 @@ VK_ReleaseHeldImage
 
 Before the swapchain goes away with an image acquired but not presented:
 a submission without commands waits for the image's semaphore, which
-would otherwise stay signaled
+would otherwise stay signaled, and with swapchain_maintenance1 the image
+goes back to the swapchain (which may then free it before it is destroyed)
 ===============
 */
 void VK_ReleaseHeldImage( void ) {
@@ -628,6 +630,18 @@ void VK_ReleaseHeldImage( void ) {
 	submit.pWaitDstStageMask = &waitStage;
 	VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit, VK_NULL_HANDLE ) );
 	VK_CHECK( qvkQueueWaitIdle( vk.queue ) );
+
+	if ( qvkReleaseSwapchainImagesEXT ) {
+		VkReleaseSwapchainImagesInfoEXT info;
+
+		Com_Memset( &info, 0, sizeof( info ) );
+		info.sType = VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_EXT;
+		info.swapchain = vk.swapchain;
+		info.imageIndexCount = 1;
+		info.pImageIndices = &vk.heldIndex;
+		// an error (surface lost) changes nothing: the swapchain goes
+		qvkReleaseSwapchainImagesEXT( vk.device, &info );
+	}
 
 	vk.heldImage = qfalse;
 	vk.acquireWaitPending = qfalse;
@@ -861,11 +875,14 @@ void VK_FlushAndWait( void ) {
 ===============
 VK_QueuePresent
 
-Presents the held swapchain image once its present semaphore is signaled
+Presents the held swapchain image once its present semaphore is signaled,
+with swapchain_maintenance1 signaling the fence VK_PreparePresentFence chose
+after the previous present (see vk_instance.c)
 ===============
 */
 static void VK_QueuePresent( uint32_t imageIndex ) {
 	VkPresentInfoKHR presentInfo;
+	VkSwapchainPresentFenceInfoEXT fenceInfo;
 	VkResult result;
 	uint64_t start;
 
@@ -876,6 +893,15 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = &vk.swapchain;
 	presentInfo.pImageIndices = &imageIndex;
+	if ( vk.presentFences ) {
+		// chosen after the previous present, but for the first one
+		VK_PreparePresentFence();
+		Com_Memset( &fenceInfo, 0, sizeof( fenceInfo ) );
+		fenceInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT;
+		fenceInfo.swapchainCount = 1;
+		fenceInfo.pFences = &vk.presentFenceSlots[vk.nextPresentFence].fence;
+		presentInfo.pNext = &fenceInfo;
+	}
 
 	start = VK_Microseconds();
 	vk.stats.frameToPresentUs += start - vk.frameStartUs;
@@ -888,6 +914,9 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 	} else {
 		VK_CHECK( result );
 	}
+	// queued, also when out of date: the semaphore wait happens and the
+	// fence signals
+	VK_PresentFenceUsed();
 }
 
 /*
@@ -1066,9 +1095,7 @@ static void VK_CreateFrames( void ) {
 	vk_skin.words = 0;
 	vk_skin.full = qfalse;
 
-	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
-		VK_CHECK( qvkCreateSemaphore( vk.device, &semaphoreInfo, NULL, &vk.presentSemaphores[i] ) );
-	}
+	// the present semaphores belong to the swapchain (VK_CreateSwapchain)
 	for ( i = 0; i < VK_ACQUIRE_SEMAPHORES; i++ ) {
 		VK_CHECK( qvkCreateSemaphore( vk.device, &semaphoreInfo, NULL, &vk.acquireSemaphores[i] ) );
 		vk.acquireWaitSerial[i] = 0;
@@ -1151,12 +1178,6 @@ static void VK_DestroyFrames( void ) {
 		Com_Memset( frame, 0, sizeof( *frame ) );
 	}
 
-	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
-		if ( vk.presentSemaphores[i] ) {
-			qvkDestroySemaphore( vk.device, vk.presentSemaphores[i], NULL );
-			vk.presentSemaphores[i] = VK_NULL_HANDLE;
-		}
-	}
 	for ( i = 0; i < VK_ACQUIRE_SEMAPHORES; i++ ) {
 		if ( vk.acquireSemaphores[i] ) {
 			qvkDestroySemaphore( vk.device, vk.acquireSemaphores[i], NULL );
@@ -1873,6 +1894,11 @@ static void VK_ReportCapabilities( void ) {
 
 	ri.Printf( PRINT_ALL, "Vulkan device: %s (%s)\n", glConfig.renderer_string, glConfig.version_string );
 	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d\n", VK_SwapchainPresentModeName(), vk.width, vk.height );
+	// what the fallbacks replace (see README, Known risks); r_vkFallbacks forces them
+	ri.Printf( PRINT_ALL, "Vulkan present fences %s, view swizzle %s, stride 0 bindings %s, Bresenham lines %s, line stipple %s%s\n",
+		vk.presentFences ? "yes" : "no", vk.viewSwizzle ? "yes" : "no", vk.strideZero ? "yes" : "no",
+		vk.bresenhamLines ? "yes" : "no", vk.lineStipple ? "yes" : "no",
+		vk.fallbacks ? va( " (r_vkFallbacks %d)", vk.fallbacks ) : "" );
 }
 
 /*
@@ -1903,9 +1929,10 @@ static void VK_Info_f( void ) {
 #undef VK_DELTA
 	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
 	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines, depth image %sreadable,"
-		" skin data %.1f MB of %d\n",
+		" skin data %.1f MB of %d, %d present fences, %d retired swapchains\n",
 		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), VK_NumPipelines(),
-		vk.depthReadable ? "" : "not ", vk_skin.words / ( 256.0 * 1024.0 ), VK_SKIN_DATA_WORDS / ( 256 * 1024 ) );
+		vk.depthReadable ? "" : "not ", vk_skin.words / ( 256.0 * 1024.0 ), VK_SKIN_DATA_WORDS / ( 256 * 1024 ),
+		vk.numPresentFences, vk.numRetiredSwapchains );
 
 	vk.statsReported = vk.stats;
 }
@@ -1938,14 +1965,19 @@ static void VK_ResetState( void ) {
 
 void vk_initialize( void ) {
 	r_vkValidation = ri.Cvar_Get( "r_vkValidation", "0", CVAR_LATCH );
+	r_vkFallbacks = ri.Cvar_Get( "r_vkFallbacks", "0", CVAR_LATCH );
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
 	VK_ResetState();
 	// 0 is the segment of new textures, which no draw has used
 	vk.segment = 1;
+	vk.fallbacks = r_vkFallbacks->integer;
+	vk.nextPresentFence = -1;
+	vk.lastPresentFence = -1;
 
 	VK_CreateDevice();
 	VK_CreateFrames();
+	VK_PreparePresentFence();
 	VK_CreateSwapchain();
 	VK_CreateRenderTargets();
 	VK_InitPipelines();
@@ -1963,8 +1995,12 @@ void vk_shutdown( void ) {
 
 	if ( vk.device ) {
 		qvkDeviceWaitIdle( vk.device );
-		// before the semaphores go
-		VK_ReleaseHeldImage();
+		// first: the held image's acquire semaphore is waited for, and the
+		// swapchains and their present semaphores go once their presents
+		// are done
+		VK_DestroySwapchain();
+		VK_DestroyRetiredSwapchains( qtrue );
+		VK_DestroyPresentFences();
 
 		VK_ShutdownTextures();
 		for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
@@ -1979,7 +2015,6 @@ void vk_shutdown( void ) {
 		VK_DestroyFrames();
 		VK_DestroyRenderTargets();
 		VK_DestroyBuffer( &vk.readbackBuffer );
-		VK_DestroySwapchain();
 	}
 
 	VK_DestroyDevice();
@@ -2032,6 +2067,15 @@ void vk_end_frame( void ) {
 			VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
 			VK_CHECK( qvkQueueSubmit( vk.queue, 0, NULL, frame->fence ) );
 			vk.lastSubmitFence = frame->fence;
+		}
+	}
+
+	// after the present: the fence of the next one, and the retired
+	// swapchains whose presents are done (see vk_instance.c)
+	if ( vk.presentFences ) {
+		VK_PreparePresentFence();
+		if ( vk.numRetiredSwapchains ) {
+			VK_DestroyRetiredSwapchains( qfalse );
 		}
 	}
 
@@ -2486,8 +2530,9 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		if ( textures[i] ) {
 			bits |= (uint64_t)vks.texEnv[i] << ( i ? VK_PIPE_TEXENV1_SHIFT : VK_PIPE_TEXENV0_SHIFT );
-			// only TEXENV_REPLACE treats RGB textures differently
-			if ( textures[i]->rgb && vks.texEnv[i] == TEXENV_REPLACE ) {
+			// only TEXENV_REPLACE treats RGB textures differently, but
+			// without the view swizzle the shader sets their alpha to 1
+			if ( textures[i]->rgb && ( vks.texEnv[i] == TEXENV_REPLACE || !vk.viewSwizzle ) ) {
 				bits |= i ? VK_PIPE_TEX1_RGB : VK_PIPE_TEX0_RGB;
 			}
 		}

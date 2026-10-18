@@ -44,6 +44,10 @@ VK_DEVICE_FUNCTIONS_OPTIONAL( VK_DEFINE_FUNCTION )
 
 static PFN_vkGetInstanceProcAddr qvkGetInstanceProcAddr;
 
+// instance extensions that VK_KHR/EXT_swapchain_maintenance1 need, enabled
+// when present
+static qboolean vk_khrSurfaceMaintenance1, vk_extSurfaceMaintenance1;
+
 #define VK_MAX_EXTENSIONS 16
 
 /*
@@ -230,6 +234,28 @@ static void VK_CreateInstance( void ) {
 		// MoltenVK only shows up with this
 		VK_AddExtension( extensions, &numExtensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME );
 		createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+	}
+
+	// present fences (VK_KHR/EXT_swapchain_maintenance1, see
+	// VK_CreateLogicalDevice): their surface extensions
+	vk_khrSurfaceMaintenance1 = vk_extSurfaceMaintenance1 = qfalse;
+	if ( !( vk.fallbacks & VK_FALLBACK_PRESENT_FENCES )
+		&& VK_HasExtension( available, numAvailable, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME ) ) {
+		if ( VK_HasExtension( available, numAvailable, "VK_KHR_surface_maintenance1" ) ) {
+			vk_khrSurfaceMaintenance1 = qtrue;
+		}
+		if ( VK_HasExtension( available, numAvailable, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME ) ) {
+			vk_extSurfaceMaintenance1 = qtrue;
+		}
+		if ( vk_khrSurfaceMaintenance1 || vk_extSurfaceMaintenance1 ) {
+			VK_AddExtension( extensions, &numExtensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
+		}
+		if ( vk_khrSurfaceMaintenance1 ) {
+			VK_AddExtension( extensions, &numExtensions, "VK_KHR_surface_maintenance1" );
+		}
+		if ( vk_extSurfaceMaintenance1 ) {
+			VK_AddExtension( extensions, &numExtensions, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+		}
 	}
 
 	// validation layer
@@ -457,11 +483,25 @@ static void VK_SelectPhysicalDevice( void ) {
 	}
 }
 
+// the features of an extension's feature structure (pNext NULL) that the
+// device supports
+static void VK_GetExtensionFeatures( void *features ) {
+	VkPhysicalDeviceFeatures2 features2;
+
+	Com_Memset( &features2, 0, sizeof( features2 ) );
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = features;
+	qvkGetPhysicalDeviceFeatures2( vk.physicalDevice, &features2 );
+}
+
 static void VK_CreateLogicalDevice( void ) {
 	VkPhysicalDeviceFeatures supported;
 	VkPhysicalDeviceDepthClipControlFeaturesEXT clipControl;
 	VkPhysicalDeviceLineRasterizationFeaturesEXT lineFeatures;
-	const char *lineExtension;
+	VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swapchainFeatures;
+	VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures;
+	qboolean portability;
+	const char *lineExtension, *swapchainExtension;
 	VkDeviceQueueCreateInfo queueInfo;
 	VkDeviceCreateInfo createInfo;
 	VkExtensionProperties *available;
@@ -487,9 +527,76 @@ static void VK_CreateLogicalDevice( void ) {
 
 	numExtensions = 0;
 	VK_AddExtension( extensions, &numExtensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME );
-	// must be enabled when the device has it (MoltenVK)
-	if ( VK_HasExtension( available, numAvailable, "VK_KHR_portability_subset" ) ) {
+
+	// must be enabled when the device has it (MoltenVK). Of what it can
+	// leave out, the renderer uses the A = ONE view swizzle of RGB textures
+	// (imageViewFormatSwizzle; without it the fragment shader sets the
+	// alpha, see vk.viewSwizzle) and vertex bindings with a stride of 0
+	// (constant colors, unused texture coordinates), which it never allows:
+	// a stride must be at least minVertexInputBindingStrideAlignment
+	// (VUID-VkVertexInputBindingDescription-stride-04456), whatever
+	// vertexAttributeAccessBeyondStride says, so those bindings are read per
+	// instance with a stride of their attribute's size (see vk.strideZero),
+	// which needs neither
+	Com_Memset( &portabilityFeatures, 0, sizeof( portabilityFeatures ) );
+	portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+	vk.viewSwizzle = qtrue;
+	vk.strideZero = qtrue;
+	portability = VK_HasExtension( available, numAvailable, "VK_KHR_portability_subset" );
+	if ( portability ) {
 		VK_AddExtension( extensions, &numExtensions, "VK_KHR_portability_subset" );
+		if ( qvkGetPhysicalDeviceFeatures2 ) {
+			VkPhysicalDevicePortabilitySubsetFeaturesKHR supportedPortability;
+
+			Com_Memset( &supportedPortability, 0, sizeof( supportedPortability ) );
+			supportedPortability.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+			VK_GetExtensionFeatures( &supportedPortability );
+			portabilityFeatures.imageViewFormatSwizzle = supportedPortability.imageViewFormatSwizzle;
+		}
+		if ( qvkGetPhysicalDeviceProperties2 ) {
+			VkPhysicalDevicePortabilitySubsetPropertiesKHR portabilityProps;
+			VkPhysicalDeviceProperties2 props2;
+
+			Com_Memset( &portabilityProps, 0, sizeof( portabilityProps ) );
+			portabilityProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_PROPERTIES_KHR;
+			Com_Memset( &props2, 0, sizeof( props2 ) );
+			props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+			props2.pNext = &portabilityProps;
+			qvkGetPhysicalDeviceProperties2( vk.physicalDevice, &props2 );
+			// the strides are 4 (colors), 8, 12 (positions) and 16 bytes
+			if ( portabilityProps.minVertexInputBindingStrideAlignment > 4 ) {
+				ri.Printf( PRINT_ALL, S_COLOR_YELLOW "WARNING: Vulkan: minVertexInputBindingStrideAlignment is %u, vertex strides of 4 and 12 bytes aren't allowed\n",
+					portabilityProps.minVertexInputBindingStrideAlignment );
+			}
+		}
+		vk.viewSwizzle = portabilityFeatures.imageViewFormatSwizzle ? qtrue : qfalse;
+		vk.strideZero = qfalse;
+	}
+	if ( vk.fallbacks & VK_FALLBACK_VIEW_SWIZZLE ) {
+		vk.viewSwizzle = qfalse;
+	}
+	if ( vk.fallbacks & VK_FALLBACK_STRIDE_ZERO ) {
+		vk.strideZero = qfalse;
+	}
+
+	// present fences: a present signals a fence once its wait semaphore can
+	// be reused or destroyed, and once those of every present to a swapchain
+	// have signaled, the swapchain can be destroyed (see VK_DestroyRetiredSwapchains)
+	Com_Memset( &swapchainFeatures, 0, sizeof( swapchainFeatures ) );
+	swapchainFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+	vk.presentFences = qfalse;
+	swapchainExtension = NULL;
+	if ( vk_khrSurfaceMaintenance1 && VK_HasExtension( available, numAvailable, "VK_KHR_swapchain_maintenance1" ) ) {
+		swapchainExtension = "VK_KHR_swapchain_maintenance1";
+	} else if ( vk_extSurfaceMaintenance1 && VK_HasExtension( available, numAvailable, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ) {
+		swapchainExtension = VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
+	}
+	if ( qvkGetPhysicalDeviceFeatures2 && swapchainExtension ) {
+		VK_GetExtensionFeatures( &swapchainFeatures );
+		if ( swapchainFeatures.swapchainMaintenance1 ) {
+			VK_AddExtension( extensions, &numExtensions, swapchainExtension );
+			vk.presentFences = qtrue;
+		}
 	}
 
 	// GL clip space depth: the projection is used as is, so clip space z,
@@ -498,12 +605,7 @@ static void VK_CreateLogicalDevice( void ) {
 	clipControl.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT;
 	vk.depthClipControl = qfalse;
 	if ( qvkGetPhysicalDeviceFeatures2 && VK_HasExtension( available, numAvailable, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME ) ) {
-		VkPhysicalDeviceFeatures2 features2;
-
-		Com_Memset( &features2, 0, sizeof( features2 ) );
-		features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-		features2.pNext = &clipControl;
-		qvkGetPhysicalDeviceFeatures2( vk.physicalDevice, &features2 );
+		VK_GetExtensionFeatures( &clipControl );
 		if ( clipControl.depthClipControl ) {
 			VK_AddExtension( extensions, &numExtensions, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME );
 			vk.depthClipControl = qtrue;
@@ -511,27 +613,26 @@ static void VK_CreateLogicalDevice( void ) {
 	}
 
 	// GL rasterizes aliased lines with the diamond-exit rule, which is
-	// Vulkan's Bresenham mode; it also provides line stipple (debug lines)
+	// Vulkan's Bresenham mode; it also provides line stipple (debug lines).
+	// Without it lines have the device's default rule and no stipple
 	Com_Memset( &lineFeatures, 0, sizeof( lineFeatures ) );
 	lineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT;
 	vk.bresenhamLines = qfalse;
 	vk.lineStipple = qfalse;
 	lineExtension = NULL;
-	if ( VK_HasExtension( available, numAvailable, "VK_KHR_line_rasterization" ) ) {
+	if ( vk.fallbacks & VK_FALLBACK_LINES ) {
+		// none
+	} else if ( VK_HasExtension( available, numAvailable, "VK_KHR_line_rasterization" ) ) {
 		lineExtension = "VK_KHR_line_rasterization";
 	} else if ( VK_HasExtension( available, numAvailable, VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME ) ) {
 		lineExtension = VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME;
 	}
 	if ( qvkGetPhysicalDeviceFeatures2 && lineExtension ) {
 		VkPhysicalDeviceLineRasterizationFeaturesEXT supportedLines;
-		VkPhysicalDeviceFeatures2 features2;
 
 		Com_Memset( &supportedLines, 0, sizeof( supportedLines ) );
 		supportedLines.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT;
-		Com_Memset( &features2, 0, sizeof( features2 ) );
-		features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-		features2.pNext = &supportedLines;
-		qvkGetPhysicalDeviceFeatures2( vk.physicalDevice, &features2 );
+		VK_GetExtensionFeatures( &supportedLines );
 		if ( supportedLines.bresenhamLines ) {
 			VK_AddExtension( extensions, &numExtensions, lineExtension );
 			lineFeatures.bresenhamLines = VK_TRUE;
@@ -572,6 +673,14 @@ static void VK_CreateLogicalDevice( void ) {
 		clipControl.pNext = (void *)createInfo.pNext;
 		createInfo.pNext = &clipControl;
 	}
+	if ( vk.presentFences ) {
+		swapchainFeatures.pNext = (void *)createInfo.pNext;
+		createInfo.pNext = &swapchainFeatures;
+	}
+	if ( portability ) {
+		portabilityFeatures.pNext = (void *)createInfo.pNext;
+		createInfo.pNext = &portabilityFeatures;
+	}
 
 	VK_CHECK( qvkCreateDevice( vk.physicalDevice, &createInfo, NULL, &vk.device ) );
 
@@ -588,6 +697,12 @@ static void VK_CreateLogicalDevice( void ) {
 		if ( !qvkCmdSetLineStippleEXT ) {
 			vk.lineStipple = qfalse;
 		}
+	}
+
+	qvkReleaseSwapchainImagesEXT = NULL;
+	if ( vk.presentFences ) {
+		qvkReleaseSwapchainImagesEXT = (PFN_vkReleaseSwapchainImagesEXT)qvkGetDeviceProcAddr( vk.device,
+			!strcmp( swapchainExtension, "VK_KHR_swapchain_maintenance1" ) ? "vkReleaseSwapchainImagesKHR" : "vkReleaseSwapchainImagesEXT" );
 	}
 
 	qvkCreateRenderPass2KHR = NULL;
@@ -743,6 +858,250 @@ static const char *VK_PresentModeName( VkPresentModeKHR mode ) {
 }
 
 /*
+====================================================================
+
+PRESENT FENCES AND RETIRED SWAPCHAINS
+
+A present waits for a semaphore that the frame's submission signals, one
+per image of the swapchain (vk.presentSemaphores, created with it). The
+semaphore of an image is signaled again only after the image has been
+acquired again and its acquire semaphore waited for, which guarantees that
+the image's previous present has completed, its wait included. When the
+swapchain is replaced (or destroyed while the window is minimized, or at
+shutdown) it and its semaphores are retired: no image of it is presented
+any more, but the presentation engine may still use them.
+
+With VK_KHR/EXT_swapchain_maintenance1 every present also signals a fence
+(vk.presentFenceSlots) once the presentation engine is done with its wait
+semaphore; the fences of the presents to one swapchain signal in present
+order, so a retired swapchain and its semaphores are destroyed once the
+fence of its last present has signaled (checked after every frame's present,
+waited for at shutdown). Without the extension they are destroyed when they
+are retired: that always follows a vkDeviceWaitIdle after their last
+present, and vkQueueWaitIdle waits for the queue operations of presents too
+(the semaphore waits; Vulkan specification, vkQueueWaitIdle and
+vkQueuePresentKHR).
+
+Nothing here waits between a frame's input and its present: the fence of
+the next present is chosen and reset right after a present
+(VK_PreparePresentFence, called by vk_end_frame), a slot whose present is
+done is reused and one is added when none is, and the present only adds it
+to its VkPresentInfoKHR.
+====================================================================
+*/
+
+#define VK_RETIRED_WAIT_NS		1000000000ull	// at shutdown, at most this long for a swapchain's presents
+
+// the present has completed: the slot can be reused
+static qboolean VK_PresentFenceDone( vkPresentFence_t *slot ) {
+	if ( slot->pending && qvkGetFenceStatus( vk.device, slot->fence ) == VK_SUCCESS ) {
+		slot->pending = qfalse;
+	}
+	return !slot->pending;
+}
+
+/*
+===============
+VK_PreparePresentFence
+
+Chooses and resets the fence of the next present
+===============
+*/
+void VK_PreparePresentFence( void ) {
+	vkPresentFence_t *slot;
+	int i, s;
+
+	if ( !vk.presentFences || vk.nextPresentFence >= 0 ) {
+		return;
+	}
+
+	// the slots are taken in turn: the one after the last taken holds the
+	// oldest present
+	for ( i = 0, s = -1; i < vk.numPresentFences && s < 0; i++ ) {
+		if ( VK_PresentFenceDone( &vk.presentFenceSlots[( vk.presentFenceScan + i ) % vk.numPresentFences] ) ) {
+			s = ( vk.presentFenceScan + i ) % vk.numPresentFences;
+		}
+	}
+
+	if ( s < 0 && vk.numPresentFences < VK_PRESENT_FENCES ) {
+		VkFenceCreateInfo info;
+
+		s = vk.numPresentFences++;
+		slot = &vk.presentFenceSlots[s];
+		Com_Memset( &info, 0, sizeof( info ) );
+		info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		VK_CHECK( qvkCreateFence( vk.device, &info, NULL, &slot->fence ) );
+		slot->pending = qfalse;
+		slot->uses = 0;
+	} else {
+		if ( s < 0 ) {
+			// VK_PRESENT_FENCES presents pending, more than any swapchain
+			// has images: not seen. Wait for the oldest
+			s = vk.presentFenceScan % vk.numPresentFences;
+			VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.presentFenceSlots[s].fence, VK_TRUE, UINT64_MAX ) );
+			vk.presentFenceSlots[s].pending = qfalse;
+		}
+		slot = &vk.presentFenceSlots[s];
+		if ( slot->uses ) {
+			VK_CHECK( qvkResetFences( vk.device, 1, &slot->fence ) );
+		}
+	}
+
+	vk.nextPresentFence = s;
+	vk.presentFenceScan = ( s + 1 ) % vk.numPresentFences;
+}
+
+/*
+===============
+VK_PresentFenceUsed
+
+After a present that queued its operations (VK_SUCCESS, VK_SUBOPTIMAL_KHR
+or VK_ERROR_OUT_OF_DATE_KHR): its fence will signal
+===============
+*/
+void VK_PresentFenceUsed( void ) {
+	vkPresentFence_t *slot;
+
+	if ( vk.nextPresentFence < 0 ) {
+		return;
+	}
+	slot = &vk.presentFenceSlots[vk.nextPresentFence];
+	slot->pending = qtrue;
+	slot->uses++;
+	vk.lastPresentFence = vk.nextPresentFence;
+	vk.lastPresentFenceUse = slot->uses;
+	vk.nextPresentFence = -1;
+}
+
+/*
+===============
+VK_RetiredSwapchainDone
+
+The presentation engine is done with the swapchain and its semaphores
+===============
+*/
+static qboolean VK_RetiredSwapchainDone( const vkRetiredSwapchain_t *retired, qboolean wait ) {
+	vkPresentFence_t *slot;
+	VkResult result;
+
+	// without present fences a vkDeviceWaitIdle came after its last present
+	if ( !vk.presentFences || retired->lastFence < 0 ) {
+		return qtrue;
+	}
+	// a slot is only taken again once its fence has signaled
+	slot = &vk.presentFenceSlots[retired->lastFence];
+	if ( slot->uses != retired->lastFenceUse || VK_PresentFenceDone( slot ) ) {
+		return qtrue;
+	}
+	if ( !wait ) {
+		return qfalse;
+	}
+
+	result = qvkWaitForFences( vk.device, 1, &slot->fence, VK_TRUE, VK_RETIRED_WAIT_NS );
+	if ( result == VK_SUCCESS ) {
+		slot->pending = qfalse;
+	} else {
+		// destroyed anyway (shutdown, or more retired swapchains than
+		// VK_MAX_RETIRED_SWAPCHAINS), but say so
+		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "WARNING: Vulkan: the last present of a swapchain didn't complete (%s)\n",
+			VK_ResultString( result ) );
+	}
+	return qtrue;
+}
+
+/*
+===============
+VK_DestroyRetiredSwapchains
+
+Destroys the retired swapchains whose presents are done, all of them with
+wait (at shutdown)
+===============
+*/
+void VK_DestroyRetiredSwapchains( qboolean wait ) {
+	int i, n;
+	uint32_t j;
+
+	for ( i = n = 0; i < vk.numRetiredSwapchains; i++ ) {
+		vkRetiredSwapchain_t *retired = &vk.retiredSwapchains[i];
+
+		if ( !VK_RetiredSwapchainDone( retired, wait ) ) {
+			vk.retiredSwapchains[n++] = *retired;
+			continue;
+		}
+		qvkDestroySwapchainKHR( vk.device, retired->swapchain, NULL );
+		for ( j = 0; j < retired->numSemaphores; j++ ) {
+			qvkDestroySemaphore( vk.device, retired->semaphores[j], NULL );
+		}
+	}
+	vk.numRetiredSwapchains = n;
+}
+
+/*
+===============
+VK_RetireSwapchain
+
+The swapchain is replaced or destroyed, and nothing will be presented to
+it; the caller waited for the device after its last present and released
+its held image
+===============
+*/
+static void VK_RetireSwapchain( VkSwapchainKHR swapchain ) {
+	vkRetiredSwapchain_t *retired;
+
+	if ( vk.numRetiredSwapchains == VK_MAX_RETIRED_SWAPCHAINS ) {
+		// not seen: the oldest ones are done after a frame or two
+		VK_DestroyRetiredSwapchains( qtrue );
+	}
+
+	retired = &vk.retiredSwapchains[vk.numRetiredSwapchains++];
+	retired->swapchain = swapchain;
+	retired->numSemaphores = vk.numPresentSemaphores;
+	Com_Memcpy( retired->semaphores, vk.presentSemaphores, sizeof( retired->semaphores ) );
+	retired->lastFence = vk.lastPresentFence;
+	retired->lastFenceUse = vk.lastPresentFenceUse;
+
+	Com_Memset( vk.presentSemaphores, 0, sizeof( vk.presentSemaphores ) );
+	vk.numPresentSemaphores = 0;
+	vk.lastPresentFence = -1;
+
+	// usually done already: the device was waited for
+	VK_DestroyRetiredSwapchains( qfalse );
+}
+
+// the present semaphores of a new swapchain, one per image
+static void VK_CreatePresentSemaphores( void ) {
+	VkSemaphoreCreateInfo info;
+	uint32_t i;
+
+	Com_Memset( &info, 0, sizeof( info ) );
+	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+	for ( i = 0; i < vk.swapchainImageCount; i++ ) {
+		VK_CHECK( qvkCreateSemaphore( vk.device, &info, NULL, &vk.presentSemaphores[i] ) );
+	}
+	vk.numPresentSemaphores = vk.swapchainImageCount;
+	vk.lastPresentFence = -1;
+}
+
+/*
+===============
+VK_DestroyPresentFences
+
+At shutdown, once every swapchain is gone
+===============
+*/
+void VK_DestroyPresentFences( void ) {
+	int i;
+
+	for ( i = 0; i < vk.numPresentFences; i++ ) {
+		qvkDestroyFence( vk.device, vk.presentFenceSlots[i].fence, NULL );
+	}
+	Com_Memset( vk.presentFenceSlots, 0, sizeof( vk.presentFenceSlots ) );
+	vk.numPresentFences = 0;
+	vk.nextPresentFence = -1;
+	vk.presentFenceScan = 0;
+}
+
+/*
 ===============
 VK_CreateSwapchain
 
@@ -837,8 +1196,10 @@ void VK_CreateSwapchain( void ) {
 	VK_CHECK( qvkCreateSwapchainKHR( vk.device, &createInfo, NULL, &vk.swapchain ) );
 	vk.stats.swapchains++;
 
+	// the old swapchain and its present semaphores go once its presents
+	// are done
 	if ( oldSwapchain ) {
-		qvkDestroySwapchainKHR( vk.device, oldSwapchain, NULL );
+		VK_RetireSwapchain( oldSwapchain );
 	}
 
 	vk.swapchainFormat = format.format;
@@ -849,6 +1210,7 @@ void VK_CreateSwapchain( void ) {
 		ri.Error( ERR_FATAL, "Vulkan: too many swapchain images (%u)", vk.swapchainImageCount );
 	}
 	VK_CHECK( qvkGetSwapchainImagesKHR( vk.device, vk.swapchain, &vk.swapchainImageCount, vk.swapchainImages ) );
+	VK_CreatePresentSemaphores();
 
 	// views and framebuffers, once the render pass exists
 	VK_CreateSwapchainTargets();
@@ -857,6 +1219,14 @@ void VK_CreateSwapchain( void ) {
 		vk.swapchainImageCount, VK_PresentModeName( vk.presentMode ) );
 }
 
+/*
+===============
+VK_DestroySwapchain
+
+The window has no area (minimized), or shutdown: the swapchain is retired
+like a replaced one; vk_shutdown then waits for it (VK_DestroyRetiredSwapchains)
+===============
+*/
 void VK_DestroySwapchain( void ) {
 	if ( vk.swapchain ) {
 		VK_ReleaseHeldImage();
@@ -864,7 +1234,7 @@ void VK_DestroySwapchain( void ) {
 		// device, and a second fatal error would skip the window shutdown
 		qvkDeviceWaitIdle( vk.device );
 		VK_DestroySwapchainTargets();
-		qvkDestroySwapchainKHR( vk.device, vk.swapchain, NULL );
+		VK_RetireSwapchain( vk.swapchain );
 		vk.swapchain = VK_NULL_HANDLE;
 	}
 	vk.swapchainImageCount = 0;
