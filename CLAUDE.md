@@ -51,7 +51,7 @@ port/skinab.sh                     # GPU-skinning A/B flavor (metalab), then: po
 
 New flavors are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. OpenGL is gone from the tree since Phase 4; GL1 comparisons (screenshots, bench) use the `gl` reference flavor, whose renderer never changes unless `GL1_REF` in `port/build.sh` does (`GL1_PATCHES` there adds client-only benchmark logging, such as the per-frame work log). `cl_renderer` is ignored (read-only "metal"). Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.
 
-Gotchas: in OpenMoHAA, `wait N` counts **milliseconds**, and `wait 1` is exactly one frame. A killed run leaves a PID file, and the next start then blocks on a modal "Abnormal Exit" dialog (`run.sh` removes stale PID files). Don't use `s_initsound 0` (upstream crashes on the first footstep); mute with `s_volume 0`. The upstream launchers (`launch_openmohaa_*`) don't work on macOS; run the .app binary directly.
+Gotchas: in OpenMoHAA, `wait N` counts **milliseconds**, and `wait 1` is exactly one frame. A killed run leaves a PID file, and the next start then blocks on a modal "Abnormal Exit" dialog (`run.sh` removes stale PID files). Don't use `s_initsound 0` (upstream crashes on the first footstep); mute with `s_volume 0`. Spearhead/Breakthrough: `+set com_target_game 1`/`2` (the upstream launchers are deleted, Phase 7a); run the .app binary directly.
 
 ## Session hand-off protocol
 

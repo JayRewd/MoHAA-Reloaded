@@ -76,7 +76,6 @@ include(renderer_metal)
 include(client)
 include(basegame)
 #include(missionpack)
-include(launcher)
 
 include(post_configure)
 #include(installer)
