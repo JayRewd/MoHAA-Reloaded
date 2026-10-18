@@ -69,7 +69,10 @@ below are done.
   minimize and restore (also a simulated window without area, the Windows
   path), fullscreen toggles and shutdown, with present fences and with
   every fallback forced (`r_vkFallbacks 15`), and none in the 41 lists'
-  runs of the build-against-build check (`r_vkValidation 1`)
+  runs of the build-against-build check (`r_vkValidation 1`); with the
+  pipelines and skin data at load (2026-10-18), none with synchronization
+  validation through startup, map loads and a map change, `vid_restart` in
+  a map and with a mode change, a demo and shutdown
 - performance (milestone 6, see [Performance](#performance)): on an idle
   machine Vulkan spends 13 to 28 % less main-thread time in the renderer
   than GL1 in the measured views at 1920x1080 (fence waits left out; after
@@ -186,6 +189,21 @@ below are done.
   fallback can be forced (`r_vkFallbacks`) and gives the same frames, the
   input read to present time is unchanged, and Windows has a test
   checklist ([WINDOWS_TESTING.md](WINDOWS_TESTING.md); see Plan 15)
+- pipelines and skin data at load (2026-10-18): the pipelines of a map's
+  draws are created at the end of its load, worked out from the registered
+  shaders as the stage iterators draw them, and a skeletal model's skin
+  data (GPU skinning) when the model is registered, instead of at their
+  first draw: with cold caches (the first play after an install) the 39
+  and 49 pipelines that two matches created while they were played (60 and
+  80 ms, up to 58 ms in one frame) now come at load (the map load 0.18 to
+  0.20 s longer, 2 pipelines left in the match), the 99.9th percentile of
+  the frame time goes from 2.08 to 1.56 ms and from 3.66 to 2.76 ms, the
+  maximum from 34 and 58 ms to 21 and 29 ms (what registration in the
+  match costs both renderers); after a driver update (the keys of what
+  still came late are kept in `vkpipelines.keys`) and with warm caches
+  none is created in the match and the load takes as long as before; the
+  same frames, the same input to present time (see Performance, Pipelines
+  and skin data at load)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -200,10 +218,11 @@ below are done.
 | `vk_instance.c` | Vulkan loading through SDL, instance, validation messenger, device selection, swapchain, present fences and retired swapchains |
 | `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
-| `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file |
+| `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file, the pipelines created before their first draw and the file of keys created after a load (`vkpipelines.keys`) |
 | `vk_framelog.c` | the frame log (`r_vkFrameLog`, `vkframelog`): the per-frame exports timed, the backend's counters and GPU time of every frame, the dump (see Performance, Frame spikes) |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
-| `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces, the frame data of each entity, the skinned batches (see Implementation notes) |
+| `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces (added when a model is registered), the frame data of each entity, the skinned batches (see Implementation notes) |
+| `tr_pipelines.c` | the pipelines of a registration's shaders, worked out from their stages as the stage iterators draw them and created at its end (see Implementation notes, Pipelines) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
 | `shaders/skinned.vert` | the vertex shader of skinned draws (skinning and `rgbGen lightingSpherical`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
@@ -279,7 +298,10 @@ The console command `vkinfo` prints the backend's counters since its last
 call: frames, render passes, submissions, mid-frame flushes, draws,
 pipeline and descriptor set binds, bytes copied into vertex and staging
 buffers, uploads ordered with draws, textures, pipelines and device memory
-allocations created (with the microseconds spent creating them), depth
+allocations created (with the microseconds spent creating them; of the
+pipelines, those created before a draw needed them, `prebuiltPipelines`
+and `prebuiltUs`, see Implementation notes, Pipelines), skin data added
+(`skinUploads`, `skinBytes`), depth
 images replaced to become readable or not (see Implementation notes,
 Render target), swapchains created, bytes of frame vertex buffers created
 because one was full, time spent waiting for frame fences (`waitUs`, with
@@ -288,7 +310,9 @@ the waits of mid-frame flushes, which `flushUs` also counts), in `vkQueueSubmit`
 start of a frame's recording to its present, and the GPU time of the frames
 from timestamps (main command buffer, copy to the swapchain image, whole
 frame); then the device memory objects, memory blocks and pipelines that
-exist and whether the depth image is readable. `tools/perf.py` reads it.
+exist (with how many were created before their first draw and how many of
+those a draw has used) and whether the depth image is readable.
+`tools/perf.py` reads it.
 
 With `r_vkFrameLog 1` (latched: on the command line, or set it and
 `vid_restart`), `vkframelog [file]` writes every frame recorded since the
@@ -299,7 +323,13 @@ See Performance, Frame spikes, for what is in the file and how to send one.
 
 The pipeline cache is saved as `vkpipelines.cache` in `fs_homepath/main` at
 shutdown and `vid_restart` (when it grew) and given to the driver at
-startup when the device and driver match.
+startup when the device and driver match. Next to it, `vkpipelines.keys`
+lists the pipelines that were created after a load (a draw no shader of
+the load gave, a shader registered during the match), at most 256: they are
+created at the end of every load of the next runs, also after a driver
+update, which makes `vkpipelines.cache` useless (see Implementation notes,
+Pipelines). Deleting both files gives what a first play after an install
+does.
 
 Shaders: edit `shaders/*.vert|frag`, run `code/renderervk/shaders/compile_shaders.sh`
 and commit the regenerated `vk_shaders.c`.
@@ -1024,6 +1054,40 @@ synchronization validation (`r_vkValidation 2`) on `mohdm1_dlight` in
 both modes, `m2l1_skyportal`, `obj_team2`, `mp_mohdm1` and a script that
 loads `dm/mohdm1`, runs `vid_restart`, loads `obj/obj_team2`, turns
 `r_novis`, `r_lockpvs` and `r_nocull` on and off, and loads `dm/mohdm3`;
+`renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
+`GetRefAPI`.
+
+Pipelines and skin data at load (2026-10-18, see Performance, Pipelines
+and skin data at load), against the build before it (`run.sh`,
+`tgadiff.py`, 640x480) on the 41 view lists (177 views): 146 give the
+same frames to the bit, among them every view of the `dm`, `obj` and
+multiplayer lists but the snow of `mohdm5_fog` and the near-camera ±1 of
+`d7_alley` and `d7_arch`, of the menus, the dynamic light lists, the debug
+drawing list, `m2l3`, `m3l2`, `m3l3`, `m5l3`, `m6l2a` and `m6l3a`. The
+other 31 are in the 11 lists with random content or run-to-run noise named
+above (`m1l1`, `m1l2a`, `m1l3a`, `m2l1_skyportal`, `m3l1a`, `m4l1_fog`,
+`m5l1a`, `m5l2a`, `m6l1a`, `mohdm5_fog`, `mohdm7`): two runs of the build
+before differ in 29 of the 43 views of those lists in the same way, and
+the one view that differed only between the builds, `m13_sky`, differs by
+a tracer the AI fired in one run (the rest of its frame is the same).
+With `r_ext_multisample 4` (`mohdm1`, `mp_mohdm1`), `r_fastdlights 1` and
+`r_dlightBacks 0` (the dynamic light lists), `r_vkFallbacks 3` (`mohdm1`,
+`obj_team2`, `mp_mohdm1`: keys with the RGB bit of every unit, bindings
+read per instance), `r_gpuSkinning 0` (`mp_mohdm1`, `mp_obj_team4`) and
+`r_lightmap 1` (`mohdm1`: `TEXENV_REPLACE` with the RGB lightmaps) the 46
+views are the same to the bit. No validation message in these runs
+(`r_vkValidation 1`), nor with synchronization validation (`r_vkValidation
+2`, and 1) in a script that starts the game, loads `obj/obj_team2`, runs
+`vid_restart` in it, changes the mode to 800x600 with `vid_restart`,
+loads `dm/mohdm1`, goes back to 640x480, disconnects, plays the `o2match`
+demo and quits (the pipelines of each load built at its end, the unused
+ones of the previous load destroyed, the keys file written at each
+`vid_restart` and at shutdown and read again). Against GL1 (`compare.sh`,
+`summary.py`): `obj_team2`, `mp_mohdm1`, `dm/mohdm3`, `obj_team4` and
+`mp_obj_team4` give the numbers of the tables above at 640x480 and at
+4160x240, `mohdm1_dlight` its known per-pixel light differences, and the
+main menu matches GL1 (fan masked; `menus.txt`: 0 pixels in every menu
+but the 17 of `mn_video`, the views over `m1_spawn` 5.2 to 7.4 %).
 `renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
 `GetRefAPI`.
 
@@ -1782,7 +1846,7 @@ then, in the console, `vkframelog clear` before what should be measured
 `vkframelog`, which writes `vkframes.txt`): the file is written to
 `<fs_homepath>/main/` (the game's writable directory: the console's
 `path` command lists it first) and holds at most the last 131072 frames (`r_vkFrameLog 500000` keeps
-more; 140 bytes per frame). The console shows the percentiles and the
+more; 128 bytes per frame). The console shows the percentiles and the
 slowest frames; the file is what to send. Its header has the device,
 driver, present mode, size and these percentiles; then one line per
 frame, in microseconds:
@@ -1797,6 +1861,7 @@ frame, in microseconds:
 | `gpu gpu_start gpu_end` | GPU time of the main command buffer, and when it started and ended on the GPU (since the first timestamp; 0: none): `gpu_end` differences are the GPU's frame to frame time, `gpu_start` minus the previous `gpu_end` the GPU's idle time |
 | `draws render_passes submits vertex_bytes staging_bytes` | per frame |
 | `pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains` | what was created in the frame and the time it took: pipelines, texture storages, device memory, mid-frame flushes, a frame vertex buffer replaced by a larger one (its size), the depth image replaced, a swapchain created |
+| `skin_uploads skin_bytes` | skin data of skeletal models added in the frame (`vk_add_skin_data` calls and bytes; GPU skinning, see Implementation notes, Skeletal models) |
 
 `tools/framelog.py file` prints the distributions and the causes of the
 slow frames (below). The log changes nothing of what the frames do or
@@ -1910,7 +1975,9 @@ the 3840x2160 ones are as measured, their `load` share a little high.)
 - The skin data of GPU skinning (Vulkan only): a skeletal model's first
   draw builds and uploads its skin data (`R_SkinAddSurface`,
   `R_SkinThresholds`, 429 KB for a player model), 0.6 ms more than GL1 in
-  that frame (`o2match` frame 142, every run), once per model and map.
+  that frame (`o2match` frame 142, every run), once per model and map
+  (since 2026-10-18 when the model is registered, see Pipelines and skin
+  data at load).
 - `engine` in `o4match`'s round changes (frames 4451, 7055, 11008, 13483:
   +1.2 ms, with +1.4 ms of cgame): a new soundtrack is loaded and decoded
   on the main thread (`MUSIC_NewSoundtrack`, `S_CodecLoad`, MP3 decoding,
@@ -1936,7 +2003,9 @@ pipelines in the first frames after the load (25 to 52 ms: the 58 ms
 frame of `o4match`) and 11 to 22 more during the match, in 10 to 12
 frames, 1.6 to 2.4 ms each and up to 7 ms in one frame; the pipelines are
 then 30 to 34 % of the content's slow frames, and Vulkan's 99.9th
-percentile comes near GL1's. GL1's changes by 0.04 to 0.24 ms.
+percentile comes near GL1's. GL1's changes by 0.04 to 0.24 ms. (Since
+2026-10-18 these pipelines are created at load: see Pipelines and skin data
+at load below.)
 
 Fixed views (no movement, 5000 frames, medians of 3; the GPU's frame to
 frame time: Vulkan's `gpu_end` differences from the frame log, GL1's from
@@ -2831,6 +2900,158 @@ That is the cost: about 4 µs a frame after the input's present, of which
 1 µs inside the present call, after the moment `libinlat.so` takes as
 the present.
 
+Pipelines and skin data at load (2026-10-18, Plan 16; see Implementation
+notes, Pipelines at load and Skeletal models). Three cases: the first play
+after an install (cold caches: no `vkpipelines.cache`, no
+`vkpipelines.keys`, `MESA_SHADER_CACHE_DISABLE=true`, `perf.py --cold`),
+the first play after a driver update (the same with `vkpipelines.keys`
+kept, `--keep-keys`), and every later play (warm caches). Idle machine
+(other processes at most 1.1 CPUs, no Plex transcoding), 1920x1080 under
+Xwayland, the build before (`base`) and this one (`new`) interleaved with
+frame log copies of both (`--vklog`), 5 runs of the two match demos (3 for
+the driver update), medians of the runs. Map load: `CL_InitCGame`'s time
+(the map, cgame's registration, `EndRegistration`); the first frames after
+it: the sum of the first 10, the slowest of the first 30; pipelines and
+skin data added during the 15000 measured frames (`vkinfo`; the base build
+added the skin data at first draws, which it doesn't count); ms:
+
+| demo | caches | build | map load (s) | pipelines at load (ms) | first 10 frames | slowest of the first 30 | p99 | p99.9 | max | pipelines in the match (ms) | skin data in the match |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | cold | base | 1.33 | 7 (11) | 43.7 | 33.6 | 1.161 | 2.080 | 33.6 | 39 (60) | at first draws |
+| | | new | 1.51 | 157 (179) | 20.8 | 10.5 | 1.167 | 1.556 | 21.2 | 2 (3.6) | 12 (214 KB), when registered |
+| | driver update | new | 1.51 | 159 (183) | | | 1.157 | 1.544 | 21.0 | 0 | 12 (214 KB) |
+| | warm | base | 1.33 | 7 (0.2) | 18.2 | 8.2 | 1.166 | 1.558 | 21.0 | 39 (0.9) | at first draws |
+| | | new | 1.33 | 159 (1.0) | 16.5 | 7.0 | 1.150 | 1.554 | 21.2 | 0 | 12 (214 KB) |
+| `o4match` | cold | base | 1.23 | 7 (14) | 80.2 | 58.4 | 1.832 | 3.658 | 58.4 | 49 (80) | at first draws |
+| | | new | 1.43 | 177 (196) | 24.4 | 9.4 | 1.878 | 2.761 | 28.5 | 2 (3.6) | 7 (106 KB), when registered |
+| | driver update | new | 1.44 | 179 (199) | | | 1.764 | 2.276 | 28.1 | 0 | 7 (106 KB) |
+| | warm | base | 1.24 | 7 (0.2) | 24.9 | 8.5 | 1.821 | 2.452 | 28.0 | 49 (0.9) | at first draws |
+| | | new | 1.24 | 179 (1.0) | 21.2 | 6.0 | 1.805 | 2.460 | 28.7 | 0 | 7 (106 KB) |
+
+(The ranges over the runs: the cold maxima 33.2 to 34.5 and 58.1 to 59.2
+ms before, 21.0 to 22.0 and 28.3 to 29.2 after; the warm 20.9 to 21.1 and
+27.9 to 28.3 before, 20.9 to 21.7 and 28.0 to 31.1 after.)
+
+- With cold caches the 39 and 49 pipelines that the matches created on
+  first use (60 and 80 ms: 21 and 38 of them in the first 30 frames, 29
+  and 53 ms, the others in 10 and 11 frames of the match, up to 7.6 ms in
+  one) are created at load instead: 157 and 177 pipelines in 179 and 196
+  ms, the map load 0.18 and 0.20 s longer (+14 and +16 %). The first
+  frames after the load take 21 and 24 ms in all instead of 44 and 80, the
+  slowest of them 10 and 9 ms instead of 34 and 58; the 99.9th percentile goes from 2.08 to 1.56
+  ms and from 3.66 to 2.76 ms, the warm plays' values within the run to run
+  spread (o4match's 99.9th percentile spreads more, 2.28 to 2.76 ms, from
+  batch to batch); the maximum from 33.6 to 21.2 and from 58.4 to 28.5 ms,
+  which is registration in the match (shared with GL1, see below and
+  Remaining), the same as with warm caches. In `framelog.py --batch`'s
+  causes of the slow frames (those above each run's 99th percentile),
+  pipelines were 27 to 30 % of the excess in both matches and are 1.5 to
+  2.4 % (the head icons).
+- What the first play still creates in the match: 2 pipelines (3.6 ms), in
+  the first frame, for the head icon sprites (`textures/hud/*_headicon`, a
+  sprite model cgame registers when it first draws one; their alpha test
+  and blend combination isn't any load shader's). After a driver update,
+  and in every later play, they are recorded keys and built at load: 0.
+- With warm caches the pipelines of the load come from the pipeline cache:
+  152 and 172 more in 1 ms, the map load unchanged; the 0.8 to 0.9 ms they
+  cost in the match is gone, and the first frames are shorter by 1.7 and
+  3.7 ms (pipelines and the skin data of the first draws).
+- The skin data is added when a model is registered: at load for the
+  models of the gamestate (234 additions, 3.8 MB in `o2match`, where the
+  base build added 1.6 MB over the whole match at first draws: the load
+  now also adds the models that the match never draws), and during the
+  match the 12 and 7 additions (214 and 106 KB) of the models announced
+  then, all in frames that register (their frame log records have
+  registration time): no first draw adds any. The skin data buffer is 32
+  MB; 4.3 MB was the most a load used in the six demos below.
+- The frame time otherwise: the same within the noise (the median of the
+  runs' means 1.005 and 1.004 ms, 1.141 and 1.142 ms warm; renderer time
+  0.377 and 0.380, 0.862 and 0.868 ms, ranges 0.375 to 0.384 and 0.371 to
+  0.389, 0.839 to 0.899 and 0.860 to 0.894).
+
+How complete the load's pipelines are, checked with a temporary build that
+printed every pipeline a draw created and every shader registered after the
+load, on six matches of four maps (`o2match`, `o4match`, a second match of
+each, `obj/obj_team1`, `dm/mohdm6`), a fresh homepath for each: the base
+build created 33 to 49 pipelines after the load, the new one creates none
+at a draw; 2 come in the first frame for the head icons and 1 when the
+menu opens at the end of a demo (`menu_button_trans`, which a real session
+has created in the main menu); with the keys file of the six runs, none.
+With `r_vkFallbacks 3` (keys with the RGB bit of every texture),
+`r_dlightBacks 0`, `r_fastdlights 1`, `r_gpuSkinning 0` and
+`r_ext_multisample 4` (the final build, `o2match` and `o4match`, no keys
+file) the same: the 2 head icon pipelines after the load, none at a draw
+(201 to 225 pipelines at load with the fallbacks, 172 to 198 with
+`r_dlightBacks 0`, 146 to 166 without GPU skinning, which then adds no
+skin data). The loads create 122 to 173 pipelines (fogged maps more: their fog isn't
+known at load, so both), of which 31 to 50 (20 to 29 %) are used in the
+match; unused ones are destroyed at the next registration. The first
+version of the prediction missed the immediate mode clear to the fog color
+and the UI boxes (now built, see Implementation notes) and built shaders
+registered later with both fogs and static geometry variants (4 pipelines
+for a head icon instead of 1). Memory on RADV: 178 more pipelines left the
+game's resident memory 50 KB larger and its device memory (amdgpu's
+`fdinfo`) unchanged: pipelines that differ only in fixed-function state
+share their shaders.
+
+The `obj_team2` yard (`views/perf.txt`, a fixed view; 5 runs each): with
+cold caches the map load takes 1.07 s instead of 0.90 (157 pipelines at
+load, 166 to 167 ms of them created before their draw), against the base
+build's 20 pipelines by the time the view is set up (the loading screen's
+7 and 13 in the first frames, 23 to 25 ms); none after it in either. Warm,
+the map load is 0.90 and 0.90 to 0.91 s and the renderer's time per frame
+the same: 0.359 and 0.358 ms at 640x480, 0.385 and 0.386 ms at 1920x1080.
+
+Input read to present (`libinlat.so`, `perf.py --caps 0,250 --seconds 10
+--runs 5 --preload libinlat.so --framelog`, 1920x1080 in a window, the
+yard and `o2match`; ms, the median of the runs' medians with their range,
+the median of their 99th percentiles):
+
+| view | `com_maxfps` | base | new |
+| --- | --- | --- | --- |
+| `obj_team2` yard | 0 | 0.408 (0.406 to 0.416), 0.602 | 0.409 (0.405 to 0.411), 0.612 |
+| | 250 | 0.530 (0.518 to 0.562), 0.917 | 0.530 (0.520 to 0.545), 0.910 |
+| `o2match` | 0 | 0.498 (0.495 to 0.506), 1.141 | 0.508 (0.494 to 0.512), 1.110 |
+| | 250 | 0.560 (0.557 to 0.564), 1.040 | 0.558 (0.557 to 0.570), 1.047 |
+
+Nothing was added between a frame's input read and its present: the
+pipelines are created at the end of the load (between frames), or for a
+shader registered in a frame when it is registered, which is no later
+than its first draw would have created them; the skin data when a model is
+registered; per frame only the pipeline's used flag is stored at each
+pipeline lookup that isn't the previous draw's pipeline; no frame more in
+flight, the acquire where it was. The medians differ by -0.002 to +0.010
+ms, inside the spread of the runs.
+
+What is left of the slowest frames: registration in the match (Remaining,
+item 1), shared with GL1, measured in the same demos with warm caches (the
+frame logs of the 5 runs above; stack samples of `libstacks.so` in 2 more
+runs per renderer, `perf.py --stacks`). `o2match` has 6 frames whose
+registration (`load`) takes 0.3 ms or more, 39 ms of registration in all,
+the slowest of them 21 ms with 19 ms of registration; `o4match` 3 frames,
+26 ms, the slowest 28.6 ms with 24 ms of registration (GL1: 7 frames and
+49 to 50 ms, the slowest 26 ms; 4 frames and 31 ms, the slowest 32 to 33
+ms); 26 to 36 textures are created after the load (8 to 11 MB). Where the
+main thread is in those frames' registration exports (134 samples of
+Vulkan's 4 runs, 155 of GL1's, each attributed to the first of these
+functions from its leaf up):
+
+| | Vulkan | GL1 |
+| --- | --- | --- |
+| zlib decompressing the images from the pk3s (`inflate`, `unzReadCurrentFile`) | 48 % | 47 % |
+| the file system's lookups (`FS_FOpenFileRead`, `FS_ReadFile`, the pk3 directories) | 17 % | 13 % |
+| its case correction (`FS_CorrectCase`: `opendir`/`readdir` of each search directory that lacks the path) | 11 % | 10 % |
+| mipmaps and scaling on the CPU (`R_MipMap`, `ResampleTexture`, `R_LightScaleTexture`; GL1's uploads) | 10 % | 21 % |
+| TIKI files (the engine's skeletal models) | 7.5 % | 3 % |
+| shader parsing, the sound | 2 % | 4 % |
+| the skin data, now built when the model is registered (`R_SkinTiki`) | under 1 % | |
+| TGA and JPEG decoding itself | about 1 % | 3 % |
+
+The registration takes as long as before (0.3 to 0.7 ms more in all per
+match: the skin data of the models announced in the match, 214 and 106 KB,
+which their first draws added before), and the frames that used to add
+skin data and create pipelines at a first draw don't any more.
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -3485,8 +3706,16 @@ selects the sample count (see Implementation notes).
   start), the morphs and weights, the indexes of all the triangles, and
   the bone remap tables of the meshes after a TIKI's first (heads, hands,
   helmets: `TIKI_GetLocalChannel` of each bone's channel, as `RB_SkelMesh`
-  maps them), when a TIKI is first drawn; everything is forgotten at each
-  map load (`R_ClearSkinData`, after `vk_finish`). What changes every
+  maps them), when the TIKI is registered (`R_SkinRegisterModel` from
+  `R_RegisterModelInternal`; cgame registers the models of the
+  configstrings, the players' and their weapons, as server models), if one
+  of its surfaces has a shader that the vertex-lit iterator draws, and
+  those registered before the map load at the end of the registration
+  (`R_SkinRegisteredModels`): its first draw used to add it, 0.6 ms more
+  than GL1 in that frame for a player model; the first draw still adds
+  what that missed (a custom shader). Everything is forgotten at each map
+  load (`R_ClearSkinData`, after `vk_finish`), which comes before the
+  models the map's cgame registers. What changes every
   frame goes into the frame data, a 2 MB host-visible buffer per frame
   slot (`vk_alloc_skin_frame`), once per entity and frame: its bones (the
   `skelBoneCache_t` that `R_AddSkelSurfaces` filled), its morph weights,
@@ -3546,15 +3775,70 @@ selects the sample count (see Implementation notes).
   alpha written without blending (see State) and the dynamic lights;
   pipelines with a clip plane use the vertex shader built with
   `gl_ClipDistance`.
-  Pipelines are created on first use and cached for the life of the device,
-  with a `VkPipelineCache` saved to `vkpipelines.cache` (fs_homepath) when
-  the device is destroyed, if it grew, and loaded at startup when its
-  header (vendor, device, pipeline cache UUID) matches; a driver that
-  refuses the data gets an empty cache. With a cold driver shader cache
-  (`MESA_SHADER_CACHE_DISABLE=true`) a pipeline takes about 1.2 ms to
+  Pipelines are cached for the life of the device, with a
+  `VkPipelineCache` saved to `vkpipelines.cache` (fs_homepath) when the
+  device is destroyed, if it grew, and loaded at startup when its header
+  (vendor, device, pipeline cache UUID) matches; a driver that refuses the
+  data gets an empty cache. With a cold driver shader cache
+  (`MESA_SHADER_CACHE_DISABLE=true`) a pipeline takes about 1 to 1.5 ms to
   create, 18 ms for the 15 pipelines up to the first view of `m6l1a`, and
   0.2 ms with the file; RADV's own disk cache brings it to 0.5 ms without
   the file.
+- **Pipelines at load** (`tr_pipelines.c`, `vk_prebuild_pipeline`; see
+  Performance, Pipelines and skin data at load). A pipeline used to be
+  created by the first draw that needed it, inside that frame: with cold
+  caches 1 to 2 ms each, 33 to 49 of them in the first frames after a load
+  and during a match. At the end of a registration (`RE_EndRegistration`,
+  after cgame has registered the map's models, effects and HUD)
+  `R_PrebuildPipelines` goes through every registered shader and works
+  out the draws the stage iterators make with it, from its stages as they
+  pass them to `GL_State`, `GL_Cull`, `GL_TexEnv` and `GL_Bind` (the
+  generic iterator stage by stage, the lightmapped multitexture and
+  vertex-lit ones, the sky box, the projected dynamic light pass), and
+  `vk_prebuild_pipeline` creates their pipelines. It builds the key with
+  `vk_draw`'s own `VK_BuildPipelineKey`, which now reads the state from a
+  `vkState_t` it is given (`vk_draw` gives it the recorded state), from a
+  state with those fields set and a geometry that says only whether it is
+  skinned, has colors per vertex and which units have texture coordinates:
+  the same key, so the pipeline the draw finds is the one it would have
+  created (`VK_CreatePipeline` depends on the key and the device only). What
+  only the frame decides, every value it can take: where the shader is
+  drawn (2D, where depth test is off for a stage without a second texture
+  and the cull is the shader's or the none `Set2DWindow` sets behind
+  `GL_Cull`'s back, which a draw keeps until `GL_Cull` changes it; a 3D
+  view on the CPU, with colors per vertex; the static geometry, with a
+  constant color when `RB_StaticStageColor` can give one; skinned), the
+  fog (off, or the stage's `GLS_FOG_ENABLED`, since `GL_State` keeps the
+  previous fog when that bit doesn't change and `Set2DWindow` turns it
+  off: both, the map's fog isn't known before its first frame), dynamic
+  lights on a lightmap unit (and `r_dlightBacks 0`'s test when set), the
+  images an animated bundle binds (RGB textures with `TEXENV_REPLACE`, or
+  any env without the view swizzle, change the key), the cull left before
+  the sky box, and the immediate mode draws of every frame (the color
+  clear drawn as a quad, the UI's boxes). A shader registered after that
+  (an effect or a sprite announced in the match, in
+  `GeneratePermanentShader`) gets its pipelines in that frame, with the fog
+  of the last 3D view and none from the static geometry, which only the
+  load registers. Not built: mirror and portal views (cull swapped, clip
+  plane), debug drawing, stencil shadows, `r_measureOverdraw`, other
+  immediate mode draws. The keys created after a load (by a draw, or for
+  a shader registered later) are written to `vkpipelines.keys` at
+  shutdown when new ones came (keys only: a header with the layout
+  version of the `VK_PIPE_*` fields, at most 256, the new ones first),
+  and created at the end of every registration of the next runs (those
+  this device can make: no stipple without the extension, no polygon line
+  mode without `fillModeNonSolid`), so they are compiled at load after a
+  driver update too. Bounded: at most `VK_MAX_PREBUILT` (1024) pipelines
+  per registration, and at the start of each registration
+  (`vk_begin_prebuild`) the pipelines created before their draw that no
+  draw used are destroyed (no command buffer refers to them), so what
+  exists is what the draws used plus one registration's: 130 to 190 after
+  loading the measured maps, of which 30 to 50 are used. On RADV they cost
+  next to nothing in memory (pipelines that differ only in fixed-function
+  state share their shaders): 178 more pipelines left the game's resident
+  memory 50 KB larger and its device memory (amdgpu's fdinfo) the same.
+  `vkinfo` prints how many exist, were created before their draw and of
+  those were used.
 - **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
   the static geometry). Every `vkAllocateMemory` goes
   through `VK_AllocateMemory`, which counts it; GPU times come from
@@ -3568,9 +3852,12 @@ selects the sample count (see Implementation notes).
   instead of the exports; otherwise it returns them unchanged, and the only
   trace of the log is one test of `vk_frameLog` per frame in
   `VK_CollectTimestamps`. Each frame's record is filled at `EndFrame` from
-  the difference of `vkStats_t` since the previous `EndFrame` (so the fence
-  wait at the start of the frame, in the first 2D call, and the acquire
-  after the present are in it) and completed at the next `BeginFrame` (its
+  the difference of `vkStats_t` since its `BeginFrame` (so the fence wait
+  at the start of the frame, in the first 2D call, and the acquire after
+  the present are in it; what the backend does between frames, a map load
+  with the pipelines created at its end, is no frame's, like the
+  registration time between frames, which `load` leaves out too; until
+  2026-10-18 it went to the first frame after it) and completed at the next `BeginFrame` (its
   interval, the engine's time after it); the GPU timestamps come two frames
   later, when the slot is reused (`VK_FrameLogGpu`, matched by frame
   serial). Nothing of the frames, submissions, presents or acquires
@@ -3943,31 +4230,76 @@ Done:
     and at 250, in a window and fullscreen. A checklist for testing on
     Windows: [WINDOWS_TESTING.md](WINDOWS_TESTING.md).
 
+16. Pipelines and skin data at load (2026-10-18, see Performance,
+    Pipelines and skin data at load, and Implementation notes, Pipelines
+    at load and Skeletal models). At the end of a registration
+    (`RE_EndRegistration`) the pipelines of the draws the registered
+    shaders will make are created (`tr_pipelines.c`: the stage iterators'
+    state, with each value of what only the frame decides: where the
+    shader is drawn, the fog, dynamic lights, the images of animations, the
+    sky box, the clear to the fog color and the UI's boxes), through
+    `vk_draw`'s own key function, so a draw finds the pipeline it would have
+    created; a shader registered later gets its own when it is created; the
+    keys that still come after a load are kept in `vkpipelines.keys` and
+    created at the loads of the next runs (after a driver update too);
+    unused ones are destroyed at the next registration. A skeletal model's
+    skin data is added when the model is registered instead of at its
+    first draw. With cold caches the 39 and 49 pipelines that two matches
+    created on first use (60 and 80 ms, up to 58 ms in one frame) are
+    created at load (the map load 0.18 to 0.20 s longer): 2 left in the
+    match for the first play after an install, 0 after a driver update and
+    with warm caches, where the load is as long as before; the 99.9th
+    percentile with cold caches 2.08 to 1.56 ms and 3.66 to 2.76 ms, the
+    maximum 33.6 to 21.2 and 58.4 to 28.5 ms (registration, shared with
+    GL1). No skin data at first draws any more. The same frames, the same
+    input to present time. The frame log no longer charges what happens
+    between frames (a load) to the first frame after it.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
   frame times in two matches played back, 1920x1080 unless named):
   1. Registration in the middle of a match: a model announced by a
      configstring (`CG_ProcessConfigString`, cgame's `CacheResource`)
-     loads its shaders' images from the pk3s, zlib, TGA/JPEG decoding,
-     `R_MipMap` on the CPU, the file system's case correction
-     (`FS_CorrectCase`): the largest frames of both renderers (21 to 31
-     ms) and 13 to 28 % of the slow frames' excess. Shared with GL1;
-     precaching the players' models and weapons at map load (cgame or the
-     engine), or making image loading cheaper (mipmaps by the GPU with
-     `vkCmdBlitImage`, fewer directory scans), would remove most of it. In
-     the renderer alone: a skeletal model's skin data (GPU skinning) is
-     built and uploaded at its first draw, 0.6 ms more than GL1 in that
-     frame, once per model and map; it can be built at registration.
-  2. Pipelines on first use, with cold caches only (the first play after
-     an install or a driver update): 39 to 49 pipelines after the load,
-     25 to 52 ms in the first frames and 1.6 to 2.4 ms each for the 11 to
-     22 that come during the match: the 99.9th percentile 0.5 to 0.8 ms
-     higher, the maximum 33 to 58 ms. With warm caches the same pipelines
-     cost 0.6 to 1.5 ms in all. Creating the map's pipelines at load time
-     (its shaders' stages and the states the back end can give them) would
-     remove both; it matters for the first play, and more where pipelines
-     compile more slowly than on RADV.
+     loads its shaders' images from the pk3s: the largest frames of both
+     renderers (21 to 29 ms in the two matches, GL1 26 to 33 ms) and 13 to
+     28 % of the slow frames' excess; 6 and 3 frames, 39 and 26 ms of
+     registration per match, 26 to 36 textures (8 to 11 MB). Measured
+     (2026-10-18, see Performance, Pipelines and skin data at load): zlib
+     decompressing the images from the pk3s takes 48 % of it, the file
+     system's lookups 17 % and its case correction (`FS_CorrectCase`) 11
+     %, mipmaps and scaling on the CPU 10 %, TIKI files 7.5 %, TGA and JPEG
+     decoding about 1 %; shared with GL1, which spends about the same. Not
+     done, each keeping the frames: (a) the players' models and weapons
+     registered at map load (cgame or the engine: the stock lists are
+     known; more load time and memory) would take nearly all of it out of
+     the match; (b) a faster inflate for the pk3 reads (zlib-ng's or
+     libdeflate's decompression, the same bytes, reported about twice as
+     fast as stock zlib; not measured here) would take up to a quarter of
+     it off, in the load too; (c) the file system's directory scans: `FS_CorrectCase` lists
+     every search directory that lacks a path (`opendir`/`readdir`) on
+     each lookup of a file that only a pk3 has; listing each directory
+     once per file system start, or skipping the correction where a pk3
+     has the file, would remove most of its 11 % and part of the 17 %;
+     (d) the mipmaps on the GPU, with a compute shader doing `R_MipMap`'s
+     integer box filter (the same bytes; `vkCmdBlitImage`'s filtering
+     would not be), 10 %; (e) a cache of decoded images (like the pipeline
+     cache) would remove the decompression and the decoding together, at
+     the cost of disk space. (a) to (c) are engine or cgame changes, (d)
+     the renderer's. The skin data of GPU skinning is no longer built at a
+     model's first draw (0.6 ms more than GL1 in that frame): it is built
+     when the model is registered, in these frames (under 1 % of them).
+  2. Pipelines on first use, with cold caches: done (2026-10-18, Plan 16):
+     the map's pipelines are created at load (0.18 to 0.20 s more map load
+     with cold caches, the same with warm ones), 2 are left in the match
+     for the first play after an install (the head icon sprite, registered
+     in the first frame), none after a driver update or with warm caches
+     (`vkpipelines.keys`). What a first play can still create: mirror and
+     portal views (cull swapped, clip plane), debug drawing, stencil
+     shadows, `r_measureOverdraw`, immediate mode draws other than the UI's
+     boxes and the clear, shaders whose state combination no load shader
+     has. Untested where pipelines compile more slowly than on RADV
+     (NVIDIA, MoltenVK), where the load would grow more and the gain too.
   3. The busier moments of a match on the CPU: front end, back end and
      cgame are 60 to 80 % of the slow frames' excess at 1920x1080,
      Vulkan's smaller than GL1's. In the stack samples of

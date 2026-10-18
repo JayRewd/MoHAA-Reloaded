@@ -3003,6 +3003,9 @@ static shader_t *GeneratePermanentShader( void ) {
 
 	currentShader = NULL;
 
+	// registered after the map's pipelines were built: its own now
+	R_PrebuildNewShader( newShader );
+
 	return newShader;
 }
 

@@ -328,6 +328,35 @@ typedef struct {
 // during the call
 void		vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes );
 
+// Pipelines at load (tr_pipelines.c): what vk_draw would read of the state
+// set above and of the geometry, for a draw that is expected later.
+// vk_prebuild_pipeline creates the pipeline such a draw would use now, so
+// the draw finds it, and returns whether it had to be created. Outside a
+// frame too; it records nothing
+typedef struct {
+	primType_t		prim;
+	unsigned long	stateBits;			// as given to vk_set_state
+	cullFace_t		cull;
+	qboolean		polygonOffset;
+	qboolean		fog;
+	qboolean		clipPlane;
+	texEnv_t		texEnv[NUM_TEXTURE_BUNDLES];
+	image_t			*image[NUM_TEXTURE_BUNDLES];	// bound to the unit; NULL: the geometry has no texture coordinates for it
+	int				dlightTmu;			// vk_set_lightmap_dlights' unit, -1 for none
+	qboolean		dlightBacks;
+	qboolean		colorArray;			// geometry colors per vertex (not the constant color)
+	qboolean		skinned;
+} vkDrawState_t;
+
+qboolean	vk_prebuild_pipeline( const vkDrawState_t *state );
+// a registration starts: the pipelines built for the last one that no draw
+// used are destroyed
+void		vk_begin_prebuild( void );
+// its shaders' pipelines are built: those recorded in earlier runs too (the
+// keys that came after a load: see vk_pipeline.c), and what
+// vk_prebuild_pipeline builds from now on is recorded for the next runs
+void		vk_end_prebuild( void );
+
 // Static geometry: what doesn't change after a map load (world surfaces,
 // static models) is uploaded once into device memory and drawn from there.
 // Positions and texture coordinates share one vertex numbering, colors have

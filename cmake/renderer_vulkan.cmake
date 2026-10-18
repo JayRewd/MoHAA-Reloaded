@@ -36,6 +36,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_marks_permanent.c
     ${SOURCE_DIR}/renderervk/tr_marks.c
     ${SOURCE_DIR}/renderervk/tr_model.cpp
+    ${SOURCE_DIR}/renderervk/tr_pipelines.c
     ${SOURCE_DIR}/renderervk/tr_scene.c
     ${SOURCE_DIR}/renderervk/tr_shade_calc.c
     ${SOURCE_DIR}/renderervk/tr_shade.c

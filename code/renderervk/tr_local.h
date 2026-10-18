@@ -1361,6 +1361,9 @@ typedef struct {
 	// (RB_TransformDlights)
 	int			dlightList;
 	int			worldDlightList;
+	// RB_SetupFog calls: once one came after a registration, the fog of its
+	// map is known (tr_pipelines.c)
+	int			setupFogs;
 } backEndState_t;
 
 /*
@@ -2136,8 +2139,15 @@ void RB_CheckOverflow( int verts, int indexes );
 extern cvar_t *r_gpuSkinning;
 
 void R_ClearSkinData( void );
+void R_SkinRegisterModel( const model_t *mod );
+void R_SkinRegisteredModels( void );
 qboolean RB_SkinSurface( skelSurfaceGame_t *sf, int mesh, int render_count );
 void RB_SkinDraw( drawGeometry_t *geometry );
+// tr_pipelines.c
+void R_PrebuildPipelines( void );
+void R_PrebuildNewShader( const shader_t *shader );
+void R_PrebuildReset( void );
+
 #define RB_CHECKOVERFLOW(v,i) if (tess.numVertexes + (v) >= SHADER_MAX_VERTEXES || tess.numIndexes + (i) >= SHADER_MAX_INDEXES ) {RB_CheckOverflow(v,i);}
 
 void RB_StageIteratorGeneric( void );

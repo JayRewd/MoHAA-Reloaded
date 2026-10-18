@@ -26,7 +26,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //  - vk_instance.c: loader, instance, device, swapchain
 //  - vk.c: frames, command buffers, render state, drawing, clears, readback
 //  - vk_image.c: textures, samplers, uploads
-//  - vk_pipeline.c: pipeline cache
+//  - vk_pipeline.c: pipeline cache, pipelines created before their first draw
 //  - vk_shaders.c: SPIR-V generated from shaders/ by shaders/compile_shaders.sh
 //
 // Vulkan is loaded through SDL (SDL_Vulkan_GetVkGetInstanceProcAddr), so the
@@ -318,7 +318,10 @@ typedef struct {
 	uint64_t	stagingBytes;		// texture data copied into staging buffers
 	uint64_t	mainUploads;		// uploads recorded in order with the draws (they end the render pass)
 	uint64_t	textures;			// texture storages created
-	uint64_t	pipelines;			// pipelines created
+	uint64_t	pipelines;			// pipelines created (by draws and by vk_prebuild_pipeline)
+	uint64_t	prebuiltPipelines;	// pipelines created before a draw needed them (vk_prebuild_pipeline, recorded keys)
+	uint64_t	skinUploads;		// vk_add_skin_data calls that added words
+	uint64_t	skinBytes;			// bytes they added
 	uint64_t	allocations;		// vkAllocateMemory calls
 	uint64_t	depthTargets;		// depth images replaced to become readable or not (VK_UpdateDepthTarget)
 	uint64_t	swapchains;			// swapchains created (VK_CreateSwapchain)
@@ -332,6 +335,7 @@ typedef struct {
 	uint64_t	frameToPresentUs;	// from the start of a frame's recording to its present
 	uint64_t	presentUs;			// vkQueuePresentKHR
 	uint64_t	pipelineUs;			// vkCreateGraphicsPipelines
+	uint64_t	prebuiltUs;			// vkCreateGraphicsPipelines of those
 	uint64_t	allocationUs;		// vkAllocateMemory
 	uint64_t	textureUs;			// creating texture storages (image, memory, view, descriptor set)
 	// GPU time from timestamps, of the frames that presented
@@ -592,7 +596,9 @@ typedef struct {
 void		VK_InitPipelines( void );
 void		VK_ShutdownPipelines( void );
 VkPipeline	VK_GetPipeline( const vkPipelineKey_t *key );
+qboolean	VK_PrebuildPipeline( const vkPipelineKey_t *key );
 int			VK_NumPipelines( void );
+void		VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed );
 
 // pipeline key fields
 #define VK_PIPE_SRCBLEND_SHIFT		0		// GLS_SRCBLEND_* value, 4 bits

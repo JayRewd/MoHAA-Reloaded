@@ -70,9 +70,9 @@ typedef struct {
 	uint32_t	flushWait;		// mid-frame flushes
 	uint32_t	submit, acquire, acquireAhead, present;
 	uint32_t	pipelineUs, textureUs, allocationUs;
-	uint32_t	stagingBytes, vertexBytes, vertexGrowth;
+	uint32_t	stagingBytes, vertexBytes, vertexGrowth, skinBytes;
 	uint32_t	draws;
-	uint16_t	pipelines, textures, allocations, flushes;
+	uint16_t	pipelines, textures, allocations, flushes, skinUploads;
 	uint16_t	submits, renderPasses, depthTargets, swapchains;
 	// GPU, from the timestamps (set when the frame slot is reused)
 	uint32_t	gpuMain;		// main command buffer
@@ -178,6 +178,9 @@ static void FL_BeginFrame( stereoFrame_t stereoFrame ) {
 	fl.curStart = t0;
 	fl.cur.start = FL_Clamp( t0 - fl.base );
 	fl.inFrame = qtrue;
+	// what the backend did between frames (a map load: its pipelines,
+	// textures and uploads) is no frame's, like the registration time
+	fl.stats = vk.stats;
 
 	// not nested in anything; an error that jumped out of an export left
 	// depth behind
@@ -238,7 +241,9 @@ static void FL_EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	r->vertexBytes = FL_Clamp( s->vertexBytes - p->vertexBytes );
 	r->vertexGrowth = FL_Clamp( s->vertexGrowth - p->vertexGrowth );
 	r->draws = FL_Clamp( s->draws - p->draws );
+	r->skinBytes = FL_Clamp( s->skinBytes - p->skinBytes );
 	r->pipelines = FL_Clamp16( s->pipelines - p->pipelines );
+	r->skinUploads = FL_Clamp16( s->skinUploads - p->skinUploads );
 	r->textures = FL_Clamp16( s->textures - p->textures );
 	r->allocations = FL_Clamp16( s->allocations - p->allocations );
 	r->flushes = FL_Clamp16( s->flushes - p->flushes );
@@ -418,6 +423,9 @@ static void FL_Events( const vkFrameRecord_t *r, char *out, int outSize ) {
 	if ( r->stagingBytes ) {
 		Q_strcat( out, outSize, va( " uploads %.0f KB", r->stagingBytes / 1024.0 ) );
 	}
+	if ( r->skinUploads ) {
+		Q_strcat( out, outSize, va( " skin data %d (%.0f KB)", r->skinUploads, r->skinBytes / 1024.0 ) );
+	}
 	if ( r->allocations ) {
 		Q_strcat( out, outSize, va( " allocations %d (%.2f ms)", r->allocations, r->allocationUs / 1000.0 ) );
 	}
@@ -537,18 +545,19 @@ static void FL_Dump( const char *name ) {
 
 	FL_Printf( w, "# columns, microseconds unless named: frame start interval begin scene 2d end load cgame engine present_at"
 		" fence flush submit acquire acquire_ahead present gpu gpu_start gpu_end draws render_passes submits vertex_bytes staging_bytes"
-		" pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains\n" );
+		" pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains"
+		" skin_uploads skin_bytes\n" );
 	FL_Printf( w, "# (frame: index in this log; start, present_at, gpu_start and gpu_end: since the log started, 0 and gpu_end 0: none;"
 		" engine: EndFrame's return to the next BeginFrame; cgame: the rest of the interval outside the exports)\n" );
 	for ( i = 0; i < n; i++ ) {
 		const vkFrameRecord_t *r = FL_Record( first + i );
 
-		FL_Printf( w, "%d %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
+		FL_Printf( w, "%d %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
 			i, r->start, r->interval, r->begin, r->scene, r->twoD, r->end, r->load, FL_Cgame( r ), r->engine, r->presentAt,
 			r->fenceWait, r->flushWait, r->submit, r->acquire, r->acquireAhead, r->present, r->gpuMain, r->gpuStart, r->gpuEnd,
 			r->draws, r->renderPasses, r->submits, r->vertexBytes, r->stagingBytes,
 			r->pipelines, r->pipelineUs, r->textures, r->textureUs, r->allocations, r->allocationUs, r->flushes,
-			r->vertexGrowth, r->depthTargets, r->swapchains );
+			r->vertexGrowth, r->depthTargets, r->swapchains, r->skinUploads, r->skinBytes );
 	}
 	FL_Flush( w );
 	ri.FS_CloseFile( w->f );

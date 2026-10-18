@@ -1912,25 +1912,28 @@ reads them), then what exists now
 static void VK_Info_f( void ) {
 	const vkStats_t *s = &vk.stats, *r = &vk.statsReported;
 	VkDeviceSize blockSize, blockUsed;
-	int numBlocks;
+	int numBlocks, numPipelines, prebuilt, prebuiltUsed;
 
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
 	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu skinDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
-		" swapchains=%llu vertexGrowth=%llu"
-		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu allocationUs=%llu textureUs=%llu"
+		" swapchains=%llu vertexGrowth=%llu prebuiltPipelines=%llu skinUploads=%llu skinBytes=%llu"
+		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu prebuiltUs=%llu allocationUs=%llu textureUs=%llu"
 		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
 		VK_DELTA( staticDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
 		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( swapchains ), VK_DELTA( vertexGrowth ),
+		VK_DELTA( prebuiltPipelines ), VK_DELTA( skinUploads ), VK_DELTA( skinBytes ),
 		VK_DELTA( waitUs ), VK_DELTA( flushUs ), VK_DELTA( submitUs ),
-		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
+		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( prebuiltUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
 		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ) );
 #undef VK_DELTA
 	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
-	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines, depth image %sreadable,"
+	VK_PipelineCounts( &numPipelines, &prebuilt, &prebuiltUsed );
+	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines"
+		" (%d created at load, %d of them used), depth image %sreadable,"
 		" skin data %.1f MB of %d, %d present fences, %d retired swapchains\n",
-		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), VK_NumPipelines(),
+		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), numPipelines, prebuilt, prebuiltUsed,
 		vk.depthReadable ? "" : "not ", vk_skin.words / ( 256.0 * 1024.0 ), VK_SKIN_DATA_WORDS / ( 256 * 1024 ),
 		vk.numPresentFences, vk.numRetiredSwapchains );
 
@@ -2443,8 +2446,8 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 	}
 }
 
-static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const drawGeometry_t *geometry, vkTexture_t **textures ) {
-	unsigned long stateBits = vks.stateBits;
+static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primType_t prim, const drawGeometry_t *geometry, vkTexture_t **textures ) {
+	unsigned long stateBits = s->stateBits;
 	uint64_t bits = 0;
 	float alphaRef = 0.0f;
 	int alphaFunc = 0;
@@ -2468,26 +2471,26 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 
 	if ( prim == PRIM_LINES ) {
 		bits |= VK_PIPE_LINES;
-		if ( vks.lineStippleFactor && vk.lineStipple ) {
+		if ( s->lineStippleFactor && vk.lineStipple ) {
 			bits |= VK_PIPE_STIPPLE;
 		}
 	} else {
 		// culling, polygon mode and polygon offset only apply to polygons
-		bits |= (uint64_t)vks.cull << VK_PIPE_CULL_SHIFT;
+		bits |= (uint64_t)s->cull << VK_PIPE_CULL_SHIFT;
 		if ( stateBits & GLS_POLYMODE_LINE ) {
 			if ( vk.enabledFeatures.fillModeNonSolid ) {
 				bits |= VK_PIPE_POLYMODE_LINE;
-				if ( vks.lineStippleFactor && vk.lineStipple ) {
+				if ( s->lineStippleFactor && vk.lineStipple ) {
 					bits |= VK_PIPE_STIPPLE;
 				}
 			}
-		} else if ( vks.polygonOffset ) {
+		} else if ( s->polygonOffset ) {
 			// GL_POLYGON_OFFSET_FILL: filled polygons only
 			bits |= VK_PIPE_DEPTHBIAS;
 		}
 	}
 
-	bits |= (uint64_t)( ( vks.colorMask[0] ? 1 : 0 ) | ( vks.colorMask[1] ? 2 : 0 ) | ( vks.colorMask[2] ? 4 : 0 ) ) << VK_PIPE_COLORMASK_SHIFT;
+	bits |= (uint64_t)( ( s->colorMask[0] ? 1 : 0 ) | ( s->colorMask[1] ? 2 : 0 ) | ( s->colorMask[2] ? 4 : 0 ) ) << VK_PIPE_COLORMASK_SHIFT;
 
 	switch ( stateBits & GLS_ATEST_BITS ) {
 	case GLS_ATEST_GT_0:
@@ -2529,35 +2532,35 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, primType_t prim, const dr
 
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		if ( textures[i] ) {
-			bits |= (uint64_t)vks.texEnv[i] << ( i ? VK_PIPE_TEXENV1_SHIFT : VK_PIPE_TEXENV0_SHIFT );
+			bits |= (uint64_t)s->texEnv[i] << ( i ? VK_PIPE_TEXENV1_SHIFT : VK_PIPE_TEXENV0_SHIFT );
 			// only TEXENV_REPLACE treats RGB textures differently, but
 			// without the view swizzle the shader sets their alpha to 1
-			if ( textures[i]->rgb && ( vks.texEnv[i] == TEXENV_REPLACE || !vk.viewSwizzle ) ) {
+			if ( textures[i]->rgb && ( s->texEnv[i] == TEXENV_REPLACE || !vk.viewSwizzle ) ) {
 				bits |= i ? VK_PIPE_TEX1_RGB : VK_PIPE_TEX0_RGB;
 			}
 		}
 	}
 
-	if ( vks.dlightTmu >= 0 && textures[vks.dlightTmu] ) {
-		bits |= (uint64_t)( vks.dlightTmu + 1 ) << VK_PIPE_DLIGHT_SHIFT;
-		if ( vks.dlightBacks ) {
+	if ( s->dlightTmu >= 0 && textures[s->dlightTmu] ) {
+		bits |= (uint64_t)( s->dlightTmu + 1 ) << VK_PIPE_DLIGHT_SHIFT;
+		if ( s->dlightBacks ) {
 			bits |= VK_PIPE_DLIGHT_BACKS;
 		}
 	}
 
-	if ( vks.fog ) {
+	if ( s->fog ) {
 		bits |= VK_PIPE_FOG;
 	}
-	if ( vks.clipPlaneEnabled ) {
+	if ( s->clipPlaneEnabled ) {
 		bits |= VK_PIPE_CLIPPLANE;
 	}
 
-	if ( vks.stencilTest ) {
+	if ( s->stencilTest ) {
 		bits |= VK_PIPE_STENCIL;
-		bits |= (uint64_t)vks.stencilFunc << VK_PIPE_STENCILFUNC_SHIFT;
-		bits |= (uint64_t)vks.stencilOp[0] << VK_PIPE_STENCILOP_SHIFT;
-		bits |= (uint64_t)vks.stencilOp[1] << ( VK_PIPE_STENCILOP_SHIFT + 2 );
-		bits |= (uint64_t)vks.stencilOp[2] << ( VK_PIPE_STENCILOP_SHIFT + 4 );
+		bits |= (uint64_t)s->stencilFunc << VK_PIPE_STENCILFUNC_SHIFT;
+		bits |= (uint64_t)s->stencilOp[0] << VK_PIPE_STENCILOP_SHIFT;
+		bits |= (uint64_t)s->stencilOp[1] << ( VK_PIPE_STENCILOP_SHIFT + 2 );
+		bits |= (uint64_t)s->stencilOp[2] << ( VK_PIPE_STENCILOP_SHIFT + 4 );
 	}
 
 	key->bits = bits;
@@ -2844,7 +2847,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		}
 	}
 
-	VK_BuildPipelineKey( &key, prim, geometry, textures );
+	VK_BuildPipelineKey( &key, &vks, prim, geometry, textures );
 	if ( key.bits == vk_lastKey.bits && key.alphaRef == vk_lastKey.alphaRef && vk_lastPipeline ) {
 		pipeline = vk_lastPipeline;
 	} else {
@@ -2903,6 +2906,59 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
 	}
 	vk.stats.draws++;
+}
+
+/*
+===============
+vk_prebuild_pipeline
+
+The pipeline of a draw with that state and geometry: the state vk_draw
+reads from vks, and from the geometry only whether it is skinned, has
+colors per vertex and has texture coordinates for a unit, so the key is
+the one vk_draw builds (VK_BuildPipelineKey) and the pipeline the one it
+would create (VK_CreatePipeline knows nothing but the key and the device).
+No stipple, stencil test or color mask: what the shader stages never set
+===============
+*/
+qboolean vk_prebuild_pipeline( const vkDrawState_t *state ) {
+	vkTexture_t *textures[NUM_TEXTURE_BUNDLES];
+	drawGeometry_t geometry;
+	vkPipelineKey_t key;
+	vkState_t s;
+	int i;
+
+	if ( !vk.device ) {
+		return qfalse;
+	}
+
+	Com_Memset( &s, 0, sizeof( s ) );
+	s.stateBits = state->stateBits;
+	s.cull = state->cull;
+	s.polygonOffset = state->polygonOffset;
+	s.colorMask[0] = s.colorMask[1] = s.colorMask[2] = s.colorMask[3] = qtrue;
+	s.fog = state->fog;
+	s.clipPlaneEnabled = state->clipPlane;
+	s.dlightTmu = state->dlightTmu;
+	s.dlightBacks = state->dlightBacks;
+
+	Com_Memset( &geometry, 0, sizeof( geometry ) );
+	geometry.isSkinned = state->skinned;
+	// only compared with NULL
+	geometry.colors = state->colorArray ? (const byte *)&geometry : NULL;
+
+	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
+		s.texEnv[i] = state->texEnv[i];
+		textures[i] = NULL;
+		if ( state->image[i] ) {
+			textures[i] = VK_GetTexture( state->image[i]->texnum );
+			if ( !textures[i] ) {
+				textures[i] = VK_DefaultTexture();
+			}
+		}
+	}
+
+	VK_BuildPipelineKey( &key, &s, state->prim, &geometry, textures );
+	return VK_PrebuildPipeline( &key );
 }
 
 /*
@@ -3049,6 +3105,8 @@ int vk_add_skin_data( const uint32_t *words, int numWords ) {
 		0, 0, NULL, 1, &barrier, 0, NULL );
 
 	vk_skin.words = first + numWords;
+	vk.stats.skinUploads++;
+	vk.stats.skinBytes += (uint64_t)numWords * 4;
 	return first;
 }
 

@@ -27,10 +27,14 @@ options:
                     frames are measured and SIGCONT them right after (about
                     5 s per measurement). Only for processes whose owner
                     agreed to it.
-  --cold            delete main/vkpipelines.cache before each run (the
-                    Vulkan renderer then compiles every pipeline again,
-                    unless the driver has its own cache: set
-                    MESA_SHADER_CACHE_DISABLE=true for that)
+  --cold            delete main/vkpipelines.cache and main/vkpipelines.keys
+                    before each run (the Vulkan renderer then compiles every
+                    pipeline again, unless the driver has its own cache: set
+                    MESA_SHADER_CACHE_DISABLE=true for that): the first play
+                    after an install
+  --keep-keys       with --cold: keep main/vkpipelines.keys (the keys of the
+                    pipelines that earlier runs created after a load, built
+                    at load): the first play after a driver update
   --json FILE       also write every measurement to FILE
   --exec CMDS       console commands run once the camera is at the view,
                     ';' separated (e.g. 'cg_acidtrip 4': random dynamic lights)
@@ -356,14 +360,15 @@ RTIMER = re.compile(r"rtimer: (\d+) frames, ms per frame: interval ([\d.]+), ren
                     r"(?:, interval p99.9 ([\d.]+))?")
 
 
-def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=False, preload=()):
+def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None, vklog=False, preload=(), keep_keys=False):
     for d in ("configs", "save"):
         shutil.rmtree(os.path.join(HOMEPATH, "main", d), ignore_errors=True)
     if cold:
-        try:
-            os.remove(os.path.join(HOMEPATH, "main", "vkpipelines.cache"))
-        except OSError:
-            pass
+        for name in ("vkpipelines.cache",) + (() if keep_keys else ("vkpipelines.keys",)):
+            try:
+                os.remove(os.path.join(HOMEPATH, "main", name))
+            except OSError:
+                pass
     vkframes = os.path.join(HOMEPATH, "main", "perf_frames.txt")
     if os.path.exists(vkframes):
         os.remove(vkframes)
@@ -398,6 +403,7 @@ def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None,
     proc = subprocess.Popen(cmd, cwd=BINDIR, env=env, stdin=subprocess.DEVNULL, stdout=slave, stderr=slave)
     os.close(slave)
     start = end = None
+    initcgame = None
     rf, bk, n = 0, 0, 0
     timed, sampler, gpuBusy, mhz, core = None, None, None, None, None
     vkinfo = []
@@ -419,6 +425,9 @@ def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None,
                 pauser.cont()
             elif line.startswith("vkinfo: frames="):
                 vkinfo.append(parse_vkinfo(line))
+            elif line.startswith("CL_InitCGame: ") and initcgame is None:
+                # the map load (cgame, its registration, EndRegistration)
+                initcgame = float(line.split()[1])
             elif line.startswith("rtimer: ") and RTIMER.match(line):
                 v = RTIMER.match(line).groups()
                 timed = {"frames": int(v[0]), "interval": float(v[1]), "renderer": float(v[2]),
@@ -462,7 +471,8 @@ def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None,
     frames = vkinfo[2] if len(vkinfo) == 3 else None
     return {"secs": secs, "rf": rf / max(n, 1), "bk": bk / max(n, 1), "n": n, "others": others,
             "game_cpu": (game1 - game0) / HZ / secs, "main_cpu": (main1 - main0) / 1e9 / secs,
-            "gpu": gpuBusy, "mhz": mhz, "core": core, "timed": timed, "vkload": load, "vkframes": frames}
+            "gpu": gpuBusy, "mhz": mhz, "core": core, "timed": timed, "vkload": load, "vkframes": frames,
+            "initcgame": initcgame}
 
 
 def frame_dist(path):
@@ -523,6 +533,7 @@ def main():
     ap.add_argument("--sizes", default="640x480")
     ap.add_argument("--pause", default="")
     ap.add_argument("--cold", action="store_true")
+    ap.add_argument("--keep-keys", action="store_true")
     ap.add_argument("--stacks")
     ap.add_argument("--framelog")
     ap.add_argument("--vklog", default="")
@@ -585,7 +596,7 @@ def main():
                     stacks = f"{args.stacks}_{tag}.txt" if args.stacks else None
                     framelog = os.path.join(args.framelog, tag) if args.framelog else None
                     res = run(b, rn, v, size_args(size) + extra, pauser, args.cold, stacks, framelog,
-                              r in args.vklog.split(","), preload)
+                              r in args.vklog.split(","), preload, args.keep_keys)
                     if res is None:
                         continue
                     res.update(run=i, view=v.name, size="%dx%d" % size, renderer=r, load=load)
@@ -605,9 +616,13 @@ def main():
                           + (f"  gpu frame {gpu_ms(vk, 'gpuFrameUs'):5.3f} (copy {gpu_ms(vk, 'gpuPresentUs'):5.3f})"
                              f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static, {per_frame(vk, 'skinDraws'):4.0f} skinned) {per_frame(vk, 'renderPasses'):4.2f} passes"
                              f" {per_frame(vk, 'vertexBytes', 1 / 1024):5.0f} KB" if vk and vk["gpuFrames"] else "")
-                          + (f"  load: {vl['pipelines']} pipelines {vl['pipelineUs'] / 1000:.0f} ms,"
+                          + (f"  map load {res['initcgame']:.3f} s" if res.get("initcgame") is not None else "")
+                          + (f"  load: {vl['pipelines']} pipelines {vl['pipelineUs'] / 1000:.0f} ms"
+                             f" ({vl.get('prebuiltPipelines', 0)} before their draw, {vl.get('prebuiltUs', 0) / 1000:.0f} ms),"
                              f" {vl['textures']} textures {vl['textureUs'] / 1000:.0f} ms,"
                              f" {vl['allocations']} allocations {vl['allocationUs'] / 1000:.0f} ms" if vl else "")
+                          + (f"  measured: {vk['pipelines']} pipelines {vk['pipelineUs'] / 1000:.1f} ms,"
+                             f" {vk.get('skinUploads', 0)} skin uploads" if vk else "")
                           + f"  others {res['others']:4.1f} CPUs, load {load:5.2f}"
                           + ("  WARNING: busy machine" if res["others"] > BUSY else ""), flush=True)
                     if res.get("dist"):
@@ -637,6 +652,9 @@ def main():
                              f" 2d {statistics.median(t.get('twod', 0) for t in ts):6.3f}"
                              f" end {statistics.median(t['endframe'] for t in ts):6.3f}"
                              f" load {statistics.median(t.get('load', 0) for t in ts):5.0f} ms")
+                ic = [x["initcgame"] for x in rs if x.get("initcgame") is not None]
+                if ic:
+                    line += f"  map load {statistics.median(ic):.3f} s"
                 else:
                     line += f"  rf {statistics.median(x['rf'] for x in rs):5.2f} bk {statistics.median(x['bk'] for x in rs):5.2f}"
                 gs = [x["gpu"] for x in rs if x["gpu"] is not None]

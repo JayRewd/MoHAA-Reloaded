@@ -23,13 +23,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // vk_pipeline.c -- graphics pipelines for the fixed-function state
 //
 // vk.c packs the state that has to be baked into a pipeline into a
-// vkPipelineKey_t (VK_PIPE_* fields); pipelines are created on first use and
-// kept in a hash table for the lifetime of the device. Viewport, scissor,
-// depth bias, line width and the stencil reference and masks are dynamic.
+// vkPipelineKey_t (VK_PIPE_* fields); pipelines are kept in a hash table for
+// the lifetime of the device, created by the end of a registration for the
+// draws its shaders will make (vk_prebuild_pipeline, tr_pipelines.c) or on
+// first use. Viewport, scissor, depth bias, line width and the stencil
+// reference and masks are dynamic.
 //
 // The VkPipelineCache is saved to VK_PIPELINE_CACHE_FILE in fs_homepath at
 // shutdown and given back to the driver at startup when it was made by the
-// same device and driver, so pipelines don't have to be compiled again.
+// same device and driver, so pipelines don't have to be compiled again. The
+// keys of the pipelines created after a load are saved to
+// VK_PIPELINE_KEYS_FILE and built at the end of the next runs' loads (see
+// PIPELINES AT LOAD).
 //
 // Every pipeline uses the same shaders (shaders/generic.*); the fragment
 // stage is specialized for the texture envs, the alpha test, fog, the
@@ -39,10 +44,22 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "vk_local.h"
 
+// what created a pipeline
+typedef enum {
+	VK_ORIGIN_DRAW,			// a draw that needed it (VK_GetPipeline)
+	VK_ORIGIN_LOAD,			// the end of a registration (tr_pipelines.c)
+	VK_ORIGIN_LATE,			// a shader registered after it
+	VK_ORIGIN_RECORDED		// VK_PIPELINE_KEYS_FILE
+} vkPipelineOrigin_t;
+
 typedef struct {
 	vkPipelineKey_t	key;
 	VkPipeline		pipeline;
+	byte			origin;		// vkPipelineOrigin_t
+	byte			used;		// a draw has used it
 } vkPipelineEntry_t;
+
+#define VK_MAX_PREBUILT		1024	// pipelines created by a registration before a draw needs them
 
 #define VK_PIPELINE_CACHE_FILE	"vkpipelines.cache"
 
@@ -51,6 +68,8 @@ static size_t				vk_pipelineCacheLoaded;	// size of the data read at startup
 static vkPipelineEntry_t	*vk_pipelines;
 static int					vk_pipelineTableSize;	// power of two
 static int					vk_numPipelines;
+static qboolean				vk_prebuildLate;		// the registration's pipelines are built (vk_end_prebuild)
+static int					vk_prebuiltNow;			// by this registration, or after it
 
 /*
 ====================================================================
@@ -397,53 +416,332 @@ static unsigned int VK_HashKey( const vkPipelineKey_t *key ) {
 	return (unsigned int)h;
 }
 
-static void VK_InsertPipeline( vkPipelineEntry_t *table, int size, const vkPipelineKey_t *key, VkPipeline pipeline ) {
+static vkPipelineEntry_t *VK_InsertPipeline( vkPipelineEntry_t *table, int size, const vkPipelineEntry_t *entry ) {
 	int i;
 
-	for ( i = VK_HashKey( key ) & ( size - 1 ); table[i].pipeline; i = ( i + 1 ) & ( size - 1 ) ) {
+	for ( i = VK_HashKey( &entry->key ) & ( size - 1 ); table[i].pipeline; i = ( i + 1 ) & ( size - 1 ) ) {
 	}
-	table[i].key = *key;
-	table[i].pipeline = pipeline;
+	table[i] = *entry;
+	return &table[i];
 }
 
-VkPipeline VK_GetPipeline( const vkPipelineKey_t *key ) {
-	VkPipeline pipeline;
+static vkPipelineEntry_t *VK_FindPipeline( const vkPipelineKey_t *key ) {
 	int i;
 
 	for ( i = VK_HashKey( key ) & ( vk_pipelineTableSize - 1 ); vk_pipelines[i].pipeline; i = ( i + 1 ) & ( vk_pipelineTableSize - 1 ) ) {
 		if ( vk_pipelines[i].key.bits == key->bits && vk_pipelines[i].key.alphaRef == key->alphaRef ) {
-			return vk_pipelines[i].pipeline;
+			return &vk_pipelines[i];
 		}
 	}
+	return NULL;
+}
 
-	pipeline = VK_CreatePipeline( key );
+// a table of size entries (a power of two, at least twice the entries kept)
+// with the entries of the current one that keep() accepts
+static void VK_RebuildTable( int size, qboolean ( *keep )( const vkPipelineEntry_t *entry ) ) {
+	vkPipelineEntry_t *table;
+	int i, n = 0;
+
+	table = ri.Malloc( sizeof( *table ) * size );
+	Com_Memset( table, 0, sizeof( *table ) * size );
+	for ( i = 0; i < vk_pipelineTableSize; i++ ) {
+		if ( vk_pipelines[i].pipeline ) {
+			if ( !keep || keep( &vk_pipelines[i] ) ) {
+				VK_InsertPipeline( table, size, &vk_pipelines[i] );
+				n++;
+			} else {
+				qvkDestroyPipeline( vk.device, vk_pipelines[i].pipeline, NULL );
+			}
+		}
+	}
+	ri.Free( vk_pipelines );
+	vk_pipelines = table;
+	vk_pipelineTableSize = size;
+	vk_numPipelines = n;
+}
+
+static vkPipelineEntry_t *VK_AddPipeline( const vkPipelineKey_t *key, vkPipelineOrigin_t origin ) {
+	vkPipelineEntry_t entry;
 
 	// keep the table at most half full
 	if ( ( vk_numPipelines + 1 ) * 2 > vk_pipelineTableSize ) {
-		vkPipelineEntry_t *table;
-		int size;
-
-		size = vk_pipelineTableSize * 2;
-		table = ri.Malloc( sizeof( *table ) * size );
-		Com_Memset( table, 0, sizeof( *table ) * size );
-		for ( i = 0; i < vk_pipelineTableSize; i++ ) {
-			if ( vk_pipelines[i].pipeline ) {
-				VK_InsertPipeline( table, size, &vk_pipelines[i].key, vk_pipelines[i].pipeline );
-			}
-		}
-		ri.Free( vk_pipelines );
-		vk_pipelines = table;
-		vk_pipelineTableSize = size;
+		VK_RebuildTable( vk_pipelineTableSize * 2, NULL );
 	}
 
-	VK_InsertPipeline( vk_pipelines, vk_pipelineTableSize, key, pipeline );
+	Com_Memset( &entry, 0, sizeof( entry ) );
+	entry.key = *key;
+	entry.pipeline = VK_CreatePipeline( key );
+	entry.origin = origin;
 	vk_numPipelines++;
+	return VK_InsertPipeline( vk_pipelines, vk_pipelineTableSize, &entry );
+}
 
-	return pipeline;
+VkPipeline VK_GetPipeline( const vkPipelineKey_t *key ) {
+	vkPipelineEntry_t *entry = VK_FindPipeline( key );
+
+	if ( !entry ) {
+		entry = VK_AddPipeline( key, VK_ORIGIN_DRAW );
+	}
+	entry->used = qtrue;
+	return entry->pipeline;
+}
+
+/*
+===============
+VK_PrebuildKey
+
+Creates the pipeline of a key that a draw is expected to make (see
+tr_pipelines.c) unless it exists; returns whether it was created. Bounded
+per registration (VK_MAX_PREBUILT): what comes after is left to the draws
+===============
+*/
+static qboolean VK_PrebuildKey( const vkPipelineKey_t *key, vkPipelineOrigin_t origin ) {
+	uint64_t start;
+
+	if ( VK_FindPipeline( key ) ) {
+		return qfalse;
+	}
+	if ( vk_prebuiltNow >= VK_MAX_PREBUILT ) {
+		if ( vk_prebuiltNow++ == VK_MAX_PREBUILT ) {
+			ri.Printf( PRINT_WARNING, "Vulkan: more than %d pipelines to create at load, the others are created at their first draw\n",
+				VK_MAX_PREBUILT );
+		}
+		return qfalse;
+	}
+	vk_prebuiltNow++;
+	start = vk.stats.pipelineUs;
+	VK_AddPipeline( key, origin );
+	vk.stats.prebuiltPipelines++;
+	vk.stats.prebuiltUs += vk.stats.pipelineUs - start;
+	return qtrue;
+}
+
+qboolean VK_PrebuildPipeline( const vkPipelineKey_t *key ) {
+	return VK_PrebuildKey( key, vk_prebuildLate ? VK_ORIGIN_LATE : VK_ORIGIN_LOAD );
+}
+
+/*
+===============
+VK_PipelineCounts
+
+The pipelines that exist: all of them, those created before a draw needed
+them (at load, for a shader registered later, recorded in earlier runs) and
+those of them that a draw has used
+===============
+*/
+void VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed ) {
+	int i;
+
+	*total = vk_numPipelines;
+	*prebuilt = *prebuiltUsed = 0;
+	for ( i = 0; i < vk_pipelineTableSize; i++ ) {
+		if ( vk_pipelines[i].pipeline && vk_pipelines[i].origin != VK_ORIGIN_DRAW ) {
+			( *prebuilt )++;
+			if ( vk_pipelines[i].used ) {
+				( *prebuiltUsed )++;
+			}
+		}
+	}
 }
 
 int VK_NumPipelines( void ) {
 	return vk_numPipelines;
+}
+
+/*
+====================================================================
+
+PIPELINES AT LOAD
+
+tr_pipelines.c builds the pipelines of a registration's shaders at its end;
+what it can't foresee (shaders registered later, the immediate mode draws
+of the UI after whatever state came before) is created at the first draw
+or when the shader is registered. Those keys are written to
+VK_PIPELINE_KEYS_FILE at shutdown and built at the end of every
+registration of the next runs: after a driver update, when
+VK_PIPELINE_CACHE_FILE no longer applies, they are compiled at load too.
+The file holds keys only, so it outlives the driver; a new layout of the
+VK_PIPE_* fields needs a new VK_PIPELINE_KEYS_VERSION
+
+====================================================================
+*/
+
+#define VK_PIPELINE_KEYS_FILE		"vkpipelines.keys"
+#define VK_PIPELINE_KEYS_MAGIC		0x4b504b56		// "VKPK"
+#define VK_PIPELINE_KEYS_VERSION	1
+#define VK_MAX_RECORDED_KEYS		256
+
+typedef struct {
+	uint64_t	bits;
+	uint32_t	alphaRef;
+	uint32_t	unused;
+} vkRecordedKey_t;
+
+static vkRecordedKey_t	vk_recordedKeys[VK_MAX_RECORDED_KEYS];
+static int				vk_numRecordedKeys;		// read at startup
+
+// what VK_BuildPipelineKey can make on this device
+static qboolean VK_KeyValid( uint64_t bits ) {
+	if ( bits >> 46 ) {
+		return qfalse;
+	}
+	if ( ( bits & VK_PIPE_STIPPLE ) && !vk.lineStipple ) {
+		return qfalse;
+	}
+	if ( ( bits & VK_PIPE_POLYMODE_LINE ) && !vk.enabledFeatures.fillModeNonSolid ) {
+		return qfalse;
+	}
+	return qtrue;
+}
+
+static void VK_ReadRecordedKeys( void ) {
+	uint32_t header[4];
+	void *data;
+	int len;
+
+	vk_numRecordedKeys = 0;
+	len = ri.FS_ReadFileEx( VK_PIPELINE_KEYS_FILE, &data, qtrue );
+	if ( len <= 0 || !data ) {
+		return;
+	}
+	// magic, version, count, 0, then the keys
+	Com_Memset( header, 0, sizeof( header ) );
+	Com_Memcpy( header, data, Q_min( len, (int)sizeof( header ) ) );
+	if ( header[0] != VK_PIPELINE_KEYS_MAGIC || header[1] != VK_PIPELINE_KEYS_VERSION || header[2] > VK_MAX_RECORDED_KEYS
+		|| len != (int)( sizeof( header ) + header[2] * sizeof( vkRecordedKey_t ) ) ) {
+		ri.Printf( PRINT_ALL, "Vulkan: %s is from another version, ignored\n", VK_PIPELINE_KEYS_FILE );
+	} else {
+		vk_numRecordedKeys = header[2];
+		Com_Memcpy( vk_recordedKeys, (const byte *)data + sizeof( header ), vk_numRecordedKeys * sizeof( vkRecordedKey_t ) );
+	}
+	ri.FS_FreeFile( data );
+}
+
+// what the file will hold: the keys that came after the load this run
+// (created by a draw, or for a shader registered later), the recorded ones
+// that a draw used, then the others; returns how many, *added: of the first
+static int VK_CollectRecordedKeys( vkRecordedKey_t *out, int *added ) {
+	int pass, i, j, n = 0;
+
+	*added = 0;
+	for ( pass = 0; pass < 3; pass++ ) {
+		for ( i = 0; i < vk_pipelineTableSize && n < VK_MAX_RECORDED_KEYS; i++ ) {
+			const vkPipelineEntry_t *e = &vk_pipelines[i];
+
+			if ( !e->pipeline || ( pass ? e->origin != VK_ORIGIN_RECORDED || !e->used != ( pass == 2 )
+				: e->origin != VK_ORIGIN_DRAW && e->origin != VK_ORIGIN_LATE ) ) {
+				continue;
+			}
+			if ( !pass ) {
+				for ( j = 0; j < vk_numRecordedKeys; j++ ) {
+					if ( vk_recordedKeys[j].bits == e->key.bits && vk_recordedKeys[j].alphaRef == e->key.alphaRef ) {
+						break;
+					}
+				}
+				if ( j < vk_numRecordedKeys ) {
+					continue;
+				}
+				( *added )++;
+			}
+			Com_Memset( &out[n], 0, sizeof( out[n] ) );
+			out[n].bits = e->key.bits;
+			out[n].alphaRef = e->key.alphaRef;
+			n++;
+		}
+	}
+	// the other recorded keys: built otherwise (at load, by a draw), or not
+	// (not valid on this device, more than VK_MAX_PREBUILT, released)
+	for ( i = 0; i < vk_numRecordedKeys && n < VK_MAX_RECORDED_KEYS; i++ ) {
+		vkPipelineKey_t key;
+		const vkPipelineEntry_t *e;
+
+		key.bits = vk_recordedKeys[i].bits;
+		key.alphaRef = vk_recordedKeys[i].alphaRef;
+		e = VK_FindPipeline( &key );
+		if ( !e || e->origin != VK_ORIGIN_RECORDED ) {
+			out[n++] = vk_recordedKeys[i];
+		}
+	}
+	return n;
+}
+
+static void VK_WriteRecordedKeys( void ) {
+	vkRecordedKey_t *keys;
+	uint32_t *data;
+	int n, added;
+
+	keys = ri.Malloc( sizeof( *keys ) * VK_MAX_RECORDED_KEYS );
+	n = VK_CollectRecordedKeys( keys, &added );
+	if ( added ) {
+		data = ri.Malloc( 16 + n * sizeof( *keys ) );
+		data[0] = VK_PIPELINE_KEYS_MAGIC;
+		data[1] = VK_PIPELINE_KEYS_VERSION;
+		data[2] = n;
+		data[3] = 0;
+		Com_Memcpy( data + 4, keys, n * sizeof( *keys ) );
+		ri.FS_WriteFile( VK_PIPELINE_KEYS_FILE, data, 16 + n * sizeof( *keys ) );
+		ri.Free( data );
+	}
+	ri.Free( keys );
+}
+
+static qboolean VK_KeepUsed( const vkPipelineEntry_t *entry ) {
+	return entry->origin == VK_ORIGIN_DRAW || entry->used;
+}
+
+/*
+===============
+vk_begin_prebuild
+
+A registration starts (RE_BeginRegistration): the pipelines built before a
+draw needed them that no draw has used are destroyed (no command buffer
+refers to them), so what is kept is bounded by the draws and the last
+registration's
+===============
+*/
+void vk_begin_prebuild( void ) {
+	int i, unused = 0;
+
+	vk_prebuildLate = qfalse;
+	vk_prebuiltNow = 0;
+	if ( !vk.device || !vk_pipelines ) {
+		return;
+	}
+	for ( i = 0; i < vk_pipelineTableSize; i++ ) {
+		if ( vk_pipelines[i].pipeline && !VK_KeepUsed( &vk_pipelines[i] ) ) {
+			unused++;
+		}
+	}
+	if ( unused ) {
+		VK_RebuildTable( vk_pipelineTableSize, VK_KeepUsed );
+	}
+}
+
+/*
+===============
+vk_end_prebuild
+
+The registration's shaders have their pipelines (tr_pipelines.c): builds the
+keys recorded in earlier runs, and the pipelines built from now on are those
+of shaders registered later (VK_ORIGIN_LATE, recorded for the next runs)
+===============
+*/
+void vk_end_prebuild( void ) {
+	vkPipelineKey_t key;
+	int i;
+
+	if ( !vk.device || !vk_pipelines ) {
+		return;
+	}
+	for ( i = 0; i < vk_numRecordedKeys; i++ ) {
+		if ( VK_KeyValid( vk_recordedKeys[i].bits ) ) {
+			key.bits = vk_recordedKeys[i].bits;
+			key.alphaRef = vk_recordedKeys[i].alphaRef;
+			VK_PrebuildKey( &key, VK_ORIGIN_RECORDED );
+		}
+	}
+	vk_prebuildLate = qtrue;
+	vk_prebuiltNow = 0;
 }
 
 /*
@@ -613,12 +911,16 @@ void VK_InitPipelines( void ) {
 	vk_pipelines = ri.Malloc( sizeof( *vk_pipelines ) * vk_pipelineTableSize );
 	Com_Memset( vk_pipelines, 0, sizeof( *vk_pipelines ) * vk_pipelineTableSize );
 	vk_numPipelines = 0;
+	vk_prebuildLate = qfalse;
+	vk_prebuiltNow = 0;
+	VK_ReadRecordedKeys();
 }
 
 void VK_ShutdownPipelines( void ) {
 	int i;
 
 	if ( vk_pipelines ) {
+		VK_WriteRecordedKeys();
 		for ( i = 0; i < vk_pipelineTableSize; i++ ) {
 			if ( vk_pipelines[i].pipeline ) {
 				qvkDestroyPipeline( vk.device, vk_pipelines[i].pipeline, NULL );

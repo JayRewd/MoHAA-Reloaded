@@ -1130,6 +1130,7 @@ RB_SetupFog
 =============
 */
 void RB_SetupFog() {
+	backEnd.setupFogs++;
 	if (!backEnd.viewParms.farplane_distance) {
 		glState.externalSetState &= ~GLS_FOG;
 	} else if (r_farplane_nofog->integer) {

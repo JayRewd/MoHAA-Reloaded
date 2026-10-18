@@ -361,6 +361,63 @@ static const skinEntry_t *R_SkinTiki( dtiki_t *tiki ) {
 }
 
 /*
+===============
+R_SkinRegisterModel
+
+A model registered (R_RegisterModelInternal: cgame registers the models of
+the configstrings, the players' and their weapons, as server models): a TIKI
+one of whose surfaces has a shader that the vertex-lit iterator draws (the
+batches RB_SkinBatchAllowed can take) gets its skin data now instead of at
+its first draw, which made that frame 0.6 ms longer for a player model.
+Only once the map is loaded: its load clears the skin data
+(R_ClearSkinData), and R_SkinRegisteredModels adds those registered before
+===============
+*/
+void R_SkinRegisterModel( const model_t *mod ) {
+	dtiki_t *tiki;
+	int i, j;
+
+	if ( !mod || mod->type != MOD_TIKI || !mod->d.tiki || !tr.world || !r_gpuSkinning->integer
+		|| !vk_skin_available() || lod_tool->integer ) {
+		return;
+	}
+
+	tiki = mod->d.tiki;
+	if ( R_SkinFind( tiki, SKIN_TIKI ) ) {
+		// added already (cgame registers some models every frame)
+		return;
+	}
+	for ( i = 0; i < tiki->num_surfaces; i++ ) {
+		const dtikisurface_t *surface = &tiki->surfaces[i];
+
+		for ( j = 0; j < surface->numskins; j++ ) {
+			int h = surface->hShader[j];
+
+			if ( h > 0 && h < tr.numShaders && tr.shaders[h]->optimalStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
+				R_SkinTiki( tiki );
+				return;
+			}
+		}
+	}
+}
+
+/*
+===============
+R_SkinRegisteredModels
+
+At the end of the registration (RE_EndRegistration): the skin data of the
+models registered before the map load (in an earlier map too)
+===============
+*/
+void R_SkinRegisteredModels( void ) {
+	int i;
+
+	for ( i = 1; i < tr.numModels; i++ ) {
+		R_SkinRegisterModel( &tr.models[i] );
+	}
+}
+
+/*
 ====================================================================
 
 BATCHES

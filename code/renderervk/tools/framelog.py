@@ -85,7 +85,8 @@ PARTS_VK = ["engine", "cgame", "load", "scene", "fence", "flush", "pipelines", "
 PARTS_RT = ["engine", "cgame", "load", "scene", "backend"]
 EVENTS = [("pipelines", "pipelines"), ("textures", "textures"), ("staging_bytes", "uploads"),
           ("allocations", "allocations"), ("flushes", "flushes"), ("vertex_growth", "vertex buffer grown"),
-          ("depth_targets", "depth image replaced"), ("swapchains", "swapchain created")]
+          ("depth_targets", "depth image replaced"), ("swapchains", "swapchain created"),
+          ("skin_uploads", "skin data")]
 
 
 class Log:
@@ -170,6 +171,8 @@ class Log:
                     out.append(f"{name} {v} ({self.col('pipeline_us')[i] / 1000:.2f} ms)")
                 elif key == "textures":
                     out.append(f"{name} {v} ({self.col('texture_us')[i] / 1000:.2f} ms)")
+                elif key == "skin_uploads":
+                    out.append(f"{name} {v} ({self.col('skin_bytes')[i] / 1024:.0f} KB)")
                 else:
                     out.append(f"{name} {v}")
         return out

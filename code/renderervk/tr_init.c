@@ -1844,6 +1844,7 @@ void RE_BeginRegistration(glconfig_t* glconfigOut) {
 	//  to free allocated marks
 	R_ClearWorld();
 
+	R_PrebuildReset();
 	R_SetupShaders();
 	R_InitLensFlare();
 	R_LevelMarksInit();
@@ -1876,6 +1877,11 @@ void RE_EndRegistration( void ) {
 	}
 
 	R_FreeUnusedImages();
+
+	// what the registered models and shaders will draw: skin data and
+	// pipelines now rather than at their first draw
+	R_SkinRegisteredModels();
+	R_PrebuildPipelines();
 }
 
 /*

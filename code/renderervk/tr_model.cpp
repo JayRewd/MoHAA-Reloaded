@@ -196,6 +196,8 @@ static qhandle_t R_RegisterModelInternal(const char *name, qboolean bBeginTiki, 
             if (mod->type == MOD_BAD) {
                 return 0;
             }
+            // added in this map already, or registered before its load
+            R_SkinRegisterModel(mod);
             return hModel;
         }
     }
@@ -238,6 +240,8 @@ static qhandle_t R_RegisterModelInternal(const char *name, qboolean bBeginTiki, 
             if (mod->d.tiki) {
                 mod->type = MOD_TIKI;
                 R_RegisterShaders(mod);
+                // its skin data now, not at its first draw
+                R_SkinRegisterModel(mod);
 
                 if (bBeginTiki) {
                     ri.CG_ProcessInitCommands(mod->d.tiki, NULL);
