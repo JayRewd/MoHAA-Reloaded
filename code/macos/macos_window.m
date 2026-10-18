@@ -42,6 +42,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // an offscreen pass over the layer, so the layer can't go direct.
 
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>	// kVK_Tab
 #import <QuartzCore/CAMetalLayer.h>
 #include <IOKit/graphics/IOGraphicsTypes.h>
 
@@ -670,6 +671,26 @@ static void MTLimp_LeaveExclusive( qboolean minimize )
 	mac_window.level = NSNormalWindowLevel;
 	if( minimize )
 		[mac_window miniaturize:nil];
+}
+
+/*
+===============
+MacOS_SwitchKey
+
+A key going down, from the pump. Exclusive fullscreen in another mode than the desktop's has the displays captured
+(MTLimp_SetDisplayMode), and Cmd+Tab then reaches the game but never the application switcher (SDL's neither):
+leave as a focus loss does and hide, so the application before this one comes forward. Coming back (Cmd+Tab, the
+Dock) brings the window and the mode back (applicationDidBecomeActive).
+===============
+*/
+void MacOS_SwitchKey( NSEvent *event )
+{
+	if( event.keyCode == kVK_Tab && ( event.modifierFlags & NSEventModifierFlagCommand ) && mac_modeSwitched &&
+		mac_exclusiveActive )
+	{
+		MTLimp_LeaveExclusive( qtrue );
+		[NSApp hide:nil];
+	}
 }
 
 /*

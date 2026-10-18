@@ -137,7 +137,8 @@ Handles every pending event and returns at once (a nil date is distantPast). Run
 main dispatch queue.
 
 The input layer reads the key events here, before AppKit dispatches them, as SDL did: AppKit drops some of them on
-the way to the window (key-ups with Cmd held). sendEvent: still runs for them, so Cmd key equivalents reach the menu.
+the way to the window (key-ups with Cmd held, Cmd+Tab). sendEvent: still runs for them, so Cmd key equivalents reach
+the menu. A key going down also goes to the window (MacOS_SwitchKey: Cmd+Tab with the displays captured).
 The mouse's movement is read here too (the captured mouse's deltas); its buttons, the wheel and the cursor's
 position reach the content view through sendEvent:, as SDL read them.
 ===============
@@ -154,6 +155,10 @@ void MacOS_PumpEvents( void )
 			switch( event.type )
 			{
 				case NSEventTypeKeyDown:
+					MacOS_KeyEvent( event );
+					MacOS_SwitchKey( event );
+					break;
+
 				case NSEventTypeKeyUp:
 				case NSEventTypeFlagsChanged:
 					MacOS_KeyEvent( event );
