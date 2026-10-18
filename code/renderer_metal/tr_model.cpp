@@ -1307,6 +1307,8 @@ static unsigned R_SkinHash(const void *p)
     return (unsigned)(((uintptr_t)p >> 4) * 2654435761u);
 }
 
+static void R_CollapsedReset(void);
+
 /*
 =============
 R_SkinReset
@@ -1319,6 +1321,7 @@ void R_SkinReset(void)
     memset(skinSurfaces, 0, sizeof(skinSurfaces));
     memset(skinBoneMaps, 0, sizeof(skinBoneMaps));
     mbSkinReset();
+    R_CollapsedReset();
 }
 
 /*
@@ -1566,6 +1569,124 @@ void RB_SkinMaterialize(void)
 }
 
 /*
+=============================================================
+
+COLLAPSED INDEX LISTS
+
+The index list of a LOD-collapsed surface (RB_SkelMesh, RB_StaticMesh) depends only on the surface and
+render_count: it is built once per (surface, render_count) and then copied with the base vertex added, instead
+of collapsing the surface every frame. Same values, same order. Forgotten with the models (R_SkinReset), and
+all at once when the table or the pool is full.
+
+=============================================================
+*/
+
+#define COLLAPSED_LISTS 4096    // power of two
+#define COLLAPSED_POOL  1048576 // indexes
+
+typedef struct {
+    const skelSurfaceGame_t *surface; // NULL: empty slot
+    const skelIndex_t       *triangles; // the surface's when the list was built
+    const skelIndex_t       *collapse;
+    int                      numVerts;
+    int                      numTriangles;
+    int                      render_count;
+    int                      numIndexes; // up to the first degenerate triangle
+    int                      offset;     // in collapsedPool
+} collapsedList_t;
+
+static collapsedList_t collapsedLists[COLLAPSED_LISTS];
+static int             collapsedNumLists;
+static skelIndex_t     collapsedPool[COLLAPSED_POOL];
+static int             collapsedPoolUsed;
+
+static void R_CollapsedReset(void)
+{
+    memset(collapsedLists, 0, sizeof(collapsedLists));
+    collapsedNumLists = 0;
+    collapsedPoolUsed = 0;
+}
+
+/*
+=============
+R_CollapsedIndexes
+
+The surface's triangles over its first render_count vertexes, as RB_SkelMesh collapsed them (vertex numbers
+from 0), and how many indexes there are. NULL if the surface can't be cached.
+=============
+*/
+static const skelIndex_t *R_CollapsedIndexes(const skelSurfaceGame_t *sf, int render_count, int *numIndexes)
+{
+    unsigned         i = (R_SkinHash(sf) + render_count * 40503u) & (COLLAPSED_LISTS - 1);
+    collapsedList_t *list;
+    skelIndex_t     *out;
+    int              indexes = sf->numTriangles * 3;
+    int              n;
+    short            collapse[TIKI_MAX_VERTEXES];
+
+    for (n = 0; n < COLLAPSED_LISTS; n++, i = (i + 1) & (COLLAPSED_LISTS - 1)) {
+        list = &collapsedLists[i];
+        if (!list->surface) {
+            break;
+        }
+        if (list->surface == sf && list->render_count == render_count && list->triangles == sf->pTriangles
+            && list->collapse == sf->pCollapse && list->numVerts == sf->numVerts
+            && list->numTriangles == sf->numTriangles) {
+            *numIndexes = list->numIndexes;
+            return collapsedPool + list->offset;
+        }
+    }
+
+    if (sf->numVerts > TIKI_MAX_VERTEXES || render_count > sf->numVerts || indexes <= 0 || indexes > COLLAPSED_POOL) {
+        return NULL;
+    }
+    if (collapsedNumLists >= COLLAPSED_LISTS / 2 || collapsedPoolUsed + indexes > COLLAPSED_POOL) {
+        R_CollapsedReset();
+    }
+    i = (R_SkinHash(sf) + render_count * 40503u) & (COLLAPSED_LISTS - 1);
+    while (collapsedLists[i].surface) {
+        i = (i + 1) & (COLLAPSED_LISTS - 1);
+    }
+
+    out = collapsedPool + collapsedPoolUsed;
+
+    for (n = 0; n < render_count; n++) {
+        collapse[n] = n;
+    }
+    for (n = render_count; n < sf->numVerts; n++) {
+        collapse[n] = collapse[sf->pCollapse[n]];
+    }
+    for (n = 0; n < indexes; n += 3) {
+        const int c0 = collapse[sf->pTriangles[n]];
+        const int c1 = collapse[sf->pTriangles[n + 1]];
+        const int c2 = collapse[sf->pTriangles[n + 2]];
+
+        if (c0 == c1 || c1 == c2 || c2 == c0) {
+            break;
+        }
+
+        out[n]     = c0;
+        out[n + 1] = c1;
+        out[n + 2] = c2;
+    }
+
+    list               = &collapsedLists[i];
+    list->surface      = sf;
+    list->triangles    = sf->pTriangles;
+    list->collapse     = sf->pCollapse;
+    list->numVerts     = sf->numVerts;
+    list->numTriangles = sf->numTriangles;
+    list->render_count = render_count;
+    list->numIndexes   = n;
+    list->offset       = collapsedPoolUsed;
+    collapsedPoolUsed += n;
+    collapsedNumLists++;
+
+    *numIndexes = n;
+    return out;
+}
+
+/*
 =============
 RB_SkinBegin
 
@@ -1648,6 +1769,8 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
     skelHeaderGame_t  *skelmodel;
     skelSurfaceGame_t *psurface;
     qboolean           bFound;
+    const skelIndex_t *collapsed;
+    int                j;
     short              collapse[TIKI_MAX_VERTEXES];
 
     if (!r_drawentitypoly->integer) {
@@ -1758,6 +1881,13 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
 
         entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
         tess.numIndexes += indexes;
+    } else if ((collapsed = R_CollapsedIndexes(sf, render_count, &i))) {
+        for (j = 0; j < i; j++) {
+            tess.indexes[baseIndex + j] = baseVertex + collapsed[j];
+        }
+
+        entityNumIndexes[backEnd.currentEntity - backEnd.refdef.entities] += indexes;
+        tess.numIndexes += i;
     } else {
         assert(sf->numVerts < TIKI_MAX_VERTEXES);
 
@@ -1896,6 +2026,7 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
     int                indexes;
     int                baseIndex, baseVertex;
     int                staticBase, indexBase;
+    const skelIndex_t *collapsed;
     short              collapse[1000];
 
     if (!r_drawstaticmodelpoly->integer) {
@@ -1991,6 +2122,13 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
 
         staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += indexes;
         tess.numIndexes += indexes;
+    } else if ((collapsed = R_CollapsedIndexes(surf, render_count, &j))) {
+        for (i = 0; i < j; i++) {
+            tess.indexes[baseIndex + i] = indexBase + collapsed[i];
+        }
+
+        staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += j;
+        tess.numIndexes += j;
     } else {
         for (i = 0; i < render_count; i++) {
             collapse[i] = i;
