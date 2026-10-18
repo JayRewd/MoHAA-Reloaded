@@ -32,9 +32,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // Drawables: in a composited window the WindowServer holds the layer's drawables until its next refresh, and
 // nextDrawable blocked the frame for 1.3-1.9 ms (2-3 drawables, timedemo). A blocking present would cap the
 // engine loop below com_maxfps and change usercmd timing, which GL1 (non-blocking swap) doesn't. So with vsync
-// off a helper thread waits in nextDrawable and keeps one drawable ready: the frame takes it without waiting,
-// or skips its present when none is ready (a frame the compositor could not have shown anyway). With vsync on
-// (r_swapInterval 1) the next drawable is acquired at the end of the frame, blocking like GL1's swap.
+// off a helper thread waits in nextDrawable and keeps one drawable ready: the frame takes it without waiting.
+// When none is ready (direct to display: the last frame's flip is late, e.g. while the WindowServer is busy with
+// another application's frame), the frame leaves its final pass to that thread, which presents it as soon as a
+// drawable comes back, if it can still be on screen before the next frame (a late present, r_metalLatePresent);
+// otherwise the frame skips its present. With vsync on (r_swapInterval 1) the next drawable is acquired at the end
+// of the frame, blocking like GL1's swap.
 //
 // GL state: the front end drives the GL1 fixed-function state model (tr_mtl.h). The setters only record
 // state and set dirty bits; MB_PrepareDraw turns it into Metal state at draw time: a render pipeline from a
@@ -107,13 +110,27 @@ static dispatch_semaphore_t			mb_acquireRequest;	// signaled when mb_readyDrawab
 static os_unfair_lock				mb_readyLock = OS_UNFAIR_LOCK_INIT;
 static id<CAMetalDrawable>			mb_readyDrawable;	// guarded by mb_readyLock
 
+// late presents (vsync off): a frame that found no drawable ready leaves its final pass to the drawable thread, which
+// encodes and presents it as soon as a drawable comes back, unless the next frame ends first (guarded by mb_readyLock)
+static qboolean						mb_latePresent;		// r_metalLatePresent
+static id<MTLCommandBuffer>			mb_lateCmd;			// enqueued right after the frame's command buffer; nil = none
+static id<MTLTexture>				mb_lateScene;
+static uint8_t						mb_lateRamp[256][4];
+static uint64_t						mb_lateLatency;		// the frame's cl_latencyStats record
+static uint64_t						mb_lateDeadline;	// mach time: commit it by then, or leave the drawable to the next frame
+static uint64_t						mb_frameEnd, mb_frameInterval;	// mach time: the last frame's end, the smoothed frame interval
+static uint64_t						mb_lateMargin;		// mach time: a late present's commit to its drawable's return (~2 ms)
+static void MB_CancelLatePresent( void );
+
 static cvar_t	*r_metalFramesInFlight;
 static cvar_t	*r_metalPresentStats;
+static cvar_t	*r_metalLatePresent;
 static cvar_t	*r_metalPipelineCache;
 
 // r_metalPresentStats: drawables actually shown on screen (presentedTime > 0) vs. presented
 static _Atomic int	mb_statPresented, mb_statShown;
 static int			mb_statFrames, mb_statSkipped;			// frames, frames without a ready drawable
+static _Atomic int	mb_statLate;							// of those, presented late by the drawable thread
 static uint64_t		mb_statDrawableWait, mb_statSlotWait;	// main thread mach ticks in nextDrawable / the frame slot wait
 static uint64_t		mb_statDraws, mb_statPasses, mb_statClearQuads, mb_statOrphans, mb_statRingBytes;
 static _Atomic uint64_t	mb_statGPUTime, mb_statGPULatency, mb_statCompletion;	// ns: frame command buffer GPU start..end, commit..GPU start, commit..completed handler
@@ -695,6 +712,7 @@ static id<MTLBlitCommandEncoder> MB_UploadBlit( void )
 // the upload command buffer runs before everything the frame encodes (it is committed first)
 static void MB_CommitUploads( void )
 {
+	MB_CancelLatePresent();
 	if ( mb_uploadBlit ) {
 		[mb_uploadBlit endEncoding];
 		[mb_uploadCmd commit];
@@ -1463,19 +1481,148 @@ static void MB_ResetState( void )
 	mb_dirty = MB_DIRTY_ALL;
 }
 
+static void MB_LatencyTime( uint64_t seq, int which, CFTimeInterval t );
+static void MB_LatencyNotPresented( uint64_t seq );
+
+/*
+** MB_EncodeFinal
+**
+** The final pass: the scene through the gamma ramp into the drawable, with the presented handlers. Encoded into the
+** frame's command buffer, or into a late present's on the drawable thread.
+*/
+static void MB_EncodeFinal( id<MTLCommandBuffer> cmd, id<CAMetalDrawable> drawable, id<MTLTexture> scene,
+	const void *ramp, uint64_t latency )
+{
+	MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+	id<MTLRenderCommandEncoder> enc;
+
+	pass.colorAttachments[0].texture = drawable.texture;
+	pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+	enc = [cmd renderCommandEncoderWithDescriptor:pass];
+	[enc setRenderPipelineState:mb_finalPipeline];
+	[enc setFragmentTexture:scene atIndex:0];
+	[enc setFragmentBytes:ramp length:sizeof( mb_gammaRamp ) atIndex:0];
+	[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+	[enc endEncoding];
+	if ( r_metalPresentStats->integer ) {
+		mb_statPresented++;
+		[drawable addPresentedHandler:^( id<MTLDrawable> shown ) {
+			if ( shown.presentedTime > 0.0 ) {
+				mb_statShown++;
+			}
+		}];
+	}
+	if ( latency ) {
+		[drawable addPresentedHandler:^( id<MTLDrawable> shown ) {
+			MB_LatencyTime( latency, MB_LAT_PRESENT, shown.presentedTime );
+		}];
+	}
+}
+
+/*
+** MB_PresentLate
+**
+** A late present gets its drawable: encode the frame's final pass and present (the command buffer runs right after
+** the frame's own, before anything the next frame commits).
+*/
+static void MB_PresentLate( id<MTLCommandBuffer> cmd, id<CAMetalDrawable> drawable, id<MTLTexture> scene,
+	const void *ramp, uint64_t latency )
+{
+	MB_EncodeFinal( cmd, drawable, scene, ramp, latency );
+	[cmd presentDrawable:drawable];
+	[cmd commit];
+	mb_statLate++;
+}
+
+/*
+** MB_PostLatePresent
+**
+** The frame just committed found no drawable ready: leave its final pass to the drawable thread. Returns qfalse when
+** late presents are off.
+*/
+static qboolean MB_PostLatePresent( uint64_t latency )
+{
+	id<MTLCommandBuffer> cmd;
+	id<CAMetalDrawable> drawable;
+
+	// A late present is worth it only if it can be on screen, and its drawable back, before the next frame ends:
+	// direct to display that takes ~1.7 ms from its commit, plus ~0.25 ms. At 250 fps that leaves 2 ms; at 500 fps
+	// and above none, and the next frame keeps the drawable.
+	if ( !mb_latePresent || mb_frameInterval <= mb_lateMargin ) {
+		return qfalse;
+	}
+
+	cmd = [mb_queue commandBuffer];
+	cmd.label = @"late present";
+	[cmd enqueue];		// its place in the queue: after this frame, before anything later
+
+	os_unfair_lock_lock( &mb_readyLock );
+	drawable = mb_readyDrawable;
+	mb_readyDrawable = nil;
+	if ( !drawable ) {
+		mb_lateCmd = cmd;
+		mb_lateScene = mb_sceneColor;
+		memcpy( mb_lateRamp, mb_gammaRamp, sizeof( mb_lateRamp ) );
+		mb_lateLatency = latency;
+		mb_lateDeadline = mb_frameEnd + mb_frameInterval - mb_lateMargin;
+	}
+	os_unfair_lock_unlock( &mb_readyLock );
+
+	if ( drawable ) {
+		// it came while the frame was being committed
+		dispatch_semaphore_signal( mb_acquireRequest );
+		MB_PresentLate( cmd, drawable, mb_sceneColor, mb_gammaRamp, latency );
+	}
+	return qtrue;
+}
+
+/*
+** MB_CancelLatePresent
+**
+** Before anything else is committed: a late present still waiting for its drawable gives way to the newer frame.
+*/
+static void MB_CancelLatePresent( void )
+{
+	id<MTLCommandBuffer> cmd;
+	uint64_t latency;
+
+	if ( !mb_lateCmd ) {
+		return;		// read unlocked: only this thread sets it
+	}
+
+	os_unfair_lock_lock( &mb_readyLock );
+	cmd = mb_lateCmd;
+	latency = mb_lateLatency;
+	mb_lateCmd = nil;
+	mb_lateScene = nil;
+	os_unfair_lock_unlock( &mb_readyLock );
+
+	if ( cmd ) {
+		[cmd commit];	// empty: the queue moves on
+		if ( latency ) {
+			MB_LatencyNotPresented( latency );
+		}
+	}
+}
+
 /*
 ** MB_AcquireThread
 **
-** Waits in nextDrawable so the frame never has to (vsync off).
+** Waits in nextDrawable so the frame never has to (vsync off), and runs late presents.
 */
 static void *MB_AcquireThread( void *arg )
 {
 	CAMetalLayer *layer = (__bridge_transfer CAMetalLayer *)arg;
+	qboolean fetch = qfalse;	// a late present used the last drawable: fetch the next one at once
 
 	pthread_setname_np( "openmohaa drawables" );
 
 	while ( 1 ) {
-		dispatch_semaphore_wait( mb_acquireRequest, DISPATCH_TIME_FOREVER );
+		if ( !fetch ) {
+			dispatch_semaphore_wait( mb_acquireRequest, DISPATCH_TIME_FOREVER );
+		}
+		fetch = qfalse;
 		if ( mb_acquireQuit ) {
 			break;
 		}
@@ -1489,9 +1636,31 @@ static void *MB_AcquireThread( void *arg )
 				continue;
 			}
 
+			id<MTLCommandBuffer> lateCmd;
+			id<MTLTexture> lateScene = nil;
+			uint8_t lateRamp[256][4];
+			uint64_t lateLatency = 0;
+
 			os_unfair_lock_lock( &mb_readyLock );
-			mb_readyDrawable = drawable;
+			lateCmd = mb_lateCmd;
+			if ( lateCmd && mach_absolute_time() > mb_lateDeadline ) {
+				lateCmd = nil;		// too late: the next frame takes the drawable (and cancels the late present)
+			}
+			if ( lateCmd ) {
+				lateScene = mb_lateScene;
+				memcpy( lateRamp, mb_lateRamp, sizeof( lateRamp ) );
+				lateLatency = mb_lateLatency;
+				mb_lateCmd = nil;
+				mb_lateScene = nil;
+			} else {
+				mb_readyDrawable = drawable;
+			}
 			os_unfair_lock_unlock( &mb_readyLock );
+
+			if ( lateCmd ) {
+				MB_PresentLate( lateCmd, drawable, lateScene, lateRamp, lateLatency );
+				fetch = qtrue;
+			}
 		}
 	}
 
@@ -1507,6 +1676,14 @@ static qboolean MB_StartDrawableAcquisition( void )
 	int err;
 
 	mb_vsync = mb_layer.displaySyncEnabled ? qtrue : qfalse;
+	mb_latePresent = !mb_vsync && r_metalLatePresent->integer ? qtrue : qfalse;
+	if ( !mb_lateMargin ) {
+		mach_timebase_info_data_t tb;
+
+		mach_timebase_info( &tb );
+		mb_lateMargin = 2000000ull * tb.denom / tb.numer;	// 2 ms
+	}
+	mb_frameEnd = mb_frameInterval = 0;
 	if ( mb_vsync ) {
 		return qtrue;
 	}
@@ -1543,6 +1720,7 @@ static void MB_StopDrawableAcquisition( void )
 	mb_acquireRequest = nil;
 	mb_readyDrawable = nil;
 	mb_nextDrawable = nil;
+	MB_CancelLatePresent();
 }
 
 /*
@@ -1592,6 +1770,7 @@ qboolean mbInit( void *metalLayer )
 
 	r_metalFramesInFlight = ri.Cvar_Get( "r_metalFramesInFlight", "2", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalPresentStats = ri.Cvar_Get( "r_metalPresentStats", "0", 0 );
+	r_metalLatePresent = ri.Cvar_Get( "r_metalLatePresent", "1", CVAR_LATCH );
 	r_metalPipelineCache = ri.Cvar_Get( "r_metalPipelineCache", "1", CVAR_ARCHIVE | CVAR_LATCH );
 
 	if ( !mb_device ) {
@@ -1686,9 +1865,9 @@ void mbShutdown( void )
 		mach_timebase_info_data_t tb;
 
 		mach_timebase_info( &tb );
-		ri.Printf( PRINT_ALL, "Metal: %d frames, %d presented (%d skipped: no drawable ready), %d shown; "
-			"per frame: %.3f ms waiting for a drawable, %.3f ms waiting for a frame slot\n",
-			mb_statFrames, (int)mb_statPresented, mb_statSkipped, (int)mb_statShown,
+		ri.Printf( PRINT_ALL, "Metal: %d frames, %d presented (%d with no drawable ready at the end of the frame, %d of them "
+			"presented late), %d shown; per frame: %.3f ms waiting for a drawable, %.3f ms waiting for a frame slot\n",
+			mb_statFrames, (int)mb_statPresented, mb_statSkipped, (int)mb_statLate, (int)mb_statShown,
 			(double)mb_statDrawableWait * tb.numer / tb.denom / 1e6 / mb_statFrames,
 			(double)mb_statSlotWait * tb.numer / tb.denom / 1e6 / mb_statFrames );
 		ri.Printf( PRINT_ALL, "Metal: per frame %.1f draws, %.2f passes, %.2f clear quads, %.1f KB ring; "
@@ -1705,6 +1884,7 @@ void mbShutdown( void )
 		}
 	}
 	mb_statFrames = mb_statSkipped = 0;
+	mb_statLate = 0;
 	mb_statPresented = mb_statShown = 0;
 	mb_statDrawableWait = mb_statSlotWait = 0;
 	mb_statDraws = mb_statPasses = mb_statClearQuads = mb_statOrphans = mb_statRingBytes = 0;
@@ -1830,6 +2010,22 @@ static void MB_LatencyTime( uint64_t seq, int which, CFTimeInterval t )
 }
 
 /*
+** MB_LatencyNotPresented
+**
+** A late present gave way to a newer frame: this frame was never presented.
+*/
+static void MB_LatencyNotPresented( uint64_t seq )
+{
+	mbLatencyFrame_t *f = &mb_latency[( seq - 1 ) % MB_LATENCY_FRAMES];
+
+	os_unfair_lock_lock( &mb_latencyLock );
+	if ( f->seq == seq ) {
+		f->pending &= ~MB_LAT_PRESENT;	// presentUsec stays 0
+	}
+	os_unfair_lock_unlock( &mb_latencyLock );
+}
+
+/*
 ** MB_LatencyCommitted
 */
 static void MB_LatencyCommitted( uint64_t seq, qboolean presented )
@@ -1912,9 +2108,8 @@ void mbEndFrame( void )
 	}
 
 	@autoreleasepool {
-		MTLRenderPassDescriptor *pass;
-		id<MTLRenderCommandEncoder> enc;
 		id<CAMetalDrawable> drawable;
+		qboolean late;
 
 		// end the scene pass (or run one for clears that nothing drew after, or to initialize the target)
 		if ( mb_pendingClear || !mb_sceneColorValid ) {
@@ -1926,30 +2121,19 @@ void mbEndFrame( void )
 		// final pass into the drawable, if one is ready
 		mb_statFrames++;
 		drawable = MB_TakeDrawable();
+		if ( mb_latePresent ) {
+			// the frame interval (smoothed), for late presents
+			uint64_t now = mach_absolute_time();
+
+			if ( mb_frameEnd ) {
+				int64_t delta = (int64_t)( now - mb_frameEnd ) - (int64_t)mb_frameInterval;
+
+				mb_frameInterval = mb_frameInterval ? (uint64_t)( (int64_t)mb_frameInterval + delta / 8 ) : now - mb_frameEnd;
+			}
+			mb_frameEnd = now;
+		}
 		if ( drawable ) {
-			pass = [MTLRenderPassDescriptor renderPassDescriptor];
-			pass.colorAttachments[0].texture = drawable.texture;
-			pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-			enc = [mb_cmd renderCommandEncoderWithDescriptor:pass];
-			[enc setRenderPipelineState:mb_finalPipeline];
-			[enc setFragmentTexture:mb_sceneColor atIndex:0];
-			[enc setFragmentBytes:mb_gammaRamp length:sizeof( mb_gammaRamp ) atIndex:0];
-			[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-			[enc endEncoding];
-			if ( r_metalPresentStats->integer ) {
-				mb_statPresented++;
-				[drawable addPresentedHandler:^( id<MTLDrawable> shown ) {
-					if ( shown.presentedTime > 0.0 ) {
-						mb_statShown++;
-					}
-				}];
-			}
-			if ( latency ) {
-				[drawable addPresentedHandler:^( id<MTLDrawable> shown ) {
-					MB_LatencyTime( latency, MB_LAT_PRESENT, shown.presentedTime );
-				}];
-			}
+			MB_EncodeFinal( mb_cmd, drawable, mb_sceneColor, mb_gammaRamp, latency );
 		}
 
 		// Frame completion is read from this event, not from a completed handler: handlers arrived ~1.3 ms after
@@ -1977,8 +2161,9 @@ void mbEndFrame( void )
 		}
 		MB_CommitUploads();
 		[mb_cmd commit];
+		late = !drawable && MB_PostLatePresent( latency );
 		if ( latency ) {
-			MB_LatencyCommitted( latency, drawable != nil );
+			MB_LatencyCommitted( latency, drawable != nil || late );
 		}
 		mb_lastCommitted = mb_cmd;
 		mb_cmd = nil;
