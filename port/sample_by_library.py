@@ -39,7 +39,9 @@ def main():
     for i, (depth, count, frame, lib) in enumerate(lines):
         while stack and stack[-1][0] >= depth:
             stack.pop()
-        inside = (stack[-1][1] if stack else False) or (subtree is not None and frame.split(" ")[0] == subtree)
+        # C++ frames carry their parameter list ("SCR_SimpleUpdateScreen()"): match the bare name
+        inside = (stack[-1][1] if stack else False) or (
+            subtree is not None and frame.split(" ")[0].split("(")[0] == subtree)
         if subtree is None:
             inside = True
         stack.append((depth, inside))
