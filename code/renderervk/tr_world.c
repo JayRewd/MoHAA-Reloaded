@@ -440,11 +440,105 @@ int R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 }
 
 /*
+=================
+R_CullFaceToView
+
+Whether a world face lies wholly behind one of the view's side planes, by
+more than a unit: the GPU clips all of it away and it draws no pixel. GL1
+culls faces by their plane only (R_CullSurface) and leaves the others to
+the GPU's clipping. planeBits are the frustum planes its leaf isn't wholly
+in front of (the others can't cull a face of the leaf), none where faces
+outside the view still change what is drawn (R_FaceViewPlanes,
+R_AddWorldLeaf). Only for the faces of msurface_t::viewCull (ParseFace):
+not those whose vertexes move (deforms), the sky (its polygons give the
+extents of the sky box, RB_ClipSkyPolygons), portals and the sky portal
+(they start views of their own). The bounds are those of the face's points
+rounded outwards
+=================
+*/
+static qboolean R_CullFaceToView( const msurface_t *surf, int planeBits ) {
+	int i;
+
+	for ( i = 0; i < 4; i++ ) {
+		const cplane_t *frust = &tr.viewParms.frustum[i];
+		vec3_t corner;
+
+		if ( !( planeBits & ( 1 << i ) ) ) {
+			continue;
+		}
+
+		// the corner of the bounds farthest in front of the plane
+		corner[0] = surf->bounds[( frust->signbits & 1 ) ? 0 : 1][0];
+		corner[1] = surf->bounds[( frust->signbits & 2 ) ? 0 : 1][1];
+		corner[2] = surf->bounds[( frust->signbits & 4 ) ? 0 : 1][2];
+		if ( DotProduct( corner, frust->normal ) - frust->dist < -1.0f ) {
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+=================
+R_CullWorldFace
+
+R_CullSurface for a face, on the copy of its plane in the msurface_t, then
+against the view's frustum (R_CullFaceToView, planeBits 0 for brush models:
+none)
+=================
+*/
+static qboolean R_CullWorldFace( const msurface_t *surf, int planeBits ) {
+	const shader_t *shader = surf->shader;
+
+	if ( r_nocull->integer ) {
+		return qfalse;
+	}
+
+	// GL1's face culling: don't cull exactly on the plane, because there are
+	// levels of rounding through the BSP, ICD, and hardware that may cause
+	// pixel gaps if an epsilon isn't allowed here
+	if ( shader->cullType != CT_TWO_SIDED && r_facePlaneCull->integer ) {
+		float d = DotProduct( tr.ori.viewOrigin, surf->plane );
+
+		if ( shader->cullType == CT_FRONT_SIDED ) {
+			if ( d < surf->plane[3] - 8 ) {
+				return qtrue;
+			}
+		} else {
+			if ( d > surf->plane[3] + 8 ) {
+				return qtrue;
+			}
+		}
+	}
+
+	return ( planeBits & 15 ) && surf->viewCull && R_CullFaceToView( surf, planeBits );
+}
+
+/*
+=================
+R_FaceViewPlanes
+
+The frustum planes against which the faces of the world may be culled in
+this view (R_CullFaceToView): none with r_shownormals, which draws
+tess.normal, which faces only write when their shader needs normals, so
+that the others show what earlier batches left there (R_AddWorldLeaf also
+keeps the faces of the leaves dynamic lights reach)
+=================
+*/
+static int R_FaceViewPlanes( void ) {
+	return r_shownormals->integer ? 0 : 15;
+}
+
+/*
 ======================
 R_AddWorldSurface
+
+planeBits: the frustum planes the world's leaf isn't wholly in front of, 0
+for brush models
 ======================
 */
-static void R_AddWorldSurface( msurface_t *surf, int dlightBits ) {
+static void R_AddWorldSurface( msurface_t *surf, int dlightBits, int planeBits ) {
 	//if ( surf->viewCount == tr.viewCount ) {
 	//	return;		// already in this view
 	//}
@@ -453,7 +547,11 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits ) {
 	// FIXME: bmodel fog?
 
 	// try to cull before dlighting or adding
-	if ( R_CullSurface( surf->data, surf->shader ) ) {
+	if ( surf->isFace ) {
+		if ( R_CullWorldFace( surf, planeBits ) ) {
+			return;
+		}
+	} else if ( R_CullSurface( surf->data, surf->shader ) ) {
 		return;
 	}
 
@@ -499,7 +597,7 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 	R_DlightBmodel( bmodel );
 
 	for ( i = 0 ; i < bmodel->numSurfaces ; i++ ) {
-		R_AddWorldSurface( bmodel->firstSurface + i, tr.currentEntity->needDlights );
+		R_AddWorldSurface( bmodel->firstSurface + i, tr.currentEntity->needDlights, 0 );
 	}
 }
 
@@ -523,163 +621,394 @@ void R_GetInlineModelBounds(int iIndex, vec3_t vMins, vec3_t vMaxs)
 
 
 /*
+=============================================================
+
+	WORLD LEAVES
+
+GL1 marked the leaves in the PVS and their ancestors (R_MarkLeaves, a pass
+over all the nodes when the view's cluster changed), then its walk of the
+world's BSP tree (R_RecursiveWorldNode) went down from the root through the
+marked nodes, testing each node's box against the frustum planes its parent
+wasn't wholly in front of, and added the surfaces of the leaves it reached,
+children[0] first. Here R_MarkLeaves lists the leaves in the PVS in that
+order from a compact copy of what it tests (R_SetupWorldLeaves), and each
+view tests the leaves on their own boxes, after a test of the box of up to
+WORLD_LEAF_GROUP consecutive ones, without visiting the nodes: the same
+leaves in the same order with the same planes left, because a leaf's box
+lies within the boxes of all its ancestors (the BSP files store whole units
+rounded outwards), so a node GL1 culled or found wholly in front of a
+plane, the leaf is too, and the same for a group's box. The few leaves
+whose box sticks out of an ancestor's (by a unit) are tested along their
+path from the root like GL1 did (R_CullLeafAlongPath).
+
+=============================================================
+*/
+
+#define WORLD_LEAF_GROUP	8
+
+static void R_GroupVisibleLeaves( const byte *vis );
+
+/*
 ================
-R_RecursiveWorldNode
+R_CollectWalkLeaves
 ================
 */
-static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits ) {
-
-	do {
-		// if the node wasn't marked as potentially visible, exit
-		if (node->visframe != tr.visCount) {
-			return;
-		}
-
-		// if the bounding volume is outside the frustum, nothing
-		// inside can be visible OPTIMIZE: don't do this all the way to leafs?
-
-		if ( !r_nocull->integer ) {
-			int		r;
-
-			if (planeBits & 1) {
-				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[0]);
-				if (r == 2) {
-					return;						// culled
-				}
-				if (r == 1) {
-					planeBits &= ~1;			// all descendants will also be in front
-				}
-			}
-
-			if (planeBits & 2) {
-				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[1]);
-				if (r == 2) {
-					return;						// culled
-				}
-				if (r == 1) {
-					planeBits &= ~2;			// all descendants will also be in front
-				}
-			}
-
-			if (planeBits & 4) {
-				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[2]);
-				if (r == 2) {
-					return;						// culled
-				}
-				if (r == 1) {
-					planeBits &= ~4;			// all descendants will also be in front
-				}
-			}
-
-			if (planeBits & 8) {
-				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[3]);
-				if (r == 2) {
-					return;						// culled
-				}
-				if (r == 1) {
-					planeBits &= ~8;			// all descendants will also be in front
-				}
-			}
-
-			// Changed in 2.0
-			//  Allow culling only if the view is a portal sky
-			if ((planeBits & 16) && (tr.viewParms.farplane_cull < FARPLANE_CULL_PORTALSKY || tr.viewParms.isPortalSky)) {
-				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[4]);
-				if (r == 2) {
-					return;						// culled
-				}
-				if (r == 1) {
-					planeBits &= ~16;			// all descendants will also be in front
-				}
-			}
-
-		}
-
-		// the dynamic lights that reach something in the subtree
-		if ( dlightBits && !r_fastdlights->integer ) {
-			dlightBits = R_CullDlightsToNode( node, dlightBits );
-		}
-
-		if ( node->contents != -1 ) {
-			break;
-		}
-
-		// recurse down the children, front side first
-		R_RecursiveWorldNode (node->children[0], planeBits, dlightBits);
-
-		// tail recurse
+static void R_CollectWalkLeaves( mnode_t *node ) {
+	while ( node->contents == CONTENTS_NODE ) {
+		R_CollectWalkLeaves( node->children[0] );
 		node = node->children[1];
-	} while ( 1 );
+	}
+	tr.world->walkLeaves[tr.world->numWalkLeaves++] = node;
+}
 
-	{
-		// leaf node, so add mark surfaces
-		int			c;
-		msurface_t	*surf, **mark;
+/*
+================
+R_SetupWorldLeaves
 
-		tr.pc.c_leafs++;
+The leaves the BSP walk reaches, in its order (the brush models' leaves
+aren't reached), with their boxes, what R_MarkLeaves tests and whether each
+one's box lies within its ancestors' boxes. Called once the world is loaded
+================
+*/
+void R_SetupWorldLeaves( void ) {
+	world_t *w = tr.world;
+	int numLeaves, maxDepth, i, j;
 
-		// add to z buffer bounds
-		if ( node->mins[0] < tr.viewParms.visBounds[0][0] ) {
-			tr.viewParms.visBounds[0][0] = node->mins[0];
-		}
-		if ( node->mins[1] < tr.viewParms.visBounds[0][1] ) {
-			tr.viewParms.visBounds[0][1] = node->mins[1];
-		}
-		if ( node->mins[2] < tr.viewParms.visBounds[0][2] ) {
-			tr.viewParms.visBounds[0][2] = node->mins[2];
-		}
+	w->numWalkLeaves = 0;
+	w->numVisLeaves = 0;
+	w->numLeafGroups = 0;
+	if ( !w->nodes || !w->numnodes ) {
+		return;
+	}
 
-		if ( node->maxs[0] > tr.viewParms.visBounds[1][0] ) {
-			tr.viewParms.visBounds[1][0] = node->maxs[0];
-		}
-		if ( node->maxs[1] > tr.viewParms.visBounds[1][1] ) {
-			tr.viewParms.visBounds[1][1] = node->maxs[1];
-		}
-		if ( node->maxs[2] > tr.viewParms.visBounds[1][2] ) {
-			tr.viewParms.visBounds[1][2] = node->maxs[2];
-		}
+	numLeaves = w->numnodes - w->numDecisionNodes;
+	w->walkLeaves = ri.Hunk_Alloc( numLeaves * sizeof( *w->walkLeaves ), h_dontcare );
+	w->walkLeafInfo = ri.Hunk_Alloc( numLeaves * sizeof( *w->walkLeafInfo ), h_dontcare );
+	w->walkLeafBounds = ri.Hunk_Alloc( numLeaves * sizeof( *w->walkLeafBounds ), h_dontcare );
+	w->visLeaves = ri.Hunk_Alloc( numLeaves * sizeof( *w->visLeaves ), h_dontcare );
+	w->leafGroups = ri.Hunk_Alloc( numLeaves * sizeof( *w->leafGroups ), h_dontcare );
+	R_CollectWalkLeaves( w->nodes );
 
-		tr.portalsky.cntNode = node;
+	maxDepth = 0;
+	for ( i = 0; i < w->numWalkLeaves; i++ ) {
+		mnode_t *leaf = w->walkLeaves[i], *node;
+		worldWalkLeaf_t *info = &w->walkLeafInfo[i];
+		int depth = 1;
 
-		if (r_drawbrushes->integer) {
-			// add the individual surfaces
-			mark = node->firstmarksurface;
-			c = node->nummarksurfaces;
-			while (c--) {
-				// the surface may have already been added if it
-				// spans multiple leafs
-				surf = *mark;
-				if (surf->viewCount != tr.viewCount) {
-					R_AddWorldSurface(surf, dlightBits);
+		info->cluster = leaf->cluster;
+		info->area = leaf->area;
+		VectorCopy( leaf->mins, w->walkLeafBounds[i][0] );
+		VectorCopy( leaf->maxs, w->walkLeafBounds[i][1] );
+		info->inAncestors = qtrue;
+		for ( node = leaf->parent; node; node = node->parent, depth++ ) {
+			for ( j = 0; j < 3; j++ ) {
+				if ( leaf->mins[j] < node->mins[j] || leaf->maxs[j] > node->maxs[j] ) {
+					info->inAncestors = qfalse;
 				}
-				mark++;
 			}
 		}
+		if ( depth > maxDepth ) {
+			maxDepth = depth;
+		}
+	}
+	w->leafPath = ri.Hunk_Alloc( maxDepth * sizeof( *w->leafPath ), h_dontcare );
 
-		if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky)
-		{
-			int i;
+	if ( !tr.visCount ) {
+		// GL1's nodes, loaded with visframe 0, all counted as marked
+		// until R_MarkLeaves marked a cluster (a first view without one)
+		R_GroupVisibleLeaves( NULL );
+	}
+}
 
-			for (i = 0; i < node->numTerraPatches; i++) {
-				R_MarkTerrainPatch(tr.world->visTerraPatches[node->firstTerraPatch + i]);
+/*
+================
+R_GroupVisibleLeaves
+
+The leaves in the cluster's PVS (vis; NULL: every leaf that isn't solid,
+r_novis or no cluster) and not cut off by the area mask, GL1's test of
+R_MarkLeaves, in the BSP walk's order, in groups of up to WORLD_LEAF_GROUP
+consecutive ones with the box of their boxes; a leaf not within its
+ancestors' boxes gets a group of its own without leaves (numLeaves 0)
+================
+*/
+static void R_GroupVisibleLeaves( const byte *vis ) {
+	world_t *w = tr.world;
+	worldLeafGroup_t *g = NULL;
+	int i;
+
+	w->numVisLeaves = 0;
+	w->numLeafGroups = 0;
+	for ( i = 0; i < w->numWalkLeaves; i++ ) {
+		const worldWalkLeaf_t *info = &w->walkLeafInfo[i];
+		const vec3_t *bounds;
+
+		if ( vis ) {
+			int cluster = info->cluster;
+
+			if ( cluster < 0 || cluster >= w->numClusters ) {
+				continue;
 			}
+
+			// check general pvs
+			if ( !( vis[cluster >> 3] & ( 1 << ( cluster & 7 ) ) ) ) {
+				continue;
+			}
+
+			// check for door connection
+			if ( tr.refdef.areamask[info->area >> 3] & ( 1 << ( info->area & 7 ) ) ) {
+				continue;	// not visible
+			}
+		} else if ( w->walkLeaves[i]->contents == CONTENTS_SOLID ) {
+			continue;
 		}
 
-		if (r_drawstaticdecals->integer) {
-			if (node->pFirstMarkFragment) {
-				R_AddPermanentMarkFragmentSurfaces(node->pFirstMarkFragment, node->iNumMarkFragment);
-			}
+		if ( !info->inAncestors ) {
+			worldLeafGroup_t *alone = &w->leafGroups[w->numLeafGroups++];
+
+			alone->first = w->numVisLeaves;
+			alone->numLeaves = 0;
+			w->visLeaves[w->numVisLeaves++] = i;
+			g = NULL;
+			continue;
 		}
 
-		if (r_drawstaticmodels->integer) {
-			int i;
+		bounds = w->walkLeafBounds[i];
+		if ( !g || g->numLeaves == WORLD_LEAF_GROUP ) {
+			g = &w->leafGroups[w->numLeafGroups++];
+			g->first = w->numVisLeaves;
+			g->numLeaves = 0;
+			VectorCopy( bounds[0], g->mins );
+			VectorCopy( bounds[1], g->maxs );
+		} else {
+			AddPointToBounds( bounds[0], g->mins, g->maxs );
+			AddPointToBounds( bounds[1], g->mins, g->maxs );
+		}
+		w->visLeaves[w->numVisLeaves++] = i;
+		g->numLeaves++;
+	}
+}
 
-			for (i = 0; i < node->numStaticModels; i++) {
-				tr.world->visStaticModels[node->firstStaticModel + i]->visCount = tr.visCount;
+/*
+================
+R_CullBoxToFrustum
+
+GL1's test of a node's box (R_RecursiveWorldNode): qtrue when the box is
+wholly behind one of the frustum planes of *planeBits; the planes it is
+wholly in front of are taken out of *planeBits. The far plane (16) only
+culls where GL1 let it
+================
+*/
+static qboolean R_CullBoxToFrustum( const vec3_t mins, const vec3_t maxs, int *planeBits ) {
+	const float *box[2];
+	int i;
+
+	box[0] = mins;
+	box[1] = maxs;
+	for ( i = 0; i < 5; i++ ) {
+		const cplane_t *p = &tr.viewParms.frustum[i];
+		int s = p->signbits;
+		float dist1, dist2;
+
+		if ( !( *planeBits & ( 1 << i ) ) ) {
+			continue;
+		}
+
+		// Changed in 2.0
+		//  Allow culling only if the view is a portal sky
+		if ( i == 4 && !( tr.viewParms.farplane_cull < FARPLANE_CULL_PORTALSKY || tr.viewParms.isPortalSky ) ) {
+			continue;
+		}
+
+		if ( p->type < 3 ) {
+			int r = BoxOnPlaneSide( mins, maxs, (cplane_t *)p );
+
+			if ( r == 2 ) {
+				return qtrue;	// culled
 			}
+			if ( r == 1 ) {
+				*planeBits &= ~( 1 << i );	// all descendants will also be in front
+			}
+			continue;
+		}
+
+		// BoxOnPlaneSide's general case inline, the same products in the
+		// same order: dist1 from the corner farthest in front of the plane,
+		// dist2 from the one farthest behind it (dist2 <= dist1)
+		dist1 = p->normal[0] * box[!( s & 1 )][0] + p->normal[1] * box[!( s & 2 )][1] + p->normal[2] * box[!( s & 4 )][2];
+		if ( dist1 < p->dist ) {
+			return qtrue;	// culled
+		}
+		dist2 = p->normal[0] * box[( s & 1 ) != 0][0] + p->normal[1] * box[( s & 2 ) != 0][1] + p->normal[2] * box[( s & 4 ) != 0][2];
+		if ( dist2 >= p->dist ) {
+			*planeBits &= ~( 1 << i );	// all descendants will also be in front
 		}
 	}
 
+	return qfalse;
+}
+
+/*
+================
+R_CullLeafAlongPath
+
+GL1's tests of a leaf and its ancestors, from the root down
+================
+*/
+static qboolean R_CullLeafAlongPath( mnode_t *leaf, int *planeBits ) {
+	mnode_t **path = tr.world->leafPath;
+	int n = 0;
+
+	for ( ; leaf; leaf = leaf->parent ) {
+		path[n++] = leaf;
+	}
+	while ( n-- ) {
+		if ( R_CullBoxToFrustum( path[n]->mins, path[n]->maxs, planeBits ) ) {
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/*
+================
+R_AddWorldLeaf
+
+Adds what a leaf holds that is potentially visible, the leaf body of GL1's
+R_RecursiveWorldNode; facePlanes: R_FaceViewPlanes. The dynamic lights of dlightBits that reach nothing in
+it are left out first (GL1 gave all of them): its ancestors' bounds of what
+lights can reach contain its own, so the leaf's test alone leaves the same
+lights as the tests of every node down to it did
+================
+*/
+static void R_AddWorldLeaf( mnode_t *node, int planeBits, int dlightBits, int facePlanes ) {
+	int			c;
+	msurface_t	*surf, **mark;
+
+	if ( dlightBits && !r_fastdlights->integer ) {
+		dlightBits = R_CullDlightsToNode( node, dlightBits );
+	}
+
+	// no face is culled against the view where dynamic lights reach: the
+	// lights of a batch are those of all its surfaces, so a face outside the
+	// view changes those of the faces and grids batched with it
+	// (ProjectDlightTexture with r_fastdlights 1, where every leaf gets
+	// every light, and the side of the triangles a light must be on per
+	// pixel, tess.lightmapDlightFaces); the faces of the leaves no light
+	// reaches add none
+	if ( dlightBits ) {
+		facePlanes = 0;
+	}
+
+	tr.pc.c_leafs++;
+
+	// add to z buffer bounds
+	if ( node->mins[0] < tr.viewParms.visBounds[0][0] ) {
+		tr.viewParms.visBounds[0][0] = node->mins[0];
+	}
+	if ( node->mins[1] < tr.viewParms.visBounds[0][1] ) {
+		tr.viewParms.visBounds[0][1] = node->mins[1];
+	}
+	if ( node->mins[2] < tr.viewParms.visBounds[0][2] ) {
+		tr.viewParms.visBounds[0][2] = node->mins[2];
+	}
+
+	if ( node->maxs[0] > tr.viewParms.visBounds[1][0] ) {
+		tr.viewParms.visBounds[1][0] = node->maxs[0];
+	}
+	if ( node->maxs[1] > tr.viewParms.visBounds[1][1] ) {
+		tr.viewParms.visBounds[1][1] = node->maxs[1];
+	}
+	if ( node->maxs[2] > tr.viewParms.visBounds[1][2] ) {
+		tr.viewParms.visBounds[1][2] = node->maxs[2];
+	}
+
+	tr.portalsky.cntNode = node;
+
+	if (r_drawbrushes->integer) {
+		// add the individual surfaces
+		mark = node->firstmarksurface;
+		c = node->nummarksurfaces;
+		while (c--) {
+			// the surface may have already been added if it
+			// spans multiple leafs
+			surf = *mark;
+			if (surf->viewCount != tr.viewCount) {
+				R_AddWorldSurface(surf, dlightBits, planeBits & facePlanes);
+			}
+			mark++;
+		}
+	}
+
+	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky)
+	{
+		int i;
+
+		for (i = 0; i < node->numTerraPatches; i++) {
+			R_MarkTerrainPatch(tr.world->visTerraPatches[node->firstTerraPatch + i]);
+		}
+	}
+
+	if (r_drawstaticdecals->integer) {
+		if (node->pFirstMarkFragment) {
+			R_AddPermanentMarkFragmentSurfaces(node->pFirstMarkFragment, node->iNumMarkFragment);
+		}
+	}
+
+	if (r_drawstaticmodels->integer) {
+		int i;
+
+		for (i = 0; i < node->numStaticModels; i++) {
+			tr.world->visStaticModels[node->firstStaticModel + i]->visCount = tr.visCount;
+		}
+	}
+}
+
+/*
+================
+R_AddWorldLeaves
+
+The potentially visible leaves that the frustum doesn't cull, in the order
+of GL1's BSP walk (see WORLD LEAVES)
+================
+*/
+static void R_AddWorldLeaves( int planeBits, int dlightBits ) {
+	const world_t *w = tr.world;
+	int facePlanes = R_FaceViewPlanes();
+	int i, j;
+
+	for ( i = 0; i < w->numLeafGroups; i++ ) {
+		const worldLeafGroup_t *g = &w->leafGroups[i];
+		const int *leaves = w->visLeaves + g->first;
+		int groupBits = planeBits;
+
+		if ( !g->numLeaves ) {
+			if ( r_nocull->integer || !R_CullLeafAlongPath( w->walkLeaves[leaves[0]], &groupBits ) ) {
+				R_AddWorldLeaf( w->walkLeaves[leaves[0]], groupBits, dlightBits, facePlanes );
+			}
+			continue;
+		}
+
+		if ( !r_nocull->integer && R_CullBoxToFrustum( g->mins, g->maxs, &groupBits ) ) {
+			continue;
+		}
+
+		if ( g->numLeaves == 1 ) {
+			// the group's box is the leaf's
+			R_AddWorldLeaf( w->walkLeaves[leaves[0]], groupBits, dlightBits, facePlanes );
+			continue;
+		}
+
+		for ( j = 0; j < g->numLeaves; j++ ) {
+			const vec3_t *bounds = w->walkLeafBounds[leaves[j]];
+			int leafBits = groupBits;
+
+			if ( !r_nocull->integer && R_CullBoxToFrustum( bounds[0], bounds[1], &leafBits ) ) {
+				continue;
+			}
+			R_AddWorldLeaf( w->walkLeaves[leaves[j]], leafBits, dlightBits, facePlanes );
+		}
+	}
 }
 
 int R_SphereInLeafs(const vec3_t p, float r, mnode_t** nodes, int nMaxNodes) {
@@ -794,14 +1123,14 @@ qboolean R_inPVS( const vec3_t p1, const vec3_t p2 ) {
 ===============
 R_MarkLeaves
 
-Mark the leaves and nodes that are in the PVS for the current
-cluster
+Lists the leaves in the PVS for the current cluster (R_GroupVisibleLeaves).
+GL1 marked them and their ancestors for its BSP walk in a pass over every
+node, 0.23 ms in obj_team4 whenever the view's cluster changes (2 % of the
+frames of a match there)
 ===============
 */
 static void R_MarkLeaves (void) {
-	const byte	*vis;
-	mnode_t	*leaf, *parent;
-	int		i;
+	mnode_t	*leaf;
 	int		cluster;
 
 	// lockpvs lets designers walk around to determine the
@@ -834,42 +1163,12 @@ static void R_MarkLeaves (void) {
 	tr.viewCluster = cluster;
 
 	if ( r_novis->integer || tr.viewCluster == -1 ) {
-		for (i=0 ; i<tr.world->numnodes ; i++) {
-			if (tr.world->nodes[i].contents != CONTENTS_SOLID) {
-				tr.world->nodes[i].visframe = tr.visCount;
-			}
-		}
+		R_GroupVisibleLeaves( NULL );
 		return;
 	}
 
-	vis = R_ClusterPVS (tr.viewCluster);
-	
-	for (i=0,leaf=tr.world->nodes ; i<tr.world->numnodes ; i++, leaf++) {
-		cluster = leaf->cluster;
-		if ( cluster < 0 || cluster >= tr.world->numClusters ) {
-			continue;
-		}
-
-		// check general pvs
-		if ( !(vis[cluster>>3] & (1<<(cluster&7))) ) {
-			continue;
-		}
-
-		// check for door connection
-		if ( (tr.refdef.areamask[leaf->area>>3] & (1<<(leaf->area&7)) ) ) {
-			continue;		// not visible
-		}
-
-		parent = leaf;
-		do {
-			if (parent->visframe == tr.visCount)
-				break;
-			parent->visframe = tr.visCount;
-			parent = parent->parent;
-		} while (parent);
-	}
+	R_GroupVisibleLeaves( R_ClusterPVS( tr.viewCluster ) );
 }
-
 
 /*
 =============
@@ -903,7 +1202,7 @@ void R_AddWorldSurfaces (void) {
 		tr.refdef.num_dlights = 32;
 	}
 	R_TransformDlights(tr.refdef.num_dlights, tr.refdef.dlights, &tr.viewParms.world);
-	R_RecursiveWorldNode(tr.world->nodes, tr.viewParms.fog.extrafrustums ? 31 : 15, (1 << tr.refdef.num_dlights) - 1);
+	R_AddWorldLeaves(tr.viewParms.fog.extrafrustums ? 31 : 15, (1 << tr.refdef.num_dlights) - 1);
 
 	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky) {
 		R_AddTerrainSurfaces();

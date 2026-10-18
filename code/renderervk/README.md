@@ -159,6 +159,18 @@ below are done.
   nothing measurable. The pacing changes that could lower it without
   adding lag, with their measured upside, are in Plan, Remaining (see
   Performance, Present timing)
+- world culling (2026-10-17): starting from the Metal port hand-over's
+  review of JayRewd's exact world culls, world faces wholly outside the
+  view are left out (half of those GL1 draws in the `obj_team2` yard and
+  `o2match`; not where dynamic lights reach), the BSP walk is replaced by the potentially visible leaves
+  in its order, culled 8 at a time, the PVS is listed from a compact copy
+  of the leaves (GL1's pass over every node took 0.23 ms at each cluster
+  change in `obj/obj_team4`, 2 % of a match's frames) and culling a face
+  reads only its `msurface_t`. The same leaves and surfaces as GL1's code
+  (checked beside it, view by view, with a temporary build) and the same
+  frames to the bit; the renderer's CPU time 2 to 10 % lower in the yard,
+  4 to 5 % in `o2match`, 1 to 2 % in `o4match`, the same within the noise
+  in the `dm/mohdm3` overview (see Performance, World culling)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -922,6 +934,40 @@ like GL1), and a script that switches `r_stencilbits` 8 and 0,
 same kind (at most 0.17 % of the pixels differ at 4160x240), and the
 main menu matches GL1 (fan masked; `menus.txt` gives the numbers of its
 paragraph above).
+
+The world culling (2026-10-17, see Performance, World culling), against
+the build before it (`run.sh`, `tgadiff.py`, 640x480) on the 14 `dm`, 5
+`obj` and 5 multiplayer lists, `m2l1_skyportal`, `m2l3`, `m2l3_fog`,
+`m3l3`, `m4l1_fog`, `m5l3`, `m6l1a` and `m6l2a`, the dynamic light lists
+with `r_fastdlights 1`, `mohdm1_texenv` with `r_ext_texture_env_add 1`,
+`obj_team2` and `dm/mohdm3` with `r_novis 1`, and `obj_team2` with
+`r_nocull 1` and with `r_facePlaneCull 0` (170 views): 154 views give the
+same frames to the bit, among them every view of `obj/obj_team1` to
+`obj/obj_team4`, of the dynamic light lists in both modes, of the
+multiplayer lists but 2 pixels of `pm7_front`, and of `m2l3`, `m3l3`,
+`m6l2a`; the other 16 are the random content and run-to-run noise named
+above (snow in `mohdm5_fog` and `m6l1a`, a particle in `m53_street`, and
+near the camera `d7_alley`, `d7_arch`, `fm4_a`/`fm4_b`, `m61_slope`,
+`pm7_front` and `s2_a`/`s2_b`, whose few larger pixels at the bottom edge
+also differ between two runs of one build). Two views differed at first,
+`dl_a` (`r_fastdlights 1`) and `dbg_normals` (see Performance, World
+culling, change 1); they no longer cull faces there. Against GL1
+(`compare.sh`, `summary.py`): `dm/mohdm3`, `dm/mohdm6`, `dm/mohdm7`,
+`obj_team1` to `obj_team4`, `mp_mohdm1`, `mp_obj_team4` and
+`mohdm1_dlight` give the numbers of the tables above at 640x480, and
+`dm/mohdm3`, `dm/mohdm7`, `obj_team1`, `obj_team2`, `obj_team4`,
+`mp_mohdm1` and `mp_obj_team4` at 4160x240 (`dm/mohdm7` 48/36/35,
+0.070 %, 56: the `d7_window` crack; `obj_team1` 0.149 %); the main menu
+matches GL1 (fan masked; `menus.txt` gives the numbers of its paragraph
+above, 17 pixels off by 1 in `mn_video`, the views over `m1_spawn` that
+view's differences, 5 to 7.4 %).
+No validation message in these runs (`r_vkValidation 1`), nor with
+synchronization validation (`r_vkValidation 2`) on `mohdm1_dlight` in
+both modes, `m2l1_skyportal`, `obj_team2`, `mp_mohdm1` and a script that
+loads `dm/mohdm1`, runs `vid_restart`, loads `obj/obj_team2`, turns
+`r_novis`, `r_lockpvs` and `r_nocull` on and off, and loads `dm/mohdm3`;
+`renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
+`GetRefAPI`.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -2445,6 +2491,226 @@ Pacing changes that could lower input to display without adding lag
    times, not refreshes, and the frames come as often), and a full FIFO
    queue 12.5 ms (not measured).
 
+World culling (2026-10-17): the world's traversal (`R_RecursiveWorldNode`,
+`R_AddWorldSurfaces`) led the CPU causes of `o4match`'s slow frames (Plan,
+Remaining, item 3 before this step). The starting point was the review, in
+the Metal port's hand-over, of the "exact world culls" of JayRewd's omaha
+commit 1c2c8754 (a flat list of the potentially visible leaves, culls of
+groups of 8 leaves, a bounding sphere per face, early rejects in the mark
+fragments), read in the commit itself.
+
+What the traversal did per view (a temporary counting build; all frames of
+the demos):
+
+| per view | `obj_team2` yard | `dm/mohdm3` overview | `o2match` | `o4match` |
+| --- | --- | --- | --- | --- |
+| nodes visited | 324 | 1937 | 218 | 2817 |
+| leaves added | 80 | 562 | 20 | 1124 |
+| leaf surfaces (marks) | 4899 | 5631 | 1742 | 5313 |
+| faces reached | 3988 | 3160 | 1413 | 2471 |
+| culled by their plane (GL1) | 685 | 1458 | 184 | 1109 |
+| drawn by GL1 | 3246 | 1702 | 1219 | 1290 |
+| of those, wholly outside the view | 1622 (50 %) | 269 (16 %) | 677 (56 %) | 259 (20 %) |
+
+In the stack samples of `o4match` (1920x1080) the traversal took 10.9 to
+11.6 % of the main thread's time: 5.5 to 5.7 % the walk itself (the nodes'
+`visframe` read, the recursion, the leaves' surface lists), 2.8 to 3.2 %
+`R_CullSurface` (reading each face's plane, a cache miss per face: every
+face is an allocation of its own) and 1.3 to 1.4 % `BoxOnPlaneSide`.
+Whenever the view's cluster changed, `R_MarkLeaves` also marked the leaves
+of the new PVS and their ancestors in a pass over every node: 0.23 ms each
+time in `obj/obj_team4` (a temporary timing build; 278 times in the 15000
+frames of `o4match`, 2 % of the frames, so right at their 99th percentile).
+
+JayRewd's culls as written, against GL1 (a script also checked the 66 BSP
+files of the game data):
+
+- The flat leaf list takes every node that `R_MarkLeaves` marked and that
+  is a leaf, in the order of the nodes array. That includes the leaves of
+  the brush models, which the BSP tree doesn't reach but which have a
+  cluster, so `R_MarkLeaves` marks them when it is in the PVS (14 to 94
+  such leaves in the `dm` and `obj` maps; no leaf the tree reaches lists a
+  brush model's surface): their surfaces are in the models' own
+  coordinates, and drawn as world surfaces they put copies near the
+  origin, which the commit hides by skipping surfaces past the world
+  model's ("Fixed in Omaha"). The array's order is the walk's in every
+  shipped map, but each leaf is tested on its own box, which gives GL1's
+  result only when the leaf's box lies within the boxes of all its
+  ancestors: in 43 of the 66 maps some leaves stick out of an ancestor's
+  box, by one unit (the stored integer bounds are rounded outwards; up to
+  134 leaves in a map, 68 in `dm/mohdm3`, 5 in `obj/obj_team2`), and such
+  a leaf can be culled by GL1 at an ancestor and kept on its own box, or
+  the reverse.
+- The groups of 8 consecutive leaves are exact by themselves: a box that
+  contains the leaves' boxes is wholly behind (or in front of) a plane
+  only if each of them is (`BoxOnPlaneSide` takes the farthest corners,
+  and rounding keeps their order).
+- The sphere per face is centred on the face's bounds with half their
+  diagonal as radius, computed in floats (not certain to enclose every
+  point), and culls a face whose sphere is behind a frustum plane, with no
+  margin. It leaves out faces with deforms but not the sky (the sky's
+  faces give the extents of the sky box, `RB_ClipSkyPolygons`) nor the
+  sky portal's (they decide whether the sky portal's view is rendered).
+- The early mark rejects (`R_MarkFragments`: cgame's bullet holes and
+  feet shadows) are exact, since a fragment whose points are all less
+  than 0.25 in front of a plane is dropped by `R_ChopPolyBehindPlane`
+  (0.5) anyway, but they aren't the world's traversal: `R_MarkFragments`
+  is 0.8 % of the `o4match` samples in all. Not taken.
+- The commit's replay of the last walk when the view repeats exactly
+  (frames that share a client millisecond) isn't in the review's list: it
+  only helps above 1000 frames per second, or in fixed benchmark views.
+
+What was done (see Implementation notes, World culling), each change
+measured against the build before it:
+
+1. Faces culled against the view: a face whose bounds lie wholly behind
+   one of the frustum's side planes, by more than a unit, is left out (the
+   GPU would clip all of it away). Only the planes its leaf isn't wholly
+   in front of; not for faces whose shader deforms vertexes, the sky,
+   portals and the sky portal's faces, nor in the leaves that dynamic
+   lights reach, nor with `r_shownormals`, where a face outside the view
+   still changes the frame: the lights of a batch are the union of its
+   surfaces' (with `r_fastdlights 1` every light that reaches one face is
+   projected onto all the batch's triangles, `ProjectDlightTexture`, and
+   in this renderer's per-pixel lights the side a light must be on is
+   tested for the whole batch when it has a lit face,
+   `tess.lightmapDlightFaces`), and `r_shownormals` draws `tess.normal`,
+   which faces write only when their shader needs normals, so the others
+   show what earlier batches left there. The comparison with the build
+   before found the `r_fastdlights 1` case in `dl_a` (`mohdm1_dlight`: a
+   wall top lit by a light of an off-screen face of its batch, 730 pixels)
+   and the `r_shownormals` one in `dbg_normals` (384 pixels of normals);
+   the per-pixel case came from reading the code (it needs a lit face and
+   a lit grid or terrain patch in one batch). With the conditions both
+   views give the frames of the build before.
+2. The BSP walk replaced by the potentially visible leaves listed in its
+   order: the same leaves in the same order, each tested on its own box
+   after the box of 8 consecutive ones, and the few that stick out of an
+   ancestor's box along their path from the root; `BoxOnPlaneSide`'s
+   arithmetic inline (the same products in the same order).
+3. What culling a face reads copied into its `msurface_t` (64 bytes,
+   aligned): its plane and its bounds, rounded outwards to whole units in
+   shorts, so that the faces culled by their plane or by the view are not
+   read at all; `srfSurfaceFace_t` keeps its size (with the bounds in it,
+   change 1 had moved the dynamic light fields, which the front end
+   writes for every drawn face, onto another cache line for more faces).
+4. `R_MarkLeaves` lists the leaves of the PVS in the walk's order, with
+   GL1's test, from a compact copy of each leaf's cluster and area (8
+   bytes; the boxes in another array in the same order), and groups them:
+   no pass over the nodes, no marks for the ancestors (nothing walks the
+   nodes any more). In the same frames of `o4match`: 67 µs per cluster
+   change on the median (mean 111, 90th percentile 227) against 238 for
+   GL1's pass (mean 227, 90th percentile 359); it varies with the GPU's
+   memory traffic.
+
+Exactness. A temporary verification build ran GL1's code beside the new
+one in every view: `R_MarkLeaves` and `R_RecursiveWorldNode` as in
+`renderergl1` (with this renderer's culling of dynamic lights per node),
+marking a private copy of the nodes' `visframe`, and `R_CullSurface` on
+each face's own data. It compared the leaves added (in order, each with
+the frustum planes left and its dynamic lights) and the faces culled by
+their plane, and projected every face culled against the view with the
+view's modelview and projection matrices (in double precision; zFar
+doesn't change x, y and w) to check that all its points lie outside one
+clip plane x = ±w or y = ±w by more than float32's rounding (1e-5 of |x|
++ |w|). Results:
+
+| what was run (with the final build's verification copy) | lists | views | leaves added | faces culled by their plane | faces culled against the view | differences |
+| --- | --- | --- | --- | --- | --- | --- |
+| `dm` lists (`dm/mohdm1` to `dm/mohdm7`; fog, decals, dynamic lights, sun flare, debug drawing) | 14 | 11375 | 3.58 M | 7.31 M | 2.28 M | 0 |
+| `obj` lists (`obj/obj_team1` to `obj/obj_team4`, the sea shader) | 5 | 4165 | 0.72 M | 1.37 M | 1.26 M | 0 |
+| multiplayer lists (`mp_*`: 20 soldiers, muzzle flash lights) | 5 | 11240 | 3.18 M | 7.17 M | 1.71 M | 0 |
+| single-player lists (the sky portal of `m2l1`, `m2l3` and its fog, `m3l3`, the fog of `m4l1`, `m5l3`, `m6l1a`, `m6l2a`) | 8 | 5586 | 1.57 M | 2.71 M | 0.84 M | 0 |
+| variants: the dynamic light lists with `r_fastdlights 1`, `mohdm1_texenv` with `r_ext_texture_env_add 1`, `obj_team2` and `dm/mohdm3` with `r_novis 1`, `obj_team2` with `r_nocull 1` and with `r_facePlaneCull 0` | 8 | 7234 | 2.08 M | 4.04 M | 2.97 M | 0 |
+| demos: `o2match`, `o4match`, an `obj/obj_team1` match (240 s) and a `dm/mohdm6` one (123 s), every frame | 4 | 52654 | 21.4 M | 36.1 M | 18.2 M | 0 |
+
+(Differences: leaves that differ from GL1's walk in order, frustum planes
+left or dynamic lights, faces whose plane cull differs from GL1's, faces
+culled against the view with a point not outside the clip volume. The
+nearest point of a culled face was 0.005 pixel beyond the frame's edge,
+on a face whose points are all beyond it. The `r_novis` lists first
+showed different leaves: the verification copy of GL1's `R_MarkLeaves`
+had left out its re-mark when `r_showcluster` changes, which the lists
+turn on; with it, none.)
+
+Results (the final build; idle machine: other processes 1.6 CPUs at
+most; the main thread's time in the renderer per frame, with its front end
+(`scene`) and the 2D calls with the 3D back end; GPU time from timestamps;
+medians of 5 interleaved runs for the fixed views and `o4match` at
+1920x1080, of 3 for the other demo rows, 15000 frames each, whose
+"content" percentiles are those of each frame's median over the runs, see
+Frame spikes; ms):
+
+| view | size | renderer before | after | scene before / after | 2D and back end before / after | GPU before / after | content p99 before / after | p99.9 before / after |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 640x480 | 0.398 | 0.360 (-10 %) | 0.115 / 0.105 | 0.208 / 0.186 | 0.224 / 0.220 | | |
+| | 1920x1080 | 0.402 | 0.393 (-2 %) | 0.113 / 0.113 | 0.217 / 0.209 | 0.623 / 0.622 | | |
+| `dm/mohdm3` overview | 640x480 | 0.446 | 0.451 (+1 %) | 0.108 / 0.118 | 0.264 / 0.259 | 0.295 / 0.294 | | |
+| | 1920x1080 | 0.524 | 0.529 (+1 %) | 0.133 / 0.138 | 0.321 / 0.319 | 0.700 / 0.702 | | |
+| `o2match` | 640x480 | 0.359 | 0.344 (-4 %) | 0.067 / 0.063 | 0.221 / 0.211 | 0.277 / 0.278 | 1.037 / 1.035 | 1.446 / 1.381 |
+| | 1920x1080 | 0.389 | 0.371 (-5 %) | 0.074 / 0.068 | 0.242 / 0.231 | 0.554 / 0.550 | 1.149 / 1.109 | 1.548 / 1.536 |
+| `o4match` | 640x480 | 0.748 | 0.736 (-2 %) | 0.219 / 0.215 | 0.455 / 0.448 | 0.365 / 0.363 | 1.368 / 1.373 | 1.677 / 1.733 |
+| | 1920x1080 | 0.887 | 0.876 (-1 %) | 0.289 / 0.282 | 0.523 / 0.517 | 0.749 / 0.745 | 1.671 / 1.648 | 2.105 / 2.018 |
+
+(The frame times stay at the 1000 frames per second limit in the fixed
+views and at 1.003 to 1.006 ms in `o2match`; `o4match`'s go from 1.051 to
+1.045 and from 1.159 to 1.153.) The `dm/mohdm3` overview's 1 % is within
+its run-to-run spread (0.440 to 0.471 before, 0.449 to 0.455 after at
+640x480; earlier batches gave from -0.5 to +3 %). The slow frames of the
+demos compared frame by frame (the 150 frames where the two builds'
+medians add up highest; selecting by one build's frames alone favours the
+other by regression to the mean): 0.046 ms shorter on average in
+`o4match` at 1920x1080 (5 runs; 3 runs gave 0.070 longer, and
+`o4match`'s content percentiles move by as much from one batch to the
+next), 0.023 longer at 640x480, 0.051 and 0.004 shorter in `o2match`.
+Between the build without the last condition of change 1 (no view
+culling where dynamic lights reach) and the final one, in the same
+batch: `o2match` 0.339 and 0.374 against 0.344 and 0.371, `o4match`
+0.736 and 0.861 against 0.736 and 0.869; `o2match`, whose recorder fires
+often, culls 9 % fewer faces against the view with it (614 per view
+against 676).
+
+Each change against the build before it (separate interleaved batches,
+the same columns; renderer time, ms):
+
+| view | size | before | 1. faces against the view | 2. leaf list | 3. face data in `msurface_t` | 4. PVS list | lit leaves kept |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 640x480 | 0.391 | 0.362 | 0.362 | 0.367 / 0.368 * | 0.361 / 0.356 | |
+| | 1920x1080 | 0.398 | 0.390 | 0.380 | | 0.387 / 0.383 | |
+| `dm/mohdm3` overview | 640x480 | 0.439 | 0.452 | 0.444 | 0.448 / 0.449 * | 0.443 / 0.454 | |
+| | 1920x1080 | 0.534 | 0.535 | 0.531 | | 0.536 / 0.534 | |
+| `o2match` | 640x480 | 0.362 | 0.349 | 0.342 | 0.347 | 0.342 / 0.337 | 0.339 / 0.344 |
+| | 1920x1080 | 0.385 | 0.379 | 0.372 | 0.367 | 0.369 / 0.363 | 0.374 / 0.371 |
+| `o4match` | 640x480 | 0.738 | 0.747 | 0.731 | 0.731 | 0.731 / 0.731 | 0.736 / 0.736 |
+| | 1920x1080 | 0.866 | 0.877 | 0.876 | 0.852 | 0.855 / 0.848 | 0.861 / 0.869 |
+
+(Changes 1 to 3 in one batch for each kind of view; * a batch of 3 runs
+with the build before and after change 3; change 4 against the build with
+changes 1 to 3 and the inline box test, which was worth 3 to 5 µs of the
+front end in the overview and `o4match` on its own; the last column is
+the condition of change 1 that keeps the faces where dynamic lights reach
+and with `r_shownormals`, which changes nothing in the fixed views, which
+have no dynamic lights.)
+
+- Culling faces against the view saves back-end time (the static geometry
+  had already made a world face cheap there, about 11 ns each in the
+  yard) and a little GPU time at 640x480, and costs a test per face in the
+  front end: it pays where many faces are outside the view (the yard and
+  `o2match`, half the faces GL1 drew) and cost a little in the overview
+  and `o4match` (16 and 20 %) until change 3 took the reads of the faces
+  out of the culling. Static views keep the world's data in the caches,
+  so change 3 shows in the demos only.
+- The leaf list makes more box tests than the recursion where the PVS is
+  large and the frustum culls most of it (`o4match`: `BoxOnPlaneSide` and
+  the leaf tests 3.1 % of the samples against 1.3 %) and saves the node
+  visits: about even, a little better with the box test inline. Groups
+  of 4 or 16 leaves gave the same within the noise.
+- What is left of the traversal in `o4match`: the leaves' surface lists
+  (`R_AddWorldLeaf`, 3.6 % of the samples), the first read of each drawn
+  face (now in `R_CheckDlightSurface`, which writes its dynamic light
+  fields, 1.1 %; the back end reads the face anyway), the culling (1.4 %)
+  and the box tests (3.1 %).
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -2911,6 +3177,35 @@ selects the sample count (see Implementation notes).
   (`RB_StaticMerge`): one draw per model with its modelview, colors and
   indexes, one stage setup for all, the same triangles in the same order.
   `r_staticGeometry 0` draws everything through `tess` again.
+- **World culling** (`tr_world.c`). GL1's marking of the PVS and walk of
+  the world's BSP tree (`R_MarkLeaves`, `R_RecursiveWorldNode`) are
+  replaced by a list of the potentially visible leaves that gives the same
+  leaves in the same order (see Performance, World culling, for why and
+  how it was checked). At map load `R_SetupWorldLeaves` lists the leaves
+  the tree reaches in the walk's order (children[0] first; the brush
+  models' leaves aren't reached) with their boxes, their cluster and area
+  and whether the box lies within the boxes of all their ancestors
+  (`worldWalkLeaf_t`). When the view's cluster or the area mask changes,
+  `R_MarkLeaves` tests them as GL1 did (`R_GroupVisibleLeaves`) and keeps
+  the visible ones in groups of up to 8 consecutive leaves that lie within
+  their ancestors' boxes, with the box of their boxes, and the others in a
+  group of their own. Per view, `R_AddWorldLeaves` tests a group's box
+  against the frustum planes (`R_CullBoxToFrustum`: `BoxOnPlaneSide`'s
+  arithmetic inline, the far plane only where GL1 culls with it), then
+  each leaf's box against the planes the group isn't wholly in front of,
+  or a leaf of its own against the boxes of its path from the root
+  (`R_CullLeafAlongPath`), and `R_AddWorldLeaf` runs GL1's leaf body, the
+  dynamic lights first culled to the leaf's bounds (`R_CullDlightsToNode`;
+  its ancestors' bounds contain them). A face's `msurface_t` holds what
+  culling it reads (`isFace`, the plane, `viewCull` and the bounds of its
+  points rounded outwards to whole units, in shorts; 64 bytes, the world's
+  array aligned to them; `ParseFace`): `R_CullWorldFace` makes GL1's plane
+  cull on the copy, then `R_CullFaceToView` leaves out a face whose bounds
+  lie wholly behind one of the side planes its leaf isn't wholly in front
+  of, by more than a unit (not for faces whose shader deforms vertexes,
+  the sky, portals and the sky portal's faces: `viewCull` 0; not in the
+  leaves dynamic lights reach, nor with `r_shownormals`:
+  `R_FaceViewPlanes`). Brush models keep GL1's culling.
 - **Dynamic lights** (`r_fastdlights 0`, the default; `tr_light.c`,
   `vk_add_dlights`, `vk_set_lightmap_dlights`). GL1 relit the lightmap of
   every surface a light reached, texel by texel (`R_RealDlightFace`,
@@ -3406,6 +3701,30 @@ Done:
     scanout) for fullscreen mailbox and FIFO but composites with tearing;
     FIFO queues three frames; Xwayland costs nothing measurable.
 
+14. World culling (2026-10-17, see Performance, World culling, and
+    Implementation notes, World culling), starting from the Metal port
+    hand-over's review of JayRewd's exact world culls (omaha 1c2c8754),
+    each taken only in a form that gives GL1's leaves and surfaces: world
+    faces wholly outside the view culled (the bounds of each face, a unit
+    of margin; not for deforms, the sky, portals and the sky portal, nor
+    where dynamic lights reach, whose batches take the lights of all
+    their faces), the
+    BSP walk replaced by the potentially visible leaves in its order with
+    culls of 8 leaves at a time (exact by box containment; the leaves
+    that stick out of an ancestor's box tested along their path; the
+    commit's list also took the brush models' leaves), what culling a face
+    reads kept in its `msurface_t`, and the PVS listed from a compact copy
+    of the leaves instead of GL1's pass over every node (0.23 ms at each
+    cluster change in `obj/obj_team4`, 67 µs now on the median). A
+    temporary verification build ran GL1's code beside it in 92254 views
+    of 40 view lists and 4 demos: the same leaves in the same order, the
+    same plane culls, every face culled against the view outside the clip
+    volume; the frames are the same to the bit. The renderer's CPU time
+    goes down 2 to 10 % in the `obj_team2` yard, 4 to 5 % in `o2match` and
+    1 to 2 % in `o4match`, and stays within the noise in the `dm/mohdm3`
+    overview; the slowest 1 % of the demos' frames, compared frame by
+    frame, change by -0.05 to +0.02 ms.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -3436,12 +3755,21 @@ Remaining:
      Vulkan's smaller than GL1's. In the stack samples of
      `o4match`'s slow frames the world traversal (`R_RecursiveWorldNode`,
      `R_AddWorldSurfaces`, 15.7 % of their samples against 11.3 % of all
-     frames' samples) leads, then the terrain re-split every frame
+     frames' samples) led, then the terrain re-split every frame
      (`RB_DrawTerrainTris`, `R_DoTriSplitting`, 8.6 % against 6.2 %),
      `vk_draw` (7.5 %) and cgame's entities (`CG_AddPacketEntities`, 7 %);
      `RB_SkelMesh`'s mesh search and the sky clipping are about 1 % each.
-     So per-face view culling of world faces is worth it, the terrain is a
-     new candidate, and the other two exact items little for the spikes.
+     The world culling (Plan 14) took GL1's pass over the nodes off the
+     frames where the cluster changes and the faces outside the view off
+     the back end; what is left of the traversal (about 9 % of `o4match`'s
+     samples: the leaves' surface lists, the box tests, the first read of
+     each drawn face, the culling) has no exact shortcut left that this
+     step found worth it. Next candidates: the terrain re-split; the sky's
+     faces outside the view (their clipping, `ClipSkyPolygon` and
+     `AddSkyPolygon`, is 1.2 % of `o4match`), if a sky box drawn from fewer
+     of them gives the same pixels where no world face covers the frame;
+     JayRewd's exact early rejects in cgame's mark fragments
+     (`R_MarkFragments`, 0.8 %).
   4. CPU-side frame pacing where the GPU limits (3840x2160 fixed views):
      Vulkan's frame times spread more than GL1's (99th percentile 0.2 to
      0.4 ms higher) while the GPU finishes its frames as evenly as GL1's:

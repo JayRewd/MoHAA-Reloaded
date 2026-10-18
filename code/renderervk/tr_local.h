@@ -1036,9 +1036,19 @@ typedef struct msurface_s {
 	int					viewCount;		// if == tr.viewCount, already added
 	int					frameCount;
 	struct shader_s		*shader;
+	surfaceType_t		*data;			// any of srf*_t
 	int					fogIndex;
 
-	surfaceType_t		*data;			// any of srf*_t
+	// for a face (data is a srfSurfaceFace_t), what culling it reads
+	// (R_CullWorldFace), so that culled faces aren't read at all: its
+	// plane, and the bounds of its points rounded outwards to whole units
+	// for the view's frustum (R_CullFaceToView) when viewCull (its shader
+	// allows it); 64 bytes in all with 64-bit pointers, and the world's
+	// array is aligned to 64 bytes (R_LoadSurfaces)
+	qboolean			isFace;
+	qboolean			viewCull;
+	vec4_t				plane;			// srfSurfaceFace_t::plane: normal, dist
+	short				bounds[2][3];
 } msurface_t;
 
 
@@ -1047,7 +1057,6 @@ typedef struct msurface_s {
 typedef struct mnode_s {
 	// common with leaf and node
 	int			contents;		// -1 for nodes, to differentiate from leafs
-	int			visframe;		// node needs to be traversed if current
 	vec3_t		mins, maxs;		// for bounding box culling
 	struct mnode_s	*parent;
 	// what the dynamic lights of r_fastdlights 0 can reach in the subtree
@@ -1094,6 +1103,22 @@ typedef struct {
     shader_t* shader;
 } sprite_t;
 
+// what R_MarkLeaves tests of a leaf the world's BSP walk reaches
+// (R_SetupWorldLeaves)
+typedef struct {
+	int			cluster;
+	short		area;
+	short		inAncestors;	// its box lies within the boxes of all its ancestors
+} worldWalkLeaf_t;
+
+// consecutive potentially visible leaves of the world, culled together
+// first (R_AddWorldLeaves)
+typedef struct {
+	vec3_t		mins, maxs;		// of the leaves' boxes
+	int			first;			// in world_t::visLeaves
+	int			numLeaves;		// 0: one leaf tested along its path (R_CullLeafAlongPath)
+} worldLeafGroup_t;
+
 typedef struct {
 	char		name[MAX_QPATH];		// ie: maps/tim_dm2.bsp
 	char		baseName[MAX_QPATH];	// ie: tim_dm2
@@ -1118,6 +1143,20 @@ typedef struct {
 
 	int			nummarksurfaces;
 	msurface_t	**marksurfaces;
+
+	// the leaves of the BSP walk in its order with their boxes
+	// (R_SetupWorldLeaves), the potentially visible ones of tr.visCount
+	// (indexes in the walk's leaves) and their groups (R_MarkLeaves), room
+	// for the longest path from the root to a leaf (R_CullLeafAlongPath)
+	int			numWalkLeaves;
+	mnode_t		**walkLeaves;
+	worldWalkLeaf_t	*walkLeafInfo;
+	vec3_t		(*walkLeafBounds)[2];
+	int			numVisLeaves;
+	int			*visLeaves;
+	int			numLeafGroups;
+	worldLeafGroup_t	*leafGroups;
+	mnode_t		**leafPath;
 
 	vec3_t		lightGridMins;
 	vec3_t		lightGridSize;
@@ -2130,6 +2169,7 @@ mnode_t* R_PointInLeaf(const vec3_t p);
 int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits);
 int R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits);
 void R_AddWorldSurfaces( void );
+void R_SetupWorldLeaves( void );
 qboolean R_inPVS( const vec3_t p1, const vec3_t p2 );
 
 

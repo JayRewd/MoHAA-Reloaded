@@ -598,6 +598,7 @@ static void ParseFace( dsurface_t *ds, drawVert_t *verts, msurface_t *surf, int 
     int			lightmapNum;
     int			sfaceSize, ofsIndexes;
     static surfaceType_t skipData = SF_SKIP;
+    vec3_t		bounds[2];
 
     lightmapNum = LittleLong( ds->lightmapNum );
 
@@ -634,6 +635,7 @@ static void ParseFace( dsurface_t *ds, drawVert_t *verts, msurface_t *surf, int 
     cv->ofsIndices = ofsIndexes;
 
     verts += LittleLong( ds->firstVert );
+    ClearBounds( bounds[0], bounds[1] );
     for ( i = 0 ; i < numPoints ; i++ ) {
         for ( j = 0 ; j < 3 ; j++ ) {
             cv->points[i][j] = LittleFloat( verts[i].xyz[j] );
@@ -643,6 +645,7 @@ static void ParseFace( dsurface_t *ds, drawVert_t *verts, msurface_t *surf, int 
             cv->points[i][5+j] = LittleFloat( verts[i].lightmap[j] );
         }
         R_ColorShiftLightingBytesAlpha( verts[i].color, (byte *)&cv->points[i][7] );
+        AddPointToBounds( cv->points[i], bounds[0], bounds[1] );
     }
 
     indexes += LittleLong( ds->firstIndex );
@@ -657,6 +660,25 @@ static void ParseFace( dsurface_t *ds, drawVert_t *verts, msurface_t *surf, int 
     cv->plane.dist = DotProduct( cv->points[0], cv->plane.normal );
     SetPlaneSignbits( &cv->plane );
     cv->plane.type = PlaneTypeForNormal( cv->plane.normal );
+
+    // what culling the face reads (R_CullWorldFace): the plane, and the
+    // bounds for the view's frustum, which may cull the faces whose vertexes
+    // don't move (no deforms) but for the sky, portals and the sky portal
+    surf->isFace = qtrue;
+    VectorCopy( cv->plane.normal, surf->plane );
+    surf->plane[3] = cv->plane.dist;
+    surf->viewCull = numPoints && !surf->shader->numDeforms && !surf->shader->isSky && !surf->shader->isPortalSky
+        && surf->shader->sort > SS_PORTALSKY;
+    for ( i = 0 ; i < 3 && surf->viewCull ; i++ ) {
+        float lo = floor( bounds[0][i] ), hi = ceil( bounds[1][i] );
+
+        if ( lo < -32768 || hi > 32767 ) {
+            surf->viewCull = qfalse;
+            break;
+        }
+        surf->bounds[0][i] = lo;
+        surf->bounds[1][i] = hi;
+    }
 
     if (tr.numLightmaps && lightmapNum != -1 && surf->shader->lightmapIndex >= 0)
     {
@@ -1600,7 +1622,10 @@ static	void R_LoadSurfaces(gamelump_t* surfs, gamelump_t* verts, gamelump_t* ind
         ri.Error(ERR_DROP, "LoadMap: funny lump size in %s", s_worldData.name);
 
     in = (void*)surfs->buffer;
-    out = ri.Hunk_Alloc ( count * sizeof(*out), h_dontcare );	
+    // aligned to 64 bytes, the size of an msurface_t with 64-bit pointers,
+    // so that culling a face reads one cache line
+    out = ri.Hunk_Alloc ( count * sizeof(*out) + 63, h_dontcare );
+    out = (msurface_t *)( ( (intptr_t)out + 63 ) & ~(intptr_t)63 );
 
     s_worldData.surfaces = out;
     s_worldData.numsurfaces = count;
@@ -2423,6 +2448,7 @@ void RE_LoadWorldMap( const char *name ) {
     R_ClearSkinData();
     R_BuildStaticGeometry();
     R_SetupDlightBounds();
+    R_SetupWorldLeaves();
     ri.UI_LoadResource("*114");
     R_LevelMarksLoad(name);
     ri.UI_LoadResource("*115");
