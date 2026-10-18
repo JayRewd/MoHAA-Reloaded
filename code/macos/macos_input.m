@@ -1588,6 +1588,20 @@ static void IN_DeactivateMouse( void )
 
 /*
 ===============
+MacOS_ReleaseMouse
+
+A dialog is coming (MacOS_DialogBegin): the cursor goes back to the system where it is parked, as on a focus loss,
+without a pump (a dialog can come from anywhere, even from inside one). IN_Frame captures it again afterwards.
+===============
+*/
+void MacOS_ReleaseMouse( void )
+{
+	IN_Capture( qfalse );
+	mouseActive = qfalse;
+}
+
+/*
+===============
 MacOS_Cursor
 
 The cursor over the content view (its cursor rectangle): none while captured, else the UI's or the arrow.

@@ -45,6 +45,11 @@ dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *t
 	dialogResult_t result = DR_OK;
 	NSAlert *alert = [NSAlert new];
 
+#if !defined(USE_SDL) && !defined(DEDICATED)
+	// the native AppKit layer: neither exclusive fullscreen nor a captured cursor may hide the alert (macos_window.m)
+	MacOS_DialogBegin( );
+#endif
+
 	[alert setMessageText: [NSString stringWithUTF8String: title]];
 	[alert setInformativeText: [NSString stringWithUTF8String: message]];
 
@@ -85,6 +90,10 @@ dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *t
 	}
 
 	[alert release];
+
+#if !defined(USE_SDL) && !defined(DEDICATED)
+	MacOS_DialogEnd( );
+#endif
 
 	return result;
 }

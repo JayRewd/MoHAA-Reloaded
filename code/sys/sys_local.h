@@ -49,6 +49,8 @@ extern "C" {
 qboolean MacOS_WindowExists( void );
 char *MacOS_GetClipboardText( void );	// UTF-8, free() it; NULL if the clipboard holds no text
 void MacOS_SetClipboardText( const char *text );
+void MacOS_DialogBegin( void );			// Sys_Dialog: the mouse released, exclusive fullscreen left
+void MacOS_DialogEnd( void );			// the game window gets the keyboard back
 #endif
 
 // Console

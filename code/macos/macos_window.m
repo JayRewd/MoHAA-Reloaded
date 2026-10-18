@@ -98,7 +98,7 @@ cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 fo
 static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
 
 static void MTLimp_EnterExclusive( void );
-static void MTLimp_LeaveExclusive( void );
+static void MTLimp_LeaveExclusive( qboolean minimize );
 
 @implementation MacOSWindow
 
@@ -313,7 +313,7 @@ static void MTLimp_LeaveExclusive( void );
 - (void)windowDidResignKey:(NSNotification *)notification
 {
 	if( mac_windowMode == MAC_EXCLUSIVE )
-		MTLimp_LeaveExclusive();
+		MTLimp_LeaveExclusive( qtrue );
 }
 
 - (void)windowDidDeminiaturize:(NSNotification *)notification
@@ -655,10 +655,11 @@ static void MTLimp_EnterExclusive( void )
 MTLimp_LeaveExclusive
 
 The focus went elsewhere: like SDL, give the desktop its mode back and minimize the window, which would otherwise
-cover everything (applicationDidBecomeActive brings it back).
+cover everything (applicationDidBecomeActive brings it back). For a dialog the window stays, at the normal level
+under the dialog (MacOS_DialogBegin).
 ===============
 */
-static void MTLimp_LeaveExclusive( void )
+static void MTLimp_LeaveExclusive( qboolean minimize )
 {
 	if( !mac_exclusiveActive )
 		return;
@@ -667,7 +668,8 @@ static void MTLimp_LeaveExclusive( void )
 	NSApp.presentationOptions = NSApplicationPresentationDefault;
 	MTLimp_SetDisplayMode( qfalse );
 	mac_window.level = NSNormalWindowLevel;
-	[mac_window miniaturize:nil];
+	if( minimize )
+		[mac_window miniaturize:nil];
 }
 
 /*
@@ -1344,6 +1346,52 @@ void MTLimp_EndFrame( void )
 		}
 
 		r_fullscreen->modified = qfalse;
+	}
+}
+
+/*
+===============
+MacOS_DialogBegin
+
+A dialog is coming (Sys_Dialog, sys_osx.m: a modal NSAlert, mostly Sys_Error's last words). It must be seen and
+clicked: exclusive fullscreen's window at the shielding level and the displays captured for a mode switch would
+cover it, and a captured cursor couldn't reach it. So the cursor goes back to the system (where it was parked, the
+window's center) and exclusive fullscreen is left: the desktop's mode back, the displays released, the window at the
+normal level under the dialog, not minimized. The alert takes the keyboard (windowDidResignKey then finds exclusive
+fullscreen left already).
+===============
+*/
+void MacOS_DialogBegin( void )
+{
+	if( mac_window == nil )
+		return;
+
+	@autoreleasepool
+	{
+		MacOS_ReleaseMouse();
+
+		if( mac_windowMode == MAC_EXCLUSIVE )
+			MTLimp_LeaveExclusive( qfalse );
+	}
+}
+
+/*
+===============
+MacOS_DialogEnd
+
+The dialog closed. AppKit gives the keyboard back to no window (SDL's window stayed without it too), so the game
+window takes it, which brings exclusive fullscreen back (windowDidBecomeKey); IN_Frame then captures the cursor
+again. Not while the game is in the background or minimized.
+===============
+*/
+void MacOS_DialogEnd( void )
+{
+	if( mac_window == nil || mac_window.miniaturized || !NSApp.active )
+		return;
+
+	@autoreleasepool
+	{
+		[mac_window makeKeyAndOrderFront:nil];
 	}
 }
 

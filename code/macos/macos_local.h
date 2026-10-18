@@ -44,5 +44,6 @@ void		MacOS_MouseMoved( NSEvent *event );	// the cursor moved over the content v
 void		MacOS_MouseButton( NSEvent *event, qboolean down );	// a button, from the content view
 void		MacOS_MouseWheel( NSEvent *event );	// the wheel, from the content view
 NSCursor	*MacOS_Cursor( void );				// the cursor over the content view
+void		MacOS_ReleaseMouse( void );			// a dialog is coming: the cursor is the system's until IN_Frame
 
 #endif
