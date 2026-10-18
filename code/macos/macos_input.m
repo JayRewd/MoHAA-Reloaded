@@ -21,8 +21,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 // macos_input.m -- input, native (USE_SDL off): the IN_* functions of sdl/sdl_input.c and sdl/sdl_mouse.c.
-// So far the event pump, the window's events (focus, minimize, resize, quit), the keyboard and text, the mouse and
-// the cursor; gamepads come in the next slice of Phase 6 (docs/METAL_PORT_PLAN.md).
+// The event pump, the window's events (focus, minimize, resize, quit), the keyboard and text, the mouse and the
+// cursor. No gamepads or joysticks: the user won't use them (docs/METAL_PORT_PLAN.md, 3.1 #12).
 
 #import <Carbon/Carbon.h>	// the keyboard layout (TIS, UCKeyTranslate) and the kVK_* virtual key codes
 #import <GameController/GameController.h>	// GCMouse: the mouse's raw movement (in_mouseRaw)
@@ -1866,8 +1866,7 @@ void IN_Init( void *windowData )
 	// 1 = GCMouse's raw deltas (no acceleration), 0 = the system cursor's deltas, as with SDL
 	in_mouseRaw = Cvar_Get( "in_mouseRaw", "0", CVAR_ARCHIVE );
 
-	Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
-	Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
+	// no gamepads or joysticks (the user's decision, 2026-10-18): in_joystick and joy_threshold are SDL's only
 
 	IN_UpdateKeymap( );
 	IN_SyncCapsLock( );
