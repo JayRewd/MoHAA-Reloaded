@@ -3,9 +3,10 @@
 #   port/build.sh metal     the game with the Metal renderer (mounts the Metal Toolchain for the offline shader compile)
 #   port/build.sh metalref  the Metal game at the last commit (METAL_REF=<ref> for another), for before/after benches
 #   port/build.sh gl        the GL1 reference: upstream's GL1 renderer as it was in the last commit that had it
-#                           (GL1_REF below), built from a `git archive` export in build.noindex/gl-src. OpenGL is gone
-#                           from the tree (Phase 4); the fixed views (port/shot.sh pair) and the bench (port/bench.sh
-#                           run gl) still compare against this build.
+#                           (GL1_REF below), built from a `git archive` export in build.noindex/gl-src, plus the client
+#                           hunks of GL1_PATCHES (benchmark logging only). OpenGL is gone from the tree (Phase 4); the
+#                           fixed views (port/shot.sh pair) and the bench (port/bench.sh run gl) still compare against
+#                           this build.
 # Extra arguments are passed to the CMake configure step (e.g. -DCMAKE_BUILD_TYPE=Debug).
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
@@ -19,17 +20,24 @@ SRC_DIR="$OMM_ROOT"
 
 # The last commit with the GL1 renderer (Phase 3 complete up to 3c; Phase 4 deleted OpenGL after it).
 GL1_REF=c9dddadd22cf775766b34c118e9ce414290efbb6
+# Client-only commits applied on top of the GL1 export, so the reference reports what the Metal build reports:
+# the timedemo's per-frame work log (Phase 5b). The renderer stays as it was at GL1_REF.
+GL1_PATCHES=(ae894bcf)
 
 case "$FLAVOR" in
 	gl)
 		# Export the reference tree once per GL1_REF (never a second checkout of the repo). The export sits inside
 		# this repo's work tree: GIT_CEILING_DIRECTORIES keeps CMake's version step from reading the repo's HEAD.
 		SRC_DIR="$OMM_BUILD/gl-src"
-		if [ "$(cat "$SRC_DIR/.gl1-ref" 2>/dev/null)" != "$GL1_REF" ]; then
+		GL1_ID="$GL1_REF ${GL1_PATCHES[*]}"
+		if [ "$(cat "$SRC_DIR/.gl1-ref" 2>/dev/null)" != "$GL1_ID" ]; then
 			rm -rf "$SRC_DIR"
 			mkdir -p "$SRC_DIR"
 			git -C "$OMM_ROOT" archive "$GL1_REF" | tar -x -C "$SRC_DIR"
-			echo "$GL1_REF" > "$SRC_DIR/.gl1-ref"
+			for c in "${GL1_PATCHES[@]}"; do
+				git -C "$OMM_ROOT" diff "$c^" "$c" -- code/client code/qcommon | patch -p1 -s -N --no-backup-if-mismatch -d "$SRC_DIR"
+			done
+			echo "$GL1_ID" > "$SRC_DIR/.gl1-ref"
 		fi
 		export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
 		FLAVOR_ARGS=() ;;

@@ -11,7 +11,9 @@
 # Results: one line per run, "<frames> frames <seconds> seconds <fps> fps <min>/<avg>/<max>/<sdev> ms | work: <ms>/frame".
 # The engine never runs a frame shorter than 1 ms (Com_Frame pads it), so fps saturates near 1000; "work" is the
 # frame time without that padding (wall minus frame-limiter wait), the number to compare once frames are < 1 ms.
-# Per-frame durations (integer ms) are written to home.noindex/main/bench/<flavor>-<n>.txt.
+# Per-frame durations are written to home.noindex/main/bench/<flavor>-<n>.txt: integer ms, then the frame's work in us
+# (wall minus frame-limiter wait, the same measure as "work"). Each run's line ends with the work's percentiles
+# (p50/p95/p99/p99.9/max in us, nearest rank), and a last line gives them over all the runs of the call.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
@@ -38,6 +40,18 @@ watchdog() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "
 # Fresh default config each time, so nothing from an earlier run leaks in.
 reset_config() { rm -rf "$OMM_HOME/main/configs"; }
 
+# p50/p95/p99/p99.9/max (nearest rank) of the per-frame work us, the second column of timedemo logs.
+work_pct() {
+	{ cat "$@" 2>/dev/null || true; } | awk '!/^#/ && NF >= 2 { print $2 }' | sort -n | awk '
+		{ v[NR] = $1 }
+		END {
+			if (NR == 0) exit
+			n = split("50 95 99 99.9", p, " ")
+			for (i = 1; i <= n; i++) { r = NR * p[i] / 100; k = int(r); if (k < r) k++; if (k < 1) k = 1; printf "%d/", v[k] }
+			printf "%d us (%d frames)", v[NR], NR
+		}'
+}
+
 case "$MODE" in
 record)
 	cp "$OMM_PORT/bench/record_mohdm6.cfg" "$OMM_HOME/main/"
@@ -53,15 +67,23 @@ run)
 	# The committed copy (port/bench/) is the reference demo; restore it if the run home was wiped.
 	mkdir -p "$OMM_HOME/main/demos"
 	[ -f "$OMM_HOME/main/demos/$DEMO.dm_8" ] || cp "$OMM_PORT/bench/$DEMO.dm_8" "$OMM_HOME/main/demos/"
+	FRAMELOGS=()
 	for n in $(seq 1 "$RUNS"); do
 		reset_config
+		FRAMELOG="$OMM_HOME/main/bench/$FLAVOR-$n.txt"
+		rm -f "$FRAMELOG"
 		watchdog 300 "$OMM_PORT/run.sh" "$FLAVOR" "${VIDEO[@]}" +set com_maxfps 0 \
 			+set cl_timedemoLog "bench/$FLAVOR-$n.txt" +set nextdemo quit \
 			${EXTRA[@]+"${EXTRA[@]}"} +set timedemo 1 +demo "$DEMO" > "$LOGDIR/$FLAVOR-$n.log" 2>&1 || true
 		result="$(grep -E '^[0-9]+ frames ' "$LOGDIR/$FLAVOR-$n.log" | tail -1)"
 		work="$(grep -E '^timedemo work: ' "$LOGDIR/$FLAVOR-$n.log" | tail -1 | sed 's/^timedemo //')"
-		echo "$FLAVOR run $n: ${result:-FAILED (see $LOGDIR/$FLAVOR-$n.log)}${work:+ | $work}"
+		pct="$(work_pct "$FRAMELOG")"
+		if [ -n "$pct" ]; then FRAMELOGS+=("$FRAMELOG"); fi
+		echo "$FLAVOR run $n: ${result:-FAILED (see $LOGDIR/$FLAVOR-$n.log)}${work:+ | $work}${pct:+ | p50/p95/p99/p99.9/max $pct}"
 	done
+	if [ "${#FRAMELOGS[@]}" -gt 1 ]; then
+		echo "$FLAVOR all ${#FRAMELOGS[@]} runs: p50/p95/p99/p99.9/max $(work_pct "${FRAMELOGS[@]}")"
+	fi
 	;;
 trace)
 	# One timedemo under Instruments' Metal System Trace (all processes), then GPU busy time per game frame.
