@@ -23,9 +23,11 @@ allowed = [
 	(r"^code/thirdparty/SDL2-[^/]*/", r".*"),
 	# vendored CI files of recastnavigation (they installed GL for the RecastDemo app, deleted in Phase 4)
 	(r"^code/thirdparty/recastnavigation/\.github/", r".*"),
-	# false positives in vendored code: the Qt qglobal.h guard, a comment comparing coordinate systems
+	# false positives in vendored code: the Qt qglobal.h guard; in openal-soft, a comment comparing coordinate
+	# systems (al.h, al.cppm, al.xml), the OpenGL registry and tooling in its registry notes, and a glGetString
+	# example in the old changelog of its copy of fmt
 	(r"^code/thirdparty/jpeg-[^/]*/jmorecfg\.h$", r"QGLOBAL_H|qglobal\.h"),
-	(r"^code/thirdparty/openal-soft-[^/]*/include/AL/al\.h$", r"like OpenGL"),
+	(r"^code/thirdparty/openal-soft-[^/]*/", r"like OpenGL|The OpenGL registry|OpenCL/OpenGL tooling|glGetString\(GL_VERSION\)"),
 	# shader script keywords (blendFunc GL_ONE GL_ZERO ... in the retail .shader files)
 	(r"^code/renderer_metal/tr_shader\.c$", r"\"GL_[A-Z_]+\"|substituting GL_ONE"),
 	# cvar values kept for old configs: r_textureMode GL_LINEAR_MIPMAP_NEAREST ..., r_drawBuffer GL_BACK/GL_FRONT
