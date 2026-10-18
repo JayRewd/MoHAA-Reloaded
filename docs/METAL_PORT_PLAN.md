@@ -14,7 +14,7 @@ Branches: `main` = upstream mirror (openmoh/openmohaa a2f34019 at the start). `m
 | 3 | Full feature parity + screenshot-compare harness + online smoke test | **In progress:** 3a done (session 6: display modes, direct to display); 3b done (session 7: world features match or are explained; the local map-load crash is a compiler bug); 3c done (session 8: readback without GPU waits, flares, cinematics, texture modes, debug views, Spearhead/Breakthrough, pipeline cache); 3d in progress: the user's look at the fixed views done 2026-10-17 ("looks good"); still open: a few minutes of play in borderless fullscreen, the online smoke test |
 | 4 | Delete OpenGL entirely | **Done** (session 9, before 3d: the user was away). GL1 lives on only as the `gl` reference flavor (an export of c9dddadd, plus the client-only timedemo work log since session 14) for screenshot and bench comparisons |
 | 5 | Performance and input latency | **In progress:** 5a done (sessions 10–13, the user away: the renderer's own frame cost, 0.41 → 0.234 ms work per frame unlocked vs GL1's 0.95; the ≤ 0.25 ms target met locked and unlocked, the remaining cost documented as driver- and engine-side); 5b done (session 14: a µs per-frame work log in the timedemo, also in the `gl` reference; work p99 739 µs vs GL1's 2318, p99.9 1536 vs 3490); 5c done (session 14: failed sound opens remembered, no case-correcting directory scans on case-insensitive volumes: p99 692 → 497 µs, p99.9 1316 → 745). **Paused for Phases 7 and 6** (§3.1 #8): the latency items run after Phase 6, on the final layer |
-| 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | **In progress** (ahead of Phase 6 by the user's reorder, §3.1 #8; the README moves to Phase 8): 7a done (session 15: the non-macOS platform code and the dead code stripped, 898 files; build, glcheck, `omohaaded`, bench and fixed views pass); 7b (the app bundle) next, then 7c (openal-soft) |
+| 7 | Lean and robust (strip platforms, app bundle, openal-soft, dead code) | **In progress** (ahead of Phase 6 by the user's reorder, §3.1 #8; the README moves to Phase 8): 7a done (session 15: the non-macOS platform code and the dead code stripped, 898 files; build, glcheck, `omohaaded`, bench and fixed views pass); 7b done (session 16: a sealed, ad-hoc-signed arm64 `openmohaa.app` with a complete Info.plist, SDL2 thinned, a clean install prefix; bench, fixed views, skinab and `omohaaded` pass); 7c (openal-soft) next |
 | 6 | Native AppKit/GameController (replace SDL2) | Not started; after Phase 7. Starts with the SDL input-latency baseline (the probe takes the mouse: with the user); raw GCMouse input moves here |
 | 8 | Final docs (README: building and running the Metal port) | Not started; last, after the Phase 5 latency work |
 
@@ -916,7 +916,7 @@ Plan (session 1):
 - The native input should give precise input timestamps (event/GCMouse timestamps on the host clock) for the probe.
 - **Done when:** no SDL in `otool -L`, input matches or beats SDL on the probe and in the user's feel test at the end (no mouse acceleration), menus/console/text input work.
 
-### Phase 7: Lean and robust. **Status: in progress (7a done: session 15, 2026-10-17; 7b next, then 7c); moved ahead of Phase 6 by the user (§3.1 #8).**
+### Phase 7: Lean and robust. **Status: in progress (7a done: session 15, 2026-10-17; 7b done: session 16, 2026-10-17; 7c next); moved ahead of Phase 6 by the user (§3.1 #8).**
 - Delete non-macOS platform code: Windows sys/con files and resources, Launcher, `asm/`, Emscripten/Linux cmake, other-platform CI, docker `container/`. Keep `null/` (server) and the `omohaaded` target.
 - Arm64-only `.app` with a proper Info.plist (`NSHighResolutionCapable`, `LSMinimumSystemVersion` 26).
 - openal-soft built from pinned vendored source and linked directly; ad-hoc codesign.
@@ -924,7 +924,7 @@ Plan (session 1):
 - ~~README section on building/running the Metal port~~: moved to Phase 8, at the very end.
 - Slices (session 14's proposal; a session may re-cut them, recording why):
   - **7a, strip:** the non-macOS platform code (Windows `sys`/`con` files and resources, the Launcher, `asm/`, Emscripten/Linux cmake, docker `container/`, other-platform CI) and the dead code (the uncompiled ioq3 sound files, unused renderercommon loaders). Keep `null/` and `omohaaded`. Gamespy parts only where clearly unused (the server browser and the master server queries use gamespy: keep them). **Done in session 15** ("Session 15 result" below).
-  - **7b, app bundle:** arm64-only `OpenMoHAA.app` with a proper Info.plist (`NSHighResolutionCapable`, `LSMinimumSystemVersion` 26), ad-hoc codesign; `port/run.sh`, `bench.sh`, `shot.sh`, `latency.sh`, `prof.sh` and `skinab.sh` follow the new layout.
+  - **7b, app bundle:** arm64-only `OpenMoHAA.app` with a proper Info.plist (`NSHighResolutionCapable`, `LSMinimumSystemVersion` 26), ad-hoc codesign; `port/run.sh`, `bench.sh`, `shot.sh`, `latency.sh`, `prof.sh` and `skinab.sh` follow the new layout. **Done in session 16** ("Session 16 result" below; the bundle kept the name `openmohaa.app`).
   - **7c, openal-soft:** built from a pinned source and linked directly instead of dlopen'ed, inside the bundle (the user's decision §3.1 #2). The audio-latency tuning stays in the Phase 5 latency work.
 - **Session 15 result: 7a, the strip** (2026-10-17, the user away). 11 code commits, `3807fd4a`…`0e066775`, each built with `port/build.sh metal` and `port/glcheck.sh` clean. Together: **898 files, 292,626 lines deleted, 13 added** (`git diff --shortstat 8077e5cf 0e066775`).
   - **Inventory method:** ninja's compile database and dependency log of the `metal` tree (`ninja -t compdb`, `ninja -t deps`: 796 sources compiled, 1313 files compiled or included, by all targets: the client, `omohaaded`, `cgame`, `game` and the static libraries) against `git ls-files code`. 987 tracked files under `code/` were neither compiled nor included.
@@ -994,7 +994,53 @@ Plan (session 1):
     - `libSDL2-2.0.0.dylib` is still universal (x86_64 + arm64). Phase 6 deletes it; 7b can thin it when it bundles it.
     - `sys_osx.m` imports Carbon without using it, and IOKit is linked but unused (§1.7): 7b.
     - recastnavigation's install rules put its headers and static libraries into the install prefix (`metal-install/include/recastnavigation`, `lib/libDetour.a` …): 7b.
-- **Done when:** one `port/build.sh` produces `OpenMoHAA.app` (arm64) + `omohaaded`, the bench and an online test pass (the online test needs the user: until then, a local `omohaaded` + client smoke test), and the tree has no dead platform code. Then push `metal` (it carries Phase 5a/5b too).
+- **Session 16 result: 7b, the app bundle** (2026-10-17, the user away). Five code commits, `96ec42a1`…`af40ec4c`, each built with `port/build.sh metal`, `port/glcheck.sh` clean.
+  - **The commits:**
+    1. `96ec42a1`, Info.plist:
+       - `NSHighResolutionCapable` true. It only makes the default explicit: session 4's 1280×720 window on the 4K@2× display already drew 2560×1440 without it.
+       - `CFBundleShortVersionString` and `CFBundleVersion` were empty. `finish_macos_app` read `PRODUCT_VERSION`, which CMake never sets (it is a C macro in `q_version.h`; upstream has the same bug). Both are now `PROJECT_VERSION`, 0.83.0.
+    2. `df886640`: the unused `#import <Carbon/Carbon.h>` in `sys_osx.m` and the client's `-framework IOKit` are gone. `nm -u` showed no IOKit symbol; SDL2 links its own.
+    3. `8c9b2fdd`, a clean install prefix:
+       - recastnavigation's three subdirectories are `EXCLUDE_FROM_ALL`. They are still built as `game`'s dependencies, but their install rules (headers, `lib*.a`) no longer run. libmad's never did, for the same reason.
+       - The "stale" root `openmohaa.app` wasn't stale. `client.cmake` installed the deployed libraries (SDL2) a second time, into `<prefix>/openmohaa.app/Contents/MacOS`, at every install. A bundle skips that rule now (`if(NOT BUILD_MACOS_APP)`): it already carries the copy made after the link.
+       - The prefix now holds only `lib/openmohaa/`: the .app, `game.dylib`, `cgame.dylib`, `omohaaded`, plus `run.sh`'s links.
+    4. `e17966fd`, SDL2 thinned:
+       - a POST_BUILD `lipo -thin arm64` in `finish_macos_app` thins the libraries copied into the bundle: 5.3 → 2.6 MB;
+       - the arm64 slice keeps its own linker signature;
+       - the vendored universal binary stays as it is (Phase 6 removes SDL).
+    5. `af40ec4c`, the seal:
+       - an `install(CODE)` in `finish_macos_app` runs `codesign --force --sign -` on the installed bundle, then `codesign --verify --deep --strict`. Either failing fails the install, and with it `build.sh`. `codesign -dv`: `flags=0x2(adhoc)`, `Info.plist entries=16`, `Sealed Resources version=2 … files=2`, SDL2 validated as nested code.
+       - No hardened runtime: its library validation would refuse what the game loads from other signers (`game.dylib` and `cgame.dylib` beside the bundle, openal-soft). The Developer ID path (`APPLE_CERTIFICATE_ID`) is unchanged and skips the ad-hoc seal.
+       - `run.sh` links Homebrew's openal into fs_basepath (`lib/openmohaa/libopenal.1.dylib`) instead of `Contents/MacOS`. A file added to the bundle breaks the seal, and `codesign` won't sign a link that points out of the bundle. `Sys_LoadDll` tries fs_basepath after the executable's folder; the log shows the third try loading it.
+  - **Decisions** (session 16; revisit only with a reason):
+    - **The bundle keeps its name, `openmohaa.app`**, not `OpenMoHAA.app` as this plan said. Why:
+      - CMake names a `MACOSX_BUNDLE` after its executable, so renaming the bundle renames the executable too (the PID files, `pgrep -x openmohaa`, the traces' process filter), or needs a rename after the install;
+      - upstream builds `openmohaa.app` the same way;
+      - the volume is case-insensitive APFS, so the difference is cosmetic.
+      `CFBundleName` stays `openmohaa`, and the bundle ID stays upstream's `org.openmohaa.openmohaa`. No app in the user's game folder uses that ID (`launcher.app` is `com.fortessa.launchermac`, `mohbots.app` is `org.openmohaa.mohbots`). If the user installs upstream's `openmohaa.app` as well, both claim the ID and the `openmohaa://` scheme: ask them then.
+    - **The install layout stays upstream's** (`<prefix>/lib/openmohaa/`):
+      - fs_basepath is the folder holding the .app (`Sys_StripAppBundle`), and the game modules load from beside the bundle, where `omohaaded` loads them too;
+      - moving the modules into the bundle would need two copies or engine changes;
+      - the frozen `gl` reference uses the same layout.
+      So the port scripts already followed the layout; only `run.sh`'s openal link moved. `bench`, `shot`, `latency` and `prof` start the game through `run.sh`. `prof.sh` finds it with `pgrep -x openmohaa`. `glcheck.sh`'s `BIN` is unchanged. `skinab.sh`'s install is sealed by the same CMake.
+    - **The bundle's executable isn't stripped.** CMake strips `omohaaded` and the modules at install, but not a bundle, and `prof.sh`'s `sample` needs the symbols.
+    - **Spearhead/Breakthrough:** `open <…>/openmohaa.app --args +set com_target_game 1` (or `2`), or the binary directly, as the port scripts run it. Session 16 didn't try `open`, for two reasons: LaunchServices would register this build as the `openmohaa://` handler, and without `+set fs_homepath` the game writes to its default home on the internal disk. Wrapper apps or a chooser would be new UI: a question for the user ("Needs the user first" in §6).
+    - **The CPack DMG stays unwired** (`#include(installer)` stays commented out, as upstream has it). Why:
+      - a DMG for other Macs needs Developer ID signing and notarization, which needs the user's certificate: Gatekeeper blocks an ad-hoc-signed app downloaded from the internet;
+      - a drag-and-drop DMG of the .app alone wouldn't run: `game.dylib`, `cgame.dylib` and the retail data sit beside it.
+      `macos.cmake`'s CPack settings and `misc/macos` stay as upstream has them; deleting them would only add merge conflicts.
+  - **Checks** (one sitting, the screen unlocked):
+    - `port/bench.sh run metal 3`: work **0.217 / 0.203 / 0.221 ms**; p50/p95/p99/p99.9 over the three runs **204/356/476/808 µs** (session 15: 0.226 / 0.222 / 0.225, p99 502).
+    - `port/shot.sh regress base-s9`: **identical to the Metal baseline except the views that vary from run to run** (60 captures identical):
+      - dm6 view 8 (the weapon bar's real-time highlight): 1994 px;
+      - dm5's snow: 11–49 px per capture;
+      - dm6fx views 4–7 (firing, grenades);
+      - m2l1 view 0: 11 px.
+      Against GL1, the same numbers as sessions 9–15 (dm6 view 8 2441 and dm5 view 3 612 vary from run to run). Log: `build.noindex/s16/regress.log`.
+    - `port/skinab.sh`, then `port/bench.sh run metalab 1`: **every "differ" count 0** (11996 frames, 19,149,542 vertices captured). The metalab install is sealed by the same CMake.
+    - `omohaaded`, session 15's command (`+set sv_gamespy 0 +set com_updatecheck_enabled 0`, `sv_7a.cfg`): `game.dylib` loaded, dm/mohdm6 up in 1.02 s, status and serverinfo, a clean shutdown, exit 0 (`build.noindex/s16/omohaaded-7b.log`).
+    - The seal, tried once: a link out of the bundle in `Contents/MacOS` makes the install fail ("invalid destination for symbolic link in bundle"), and a file added after the install fails `--verify` ("a sealed resource is missing or invalid"). Removing it and installing again fixes both.
+- **Done when:** one `port/build.sh` produces `openmohaa.app` (arm64; the name kept, "Session 16 result") + `omohaaded`, the bench and an online test pass (the online test needs the user: until then, a local `omohaaded` + client smoke test), and the tree has no dead platform code. Then push `metal` (it carries Phase 5a/5b too).
 
 ### Phase 8: Final docs. **Status: not started (last, after the Phase 5 latency work; §3.1 #8).**
 - README section on building and running the Metal port; the plan's final status; CLAUDE.md trimmed to what stays useful.
@@ -1003,14 +1049,15 @@ Plan (session 1):
 
 ## 6. Next session
 
-**Session 16: Phase 7, slice 7b (the app bundle), without the user unless they are back** ("Phase 7, slice 7b" below). **The user reordered the phases on 2026-10-17** (§3.1 #8): 5b and 5c (done) → Phase 7 (without the README; 7a done in session 15) → Phase 6 (starting with the SDL latency baseline) → the remaining Phase 5 latency work → Phase 8, final docs. The user asked that these sessions run without them: don't ask them anything and don't wait for them; take the conservative choice where a decision would need them, record it here, and move on. Don't start anything that needs the user's OK (the list is below). **If the user is back, do slice 3d first** ("What 3d needs" below), and ask them the two Phase 7 questions (the openal-soft source download for 7c, the update checker). Start with CLAUDE.md, then this section, then Phase 7 in §5 (with "Session 15 result") and §3.1 #8.
+**Session 17: Phase 7, slice 7c (openal-soft linked directly, inside the bundle), without the user unless they are back** ("Phase 7, slice 7c" below). Phase 7 ends with it: then push `metal`. **The user reordered the phases on 2026-10-17** (§3.1 #8): 5b and 5c (done) → Phase 7 (without the README; 7a done in session 15, 7b in session 16) → Phase 6 (starting with the SDL latency baseline) → the remaining Phase 5 latency work → Phase 8, final docs. The user asked that these sessions run without them: don't ask them anything and don't wait for them; take the conservative choice where a decision would need them, record it here, and move on. Don't start anything that needs the user's OK (the list is below). **If the user is back, do slice 3d first** ("What 3d needs" below), and ask them the two Phase 7 questions (the openal-soft source download for 7c, the update checker). Start with CLAUDE.md, then this section, then Phase 7 in §5 (with "Session 15 result" and "Session 16 result") and §3.1 #8.
 - The screen may lock while the user is away. Benchmark anyway: the before and after builds (and GL1 when needed) in the same sitting, and record whether the screen was locked (`ioreg -n Root -d1 -a | grep -A1 CGSSessionScreenIsLocked`; no output = unlocked). Sessions 12–14 were unlocked throughout: Metal ~0.22–0.24 ms, GL1 0.89–0.95. Session 11's was locked: Metal 0.23, GL1 0.78. Fixed-view screenshots work on a locked screen. The user may use the machine at times: compare numbers only within one sitting.
 - **p99 is noisier than the mean:** per-run Metal p99 ranged 669–1005 µs in one sitting (p99.9 1073–2453). Compare pooled percentiles over 8+ runs per build, alternating one run each (`build.noindex/s14/sit1/` was made by a scratch loop around `port/bench.sh run <flavor> 1` that copies each run's frame log aside; the `<flavor>-<n>.txt` logs are overwritten by the next call).
 - **Unlocked runs scatter ±0.01 ms**, so a change below ~0.005 ms needs many runs: alternate metalref and metal in threes, 5 rounds (15 runs each), and compare means and medians. The first run after a build can be slow (session 13: metalref 0.289 once): look at it before averaging. For a single function, a `port/prof.sh` profile before and after (samples ÷ frames, frames ≈ `Com_Frame` − `CL_DemoCompleted` samples) is more sensitive than the bench, but whole-function totals still drift ±3 µs between runs.
 
-Where things stand (end of session 15):
-- **Phase 4 is done and pushed;** Phase 3 stays open until 3d. **Nothing of Phases 5 and 7 is pushed yet:** the next push is at the end of Phase 7, after 7c (it carries 5a–5c and 7a–7c). Last code commits: 7a's eleven, 3807fd4a…0e066775; before them ae894bcf (the timedemo's per-frame work log), 653e38dc (`bench.sh` percentiles), 9e1c543f and 0d0b3148 (5c).
+Where things stand (end of session 16):
+- **Phase 4 is done and pushed;** Phase 3 stays open until 3d. **Nothing of Phases 5 and 7 is pushed yet:** the next push is at the end of Phase 7, after 7c (it carries 5a–5c and 7a–7c). Last code commits: 7b's five, 96ec42a1…af40ec4c; 7a's eleven, 3807fd4a…0e066775; before them ae894bcf (the timedemo's per-frame work log), 653e38dc (`bench.sh` percentiles), 9e1c543f and 0d0b3148 (5c).
 - **Phase 7a is done** (Phase 7 "Session 15 result"): the non-macOS platform code (Windows, Linux, Emscripten, the launchers, x86 asm, CI, docker) and the dead code (ioq3 sound, botlib, the unbuilt tools and the QVM build, 521 unused GameSpy SDK files, the unused renderercommon loaders, small leftovers) are gone: 898 files, ~293k lines. `omohaaded` builds and ran once locally. Bench and fixed views unchanged. A fresh Debug configure and build passed too. `main` stays the upstream mirror; merges show delete/modify conflicts for removed files (keep them deleted; Phase 7 has the steps).
+- **Phase 7b is done** (Phase 7 "Session 16 result"): `port/build.sh metal` installs a sealed, ad-hoc-signed arm64 `openmohaa.app` (the install runs `codesign --verify --deep --strict`), with `NSHighResolutionCapable` and the version 0.83.0 in the plist, SDL2 thinned to arm64, no Carbon/IOKit, and an install prefix that holds only `lib/openmohaa/`. The bundle kept its name and the layout stayed upstream's (decisions recorded there); `run.sh`'s openal link moved out of the bundle, into fs_basepath. Bench, fixed views, skinab and `omohaaded` pass.
 - **Two questions for the user from 7a** (conservative choices until they answer): the openal-soft source download for 7c (the vendored `openal-soft-1.24.3` is headers only), and the update checker (every start asks GitHub for upstream releases).
 - **Phases 5b and 5c are done** (Phase 5 "Session 14 result" and "continued"): work p99 **739 µs Metal vs 2318 µs GL1** (p99.9 1536 vs 3490); 20 of 23 frames above Metal's p99 were failed sound opens, now fixed (9e1c543f: failed streams remembered; 0d0b3148: no case-correcting directory scans on case-insensitive volumes): p99 692 → **497 µs**, p99.9 1316 → 745, mean work 0.228 → 0.222 ms, ~0.09 s faster startup and map load. omaha's world culls were measured (25% of added world faces are off-screen) and skipped: ≤ ~2 µs.
 - **Phase 5a is closed** (Phase 5 "Session 10 result" to "Session 13 result"). Every change is bit-identical:
@@ -1020,7 +1067,7 @@ Where things stand (end of session 15):
   - GPU-resident world faces (session 12, −0.008 ms) and static models (session 12, −0.002 to −0.005 ms): a static vertex buffer used like a GL VBO (`mbStatic*`); `r_metalStaticWorld` 0/1/2;
   - session 13 (−0.014 ms together): the collapsed index lists cached, the sun traces reused, the radix sort in one counting pass, the static models' matrix after the cull.
   - Tried and dropped: the vertex uniforms through the ring (no gain).
-- **Bench now:** Metal **0.231 ms** work unlocked (session 15, mean of 8, median 0.232; pooled p99 536 µs), the same as before 7a in that sitting. Session 13: 0.234 (mean of 15), GL1 0.95 in the same sitting. The remaining cost is documented in Phase 5 ("Phase 5a, closed"): Metal and the driver ~17%, engine-side ~42%, renderer CPU ~38%. GPU ~0.1 ms per frame (10% busy): CPU-bound.
+- **Bench now:** Metal **0.203–0.221 ms** work unlocked (session 16, 3 runs; pooled p99 476 µs). Session 15: **0.231 ms** (mean of 8, median 0.232; pooled p99 536 µs), the same as before 7a in that sitting. Session 13: 0.234 (mean of 15), GL1 0.95 in the same sitting. The remaining cost is documented in Phase 5 ("Phase 5a, closed"): Metal and the driver ~17%, engine-side ~42%, renderer CPU ~38%. GPU ~0.1 ms per frame (10% busy): CPU-bound.
 - **Tools:**
   - `port/build.sh metalref` builds the last commit (`METAL_REF=<ref>` for another) for the "before" of a bench. Rebuild it after every commit (it is at 8077e5cf now, the commit before 7a: rebuild it before the next before/after bench).
   - `port/bench.sh run` prints the per-frame work percentiles (p50/p95/p99/p99.9/max µs) per run and over the call's runs, from the second column of `home.noindex/main/bench/<flavor>-<n>.txt`.
@@ -1039,40 +1086,24 @@ What 3d needs (when the user is back; both steps need the user, so ask early):
 2. **Online smoke test on a real server** (Phase 3 "done when"): connect, play a few minutes, no errors, no desync. Connecting to a server is outward-facing: ask the user which server (one of theirs, or a public one they pick) and get their OK before connecting. Check the console log for errors and the `r_metalPresentStats` line at quit.
 3. Then, with the build and bench passing: mark Phase 3 done, update the plan, commit, and push `metal` to origin (CLAUDE.md: the user said yes to pushing at the end of every phase).
 
-Phase 7, slice 7b (session 16; the user is away): **the arm64 app bundle** (Phase 7 in §5). One commit per step, the build passing each time.
-1. **The bundle as it is** (looked at in session 15):
-   - CMake already builds `openmohaa.app`: `MACOSX_BUNDLE`, `cmake/Info.plist.in` through `finish_macos_app` in `cmake/platforms/macos.cmake`.
-   - Install: `build.noindex/metal-install/lib/openmohaa/openmohaa.app`, with `game.dylib`, `cgame.dylib`, `omohaaded` and the `main*/` pak links beside it. `fs_basepath` is the folder holding the .app (`Sys_StripAppBundle` in `sys_osx.m`).
-   - `Contents/MacOS` holds:
-     - the arm64 `openmohaa`;
-     - `libSDL2-2.0.0.dylib`, universal, copied in by `CLIENT_DEPLOY_LIBRARIES`;
-     - `libopenal.1.dylib`, a symlink that `run.sh` makes to Homebrew's.
-   - The metallib is embedded in the binary: no file to bundle.
-   - **Signature:** only the linker's ad-hoc signature on the executable (`codesign -dv`: `flags=adhoc,linker-signed`); the bundle isn't sealed.
-   - **Info.plist:**
-     - missing: `NSHighResolutionCapable`;
-     - empty: `CFBundleShortVersionString` and `CFBundleVersion` (`finish_macos_app` reads `PRODUCT_VERSION`: check what `version.cmake` sets, and when);
-     - present: `CFBundleName` "openmohaa", `LSMinimumSystemVersion` 26.0, `GCSupportsGameMode`, the `openmohaa://` URL type.
-   - **Leftovers in the install:** a stale `build.noindex/metal-install/openmohaa.app` (only a `libSDL2`, from an early layout), and recastnavigation's headers and static libraries (`include/`, `lib/*.a`).
-2. **To do:**
-   - **Info.plist:** `NSHighResolutionCapable` true, the version strings filled in.
-   - **Bundle name:** the plan says `OpenMoHAA.app`, but every port script hard-codes `openmohaa.app/Contents/MacOS/openmohaa`. Keep the executable name `openmohaa` (PID files, `pgrep -x openmohaa`). Rename the bundle only together with the scripts, or keep `openmohaa.app` and record why.
-   - **Ad-hoc codesign of the whole bundle** after the install (`codesign --force --sign - …`; then `codesign --verify --deep --strict`):
-     - Without the hardened runtime: with it, library validation would refuse the unsigned `game.dylib`/`cgame.dylib` beside the bundle unless the entitlements allow it. `cmake/entitlements.plist` (for the Developer ID path, `APPLE_CERTIFICATE_ID`) has only `allow-unsigned-executable-memory`.
-     - `run.sh`'s openal symlink inside `MacOS/` breaks the seal. Until 7c, either sign after it is made, or move it.
-   - **Thin `libSDL2` to arm64** when bundling (`lipo -thin arm64`), or leave it for Phase 6, which deletes it.
-   - **Clean the install:** recastnavigation's install rules out of the prefix, the stale root `openmohaa.app` removed.
-   - **`sys_osx.m`:** the unused Carbon import; and is IOKit needed (`-framework IOKit` in `macos.cmake`)? Check `nm -u` first.
-   - **The scripts follow the layout:** `run.sh`, `bench.sh`, `shot.sh`, `latency.sh`, `prof.sh`, `skinab.sh`, `glcheck.sh` (its `BIN` path).
-   - **Spearhead/Breakthrough:** the launchers are gone (7a). The bundle can be started with `--args +set com_target_game 1`. Wrapper apps or a chooser would be new UI: record it as a question for the user, don't build it.
-   - **The DMG** (CPack `DragNDrop`: `cmake/installer.cmake`, commented out upstream, with `macos.cmake`'s DMG settings and `misc/macos`): keep it unused, or wire it if it costs nothing. Distribution signing and notarization need the user's certificate: not in this slice.
-3. **Done when:** `port/build.sh metal` produces the sealed arm64 `.app` + `omohaaded`; `codesign --verify --deep --strict` passes; the plist has the keys; all port scripts run against it (bench 3 runs, `shot.sh regress base-s9`, glcheck, `skinab.sh`); `omohaaded` runs once.
+Phase 7, slice 7b: **done in session 16** (Phase 7 "Session 16 result"). `port/build.sh metal` installs a sealed, ad-hoc-signed arm64 `openmohaa.app` (`codesign --verify --deep --strict` runs at the end of every install); the plist has `NSHighResolutionCapable` and the version 0.83.0; SDL2 is thinned to arm64; the prefix holds only `lib/openmohaa/`.
 
-Phase 7, slice 7c (session 17): **openal-soft linked directly, inside the bundle** (§3.1 #2):
-- **Building from a pinned source needs a download** (the release tarball from github.com/kcat/openal-soft): ask the user for the OK first, with the version, URL and size. `code/thirdparty/openal-soft-1.24.3` has only the headers (session 15).
-- **Without the user:** link Homebrew's 1.25.2 dylib directly instead of `dlopen`, copy it into `Contents/Frameworks` with `install_name_tool`, sign, and record that the source build waits.
-- **Then** turn off `USE_OPENAL_DLOPEN` (`qal.c`'s function pointers become direct calls), and drop `run.sh`'s symlink.
-- **Phase 7 ends with 7c:** bench, regress, the local `omohaaded` + client smoke test (the online test needs the user), then push `metal` (it carries Phases 5 and 7).
+Phase 7, slice 7c (session 17): **openal-soft linked directly, inside the bundle** (§3.1 #2). One commit per step, the build and `port/glcheck.sh` passing each time.
+1. **The source build needs a download** (the release from github.com/kcat/openal-soft; `code/thirdparty/openal-soft-1.24.3` holds only the AL headers). If the user is back, ask first, with the version, the URL and the size from the release page. Without the user: Homebrew's dylib (below), and record that the source build waits.
+2. **What is there** (looked at in session 16):
+   - Homebrew's `/opt/homebrew/opt/openal-soft/lib/libopenal.1.dylib` → `libopenal.1.25.2.dylib`: arm64 only, ad-hoc signed, install name `/opt/homebrew/opt/openal-soft/lib/libopenal.1.dylib`, linked only against system libraries (AudioToolbox, AudioUnit, ApplicationServices, CoreAudio, CoreFoundation, libc++, libSystem). LGPL: a dylib inside the bundle is the usual way, and distribution would need its notice (Phase 8 / the user).
+   - `cmake/libraries/openal.cmake`: `find_package(OpenAL)` (`build.sh` disables it: Apple's OpenAL.framework headers lack `alext.h`), else the internal headers and `OPENAL_LIBRARY openal`; that library is linked only when `USE_OPENAL_DLOPEN` is OFF (`CMakeLists.txt` defaults it ON).
+   - `qal.c` with `USE_OPENAL_DLOPEN`: function pointers filled by `Sys_LoadDll`. `snd_openal_new.cpp` loads `s_openaldriver` (default `libopenal.1.dylib`, `CVAR_LATCH | CVAR_PROTECTED`) and falls back to the default. Check what both do without `USE_OPENAL_DLOPEN` (ioq3's `QAL_Init` returns qtrue at once).
+3. **To do:**
+   - `USE_OPENAL_DLOPEN` OFF on macOS, the client linked against the dylib (give CMake the Homebrew path without hard-coding it in shared cmake: e.g. a `find_library` with a Homebrew hint in `openal.cmake`'s macOS branch, or `-DOPENAL_LIBRARY=…` from `build.sh`; record which and why).
+   - Copy it into `Contents/Frameworks` after the link (like the SDL copy, `finish_macos_app`), `install_name_tool -id @rpath/libopenal.1.dylib` on the copy, the executable's reference changed to `@rpath/…` with an rpath `@executable_path/../Frameworks`. `install_name_tool` invalidates a signature: re-sign the copy ad hoc before the bundle is sealed. The install's seal (af40ec4c) must still verify.
+   - `run.sh`'s openal link in fs_basepath stays for the flavors that still dlopen (`gl`, and `metalref` of commits before 7c); the 7c build never loads it. Say so in `run.sh`.
+   - `otool -L` of the installed executable: `@rpath/libopenal.1.dylib`, no `/opt/homebrew` path; the startup log shows no "Trying to load libopenal" lines.
+4. **Phase 7 ends with 7c:**
+   - `port/bench.sh run metal 3`. The bench runs with sound initialized (`s_volume 0`), so the audio path is in it: if the numbers move, alternate 8+ runs against `metalref` (rebuild it first: `port/build.sh metalref`, it is at 8077e5cf).
+   - `port/shot.sh regress base-s9`, and `port/skinab.sh` (every "differ" 0).
+   - The local `omohaaded` + client smoke test (Phase 7 "Done when"): `omohaaded` with `+set sv_gamespy 0 +set com_updatecheck_enabled 0 +set g_gametype 1 +set sv_maxclients 2` and a map, the client `+connect localhost` for a minute, then both quit. Sound must play (check the log's OpenAL lines; `s_volume 0` is fine).
+   - Then mark Phase 7 done (except the online test, which needs the user), update §6 for Phase 6, and **push `metal`** (it carries Phases 5a–5c and 7a–7c; CLAUDE.md: push at the end of every phase).
 
 Phase 5c: **done in session 14** (Phase 5 "Session 14, continued"). Left over, small, for the Phase 5 latency work after Phase 6: the frame-slot wait on heavy explosion frames (`r_metalPresentStats` slot wait; frames in flight is a latency trade-off, so measure only, don't change the default without the user); omaha's mesh-index table for `RB_SkelMesh`'s mesh search (a few µs at most); the first trigger of each missing sound still probes every codec in every search path (~0.2 ms, 29 per run, once per map).
 
@@ -1083,8 +1114,16 @@ Phase 5c: **done in session 14** (Phase 5 "Session 14, continued"). Left over, s
 - Phase 6's first step, the SDL input-latency baseline (the probe takes the mouse), and its final feel test. Phase 6 itself is approved (§3.1 #8); GCMouse raw input is part of it.
 - Phase 7's online test (until then a local `omohaaded` + client smoke test).
 - 7c's openal-soft source download (version, URL and size in the question), and whether the update checker stays on (Phase 7 "Session 15 result", findings).
+- A bundle ID of the port's own, only if the user also installs upstream's `openmohaa.app` (both would claim `org.openmohaa.openmohaa` and `openmohaa://`; Phase 7 "Session 16 result").
 - New entry points for Spearhead/Breakthrough (wrapper apps or a chooser), a macOS CI workflow (it would need the Metal Toolchain on GitHub's runner), and distribution signing/notarization (the user's certificate).
 Push `metal` at the end of each phase (CLAUDE.md): next at the end of Phase 7.
+
+Gotchas found in session 16:
+- **Nothing may be added inside the installed `openmohaa.app`:** the install signs and checks it. A file added afterwards fails `codesign --verify`, and a link out of the bundle (the old `run.sh`'s `Contents/MacOS/libopenal.1.dylib`) makes the next install fail ("invalid destination for symbolic link in bundle"). Delete it and install again. Session 16 removed the old link from the `metal`, `metalab` and `metalref` installs; the `gl` reference keeps its own (unsigned bundle).
+- **`cmake --install` never deletes files:** what an old rule installed stays in the prefix until it is removed by hand (session 16 removed recastnavigation's `include/` and `lib*.a` and the root `openmohaa.app` from the `metal`, `metalab` and `metalref` installs; the `gl` reference still has them, from its frozen CMake).
+- **CMake names a `MACOSX_BUNDLE` after its executable** (`OUTPUT_NAME`): the .app and the binary can't have different names without a rename after the build.
+- **`install(CODE)` added in `finish_macos_app` (`post_configure`) runs after the bundle's install rule** (rules run in the order they are added; the top level's `client.cmake` comes first).
+- **The linker's ad-hoc signature uses 4 KB pages, `codesign`'s 16 KB** (`hashes=816` → `204`): expected.
 
 Gotchas found in session 15:
 - **What the build really uses:** `ninja -C build.noindex/metal -t compdb` (compiled sources) plus `-t deps` (every included header of every built object). `git ls-files` minus those = the files no target uses. The deps cover the Release tree's objects only: when deleting headers, also check a Debug build (a fresh `-DCMAKE_BUILD_TYPE=Debug` tree in `build.noindex/`, deleted afterwards).
