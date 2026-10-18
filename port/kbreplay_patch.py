@@ -2,8 +2,8 @@
 """Hooks port/kbreplay.m into a scratch copy of the tree (port/kbreplay.sh; never the work tree).
 
 - code/client/kbreplay.m: the replay command and the event log, in the client of both input layers;
-- IN_ProcessEvents (sdl_input.c and macos_input.m): KbReplay_Frame() right before the pump; IN_Shutdown:
-  KbReplay_Shutdown() first (marks the log: the window goes away);
+- IN_ProcessEvents (macos_input.m, and sdl_input.c in a tree of the last SDL commit, kbsdl): KbReplay_Frame() right
+  before the pump; IN_Shutdown: KbReplay_Shutdown() first (marks the log: the window goes away);
 - Com_QueueEvent (common.c): KbReplay_LogEvent() for every queued event (a weak empty default, so the dedicated
   server, which has no client, still links).
 
@@ -37,6 +37,8 @@ patch("cmake/client.cmake", "\nset(CLIENT_SOURCES\n",
       "\nset(CLIENT_SOURCES\n")
 
 for rel in ("code/sdl/sdl_input.c", "code/macos/macos_input.m"):
+    if not os.path.exists(os.path.join(root, rel)):
+        continue	# no SDL since Phase 6g
     patch(rel, '#include "../sys/sys_local.h"\n',
           '#include "../sys/sys_local.h"\n\nvoid KbReplay_Frame( void );\nvoid KbReplay_Shutdown( void );\n')
     patch(rel, "\tCL_LatencyPump( );\n", "\tKbReplay_Frame( );\n\n\tCL_LatencyPump( );\n")

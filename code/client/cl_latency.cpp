@@ -25,7 +25,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //   event    the OS timestamps of the oldest and newest mouse event delivered by that frame's input pump
 //            (NSEvent.timestamp: when the event entered the system; a real mouse's polling interval and USB
 //            transfer come before it);
-//   pump     when IN_ProcessEvents started pumping the SDL events that delivered it: the frame's input sample;
+//   pump     when IN_ProcessEvents started pumping the events that delivered it: the frame's input sample;
 //   commit   when the renderer committed the frame to the GPU;
 //   GPU done when the GPU finished the frame (MTLCommandBuffer.GPUEndTime);
 //   present  when the first frame at or after it was shown on screen (Core Animation's presentedTime: the
@@ -84,7 +84,7 @@ static cvar_t		*cl_latencyStatsFrames;
 
 static qboolean		lat_on;
 static qboolean		lat_rendererTimes;		// the renderer reports commit, GPU and present times
-static long long	lat_pump;				// when the current SDL event pump started
+static long long	lat_pump;				// when the current event pump started
 static latInput_t	lat_pending;			// input in cl.mouseDx, not yet in a usercmd
 static latInput_t	lat_frame;				// input in this frame's usercmd
 static int			lat_endFrameTag;		// tag of the frame in EndFrame, 0 = no input
@@ -329,7 +329,7 @@ void CL_LatencyShutdown( void ) {
 ==================
 CL_LatencyPump
 
-IN_ProcessEvents is about to pump the SDL events: this frame's input sample.
+IN_ProcessEvents is about to pump the events: this frame's input sample.
 ==================
 */
 void CL_LatencyPump( void ) {

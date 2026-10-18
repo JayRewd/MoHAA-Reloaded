@@ -3,7 +3,7 @@
 #   port/glcheck.sh [flavor]     (default metal)
 # 1. The plan's grep over code/ and cmake/. Each hit has the documented exceptions removed from its line first
 #    (cvar values and shader keywords kept for old configs and retail data, false positives, upstream code kept
-#    for small diffs, vendored SDL until Phase 6); whatever still matches is printed.
+#    for small diffs); whatever still matches is printed.
 # 2. otool -L and nm -u of the installed game binary: no OpenGL framework, no GL/CGL/NSOpenGL imports.
 # Exit status 0 = clean. Run it after upstream merges too: a merge can bring GL code back.
 set -uo pipefail
@@ -19,8 +19,6 @@ import re, sys
 pattern = re.compile(sys.argv[1], re.I)
 # (file regex, allowed text regex): the allowed text is removed from the line before testing it again
 allowed = [
-	# vendored SDL2 headers (the SDL_GL_* API, build configs of other platforms): SDL goes in Phase 6
-	(r"^code/thirdparty/SDL2-[^/]*/", r".*"),
 	# vendored CI files of recastnavigation (they installed GL for the RecastDemo app, deleted in Phase 4)
 	(r"^code/thirdparty/recastnavigation/\.github/", r".*"),
 	# false positives in vendored code: the Qt qglobal.h guard; in openal-soft, a comment comparing coordinate

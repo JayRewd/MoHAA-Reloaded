@@ -1,7 +1,7 @@
 // mousemove.c -- synthetic mouse movement for the cl_latencyStats probe (port/latency.sh builds and runs it).
 //
 // Posts mouse-moved events at the HID event tap (CGEventPost(kCGHIDEventTap)): from there they take the same
-// path as a real mouse's events (WindowServer -> the application's event queue -> SDL); only the mouse itself,
+// path as a real mouse's events (WindowServer -> the application's event queue -> its pump); only the mouse itself,
 // the USB transfer and the HID driver are skipped. Each event carries its creation time as its timestamp,
 // which the game sees as NSEvent.timestamp. The posting process needs the Accessibility permission
 // (CGPreflightPostEventAccess); without it macOS drops the events silently, so this checks first.

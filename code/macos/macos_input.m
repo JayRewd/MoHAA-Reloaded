@@ -20,7 +20,8 @@ along with Quake III Arena source code; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
-// macos_input.m -- input, native (USE_SDL off): the IN_* functions of sdl/sdl_input.c and sdl/sdl_mouse.c.
+// macos_input.m -- input, native: the IN_* functions of sdl/sdl_input.c and sdl/sdl_mouse.c, which it replaced
+// (Phase 6; the SDL files are in the last commit that had them, SDL_REF in port/build.sh).
 // The event pump, the window's events (focus, minimize, resize, quit), the keyboard and text, the mouse and the
 // cursor. No gamepads or joysticks: the user won't use them (docs/METAL_PORT_PLAN.md, 3.1 #12).
 
@@ -1638,7 +1639,7 @@ Sys_MouseEventMonitor
 
 cl_latencyStats: while on, the input layer records the OS times of the mouse movement that reaches the game: the
 movement events' timestamps (NSEvent.timestamp: when the event entered the system, on the mach_absolute_time
-clock), or with GCMouse when its handler ran. (sys_osx.m's monitor of the dispatched events serves SDL.)
+clock), or with GCMouse when its handler ran.
 ==============
 */
 void Sys_MouseEventMonitor( qboolean on )

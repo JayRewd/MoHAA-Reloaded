@@ -1,9 +1,11 @@
 #!/bin/bash
 # The keyboard and mouse replay checks (Phase 6c, 6d): the same key or mouse events, posted into the game's own event
 # queue (in-process NSEvents: nothing system-wide, no synthetic HID input), must give the same SE_KEY/SE_CHAR/
-# SE_MOUSE stream through SDL and through the native AppKit layer. Two scratch flavors from the work tree plus
-# port/kbreplay_patch.py (exported into build.noindex/kbreplay-src; the shipped flavors never have the replay):
-#   port/kbreplay.sh build             kbsdl (SDL, the metal flavor's input) and kbnat (native, -DUSE_SDL=OFF)
+# SE_MOUSE stream through SDL and through the native AppKit layer. Two scratch flavors plus port/kbreplay_patch.py
+# (the shipped flavors never have the replay): kbnat from the work tree (exported into build.noindex/kbreplay-src),
+# kbsdl from the last commit with SDL (port/build.sh's SDL_REF, the sdlref flavor's code; exported into
+# build.noindex/kbsdl-src), so the native layer stays checked against SDL after SDL left the tree (Phase 6g):
+#   port/kbreplay.sh build             kbsdl (SDL, the sdlref flavor's input) and kbnat (native, the metal flavor's)
 #   port/kbreplay.sh run               the keys: both in dm/mohdm6 in a 1280x720 window, one after the other, then
 #                                      the diff
 #   port/kbreplay.sh mouse <mode>      the mouse (msreplay), the same way; <mode>: win (a 1280x720 window on the
@@ -28,33 +30,42 @@ OUT="$OMM_BUILD/kbreplay"
 mkdir -p "$OUT"
 
 build() {
-	local src="$OMM_BUILD/kbreplay-src"
-	rm -rf "$src"
-	mkdir -p "$src"
+	local src="$OMM_BUILD/kbreplay-src" sdlsrc="$OMM_BUILD/kbsdl-src"
+	local sdlref
+	sdlref="$(sed -n 's/^SDL_REF=//p' "$OMM_PORT/build.sh")"
+	rm -rf "$src" "$sdlsrc"
+	mkdir -p "$src" "$sdlsrc"
 	git -C "$OMM_ROOT" archive HEAD | tar -x -C "$src"
 	git -C "$OMM_ROOT" diff --name-only HEAD | while read -r f; do
 		if [ -f "$OMM_ROOT/$f" ]; then cp "$OMM_ROOT/$f" "$src/$f"; else rm -f "$src/$f"; fi
 	done
+	git -C "$OMM_ROOT" archive "$sdlref" | tar -x -C "$sdlsrc"
 	python3 -I "$OMM_PORT/kbreplay_patch.py" "$src"
+	python3 -I "$OMM_PORT/kbreplay_patch.py" "$sdlsrc"
 
-	build_flavor kbsdl -DUSE_SDL=ON
-	build_flavor kbnat -DUSE_SDL=OFF
+	build_flavor kbsdl "$sdlsrc" -DUSE_SDL=ON
+	build_flavor kbnat "$src"
 }
 
-# build_flavor <flavor> <cmake args>: one scratch flavor from build's tree
+# build_flavor <flavor> <tree> <cmake args>: one scratch flavor from one of build's trees
 build_flavor() {
-	local flavor=$1
-	shift
-	[ -d "$OMM_BUILD/kbreplay-src" ] || { echo "kbreplay.sh: run port/kbreplay.sh build first" >&2; exit 1; }
+	local flavor=$1 tree=$2
+	shift 2
+	[ -d "$tree" ] || { echo "kbreplay.sh: run port/kbreplay.sh build first" >&2; exit 1; }
+	# a build tree configured from another source tree (kbsdl before 6g, from kbreplay-src) can't be reused
+	if [ -f "$OMM_BUILD/$flavor/CMakeCache.txt" ] &&
+		! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$tree" "$OMM_BUILD/$flavor/CMakeCache.txt"; then
+		rm -rf "$OMM_BUILD/$flavor"
+	fi
 	export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
 	omm_mount_metal
-	"$OMM_CMAKE" -S "$OMM_BUILD/kbreplay-src" -B "$OMM_BUILD/$flavor" -G Ninja \
+	"$OMM_CMAKE" -S "$tree" -B "$OMM_BUILD/$flavor" -G Ninja \
 		-DCMAKE_MAKE_PROGRAM="$OMM_NINJA" \
 		-DBISON_EXECUTABLE="$OMM_BISON" \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX="$OMM_BUILD/$flavor-install" \
 		-DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON \
-		"$@" >/dev/null
+		${1+"$@"} >/dev/null
 	"$OMM_CMAKE" --build "$OMM_BUILD/$flavor" -j"$(sysctl -n hw.ncpu)"
 	"$OMM_CMAKE" --install "$OMM_BUILD/$flavor" >/dev/null
 	echo "kbreplay.sh: $flavor installed in $OMM_BUILD/$flavor-install"

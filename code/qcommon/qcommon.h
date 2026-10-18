@@ -1493,8 +1493,8 @@ void Sys_InitPIDFile( const char *gamedir );
 void Sys_ProcessBackgroundTasks();
 
 #ifdef __APPLE__
-// cl_latencyStats: OS timestamps (microseconds, mach_absolute_time clock) of the mouse movement events
-// the application dispatched since the last call (sys_osx.m)
+// cl_latencyStats: OS timestamps (microseconds, mach_absolute_time clock) of the mouse movement that
+// reached the game since the last call (macos_input.m)
 void Sys_MouseEventMonitor( qboolean on );
 qboolean Sys_TakeMouseEventTimes( long long *oldest, long long *newest );
 #endif

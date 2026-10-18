@@ -1,7 +1,7 @@
 #!/bin/bash
 # Input-to-present latency in a live map: the cl_latencyStats probe with synthetic mouse movement.
 #   port/latency.sh <renderer> <name> [seconds] [engine args...]
-#       renderer: metal | opengl1 (Metal from the metal install, or OMM_FLAVOR's, e.g. OMM_FLAVOR=native; GL1 from
+#       renderer: metal | opengl1 (Metal from the metal install, or OMM_FLAVOR's, e.g. OMM_FLAVOR=sdlref; GL1 from
 #       the GL1 reference install, port/build.sh gl);
 #       seconds of mouse movement (default 20)
 #       -> build.noindex/latency/<name>.log; prints the probe's whole-run numbers and the mouse tool's line
@@ -12,12 +12,12 @@
 #   port/latency.sh metal metal-fs-250 20 +set r_fullscreen 1 +set r_customwidth 1920 +set r_customheight 1080
 #   port/latency.sh metal metal-bfs-250 20 +set r_fullscreen 1 +set r_noborder 1     (borderless fullscreen)
 # The screen must be unlocked: while it is locked the WindowServer composites nothing (checked first).
-# The game window must have the keyboard focus, or SDL ignores the mouse: don't click elsewhere during a run.
+# The game window must have the keyboard focus, or the game ignores the mouse: don't click elsewhere during a run.
 # Environment:
 #   MOUSE=0     no mouse movement (to look at presents alone, or the user's own mouse; the probe then has no input
 #               frames unless the user moves it). With the synthetic movement the runs set in_mouseRaw 0 (the native
-#               layer's default is 1, GCMouse, which never sees it; SDL has no such cvar): the engine args can
-#               override it
+#               layer's default is 1, GCMouse, which never sees it; sdlref's SDL has no such cvar): the engine
+#               args can override it
 #   LATSTATS=2  cl_latencyStats 2: also log every frame's raw times (needed by TRACE's per-frame check);
 #               LATSTATS=0 leaves the probe off (with MOUSE=0 and TRACE=1: only what the display showed)
 #   TRACE=1     record 6 s of Instruments' Metal System Trace during the movement (-> <name>.trace, ~0.3 GB,

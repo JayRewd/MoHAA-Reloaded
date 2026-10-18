@@ -27,24 +27,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern "C" {
 #endif
 
-#if !defined(DEDICATED) && defined(USE_SDL)
-#ifdef USE_INTERNAL_SDL_HEADERS
-#	include "SDL_version.h"
-#else
-#	include <SDL_version.h>
-#endif
-
-// Require a minimum version of SDL
-#define MINSDL_MAJOR 2
-#define MINSDL_MINOR 0
-#if SDL_VERSION_ATLEAST( 2, 0, 5 )
-#define MINSDL_PATCH 5
-#else
-#define MINSDL_PATCH 0
-#endif
-#endif
-
-#if !defined(DEDICATED) && !defined(USE_SDL)
+#ifndef DEDICATED
 // The native AppKit layer (code/macos)
 qboolean MacOS_WindowExists( void );
 char *MacOS_GetClipboardText( void );	// UTF-8, free() it; NULL if the clipboard holds no text

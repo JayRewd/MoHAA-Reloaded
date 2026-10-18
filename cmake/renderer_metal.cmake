@@ -14,13 +14,9 @@ include(renderer_common)
 
 set(RENDERER_METAL_DIR ${SOURCE_DIR}/renderer_metal)
 
-# The window: SDL's, or the native AppKit one (USE_SDL, cmake/platforms/macos.cmake)
-if(USE_SDL)
-    set(RENDERER_METAL_WINDOW_SOURCE ${SOURCE_DIR}/sdl/sdl_mtlimp.m)
-else()
-    set(RENDERER_METAL_WINDOW_SOURCE ${SOURCE_DIR}/macos/macos_window.m)
-    list(APPEND RENDERER_LIBRARIES "-framework CoreGraphics")
-endif()
+# The window: the native AppKit one (code/macos)
+set(RENDERER_METAL_WINDOW_SOURCE ${SOURCE_DIR}/macos/macos_window.m)
+list(APPEND RENDERER_LIBRARIES "-framework CoreGraphics")
 
 set(RENDERER_METAL_SOURCES
     ${RENDERER_METAL_DIR}/tr_backend.c

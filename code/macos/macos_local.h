@@ -19,7 +19,7 @@ along with OpenMoHAA source code; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
-// macos_local.h -- between the files of the native AppKit layer, which replaces SDL2 (USE_SDL off):
+// macos_local.h -- between the files of the native AppKit layer, which replaced SDL2 (Phase 6):
 // the application and its event pump (macos_app.m), the window (macos_window.m, the renderer's side) and input
 // (macos_input.m, the client's side).
 

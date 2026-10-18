@@ -6,11 +6,6 @@ endif()
 
 option(BUILD_MACOS_APP "Deploy as a macOS .app" ON)
 
-# SDL2 for the application, the window and input. OFF builds the native AppKit layer in code/macos instead (Phase 6
-# of docs/METAL_PORT_PLAN.md). SDL stays the default until the native layer has replaced it: until then the SDL build
-# is the baseline the native one is measured against.
-option(USE_SDL "SDL2 for the window and input (OFF: the native AppKit layer, code/macos)" ON)
-
 # openal-soft is built from code/thirdparty (cmake/libraries/openal.cmake) and linked directly: the client calls
 # it without function pointers, and the app carries its own copy in Contents/Frameworks (finish_macos_app)
 set(USE_OPENAL_DLOPEN OFF CACHE INTERNAL "")
@@ -52,14 +47,6 @@ function(finish_macos_app)
     add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${RESOURCES_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy ${MACOS_ICON_PATH} ${RESOURCES_DIR})
-
-    # The bundle is arm64 only: keep just the arm64 slice of the libraries copied into it (the internal SDL2
-    # is universal). POST_BUILD commands run in the order they were added, so this follows client.cmake's copy.
-    foreach(LIBRARY IN LISTS CLIENT_DEPLOY_LIBRARIES)
-        get_filename_component(LIBRARY_NAME ${LIBRARY} NAME)
-        add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
-            COMMAND lipo ${LIBRARY} -thin arm64 -output $<TARGET_FILE_DIR:${CLIENT_BINARY}>/${LIBRARY_NAME})
-    endforeach()
 
     # openal-soft goes into Contents/Frameworks under its install name (libopenal.1.dylib, found through the
     # client's rpath), with its license files in Contents/Resources/openal-soft: the LGPL, and the two notices

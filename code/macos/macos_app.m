@@ -19,7 +19,7 @@ along with OpenMoHAA source code; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
-// macos_app.m -- the native application (USE_SDL off): NSApplication without [NSApp run], its menu bar, quitting,
+// macos_app.m -- the native application: NSApplication without [NSApp run], its menu bar, quitting,
 // the event pump and the clipboard.
 //
 // The engine owns the loop. Com_Frame pumps the events once per frame from IN_Frame, after the frame limiter's

@@ -45,7 +45,7 @@ dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *t
 	dialogResult_t result = DR_OK;
 	NSAlert *alert = [NSAlert new];
 
-#if !defined(USE_SDL) && !defined(DEDICATED)
+#ifndef DEDICATED
 	// the native AppKit layer: neither exclusive fullscreen nor a captured cursor may hide the alert (macos_window.m)
 	MacOS_DialogBegin( );
 #endif
@@ -91,7 +91,7 @@ dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *t
 
 	[alert release];
 
-#if !defined(USE_SDL) && !defined(DEDICATED)
+#ifndef DEDICATED
 	MacOS_DialogEnd( );
 #endif
 
@@ -123,64 +123,3 @@ char *Sys_StripAppBundle( char *dir )
 	Q_strncpyz(cwd, Sys_Dirname(cwd), sizeof(cwd));
 	return cwd;
 }
-
-// the native AppKit layer (USE_SDL off) records the times in its own pump (macos_input.m)
-#if defined(USE_SDL) || defined(DEDICATED)
-/*
-==============
-Sys_MouseEventMonitor
-
-cl_latencyStats: while on, records the OS timestamps of the mouse movement events the application
-dispatches (NSEvent.timestamp: when the event entered the system, on the mach_absolute_time clock).
-SDL dispatches them on the main thread while it pumps events, so this runs inside IN_ProcessEvents.
-==============
-*/
-static id			sys_mouseMonitor;
-static long long	sys_mouseOldest, sys_mouseNewest;	// microseconds, 0 = none since the last take
-
-void Sys_MouseEventMonitor( qboolean on )
-{
-	if( on && !sys_mouseMonitor )
-	{
-		NSEventMask mask = NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged |
-			NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged;
-
-		sys_mouseOldest = sys_mouseNewest = 0;
-		sys_mouseMonitor = [[NSEvent addLocalMonitorForEventsMatchingMask: mask handler: ^NSEvent *( NSEvent *event )
-		{
-			long long t = (long long)( [event timestamp] * 1e6 );
-
-			if( !sys_mouseOldest || t < sys_mouseOldest )
-				sys_mouseOldest = t;
-			if( t > sys_mouseNewest )
-				sys_mouseNewest = t;
-			return event;
-		}] retain];
-	}
-	else if( !on && sys_mouseMonitor )
-	{
-		[NSEvent removeMonitor: sys_mouseMonitor];
-		[sys_mouseMonitor release];
-		sys_mouseMonitor = nil;
-	}
-}
-
-/*
-==============
-Sys_TakeMouseEventTimes
-
-The oldest and newest mouse movement event dispatched since the last call (qfalse if none).
-==============
-*/
-qboolean Sys_TakeMouseEventTimes( long long *oldest, long long *newest )
-{
-	qboolean any = sys_mouseNewest != 0;
-
-	if( oldest )
-		*oldest = sys_mouseOldest;
-	if( newest )
-		*newest = sys_mouseNewest;
-	sys_mouseOldest = sys_mouseNewest = 0;
-	return any;
-}
-#endif

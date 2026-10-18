@@ -1,8 +1,7 @@
 #!/bin/bash
 # Configure, build and install one flavor of OpenMoHAA into build.noindex/<flavor>-install.
-#   port/build.sh metal     the game with the Metal renderer (mounts the Metal Toolchain for the offline shader compile)
-#   port/build.sh native    the Metal game with the native AppKit layer instead of SDL2 (-DUSE_SDL=OFF; Phase 6,
-#                           built next to the SDL one until SDL goes)
+#   port/build.sh metal     the game: the Metal renderer and the native AppKit layer (mounts the Metal Toolchain for
+#                           the offline shader compile)
 #   port/build.sh metalref  the Metal game at the last commit (METAL_REF=<ref> for another), for before/after benches
 #   port/build.sh sdlref    the Metal game with SDL2 as it was in the last commit that had it (SDL_REF below), from a
 #                           `git archive` export in build.noindex/sdlref-src: the SDL baseline of Phase 6f (the
@@ -50,7 +49,6 @@ case "$FLAVOR" in
 		export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
 		FLAVOR_ARGS=() ;;
 	metal) omm_mount_metal; FLAVOR_ARGS=() ;;
-	native) omm_mount_metal; FLAVOR_ARGS=(-DUSE_SDL=OFF) ;;
 	metalref|sdlref)
 		# The Metal game at a commit, from a `git archive` export like gl: metalref at METAL_REF (default HEAD: the
 		# last commit without the work tree's changes), for before/after benchmarks in one sitting (bench.sh run

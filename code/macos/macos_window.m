@@ -20,9 +20,9 @@ along with Quake III Arena source code; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
-// macos_window.m -- the Metal renderer's window, native (USE_SDL off): an NSWindow whose content view hosts the
-// CAMetalLayer. The same MTLimp_* functions, cvars and log lines as sdl/sdl_mtlimp.m, which made the window with
-// SDL; mode selection follows upstream's SDL window code of the GL1 renderer.
+// macos_window.m -- the Metal renderer's window, native: an NSWindow whose content view hosts the CAMetalLayer.
+// The same MTLimp_* functions, cvars and log lines as sdl/sdl_mtlimp.m, which made the window with SDL until
+// Phase 6; mode selection follows upstream's SDL window code of the GL1 renderer.
 //
 // Low latency (docs/METAL_PORT_PLAN.md 4b): the layer is opaque, has 2 drawables (3 for vsync in fullscreen),
 // presents immediately when r_swapInterval is 0 (displaySyncEnabled NO) and never with a Core Animation
