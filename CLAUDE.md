@@ -36,7 +36,7 @@ port/build.sh metal                # the game: Metal only, the renderer linked i
 port/build.sh metalref             # the Metal game at the last commit (METAL_REF=<ref> for another), the "before" of a before/after bench: port/bench.sh run metalref 3
 port/build.sh gl                   # the GL1 reference: the last commit with GL1 (c9dddadd), built from a git archive export -> build.noindex/gl-install
 port/run.sh metal +map dm/mohdm6   # run against the retail data; extra args are engine args (port/run.sh gl = the GL1 reference)
-port/bench.sh run metal 3          # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs (extra engine args after the run count)
+port/bench.sh run metal 3          # timedemo of port/bench/bench_mohdm6.dm_8, 1280x720 window, 3 runs (extra engine args after the run count); prints work ms/frame and the per-frame work p50/p95/p99/p99.9/max µs
 port/bench.sh run gl 3             # the same on the GL1 reference
 port/bench.sh trace metal          # one traced timedemo: GPU utilization and GPU ms per frame
 port/prof.sh metal base 20         # `sample` of the main thread over the looping timedemo; then port/sample_tree.py build.noindex/prof/base.txt callees RB_EndSurface
@@ -49,7 +49,7 @@ port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the 
 port/skinab.sh                     # GPU-skinning A/B flavor (metalab), then: port/bench.sh run metalab 1; grep SKINAB build.noindex/bench/metalab-1.log | tail -1 (every "differ" 0)
 ```
 
-New flavors are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. OpenGL is gone from the tree since Phase 4; GL1 comparisons (screenshots, bench) use the `gl` reference flavor, which never changes unless `GL1_REF` in `port/build.sh` does. `cl_renderer` is ignored (read-only "metal"). Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.
+New flavors are added as cases in `port/build.sh`. Benchmark every flavor with the same command, and put the numbers in the plan. OpenGL is gone from the tree since Phase 4; GL1 comparisons (screenshots, bench) use the `gl` reference flavor, whose renderer never changes unless `GL1_REF` in `port/build.sh` does (`GL1_PATCHES` there adds client-only benchmark logging, such as the per-frame work log). `cl_renderer` is ignored (read-only "metal"). Compare renderers on the **`work` ms/frame** figure: fps saturates near 1000 because the engine pads every frame to at least 1 ms. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes by default.
 
 Gotchas: in OpenMoHAA, `wait N` counts **milliseconds**, and `wait 1` is exactly one frame. A killed run leaves a PID file, and the next start then blocks on a modal "Abnormal Exit" dialog (`run.sh` removes stale PID files). Don't use `s_initsound 0` (upstream crashes on the first footstep); mute with `s_volume 0`. The upstream launchers (`launch_openmohaa_*`) don't work on macOS; run the .app binary directly.
 
