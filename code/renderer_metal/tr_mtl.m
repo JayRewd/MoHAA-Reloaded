@@ -39,6 +39,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // otherwise the frame skips its present. With vsync on (r_swapInterval 1) the next drawable is acquired at the end
 // of the frame, blocking like GL1's swap.
 //
+// Waking the GPU: after ~1.5 ms without work the GPU powers down, and a commit then waits ~0.3-0.5 ms for it to
+// start. The engine calls mbWakeGPU when a frame starts (right after its frame limiter), and a tiny command buffer
+// has the GPU up when that frame commits, ~0.3-0.6 ms later (r_metalWakeGPU).
+//
 // GL state: the front end drives the GL1 fixed-function state model (tr_mtl.h). The setters only record
 // state and set dirty bits; MB_PrepareDraw turns it into Metal state at draw time: a render pipeline from a
 // cache keyed by blend factors, color mask, sampled texture units and alpha test (one generic stage shader,
@@ -120,12 +124,16 @@ static uint64_t						mb_lateLatency;		// the frame's cl_latencyStats record
 static uint64_t						mb_lateDeadline;	// mach time: commit it by then, or leave the drawable to the next frame
 static uint64_t						mb_frameEnd, mb_frameInterval;	// mach time: the last frame's end, the smoothed frame interval
 static uint64_t						mb_lateMargin;		// mach time: a late present's commit to its drawable's return (~2 ms)
+static uint64_t						mb_lastSubmit;		// mach time: the last frame (or wake-up) committed
+static uint64_t						mb_wakeIdle;		// mach time: no wake-up within this of the last commit (1 ms)
+static id<MTLBuffer>				mb_wakeBuffer;		// what the wake-up's blit writes
 static void MB_CancelLatePresent( void );
 
 static cvar_t	*r_metalFramesInFlight;
 static cvar_t	*r_metalPresentStats;
 static cvar_t	*r_metalLatePresent;
 static cvar_t	*r_metalPipelineCache;
+static cvar_t	*r_metalWakeGPU;
 
 // r_metalPresentStats: drawables actually shown on screen (presentedTime > 0) vs. presented
 static _Atomic int	mb_statPresented, mb_statShown;
@@ -135,6 +143,7 @@ static uint64_t		mb_statDrawableWait, mb_statSlotWait;	// main thread mach ticks
 static uint64_t		mb_statDraws, mb_statPasses, mb_statClearQuads, mb_statOrphans, mb_statRingBytes;
 static _Atomic uint64_t	mb_statGPUTime, mb_statGPULatency, mb_statCompletion;	// ns: frame command buffer GPU start..end, commit..GPU start, commit..completed handler
 static _Atomic int		mb_statGPUFrames;
+static int				mb_statWakes;			// mbWakeGPU's command buffers
 static int			mb_statPipelines, mb_statRingGrowths;
 static uint64_t		mb_statPipelineTime, mb_statPipelineMax;		// mach ticks creating pipelines (total, slowest)
 static int			mb_statPipelinesCached;						// of mb_statPipelines, found in the pipeline cache
@@ -1935,6 +1944,7 @@ static qboolean MB_StartDrawableAcquisition( void )
 
 		mach_timebase_info( &tb );
 		mb_lateMargin = 2000000ull * tb.denom / tb.numer;	// 2 ms
+		mb_wakeIdle = 1000000ull * tb.denom / tb.numer;	// 1 ms
 	}
 	mb_frameEnd = mb_frameInterval = 0;
 	if ( mb_vsync ) {
@@ -2011,6 +2021,23 @@ static id<CAMetalDrawable> MB_TakeDrawable( void )
 }
 
 /*
+** MB_WakeCommit
+**
+** A tiny command buffer that gets the GPU going (mbWakeGPU).
+*/
+static void MB_WakeCommit( void )
+{
+	@autoreleasepool {
+		id<MTLCommandBuffer> cmd = [mb_queue commandBufferWithUnretainedReferences];
+		id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+
+		[blit fillBuffer:mb_wakeBuffer range:NSMakeRange( 0, 4 ) value:0];
+		[blit endEncoding];
+		[cmd commit];
+	}
+}
+
+/*
 ** mbInit
 **
 ** Called by MTLimp_Init once the window and its CAMetalLayer exist and glConfig.vidWidth/vidHeight hold
@@ -2025,6 +2052,7 @@ qboolean mbInit( void *metalLayer )
 	r_metalPresentStats = ri.Cvar_Get( "r_metalPresentStats", "0", 0 );
 	r_metalLatePresent = ri.Cvar_Get( "r_metalLatePresent", "1", CVAR_LATCH );
 	r_metalPipelineCache = ri.Cvar_Get( "r_metalPipelineCache", "1", CVAR_ARCHIVE | CVAR_LATCH );
+	r_metalWakeGPU = ri.Cvar_Get( "r_metalWakeGPU", "1", 0 );
 
 	if ( !mb_device ) {
 		mb_device = MTLCreateSystemDefaultDevice();
@@ -2034,6 +2062,8 @@ qboolean mbInit( void *metalLayer )
 		}
 		mb_queue = [mb_device newCommandQueue];
 		mb_queue.label = @"openmohaa";
+		mb_wakeBuffer = [mb_device newBufferWithLength:16 options:MTLResourceStorageModePrivate];
+		MB_WakeCommit();	// the first one costs ~0.5 ms or more on the CPU (the driver's first blit): here, not in play
 		Com_sprintf( mb_rendererString, sizeof( mb_rendererString ), "%s (Metal)", mb_device.name.UTF8String );
 	}
 
@@ -2138,6 +2168,7 @@ void mbShutdown( void )
 				(double)mb_statGPUTime / 1e6 / mb_statGPUFrames, (double)mb_statGPULatency / 1e6 / mb_statGPUFrames,
 				(double)mb_statCompletion / 1e6 / mb_statGPUFrames, (int)mb_statGPUFrames );
 		}
+		ri.Printf( PRINT_ALL, "Metal: %d GPU wake-ups before a frame (r_metalWakeGPU)\n", mb_statWakes );
 	}
 	mb_statFrames = mb_statSkipped = 0;
 	mb_statLate = 0;
@@ -2146,6 +2177,7 @@ void mbShutdown( void )
 	mb_statDraws = mb_statPasses = mb_statClearQuads = mb_statOrphans = mb_statRingBytes = 0;
 	mb_statGPUTime = mb_statGPULatency = mb_statCompletion = 0;
 	mb_statGPUFrames = 0;
+	mb_statWakes = 0;
 	mb_statRingGrowths = 0;
 
 	mb_staticBuffer = nil;
@@ -2416,6 +2448,7 @@ void mbEndFrame( void )
 		}
 		MB_CommitUploads();
 		[mb_cmd commit];
+		mb_lastSubmit = mach_absolute_time();
 		late = !drawable && MB_PostLatePresent( latency );
 		if ( latency ) {
 			MB_LatencyCommitted( latency, drawable != nil || late );
@@ -2466,6 +2499,34 @@ void mbEndFrame( void )
 		MB_ReleaseRetired( completed );
 		MB_ProcessReadbacks( completed );
 	}
+}
+
+/*
+** mbWakeGPU
+**
+** Called by the engine when a frame starts, right after its frame limiter's wait and before the input is sampled. The
+** GPU powers down after ~1.5 ms without work, and the next commit then waits ~0.3-0.5 ms for it to come back: at 250
+** fps every frame did (commit to GPU start ~0.6 ms in play, against ~0.1 ms with the GPU awake). A tiny command buffer
+** now has it up when the frame commits, ~0.3-0.6 ms later (a wake-up 0.4-0.8 ms ahead of the commit works best; from
+** ~1.4 ms ahead the GPU starts to doze again). Nothing waits for it, and it runs before the frame's work in the queue.
+** Skipped when something was committed within the last millisecond (at ~1000 fps the GPU never sleeps).
+*/
+void mbWakeGPU( void )
+{
+	uint64_t now;
+
+	if ( !mb_layer || !r_metalWakeGPU->integer ) {
+		return;
+	}
+
+	now = mach_absolute_time();
+	if ( now - mb_lastSubmit < mb_wakeIdle ) {
+		return;
+	}
+
+	MB_WakeCommit();
+	mb_lastSubmit = now;
+	mb_statWakes++;
 }
 
 /*

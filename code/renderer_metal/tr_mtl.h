@@ -213,6 +213,9 @@ int			mbMaxTextureSize( void );
 void		mbLatencyTag( int tag );
 qboolean	mbLatencyPoll( int *tag, long long *commitUsec, long long *gpuDoneUsec, long long *presentUsec );
 
+// re.WakeGPU: a frame starts (right after the engine's frame limiter); wakes the GPU if it has been idle
+void		mbWakeGPU( void );
+
 extern qboolean	mbMultitexture;				// ARB_multitexture equivalent (r_ext_multitexture)
 
 // Pipelines ahead of their first draw: when a shader is loaded, the front end describes the state each of its stages

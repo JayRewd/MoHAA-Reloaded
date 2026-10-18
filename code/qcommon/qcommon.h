@@ -1210,6 +1210,7 @@ qboolean CL_FinishedIntro(void);
 void CL_FinishedStartStage(void);
 void CL_SetFrameNumber(int frameNumber);
 void CL_Frame( int msec );
+void CL_WakeGPU( void );
 qboolean CL_GameCommand( void );
 void CL_KeyEvent (int key, qboolean down, unsigned time);
 

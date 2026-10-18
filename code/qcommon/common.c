@@ -2370,6 +2370,11 @@ void Com_Frame( void ) {
         com_timedemoWaitUsec += Com_Microseconds() - waitStartUsec;
     }
 
+#ifndef DEDICATED
+    // The frame starts: let the renderer wake an idle GPU, so it is up when the frame commits (Metal port).
+    CL_WakeGPU();
+#endif
+
     IN_Frame();
 
     lastTime = com_frameTime;

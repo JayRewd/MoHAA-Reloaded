@@ -189,6 +189,10 @@ typedef struct {
     // -1 = presented but reported as never shown). Returns qfalse when no frame is ready.
     void        (*LatencyTag)(int tag);
     qboolean    (*LatencyPoll)(int *tag, long long *commitUsec, long long *gpuDoneUsec, long long *presentUsec);
+
+    // Added for the Metal port: called by Com_Frame once per frame, right after the frame limiter's wait (before the
+    // input is sampled), so the renderer can wake an idle GPU before the frame commits. May be NULL.
+    void        (*WakeGPU)(void);
 } refexport_t;
 
 //

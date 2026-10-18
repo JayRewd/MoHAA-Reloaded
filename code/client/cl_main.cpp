@@ -3092,6 +3092,19 @@ qboolean CL_IsRendererLoaded(void) {
 
 /*
 ============
+CL_WakeGPU
+
+The frame limiter's wait is over: a frame starts.
+============
+*/
+void CL_WakeGPU(void) {
+	if (com_cl_running && com_cl_running->integer && re.WakeGPU) {
+		re.WakeGPU();
+	}
+}
+
+/*
+============
 CL_InitRef
 ============
 */

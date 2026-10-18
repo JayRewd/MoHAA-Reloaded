@@ -1902,6 +1902,7 @@ refexport_t *GetRefAPI ( int apiVersion, refimport_t *rimp ) {
 
 	re.LatencyTag = mbLatencyTag;
 	re.LatencyPoll = mbLatencyPoll;
+	re.WakeGPU = mbWakeGPU;
 
 	return &re;
 }
