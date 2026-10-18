@@ -35,7 +35,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // - exclusive fullscreen, r_fullscreen 1: a borderless window over the screen at the shielding level, at r_mode's
 //   size. The display mode changes only when that size isn't the current mode's (the displays captured as SDL
 //   captures them). Losing the focus minimizes the window and restores the desktop's mode, as SDL does;
-// - borderless fullscreen, r_fullscreen 1 + r_noborder 1: a native fullscreen Space at the desktop resolution.
+// - borderless fullscreen, r_fullscreen 1 + r_noborder 1: a native fullscreen Space at the desktop resolution, or
+//   with r_borderlessWindow 1 a borderless window over the screen at the normal level, the dock and menu bar
+//   hidden while the game is in front (no Space animation when switching away or at vid_restart).
 // Both fullscreen modes go direct to display (the compositor is bypassed) and have no window shadow: a shadow needs
 // an offscreen pass over the layer, so the layer can't go direct.
 
@@ -65,7 +67,7 @@ typedef enum
 	MAC_WINDOWED,
 	MAC_EXCLUSIVE,			// r_fullscreen 1
 	MAC_SPACE,				// r_fullscreen 1 + r_noborder 1
-	MAC_DESKTOPWINDOW		// r_fullscreen 1 + r_noborder 1 + r_borderlessWindow 1 (the 6b experiment)
+	MAC_DESKTOPWINDOW		// r_fullscreen 1 + r_noborder 1 + r_borderlessWindow 1
 } macWindowMode_t;
 
 @interface MacOSWindow : NSWindow
@@ -93,7 +95,7 @@ cvar_t *r_allowResize; // make window resizable
 cvar_t *r_centerWindow;
 cvar_t *r_displayIndex; // display to open the window on (0 = main)
 cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen, else 2)
-static cvar_t *r_borderlessWindow;
+static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
 
 static void MTLimp_EnterExclusive( void );
 static void MTLimp_LeaveExclusive( void );
@@ -165,6 +167,17 @@ static void MTLimp_LeaveExclusive( void );
 {
 	if( mac_windowMode == MAC_EXCLUSIVE )
 		MTLimp_EnterExclusive();
+}
+
+// borderless fullscreen's Space covers the menu bar too, even when the user's settings keep it in fullscreen apps
+// ("display rejected" otherwise); SDL asks for the same
+- (NSApplicationPresentationOptions)window:(NSWindow *)window
+	willUseFullScreenPresentationOptions:(NSApplicationPresentationOptions)proposedOptions
+{
+	if( mac_windowMode != MAC_SPACE )
+		return proposedOptions;
+
+	return NSApplicationPresentationFullScreen | NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
 }
 
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification
@@ -884,13 +897,20 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 			selector:@selector(applicationDidBecomeActive:) name:NSApplicationDidBecomeActiveNotification object:nil];
 	}
 
-	mac_window = [[MacOSWindow alloc] initWithContentRect:contentRect styleMask:style
-		backing:NSBackingStoreBuffered defer:NO];
+	// placed relative to its screen, as SDL places it: with global coordinates and no screen, AppKit opens the
+	// window on the main display
+	mac_window = [[MacOSWindow alloc] initWithContentRect:NSOffsetRect( contentRect, -NSMinX( screenFrame ),
+		-NSMinY( screenFrame ) ) styleMask:style backing:NSBackingStoreBuffered defer:NO screen:screen];
 	if( mac_window == nil )
 	{
 		ri.Printf( PRINT_ALL, "Couldn't create the window\n" );
 		MTLimp_DestroyWindow();
 		return RSERR_INVALID_MODE;
+	}
+	if( mac_windowMode == MAC_EXCLUSIVE )
+	{
+		// after a mode change NSScreen's frame may still be the old one
+		[mac_window setFrame:contentRect display:NO];
 	}
 
 	mac_window.title = @CLIENT_WINDOW_TITLE;
@@ -1084,7 +1104,7 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_centerWindow = ri.Cvar_Get( "r_centerWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_displayIndex = ri.Cvar_Get( "r_displayIndex", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_LATCH );
+	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 
 	if( ri.Cvar_VariableIntegerValue( "com_abnormalExit" ) )
 	{
