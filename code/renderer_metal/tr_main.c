@@ -1142,53 +1142,57 @@ DRAWSURF SORTING
 
 /*
 ===============
-R_Radix
-===============
-*/
-static ID_INLINE void R_Radix( int offset, int size, drawSurf_t *source, drawSurf_t *dest )
-{
-  int           count[ 256 ] = { 0 };
-  int           index[ 256 ];
-  int           i;
-  unsigned char *sortKey = NULL;
-  unsigned char *end = NULL;
-
-  sortKey = ( (unsigned char *)&source[ 0 ].sort ) + offset;
-  end = sortKey + ( size * sizeof( drawSurf_t ) );
-  for( ; sortKey < end; sortKey += sizeof( drawSurf_t ) )
-    ++count[ *sortKey ];
-
-  index[ 0 ] = 0;
-
-  for( i = 1; i < 256; ++i )
-    index[ i ] = index[ i - 1 ] + count[ i - 1 ];
-
-  sortKey = ( (unsigned char *)&source[ 0 ].sort ) + offset;
-  for( i = 0; i < size; ++i, sortKey += sizeof( drawSurf_t ) )
-    dest[ index[ *sortKey ]++ ] = source[ i ];
-}
-
-/*
-===============
 R_RadixSort
 
-Radix sort with 4 byte size buckets
+Radix sort with 4 byte size buckets, least significant byte first. The four byte counts are taken in one pass,
+and a byte that is the same in every key skips its pass (a stable pass over equal bytes keeps the order):
+the same order as four full passes.
 ===============
 */
 static void R_RadixSort( drawSurf_t *source, int size )
 {
   static drawSurf_t scratch[ MAX_DRAWSURFS ];
-#ifdef Q3_LITTLE_ENDIAN
-  R_Radix( 0, size, source, scratch );
-  R_Radix( 1, size, scratch, source );
-  R_Radix( 2, size, source, scratch );
-  R_Radix( 3, size, scratch, source );
-#else
-  R_Radix( 3, size, source, scratch );
-  R_Radix( 2, size, scratch, source );
-  R_Radix( 1, size, source, scratch );
-  R_Radix( 0, size, scratch, source );
-#endif //Q3_LITTLE_ENDIAN
+  int           count[ 4 ][ 256 ];
+  int           index[ 256 ];
+  drawSurf_t    *in, *out, *swap;
+  unsigned      sort;
+  int           i, b, shift;
+
+  if( size < 2 )
+    return;
+
+  memset( count, 0, sizeof( count ) );
+  for( i = 0; i < size; ++i )
+  {
+    sort = source[ i ].sort;
+    ++count[ 0 ][ sort & 255 ];
+    ++count[ 1 ][ ( sort >> 8 ) & 255 ];
+    ++count[ 2 ][ ( sort >> 16 ) & 255 ];
+    ++count[ 3 ][ sort >> 24 ];
+  }
+
+  in = source;
+  out = scratch;
+  for( b = 0; b < 4; ++b )
+  {
+    shift = b * 8;
+    if( count[ b ][ ( in[ 0 ].sort >> shift ) & 255 ] == size )
+      continue;
+
+    index[ 0 ] = 0;
+    for( i = 1; i < 256; ++i )
+      index[ i ] = index[ i - 1 ] + count[ b ][ i - 1 ];
+
+    for( i = 0; i < size; ++i )
+      out[ index[ ( in[ i ].sort >> shift ) & 255 ]++ ] = in[ i ];
+
+    swap = in;
+    in = out;
+    out = swap;
+  }
+
+  if( in != source )
+    memcpy( source, in, size * sizeof( drawSurf_t ) );
 }
 
 //==========================================================================================
