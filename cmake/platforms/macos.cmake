@@ -68,6 +68,16 @@ function(finish_macos_app)
         add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
             COMMAND lipo ${LIBRARY} -thin arm64 -output $<TARGET_FILE_DIR:${CLIENT_BINARY}>/${LIBRARY_NAME})
     endforeach()
+
+    # Seal the installed bundle with an ad-hoc signature (the Developer ID path below signs instead), and check
+    # the seal. No hardened runtime: its library validation would refuse the libraries of other signers that the
+    # game loads (game.dylib and cgame.dylib beside the bundle, openal-soft).
+    if("$ENV{APPLE_CERTIFICATE_ID}" STREQUAL "")
+        install(CODE "
+            set(APP \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${INSTALL_BINDIR_FULL}/${CLIENT_BINARY}.app\")
+            execute_process(COMMAND codesign --force --sign - \"\${APP}\" COMMAND_ERROR_IS_FATAL ANY)
+            execute_process(COMMAND codesign --verify --deep --strict \"\${APP}\" COMMAND_ERROR_IS_FATAL ANY)")
+    endif()
 endfunction()
 
 if(NOT "$ENV{APPLE_CERTIFICATE_ID}" STREQUAL "")

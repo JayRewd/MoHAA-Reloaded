@@ -24,7 +24,9 @@ done
 # Remove it when no game is running (pgrep matches the installed app binaries only).
 pgrep -f "build.noindex/.*/openmohaa.app/Contents/MacOS/openmohaa" >/dev/null || rm -f "$OMM_HOME"/main*/*.pid
 
-# openal-soft from Homebrew, dlopen'ed as libopenal.1.dylib from the executable's folder.
-ln -sfn /opt/homebrew/opt/openal-soft/lib/libopenal.1.dylib "$APP/libopenal.1.dylib"
+# openal-soft from Homebrew, dlopen'ed as libopenal.1.dylib: Sys_LoadDll tries the executable's folder, then
+# fs_basepath. The link goes into fs_basepath, so the bundle's ad-hoc seal (Phase 7b) stays intact: a file added
+# to the signed bundle breaks it (and `codesign` refuses to sign a link pointing out of the bundle).
+ln -sfn /opt/homebrew/opt/openal-soft/lib/libopenal.1.dylib "$BASE/libopenal.1.dylib"
 
 exec "$APP/openmohaa" +set fs_homepath "$OMM_HOME" ${1+"$@"}
