@@ -30,6 +30,8 @@
 	<string>public.app-category.games</string>
 	<key>GCSupportsGameMode</key>
 	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 
 	@MACOS_APP_PLIST_URL_TYPES@
 </dict>
