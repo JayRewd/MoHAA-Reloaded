@@ -560,6 +560,19 @@ static int check_filecase( char *Path ) {
         *ptr = 0;
     }
 
+#ifdef _PC_CASE_SENSITIVE
+    // Added in the Metal port
+    //  On a case-insensitive volume access() already ignores case, so a name it can't find
+    //  exists in no other case: skip the directory scan (it cost every file read from a pk3,
+    //  which misses the directory search paths first)
+    if (pathconf(basedir, _PC_CASE_SENSITIVE) == 0) {
+        if (ptr) {
+            *ptr = '/';
+        }
+        return 0;
+    }
+#endif
+
     dir = opendir(basedir);
     if (dir)
     {
