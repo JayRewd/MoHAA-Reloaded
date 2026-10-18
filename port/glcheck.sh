@@ -41,8 +41,6 @@ allowed = [
 	(r"^code/(renderercommon/tr_public\.h|client/cl_main\.cpp|sys/sys_local\.h|sys/sys_unix\.c)$", r"Sys_GLimp(Safe)?Init"),
 	(r"^code/client/cl_main\.cpp$", r"Cvar_Get\(\"cl_renderer\", \"opengl1\""),
 	(r"^code/qcommon/q_math\.c$", r"the OpenGL order"),
-	# non-macOS platform files, deleted in Phase 7
-	(r"^cmake/platforms/emscripten\.cmake$", r"WEBGL_VERSION"),
 ]
 allowed = [(re.compile(f), re.compile(t)) for f, t in allowed]
 for line in sys.stdin:

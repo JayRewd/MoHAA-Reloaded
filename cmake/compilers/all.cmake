@@ -1,6 +1,5 @@
 include(compilers/appleclang)
 include(compilers/clang)
-include(compilers/gcc)
 include(compilers/gnu)
 
 set(CMAKE_DEBUG_POSTFIX "-dbg")

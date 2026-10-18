@@ -68,7 +68,6 @@ endif()
 include(compilers/all)
 include(platforms/all)
 include(libraries/all)
-include(deploy/all)
 
 include(version)
 
