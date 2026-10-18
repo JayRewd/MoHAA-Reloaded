@@ -32,7 +32,5 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
-
-	@MACOS_APP_PLIST_URL_TYPES@
 </dict>
 </plist>

@@ -17,10 +17,6 @@
 #                                      1280x720: the display mode switched and the displays captured), space
 #                                      (borderless fullscreen, a Space), start (no window: the startup's "Abnormal
 #                                      Exit" question, from an empty PID file)
-#   port/kbreplay.sh url               the openmohaa:// handler (urltest, Phase 6e): builds kburl (native, compiled
-#                                      with PROTOCOL_HANDLER="openmohaa", which the shipped flavors leave out as
-#                                      upstream does) from build's tree, then sends the game's own process link
-#                                      Apple events; connect is replaced by a logger, nothing connects
 # The runs set ui_console 1: without it MOHAA's console key opens nothing. Each run opens the game for ~15 s and
 # takes the keyboard focus: don't type meanwhile. The mouse runs capture the real cursor (warped to the window's
 # center and hidden; fullscreen takes the screen): don't touch the mouse either. The logs and the diff are in
@@ -62,18 +58,6 @@ build_flavor() {
 	"$OMM_CMAKE" --build "$OMM_BUILD/$flavor" -j"$(sysctl -n hw.ncpu)"
 	"$OMM_CMAKE" --install "$OMM_BUILD/$flavor" >/dev/null
 	echo "kbreplay.sh: $flavor installed in $OMM_BUILD/$flavor-install"
-}
-
-# url: the openmohaa:// handler, compiled in (the C and Objective-C sources see the define; ninja's shell takes the
-# backslashes off the quotes)
-url() {
-	build_flavor kburl -DUSE_SDL=OFF -DCMAKE_C_FLAGS='-DPROTOCOL_HANDLER=\"openmohaa\"' \
-		-DCMAKE_OBJC_FLAGS='-DPROTOCOL_HANDLER=\"openmohaa\"'
-	game kburl urltest kburl-url +set in_mouse 0 "$@"
-	echo "kbreplay.sh: kburl-url: $(grep -c 'Sys_ParseProtocolUri' "$OUT/kburl-url-game.log")" \
-		"Sys_ParseProtocolUri line(s) in the game's log:"
-	grep 'Sys_ParseProtocolUri' "$OUT/kburl-url-game.log" || true
-	cat "$OUT/kbreplay-kburl-url.log"
 }
 
 # game <flavor> <command> <name> [engine args]: one run of `<command> <name>` in dm/mohdm6 in a 1280x720 window
@@ -184,7 +168,6 @@ case "${1:-}" in
 	run) shift; run "$@" ;;
 	mouse) shift; mouse "$@" ;;
 	dialog) shift; dialog "$@" ;;
-	url) shift; url "$@" ;;
 	*) echo "usage: port/kbreplay.sh build | run [engine args] | mouse win|full|hidpi [engine args] |" \
-		"dialog win|full|full720|space|start [engine args] | url [engine args]" >&2; exit 1 ;;
+		"dialog win|full|full720|space|start [engine args]" >&2; exit 1 ;;
 esac

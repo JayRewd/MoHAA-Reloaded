@@ -47,23 +47,6 @@ function(finish_macos_app)
     set(MACOS_APP_DEPLOYMENT_TARGET ${CMAKE_OSX_DEPLOYMENT_TARGET})
     set(MACOS_APP_COPYRIGHT ${COPYRIGHT})
 
-    if(PROTOCOL_HANDLER_SCHEME)
-        set(MACOS_APP_PLIST_URL_TYPES
-        "<key>CFBundleURLTypes</key>
-        <array>
-            <dict>
-                <key>CFBundleURLName</key>
-                <string>${MACOS_APP_BUNDLE_NAME}</string>
-                <key>CFBundleURLSchemes</key>
-                <array>
-                    <string>${PROTOCOL_HANDLER_SCHEME}</string>
-                </array>
-            </dict>
-        </array>")
-    else()
-        set(MACOS_APP_PLIST_URL_TYPES "")
-    endif()
-
     configure_file(${CMAKE_SOURCE_DIR}/cmake/Info.plist.in
         ${CMAKE_BINARY_DIR}/Info.plist @ONLY)
 

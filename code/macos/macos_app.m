@@ -20,7 +20,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 // macos_app.m -- the native application (USE_SDL off): NSApplication without [NSApp run], its menu bar, quitting,
-// the event pump, the clipboard and the openmohaa:// links (PROTOCOL_HANDLER).
+// the event pump and the clipboard.
 //
 // The engine owns the loop. Com_Frame pumps the events once per frame from IN_Frame, after the frame limiter's
 // sleep and right before the input is sampled, where SDL pumped them (docs/METAL_PORT_PLAN.md 4b). The pump never
@@ -52,27 +52,6 @@ static qboolean			mac_quitRequested;
 {
 	return YES;
 }
-
-#ifdef PROTOCOL_HANDLER
-// An openmohaa:// link opened (the scheme is in the Info.plist): "openmohaa://connect/host:port" connects, as SDL's
-// drop event did in sdl_input.c. Apple events come in through the main run loop, which runs in the pump; a link that
-// launched the game comes the same way.
-- (void)handleURLEvent:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)reply
-{
-	const char *url = [event paramDescriptorForKeyword:keyDirectObject].stringValue.UTF8String;
-
-	if( url && !Q_strncmp( url, PROTOCOL_HANDLER ":", strlen( PROTOCOL_HANDLER ":" ) ) )
-	{
-		char *protocolCommand = Sys_ParseProtocolUri( url );
-
-		if( protocolCommand )
-		{
-			Cbuf_ExecuteText( EXEC_APPEND, va( "%s\n", protocolCommand ) );
-			free( protocolCommand );
-		}
-	}
-}
-#endif
 
 @end
 
@@ -131,11 +110,6 @@ void MacOS_InitApp( void )
 
 		mac_appDelegate = [[MacOSAppDelegate alloc] init];
 		NSApp.delegate = mac_appDelegate;
-#ifdef PROTOCOL_HANDLER
-		// before finishLaunching, as SDL: a link that launches the game comes with the launch
-		[[NSAppleEventManager sharedAppleEventManager] setEventHandler:mac_appDelegate
-			andSelector:@selector(handleURLEvent:withReplyEvent:) forEventClass:kInternetEventClass andEventID:kAEGetURL];
-#endif
 		[NSApp finishLaunching];
 		[NSApp activateIgnoringOtherApps:YES];
 

@@ -20,10 +20,6 @@
 // front of it that covers it, the cursor, the display mode and capture), dismisses it from a timer (Cancel), then
 // logs the game's state for a few frames and quits. With OMM_DLGTEST=<log path> in the environment, a timer installed
 // before main does the same for a dialog without a window: the startup's "Abnormal Exit" question (No).
-//
-// `urltest <name>` (built with PROTOCOL_HANDLER only: the kburl flavor) checks the openmohaa:// handler: it replaces
-// the connect command with one that only logs its arguments, sends the game's own process kAEGetURL Apple events
-// with good and bad links (nothing leaves the process, nothing connects), logs what reached connect and quits.
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -1008,89 +1004,6 @@ __attribute__((constructor)) static void DlgStartupWatch( void )
 	CFRelease( timer );
 }
 
-#ifdef PROTOCOL_HANDLER
-/*
-==============================================================================
-
-THE LINK CHECK (urltest)
-
-==============================================================================
-*/
-
-/*
-===============
-UrlConnect_f
-
-Stands in for connect: logs, connects nowhere.
-===============
-*/
-static void UrlConnect_f( void )
-{
-	fprintf( kb_log, "  connect: %s\n", Cmd_Args( ) );
-	fflush( kb_log );
-}
-
-/*
-===============
-UrlTest_f
-===============
-*/
-static void UrlTest_f( void )
-{
-	static const char *links[] =
-	{
-		"openmohaa://connect/203.0.113.7:12203",			// documentation addresses (RFC 5737, RFC 3849)
-		"openmohaa:connect/[2001:db8::1]:12203",
-		"openmohaa://connect/example.test?password=abc",	// the query is dropped
-		"openmohaa://connect/bad;host",						// refused: a character outside a-zA-Z0-9.:-[]
-		"openmohaa://connect/",								// refused: no argument
-		"openmohaa://status",								// refused: only connect
-		"quake3://connect/203.0.113.7",						// another scheme: ignored
-	};
-	char path[ MAX_OSPATH ];
-	int i;
-
-	if( Cmd_Argc( ) != 2 )
-	{
-		Com_Printf( "urltest <name>: the openmohaa:// handler, logs to <fs_homepath>/kbreplay-<name>.log\n" );
-		return;
-	}
-
-	Com_sprintf( path, sizeof( path ), "%s/kbreplay-%s.log", Cvar_VariableString( "fs_homepath" ), Cmd_Argv( 1 ) );
-	kb_log = fopen( path, "w" );
-	if( !kb_log )
-	{
-		Com_Printf( "urltest: can't write %s\n", path );
-		return;
-	}
-	fprintf( kb_log, "urltest %s: PROTOCOL_HANDLER \"%s\"\n", Cmd_Argv( 1 ), PROTOCOL_HANDLER );
-
-	Cmd_RemoveCommand( "connect" );
-	Cmd_AddCommand( "connect", UrlConnect_f );
-
-	for( i = 0; i < ARRAY_LEN( links ); i++ )
-	{
-		NSAppleEventDescriptor *event = [NSAppleEventDescriptor appleEventWithEventClass:kInternetEventClass
-			eventID:kAEGetURL targetDescriptor:[NSAppleEventDescriptor currentProcessDescriptor]
-			returnID:kAutoGenerateReturnID transactionID:kAnyTransactionID];
-		NSError *error = nil;
-
-		[event setParamDescriptor:[NSAppleEventDescriptor descriptorWithString:@( links[ i ] )]
-			forKeyword:keyDirectObject];
-		fprintf( kb_log, "link %s\n", links[ i ] );
-		fflush( kb_log );
-		if( ![event sendEventWithOptions:NSAppleEventSendNoReply timeout:5 error:&error] )
-			fprintf( kb_log, "  not sent: %s\n", error.description.UTF8String );
-		// the handler appends connect to the command buffer: run it now, under this link
-		Cbuf_Execute( 0 );
-	}
-
-	fprintf( kb_log, "done\n" );
-	fflush( kb_log );
-	Cbuf_AddText( "quit\n" );
-}
-#endif
-
 /*
 ===============
 KbReplay_Frame
@@ -1109,9 +1022,6 @@ void KbReplay_Frame( void )
 		Cmd_AddCommand( "msreplay", MsReplay_f );
 		Cmd_AddCommand( "mslog", MsLog_f );
 		Cmd_AddCommand( "dlgtest", DlgTest_f );
-#ifdef PROTOCOL_HANDLER
-		Cmd_AddCommand( "urltest", UrlTest_f );
-#endif
 		registered = qtrue;
 	}
 
