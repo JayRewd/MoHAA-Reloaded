@@ -3,7 +3,7 @@
 #   port/glcheck.sh [flavor]     (default metal)
 # 1. The plan's grep over code/ and cmake/. Each hit has the documented exceptions removed from its line first
 #    (cvar values and shader keywords kept for old configs and retail data, false positives, upstream code kept
-#    for small diffs, vendored SDL until Phase 6, non-macOS files until Phase 7); whatever still matches is printed.
+#    for small diffs, vendored SDL until Phase 6); whatever still matches is printed.
 # 2. otool -L and nm -u of the installed game binary: no OpenGL framework, no GL/CGL/NSOpenGL imports.
 # Exit status 0 = clean. Run it after upstream merges too: a merge can bring GL code back.
 set -uo pipefail
