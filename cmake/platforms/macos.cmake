@@ -11,6 +11,10 @@ option(BUILD_MACOS_APP "Deploy as a macOS .app" ON)
 # its cvars, its per-frame call and the cURL loader are not compiled.
 set(USE_HTTP OFF CACHE INTERNAL "")
 
+# openal-soft is built from code/thirdparty (cmake/libraries/openal.cmake) and linked directly: the client calls
+# it without function pointers, and the app carries its own copy in Contents/Frameworks (finish_macos_app)
+set(USE_OPENAL_DLOPEN OFF CACHE INTERNAL "")
+
 enable_language(OBJC)
 
 list(APPEND SYSTEM_PLATFORM_SOURCES ${SOURCE_DIR}/sys/sys_osx.m)
@@ -73,6 +77,19 @@ function(finish_macos_app)
         add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
             COMMAND lipo ${LIBRARY} -thin arm64 -output $<TARGET_FILE_DIR:${CLIENT_BINARY}>/${LIBRARY_NAME})
     endforeach()
+
+    # openal-soft goes into Contents/Frameworks under its install name (libopenal.1.dylib, found through the
+    # client's rpath), with its license files in Contents/Resources/openal-soft: the LGPL, and the two notices
+    # of code built into it (BSD-3Clause, LICENSE-pffft)
+    if(TARGET OpenAL)
+        set(FRAMEWORKS_DIR $<TARGET_FILE_DIR:${CLIENT_BINARY}>/../Frameworks)
+        add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${FRAMEWORKS_DIR} ${RESOURCES_DIR}/openal-soft
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OpenAL> ${FRAMEWORKS_DIR}/$<TARGET_SONAME_FILE_NAME:OpenAL>
+            COMMAND ${CMAKE_COMMAND} -E copy ${INTERNAL_OPENAL_DIR}/COPYING ${INTERNAL_OPENAL_DIR}/BSD-3Clause
+                ${INTERNAL_OPENAL_DIR}/LICENSE-pffft ${RESOURCES_DIR}/openal-soft)
+        set_property(TARGET ${CLIENT_BINARY} APPEND PROPERTY INSTALL_RPATH @executable_path/../Frameworks)
+    endif()
 
     # Seal the installed bundle with an ad-hoc signature (the Developer ID path below signs instead), and check
     # the seal. No hardened runtime: its library validation would refuse the libraries of other signers that the
