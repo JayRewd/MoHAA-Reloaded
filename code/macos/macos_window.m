@@ -73,7 +73,7 @@ typedef enum
 @interface MacOSWindow : NSWindow
 @end
 
-@interface MacOSView : NSView
+@interface MacOSView : NSView <NSTextInputClient>
 @end
 
 @interface MacOSWindowDelegate : NSObject <NSWindowDelegate>
@@ -116,6 +116,11 @@ static void MTLimp_LeaveExclusive( void );
 @end
 
 @implementation MacOSView
+{
+	NSString	*markedText;	// an input method's text being composed; it never reaches the game
+	NSRange		markedRange;
+	NSRange		selectedRange;
+}
 
 - (BOOL)acceptsFirstResponder
 {
@@ -138,6 +143,91 @@ static void MTLimp_LeaveExclusive( void );
 
 - (void)flagsChanged:(NSEvent *)event
 {
+}
+
+// The text input client: the pump passes each key-down through interpretKeyEvents: (macos_input.m), so dead keys
+// and input methods compose text as in any text field. It is SDL's (SDLTranslatorResponder), without a subview: the
+// view's only layer stays the CAMetalLayer, which fullscreen needs to go direct to display.
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange
+{
+	if( [string isKindOfClass:[NSAttributedString class]] )
+		string = [string string];
+
+	// the composed text replaces the marked text
+	if( [self hasMarkedText] )
+		[self unmarkText];
+
+	MacOS_InsertText( string );
+}
+
+// the keys reach the game as key events: the commands they map to (cancelOperation:, insertNewline:, ...) are
+// ignored, and nothing beeps
+- (void)doCommandBySelector:(SEL)selector
+{
+}
+
+- (void)setMarkedText:(id)string selectedRange:(NSRange)selected replacementRange:(NSRange)replacementRange
+{
+	if( [string isKindOfClass:[NSAttributedString class]] )
+		string = [string string];
+
+	if( [string length] == 0 )
+	{
+		[self unmarkText];
+		return;
+	}
+
+	markedText = [string copy];
+	selectedRange = selected;
+	markedRange = NSMakeRange( 0, markedText.length );
+}
+
+- (void)unmarkText
+{
+	markedText = nil;
+}
+
+- (BOOL)hasMarkedText
+{
+	return markedText != nil;
+}
+
+- (NSRange)markedRange
+{
+	return markedRange;
+}
+
+- (NSRange)selectedRange
+{
+	return selectedRange;
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText
+{
+	return @[];
+}
+
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange
+{
+	return nil;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point
+{
+	return 0;
+}
+
+// an input method's candidate window opens at the game's top left corner, as with SDL (the game has no text
+// position to give)
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange
+{
+	NSRect rect = NSZeroRect;
+
+	if( actualRange )
+		*actualRange = range;
+
+	rect.origin = [self.window convertPointToScreen:NSMakePoint( 0, self.bounds.size.height )];
+	return rect;
 }
 
 @end

@@ -36,4 +36,8 @@ qboolean	MacOS_AppStarted( void );
 void		MacOS_PumpEvents( void );			// handles every pending event, never waits (IN_Frame)
 qboolean	MacOS_TakeQuitRequest( void );		// Cmd+Q, the close button or a quit from the system since the last call
 
+// macos_input.m
+void		MacOS_KeyEvent( NSEvent *event );		// a key or modifier event, from the pump before AppKit dispatches it
+void		MacOS_InsertText( NSString *text );	// text from the window's text input client (the content view)
+
 #endif

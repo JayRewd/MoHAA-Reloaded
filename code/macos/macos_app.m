@@ -135,6 +135,9 @@ MacOS_PumpEvents
 
 Handles every pending event and returns at once (a nil date is distantPast). Running the run loop also serves the
 main dispatch queue.
+
+The input layer reads the key events here, before AppKit dispatches them, as SDL did: AppKit drops some of them on
+the way to the window (key-ups with Cmd held). sendEvent: still runs for them, so Cmd key equivalents reach the menu.
 ===============
 */
 void MacOS_PumpEvents( void )
@@ -146,6 +149,18 @@ void MacOS_PumpEvents( void )
 		while( ( event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:nil inMode:NSDefaultRunLoopMode
 			dequeue:YES] ) != nil )
 		{
+			switch( event.type )
+			{
+				case NSEventTypeKeyDown:
+				case NSEventTypeKeyUp:
+				case NSEventTypeFlagsChanged:
+					MacOS_KeyEvent( event );
+					break;
+
+				default:
+					break;
+			}
+
 			[NSApp sendEvent:event];
 		}
 	}
