@@ -2516,7 +2516,7 @@ void Com_Frame( void ) {
 #ifdef __cplusplus
 		fpstime = fps_clock_t::now();
 #else
-		fpstime = Sys_Milliseconds();
+		fpstime = Sys_Microseconds();	// whole milliseconds read 238.8 or 242.4 at 240 (Metal port)
 #endif
 
 		delta = fpstime - fpslasttime;
@@ -2534,7 +2534,7 @@ void Com_Frame( void ) {
 		}
 #else
 		if (fpstotal) {
-			currentfps = MAX_FPS_TIMES / (fpstotal / 1000.0);
+			currentfps = MAX_FPS_TIMES / (fpstotal / 1000000.0);
 		} else {
 			currentfps = 0.0;
 		}
