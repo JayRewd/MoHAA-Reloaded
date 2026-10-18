@@ -127,7 +127,11 @@ const char* Sys_GetWholeClipboard(void)
     char *data = NULL;
     char *cliptext;
 
+#ifdef USE_SDL
     if ((cliptext = SDL_GetClipboardText()) != NULL) {
+#else
+    if ((cliptext = MacOS_GetClipboardText()) != NULL) {
+#endif
         if (cliptext[0] != 0) {
             // It's necessary to limit buffersize to 4096 as each character
             // is pasted via CharEvent, which is very-very slow and jams up the EventQueue.
@@ -147,7 +151,11 @@ const char* Sys_GetWholeClipboard(void)
             // original game skips the Windows-specific '\r' (carriage return) char here!
             Q_strncpyz(data, cliptext, bufsize);
         }
+#ifdef USE_SDL
         SDL_free(cliptext);
+#else
+        free(cliptext);
+#endif
     }
     return data;
 #else
@@ -167,7 +175,11 @@ void Sys_SetClipboard(const char *contents)
         return;
     }
 
+#ifdef USE_SDL
     SDL_SetClipboardText(contents);
+#else
+    MacOS_SetClipboardText(contents);
+#endif
 #endif
 }
 

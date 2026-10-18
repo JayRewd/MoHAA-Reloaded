@@ -35,7 +35,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <emscripten/emscripten.h>
 #endif
 
-#ifndef DEDICATED
+#if !defined(DEDICATED) && defined(USE_SDL)
 #ifdef USE_INTERNAL_SDL_HEADERS
 #	include "SDL.h"
 #	include "SDL_cpuinfo.h"
@@ -117,7 +117,11 @@ Restart the input subsystem
 void Sys_In_Restart_f( void )
 {
 #ifndef DEDICATED
+#ifdef USE_SDL
 	if( !SDL_WasInit( SDL_INIT_VIDEO ) )
+#else
+	if( !MacOS_WindowExists( ) )
+#endif
 	{
 		Com_Printf( "in_restart: Cannot restart input while video is shutdown\n" );
 		return;
@@ -288,7 +292,7 @@ static Q_NO_RETURN void Sys_Exit( int exitCode )
 
 	CON_Shutdown( );
 
-#ifndef DEDICATED
+#if !defined(DEDICATED) && defined(USE_SDL)
 	SDL_Quit( );
 #endif
 
@@ -324,7 +328,7 @@ cpuFeatures_t Sys_GetProcessorFeatures( void )
 {
 	cpuFeatures_t features = 0;
 
-#ifndef DEDICATED
+#if !defined(DEDICATED) && defined(USE_SDL)
 	if( SDL_HasRDTSC( ) )      features |= CF_RDTSC;
 	if( SDL_Has3DNow( ) )      features |= CF_3DNOW;
 	if( SDL_HasMMX( ) )        features |= CF_MMX;
@@ -791,7 +795,7 @@ int main( int argc, char **argv )
 	Sys_LaunchAutoupdater(argc, argv);
 #endif
 
-#ifndef DEDICATED
+#if !defined(DEDICATED) && defined(USE_SDL)
 	// SDL version check
 
 	// Compile time

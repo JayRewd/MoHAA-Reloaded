@@ -1,7 +1,8 @@
 #!/bin/bash
 # Input-to-present latency in a live map: the cl_latencyStats probe with synthetic mouse movement.
 #   port/latency.sh <renderer> <name> [seconds] [engine args...]
-#       renderer: metal | opengl1 (Metal from the metal install, GL1 from the GL1 reference install, port/build.sh gl);
+#       renderer: metal | opengl1 (Metal from the metal install, or OMM_FLAVOR's, e.g. OMM_FLAVOR=native; GL1 from
+#       the GL1 reference install, port/build.sh gl);
 #       seconds of mouse movement (default 20)
 #       -> build.noindex/latency/<name>.log; prints the probe's whole-run numbers and the mouse tool's line
 # Spawns in dm/mohdm6 (single-player mode on a local server, like the fixed views), turns the probe on, then
@@ -14,7 +15,8 @@
 # The game window must have the keyboard focus, or SDL ignores the mouse: don't click elsewhere during a run.
 # Environment:
 #   MOUSE=0     no mouse movement (to look at presents alone; the probe then has no input frames)
-#   LATSTATS=2  cl_latencyStats 2: also log every frame's raw times (needed by TRACE's per-frame check)
+#   LATSTATS=2  cl_latencyStats 2: also log every frame's raw times (needed by TRACE's per-frame check);
+#               LATSTATS=0 leaves the probe off (with MOUSE=0 and TRACE=1: only what the display showed)
 #   TRACE=1     record 6 s of Instruments' Metal System Trace during the movement (-> <name>.trace, ~0.3 GB,
 #               kept) and summarize what the display showed with port/display_trace.py: swaps per display,
 #               direct to display or why not, presented-handler statuses, and the probe's present times
@@ -51,7 +53,7 @@ EOF
 
 LOG="$OUT/$NAME.log"
 rm -rf "$OMM_HOME/main/configs"
-if [ "$R" = opengl1 ]; then FLAVOR=gl; else FLAVOR=metal; fi
+if [ "$R" = opengl1 ]; then FLAVOR=gl; else FLAVOR="${OMM_FLAVOR:-metal}"; fi
 perl -e 'alarm shift; exec @ARGV' $(( SECS + 90 )) "$OMM_PORT/run.sh" "$FLAVOR" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
 	+set r_swapInterval 0 +set com_maxfps 250 +set com_maxfpsUnfocused 0 +set com_maxfpsMinimized 0 \

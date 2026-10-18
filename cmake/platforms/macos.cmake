@@ -6,6 +6,11 @@ endif()
 
 option(BUILD_MACOS_APP "Deploy as a macOS .app" ON)
 
+# SDL2 for the application, the window and input. OFF builds the native AppKit layer in code/macos instead (Phase 6
+# of docs/METAL_PORT_PLAN.md). SDL stays the default until the native layer has replaced it: until then the SDL build
+# is the baseline the native one is measured against.
+option(USE_SDL "SDL2 for the window and input (OFF: the native AppKit layer, code/macos)" ON)
+
 # HTTP only serves upstream's update checker (it asks GitHub for upstream OpenMoHAA releases, whose builds are not
 # this port's), and it never ran: HAS_LIBCURL, which loads libcurl, is defined nowhere. Without HTTP the checker,
 # its cvars, its per-frame call and the cURL loader are not compiled.

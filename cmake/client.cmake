@@ -9,6 +9,18 @@ include(shared_script)
 
 include(renderer_common)
 
+if(USE_SDL)
+    set(CLIENT_INPUT_SOURCES
+        ${SOURCE_DIR}/sdl/sdl_input.c
+        ${SOURCE_DIR}/sdl/sdl_mouse.c)
+else()
+    # The native AppKit layer: the application and its event pump, input
+    set(CLIENT_INPUT_SOURCES
+        ${SOURCE_DIR}/macos/macos_app.m
+        ${SOURCE_DIR}/macos/macos_input.m)
+    set_source_files_properties(${CLIENT_INPUT_SOURCES} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+
 set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/cl_avi.cpp
     ${SOURCE_DIR}/client/cl_cgame.cpp
@@ -55,8 +67,7 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/snd_miles_new.cpp
     ${SOURCE_DIR}/client/snd_openal_new.cpp
     ${SOURCE_DIR}/client/usignal.cpp
-    ${SOURCE_DIR}/sdl/sdl_input.c
-    ${SOURCE_DIR}/sdl/sdl_mouse.c
+    ${CLIENT_INPUT_SOURCES}
     ${CLIENT_PLATFORM_SOURCES}
 )
 

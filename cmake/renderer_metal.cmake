@@ -14,6 +14,14 @@ include(renderer_common)
 
 set(RENDERER_METAL_DIR ${SOURCE_DIR}/renderer_metal)
 
+# The window: SDL's, or the native AppKit one (USE_SDL, cmake/platforms/macos.cmake)
+if(USE_SDL)
+    set(RENDERER_METAL_WINDOW_SOURCE ${SOURCE_DIR}/sdl/sdl_mtlimp.m)
+else()
+    set(RENDERER_METAL_WINDOW_SOURCE ${SOURCE_DIR}/macos/macos_window.m)
+    list(APPEND RENDERER_LIBRARIES "-framework CoreGraphics")
+endif()
+
 set(RENDERER_METAL_SOURCES
     ${RENDERER_METAL_DIR}/tr_backend.c
     ${RENDERER_METAL_DIR}/tr_bsp.c
@@ -48,7 +56,7 @@ set(RENDERER_METAL_SOURCES
     ${RENDERER_METAL_DIR}/tr_util.cpp
     ${RENDERER_METAL_DIR}/tr_vis.cpp
     ${RENDERER_METAL_DIR}/tr_world.c
-    ${SOURCE_DIR}/sdl/sdl_mtlimp.m
+    ${RENDERER_METAL_WINDOW_SOURCE}
 )
 
 set(RENDERER_METAL_SHADERS
@@ -93,5 +101,5 @@ list(APPEND RENDERER_LIBRARIES "-framework Metal" "-framework QuartzCore")
 
 set_source_files_properties(
     ${RENDERER_METAL_DIR}/tr_mtl.m
-    ${SOURCE_DIR}/sdl/sdl_mtlimp.m
+    ${RENDERER_METAL_WINDOW_SOURCE}
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
