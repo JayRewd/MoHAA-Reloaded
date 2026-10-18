@@ -11,7 +11,6 @@ enable_language(OBJC)
 list(APPEND SYSTEM_PLATFORM_SOURCES ${SOURCE_DIR}/sys/sys_osx.m)
 
 list(APPEND COMMON_LIBRARIES "-framework Cocoa")
-list(APPEND CLIENT_LIBRARIES "-framework IOKit")
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
 set(CMAKE_OSX_ARCHITECTURES arm64)
