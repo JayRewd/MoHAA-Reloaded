@@ -7,6 +7,13 @@
 // (KbReplay_LogEvent, called from Com_QueueEvent) into <fs_homepath>/kbreplay-<name>.log. Both input layers must
 // log the same stream. The events carry what a real keyboard's would: the device-dependent modifier bits, the
 // characters of the current layout (UCKeyTranslate, with dead keys on key-down), isARepeat.
+//
+// `msreplay <name>` does the same with the mouse (Phase 6d): movement events (whole deltas: posted events can't
+// carry fractions), buttons, wheel notches and fine scrolling, built as CGEvents (CGEventCreateMouseEvent and
+// friends) on a mouse event AppKit made for the game window (MsPost) and posted as NSEvents ([NSEvent
+// eventWithCGEvent:], [NSApp postEvent:atStart:]; never CGEventPost), around the capture changes (the menu, the
+// console), and logs SE_MOUSE too, with the UI's cursor position at every step where it is used (released, or a
+// captured menu). A capture still takes the real cursor (warped to the window's center and hidden).
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -255,6 +262,8 @@ void KbReplay_LogEvent( int type, int value, int value2 )
 		fprintf( kb_log, "  SE_KEY %s %s\n", Key_KeynumToString( value ), value2 ? "down" : "up" );
 	else if( type == SE_CHAR )
 		fprintf( kb_log, "  SE_CHAR 0x%x\n", value );
+	else if( type == SE_MOUSE )
+		fprintf( kb_log, "  SE_MOUSE %d %d\n", value, value2 );
 	else
 		return;
 
@@ -312,6 +321,419 @@ static void KbReplay_f( void )
 }
 
 /*
+==============================================================================
+
+THE MOUSE REPLAY (msreplay)
+
+==============================================================================
+*/
+
+enum { MS_END, MS_STEP, MS_MOVE, MS_AT, MS_DOWN, MS_UP, MS_DRAG, MS_WHEEL, MS_WHEELPX, MS_KEY, MS_MOD, MS_KEYDOWN };
+
+typedef struct
+{
+	int			op;
+	double		a, b, c;
+	const char	*note;
+} msAction_t;
+
+#define MSTEP( note )		{ MS_STEP, 0, 0, 0, note }
+#define MOVE( dx, dy )		{ MS_MOVE, dx, dy, 0, NULL }	// a movement event's deltas, whole (a released cursor moves with them)
+#define AT( x, y )			{ MS_AT, x, y, 0, NULL }		// the cursor moves to x, y over the window: points from its top left
+#define BDOWN( b )			{ MS_DOWN, b, 0, 0, NULL }		// AppKit's button numbers: 0 left, 1 right, 2 middle
+#define BUP( b )			{ MS_UP, b, 0, 0, NULL }
+#define CLICK( b )			BDOWN( b ), BUP( b )
+#define DRAG( b, dx, dy )	{ MS_DRAG, b, dx, dy, NULL }	// a movement with button b down
+#define WHEEL( n )			{ MS_WHEEL, n, 0, 0, NULL }		// wheel notches (lines), up > 0
+#define WHEELPX( n )		{ MS_WHEELPX, n, 0, 0, NULL }	// fine scrolling (pixels, a trackpad's)
+#define KEY( vk )			{ MS_KEY, vk, 0, 0, NULL }		// a key press and release
+#define KMOD( vk )			{ MS_MOD, vk, 0, 0, NULL }		// a modifier key toggles
+#define KDOWN( vk )			{ MS_KEYDOWN, vk, 0, 0, NULL }
+
+static const msAction_t ms_script[] =
+{
+	// in the game: captured
+	MSTEP( "game: the first movement after the capture (dropped)" ), MOVE( 5, 3 ),
+	MSTEP( "game: whole moves" ), MOVE( 5, 3 ), MOVE( -7, 2 ), MOVE( 0, -4 ),
+	MSTEP( "game: small moves" ), MOVE( 1, 0 ), MOVE( 0, -1 ), MOVE( -1, 1 ),
+	MSTEP( "game: no movement" ), MOVE( 0, 0 ),
+	MSTEP( "game: fast moves" ), MOVE( 120, -80 ), MOVE( 250, 33 ),
+	MSTEP( "game: left button" ), CLICK( 0 ),
+	MSTEP( "game: right button" ), CLICK( 1 ),
+	MSTEP( "game: middle button" ), CLICK( 2 ),
+	MSTEP( "game: buttons 4, 5, 6 and 8" ), CLICK( 3 ), CLICK( 4 ), CLICK( 5 ), CLICK( 7 ),
+	MSTEP( "game: left down twice, up twice" ), BDOWN( 0 ), BDOWN( 0 ), BUP( 0 ), BUP( 0 ),
+	MSTEP( "game: a drag with the left button" ), BDOWN( 0 ), DRAG( 0, 3, 4 ), DRAG( 0, -2, 1 ), BUP( 0 ),
+	MSTEP( "game: a drag with the right button" ), BDOWN( 1 ), DRAG( 1, -6, 1 ), BUP( 1 ),
+	MSTEP( "game: moves between button events" ), BDOWN( 2 ), MOVE( 2, 2 ), BUP( 2 ), MOVE( -2, -2 ),
+	MSTEP( "game: wheel notches" ), WHEEL( 1 ), WHEEL( -1 ), WHEEL( 3 ), WHEEL( -2 ),
+	MSTEP( "game: fine scrolling adds up" ), WHEELPX( 4 ), WHEELPX( 4 ), WHEELPX( 4 ), WHEELPX( 12 ),
+	MSTEP( "game: fine scrolling changes direction" ), WHEELPX( 6 ), WHEELPX( -6 ), WHEELPX( -6 ),
+
+	// the menu: released in a window (the cursor at the window's center), captured in fullscreen
+	MSTEP( "game: escape opens the menu" ), KEY( kVK_Escape ),
+	MSTEP( "menu: movement events" ), MOVE( 10, 5 ), MOVE( -3, 2 ),
+	MSTEP( "menu: the cursor over the window" ), AT( 100, 100 ), AT( 101.7, 50.2 ),
+	MSTEP( "menu: near the bottom right corner" ), AT( 1279.5, 719.5 ),
+	MSTEP( "menu: leaving the window on the right" ), AT( 1290, 700 ), AT( 1300, 600 ),
+	MSTEP( "menu: back over the window" ), AT( 1200, 650 ),
+	MSTEP( "menu: leaving at the top left" ), AT( -0.5, -0.5 ), AT( -10, 20 ),
+	MSTEP( "menu: back near the corner" ), AT( 20, 20 ),
+	MSTEP( "menu: a click in the corner (none in a captured menu)" ), CLICK( 0 ),
+	MSTEP( "menu: a right click" ), CLICK( 1 ),
+	MSTEP( "menu: a drag out of the window and back" ), BDOWN( 0 ), DRAG( 0, -30, 2 ), DRAG( 0, 20, 3 ), BUP( 0 ),
+	MSTEP( "menu: wheel" ), WHEEL( 1 ), WHEEL( -1 ),
+	MSTEP( "menu: escape back to the game" ), KEY( kVK_Escape ),
+	MSTEP( "game: captured again: the first movement is dropped" ), MOVE( 3, 3 ), MOVE( 2, -2 ),
+
+	// the console: released in a window
+	MSTEP( "game: the console key" ), KEY( kVK_ANSI_Grave ),
+	MSTEP( "console: movement" ), MOVE( 5, 5 ), AT( 300, 200 ),
+	MSTEP( "console: wheel" ), WHEEL( -1 ),
+	MSTEP( "console: shift down" ), KMOD( kVK_Shift ),
+	MSTEP( "console: shift+grave (~) closes it" ), KEY( kVK_ANSI_Grave ),
+	MSTEP( "console: shift up" ), KMOD( kVK_Shift ),
+	MSTEP( "game: captured again" ), MOVE( 1, 1 ), MOVE( -4, 4 ),
+
+	// Cmd+Q with the left button held
+	MSTEP( "game: left button down" ), BDOWN( 0 ),
+	MSTEP( "command down" ), KMOD( kVK_Command ),
+	MSTEP( "command+q" ), KDOWN( kVK_ANSI_Q ),
+
+	{ MS_END }
+};
+
+static int			ms_pos = -1;		// the next action, -1 = idle
+static double		ms_x, ms_y;			// the replayed cursor over the window: points from its top left
+static int			ms_captured = -1;	// the capture at the last step
+static qboolean		ms_skipButtons;		// a captured menu (fullscreen): a click could hit anything
+
+/*
+===============
+MsGlobal
+
+A point of the window's content (points from its top left) in global display coordinates.
+===============
+*/
+static CGPoint MsGlobal( double x, double y )
+{
+	NSRect frame = [kb_gameWindow convertRectToScreen:kb_gameWindow.contentView.frame];
+
+	return CGPointMake( NSMinX( frame ) + x, NSMaxY( NSScreen.screens.firstObject.frame ) - NSMaxY( frame ) + y );
+}
+
+/*
+===============
+MsPost
+
+The CGEvent's fields go onto a mouse event made by AppKit for the game window at the replayed cursor's point, which
+becomes the NSEvent posted into the game's queue. (A CGEvent alone gets no window, or with the window number's field
+a wrong point, and AppKit drops it; the fields that hold the window and its point are left alone. Its delta fields
+are integers, so posted movement has whole deltas only.) What AppKit made of it goes to the log.
+===============
+*/
+static void MsPost( CGEventRef cg )
+{
+	static const char *types[] = { [NSEventTypeLeftMouseDown] = "left down", [NSEventTypeLeftMouseUp] = "left up",
+		[NSEventTypeRightMouseDown] = "right down", [NSEventTypeRightMouseUp] = "right up",
+		[NSEventTypeMouseMoved] = "moved", [NSEventTypeLeftMouseDragged] = "left dragged",
+		[NSEventTypeRightMouseDragged] = "right dragged", [NSEventTypeScrollWheel] = "scroll",
+		[NSEventTypeOtherMouseDown] = "other down", [NSEventTypeOtherMouseUp] = "other up",
+		[NSEventTypeOtherMouseDragged] = "other dragged" };
+	NSInteger windowNumber = kb_gameWindow.windowNumber;
+	NSEvent *base = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:NSMakePoint( ms_x,
+		kb_gameWindow.contentView.bounds.size.height - ms_y ) modifierFlags:0
+		timestamp:[NSProcessInfo processInfo].systemUptime windowNumber:windowNumber context:nil eventNumber:0
+		clickCount:1 pressure:1];
+	CGEventRef copy = CGEventCreateCopy( base.CGEvent );
+	NSEvent *event;
+	int field;
+
+	CGEventSetType( copy, CGEventGetType( cg ) );
+	for( field = 0; field < 256; field++ )
+	{
+		// the type, the window and its point (found by trying)
+		if( field == 41 || field == 43 || field == 44 || field == 50 || field == 51 || field == 52 || field == 55 ||
+			field == 102 )
+			continue;
+		CGEventSetIntegerValueField( copy, field, CGEventGetIntegerValueField( cg, field ) );
+	}
+	if( CGEventGetType( cg ) == kCGEventScrollWheel )
+	{
+		CGEventSetDoubleValueField( copy, kCGScrollWheelEventFixedPtDeltaAxis1,
+			CGEventGetDoubleValueField( cg, kCGScrollWheelEventFixedPtDeltaAxis1 ) );
+	}
+	event = [NSEvent eventWithCGEvent:copy];
+	CFRelease( copy );
+	CFRelease( cg );
+
+	if( event.type == NSEventTypeScrollWheel )
+	{
+		fprintf( kb_log, "    posted %s: game window %d, at %.2f,%.2f, deltaY %.6f, precise %d\n", types[ event.type ],
+			event.windowNumber == windowNumber, event.locationInWindow.x, event.locationInWindow.y, event.deltaY,
+			event.hasPreciseScrollingDeltas );
+	}
+	else
+	{
+		fprintf( kb_log, "    posted %s: game window %d, at %.2f,%.2f, delta %.9f,%.9f, button %ld\n",
+			types[ event.type ] ?: "?", event.windowNumber == windowNumber, event.locationInWindow.x,
+			event.locationInWindow.y, event.deltaX, event.deltaY, (long)event.buttonNumber );
+	}
+	fflush( kb_log );
+
+	[NSApp postEvent:event atStart:NO];
+}
+
+/*
+===============
+MsMouse
+===============
+*/
+static void MsMouse( CGEventType type, int button, double dx, double dy )
+{
+	CGEventRef cg = CGEventCreateMouseEvent( NULL, type, MsGlobal( ms_x, ms_y ), (CGMouseButton)button );
+
+	CGEventSetIntegerValueField( cg, kCGMouseEventDeltaX, (int64_t)dx );
+	CGEventSetIntegerValueField( cg, kCGMouseEventDeltaY, (int64_t)dy );
+	CGEventSetIntegerValueField( cg, kCGMouseEventClickState, 1 );
+	MsPost( cg );
+}
+
+/*
+===============
+MsButton
+===============
+*/
+static void MsButton( int button, qboolean down )
+{
+	CGEventType type;
+
+	if( ms_skipButtons )
+	{
+		fprintf( kb_log, "    button %d %s: skipped (a captured menu)\n", button, down ? "down" : "up" );
+		return;
+	}
+
+	if( button == 0 )
+		type = down ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
+	else if( button == 1 )
+		type = down ? kCGEventRightMouseDown : kCGEventRightMouseUp;
+	else
+		type = down ? kCGEventOtherMouseDown : kCGEventOtherMouseUp;
+	MsMouse( type, button, 0, 0 );
+}
+
+/*
+===============
+MsWheel
+===============
+*/
+static void MsWheel( CGScrollEventUnit unit, int amount )
+{
+	CGEventRef cg = CGEventCreateScrollWheelEvent( NULL, unit, 1, amount );
+
+	CGEventSetLocation( cg, MsGlobal( ms_x, ms_y ) );
+	MsPost( cg );
+}
+
+/*
+===============
+MsReplay_f
+===============
+*/
+static void MsReplay_f( void )
+{
+	char path[ MAX_OSPATH ];
+
+	if( Cmd_Argc( ) != 2 )
+	{
+		Com_Printf( "msreplay <name>: posts the mouse replay, logs to <fs_homepath>/kbreplay-<name>.log\n" );
+		return;
+	}
+
+	Com_sprintf( path, sizeof( path ), "%s/kbreplay-%s.log", Cvar_VariableString( "fs_homepath" ), Cmd_Argv( 1 ) );
+	kb_log = fopen( path, "w" );
+	if( !kb_log )
+	{
+		Com_Printf( "msreplay: can't write %s\n", path );
+		return;
+	}
+
+	kb_gameWindow = NSApp.keyWindow ?: NSApp.mainWindow;
+	fprintf( kb_log, "msreplay %s: game window key %d\n", Cmd_Argv( 1 ), kb_gameWindow.keyWindow );
+	fflush( kb_log );
+
+	ms_pos = 0;
+	kb_wait = 0;
+	kb_stepNum = 0;
+}
+
+/*
+===============
+MsLog_f
+
+`mslog <name>`: no replay, only the log of the queued events (a real mouse or keyboard, e.g. GCMouse's path with
+in_mouseRaw 1), with a line every second.
+===============
+*/
+static int ms_logFrames = -1;
+
+static void MsLog_f( void )
+{
+	char path[ MAX_OSPATH ];
+
+	if( Cmd_Argc( ) != 2 )
+	{
+		Com_Printf( "mslog <name>: logs the queued events to <fs_homepath>/kbreplay-<name>.log\n" );
+		return;
+	}
+
+	Com_sprintf( path, sizeof( path ), "%s/kbreplay-%s.log", Cvar_VariableString( "fs_homepath" ), Cmd_Argv( 1 ) );
+	kb_log = fopen( path, "w" );
+	if( kb_log )
+	{
+		fprintf( kb_log, "mslog %s: in_mouseRaw %d\n", Cmd_Argv( 1 ), Cvar_VariableIntegerValue( "in_mouseRaw" ) );
+		fflush( kb_log );
+		ms_logFrames = 0;
+	}
+}
+
+/*
+===============
+MsReplay_Frame
+===============
+*/
+static void MsReplay_Frame( void )
+{
+	const msAction_t *a;
+	NSSize size;
+	qboolean captured;
+
+	if( kb_wait > 0 )
+	{
+		kb_wait--;
+		return;
+	}
+
+	// the first step waits for the game: in the map, no menu or loading screen up, the mouse captured (~10 s)
+	if( ms_pos == 0 && ( clc.state != CA_ACTIVE || Key_GetCatcher( ) != 0 || !IN_IsCursorActive( ) ) &&
+		kb_startWait < 2500 )
+	{
+		if( kb_startWait++ % 250 == 0 )
+		{
+			fprintf( kb_log, "waiting for the game: state %d, catcher 0x%x, captured %d\n", clc.state,
+				Key_GetCatcher( ), IN_IsCursorActive( ) );
+			fflush( kb_log );
+		}
+		return;
+	}
+
+	a = &ms_script[ ms_pos ];
+	if( a->op == MS_END )
+	{
+		if( ++kb_afterEnd == 100 )
+		{
+			fprintf( kb_log, "still running 100 frames after Cmd+Q: quitting\n" );
+			fflush( kb_log );
+			Cbuf_AddText( "quit\n" );
+		}
+		return;
+	}
+
+	// a capture parks the cursor at the window's center, and so does the release
+	size = kb_gameWindow.contentView.bounds.size;
+	captured = IN_IsCursorActive( );
+	if( captured != ms_captured )
+	{
+		ms_captured = captured;
+		ms_x = (int)size.width / 2;
+		ms_y = (int)size.height / 2;
+	}
+	ms_skipButtons = captured && ( Key_GetCatcher( ) & KEYCATCH_UI );
+
+	// the UI's cursor where it is used: released, or a captured menu
+	if( captured && !in_guimouse )
+	{
+		fprintf( kb_log, "step %d: %s (catcher 0x%x, captured %d, guimouse %d)\n", ++kb_stepNum, a->note,
+			Key_GetCatcher( ), captured, in_guimouse );
+	}
+	else
+	{
+		fprintf( kb_log, "step %d: %s (catcher 0x%x, captured %d, guimouse %d, ui cursor %d,%d)\n", ++kb_stepNum,
+			a->note, Key_GetCatcher( ), captured, in_guimouse, cl.mousex, cl.mousey );
+	}
+	fflush( kb_log );
+	kb_wait = 3;
+
+	for( a++, ms_pos++; a->op != MS_STEP && a->op != MS_END; a++, ms_pos++ )
+	{
+		switch( a->op )
+		{
+			case MS_MOVE:
+				if( !captured )
+				{
+					ms_x += a->a;
+					ms_y += a->b;
+				}
+				MsMouse( kCGEventMouseMoved, 0, a->a, a->b );
+				break;
+
+			case MS_AT:
+				ms_x = a->a;
+				ms_y = a->b;
+				MsMouse( kCGEventMouseMoved, 0, 0, 0 );
+				break;
+
+			case MS_DOWN:
+				MsButton( (int)a->a, qtrue );
+				break;
+
+			case MS_UP:
+				MsButton( (int)a->a, qfalse );
+				break;
+
+			case MS_DRAG:
+				if( !captured )
+				{
+					ms_x += a->b;
+					ms_y += a->c;
+				}
+				if( ms_skipButtons )
+					MsMouse( kCGEventMouseMoved, 0, a->b, a->c );
+				else if( a->a == 0 )
+					MsMouse( kCGEventLeftMouseDragged, 0, a->b, a->c );
+				else if( a->a == 1 )
+					MsMouse( kCGEventRightMouseDragged, 1, a->b, a->c );
+				else
+					MsMouse( kCGEventOtherMouseDragged, (int)a->a, a->b, a->c );
+				break;
+
+			case MS_WHEEL:
+				MsWheel( kCGScrollEventUnitLine, (int)a->a );
+				break;
+
+			case MS_WHEELPX:
+				MsWheel( kCGScrollEventUnitPixel, (int)a->a );
+				break;
+
+			case MS_KEY:
+				KbPostKey( NSEventTypeKeyDown, (int)a->a, NO );
+				KbPostKey( NSEventTypeKeyUp, (int)a->a, NO );
+				break;
+
+			case MS_MOD:
+				kb_down[ (int)a->a ] = !kb_down[ (int)a->a ];
+				KbPostFlags( (int)a->a );
+				break;
+
+			case MS_KEYDOWN:
+				KbPostKey( NSEventTypeKeyDown, (int)a->a, NO );
+				break;
+		}
+	}
+}
+
+/*
 ===============
 KbReplay_Frame
 
@@ -326,7 +748,26 @@ void KbReplay_Frame( void )
 	if( !registered )
 	{
 		Cmd_AddCommand( "kbreplay", KbReplay_f );
+		Cmd_AddCommand( "msreplay", MsReplay_f );
+		Cmd_AddCommand( "mslog", MsLog_f );
 		registered = qtrue;
+	}
+
+	if( ms_logFrames >= 0 )
+	{
+		if( ms_logFrames++ % 250 == 0 )
+		{
+			fprintf( kb_log, "second %d (catcher 0x%x, captured %d)\n", ms_logFrames / 250, Key_GetCatcher( ),
+				IN_IsCursorActive( ) );
+			fflush( kb_log );
+		}
+		return;
+	}
+
+	if( ms_pos >= 0 )
+	{
+		MsReplay_Frame( );
+		return;
 	}
 
 	if( kb_pos < 0 )
