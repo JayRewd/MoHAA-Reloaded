@@ -138,6 +138,8 @@ main dispatch queue.
 
 The input layer reads the key events here, before AppKit dispatches them, as SDL did: AppKit drops some of them on
 the way to the window (key-ups with Cmd held). sendEvent: still runs for them, so Cmd key equivalents reach the menu.
+The mouse's movement is read here too (the captured mouse's deltas); its buttons, the wheel and the cursor's
+position reach the content view through sendEvent:, as SDL read them.
 ===============
 */
 void MacOS_PumpEvents( void )
@@ -155,6 +157,13 @@ void MacOS_PumpEvents( void )
 				case NSEventTypeKeyUp:
 				case NSEventTypeFlagsChanged:
 					MacOS_KeyEvent( event );
+					break;
+
+				case NSEventTypeMouseMoved:
+				case NSEventTypeLeftMouseDragged:
+				case NSEventTypeRightMouseDragged:
+				case NSEventTypeOtherMouseDragged:
+					MacOS_MouseMotion( event );
 					break;
 
 				default:

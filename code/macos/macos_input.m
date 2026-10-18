@@ -21,10 +21,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 // macos_input.m -- input, native (USE_SDL off): the IN_* functions of sdl/sdl_input.c and sdl/sdl_mouse.c.
-// So far the event pump, the window's events (focus, minimize, resize, quit), the keyboard and text; the mouse and
-// gamepads come in the next slices of Phase 6 (docs/METAL_PORT_PLAN.md).
+// So far the event pump, the window's events (focus, minimize, resize, quit), the keyboard and text, the mouse and
+// the cursor; gamepads come in the next slice of Phase 6 (docs/METAL_PORT_PLAN.md).
 
 #import <Carbon/Carbon.h>	// the keyboard layout (TIS, UCKeyTranslate) and the kVK_* virtual key codes
+#import <GameController/GameController.h>	// GCMouse: the mouse's raw movement (in_mouseRaw)
+#include <os/lock.h>
+#include <time.h>
 
 #include "macos_local.h"
 #include "../client/client.h"
@@ -817,6 +820,840 @@ void MacOS_InsertText( NSString *text )
 /*
 ==============================================================================
 
+MOUSE
+
+The mouse works as it did through SDL 2.32 (its Cocoa mouse, read from its binary) and sdl_input.c. While the game
+has the mouse (IN_Frame's rules), the cursor is captured as by SDL's relative mode: parked at the window's center,
+detached from the mouse and hidden. The movement then comes from
+  in_mouseRaw 0: each movement event's deltas cut toward zero, as SDL cut them: the system cursor's deltas, with
+                 the system's acceleration, the same SE_MOUSE stream as SDL;
+  in_mouseRaw 1: GCMouse's raw deltas (the mouse's own counts, no acceleration), added up off the main thread with
+                 their fractions and queued once per frame.
+Otherwise the system cursor shows over the window, with the UI's color cursor, and its position is the UI's cursor,
+in the drawable's pixels (SDL gave window points: on a 2x display the UI's cursor reached only the top left quarter).
+A fullscreen UI keeps the mouse captured and draws its own cursor, moved by the deltas, in pixels too.
+
+The captured movement is read in the pump (MacOS_PumpEvents); the buttons, the wheel and the cursor's movement over
+the window come through the content view's responder methods (macos_window.m), as SDL read them.
+==============================================================================
+*/
+
+// SDL's mouse buttons
+#define SDL_BUTTON_LEFT		1
+#define SDL_BUTTON_MIDDLE	2
+#define SDL_BUTTON_RIGHT	3
+#define SDL_BUTTON_X1		4
+#define SDL_BUTTON_X2		5
+
+static cvar_t *in_mouse             = NULL;
+static cvar_t *in_nograb;
+static cvar_t *in_mouseRaw;
+
+static qboolean mouseAvailable = qfalse;
+static qboolean mouseActive = qfalse;
+
+static qboolean		in_focused;				// the window has the keyboard (SDL_WINDOW_INPUT_FOCUS)
+static qboolean		in_captured;			// the cursor is captured (SDL's relative mode)
+static qboolean		in_cursorHidden;		// [NSCursor hide] is in effect
+static qboolean		in_skipMotion;			// the next movement event is dropped (SDL's justEnabledRelative)
+static qboolean		in_gobbleMotion;		// the pump drops the movement (IN_GobbleMotionEvents)
+static qboolean		in_mouseInside;			// the cursor is over the window (SDL's mouse focus)
+static int			in_mouseX, in_mouseY;	// the UI's cursor over the window, in pixels (SDL's mouse->x/y)
+static int			in_lastX, in_lastY;		// the cursor's last position in points, for in_nograb's deltas
+static unsigned int	in_mouseButtons;		// SDL's button state: bit n - 1 is button n
+static float		in_wheelY;				// SDL's wheel movement not yet sent
+static NSCursor		*in_cursor;				// the UI's color cursor, nil = the arrow
+
+// GCMouse (in_mouseRaw 1): the handlers add up the movement and list the buttons on their own queue, IN_Frame takes
+// them
+#define MAX_RAW_BUTTONS	64
+
+static dispatch_queue_t	in_rawQueue;
+static NSMutableSet		*in_rawMice;				// the mice with handlers
+static qboolean			in_rawOn;					// the handlers are installed
+static os_unfair_lock	in_rawLock = OS_UNFAIR_LOCK_INIT;
+static float			in_rawX, in_rawY;			// under in_rawLock
+static long long		in_rawOldest, in_rawNewest;	// under in_rawLock: when the handlers ran, microseconds
+static int				in_rawButtons[ MAX_RAW_BUTTONS ];	// under in_rawLock: SDL's button numbers, < 0 = up
+static int				in_rawNumButtons;					// under in_rawLock
+
+// cl_latencyStats: the times of the movement that reached the game (Sys_MouseEventMonitor)
+static qboolean		in_eventTimes;
+static long long	in_eventOldest, in_eventNewest;
+
+static void IN_SendMouseButton( int button, qboolean down );
+
+/*
+===============
+IN_PixelScale
+
+The drawable's pixels per window point: the UI's coordinates are pixels.
+===============
+*/
+static CGFloat IN_PixelScale( void )
+{
+	CGFloat width = in_window.contentView.bounds.size.width;
+
+	return width > 0 && cls.glconfig.vidWidth > 0 ? cls.glconfig.vidWidth / width : 1;
+}
+
+/*
+===============
+IN_MotionTime
+
+The OS time of movement that reaches the game, for the latency probe.
+===============
+*/
+static void IN_MotionTime( long long usec )
+{
+	if( !in_eventTimes || !usec )
+		return;
+
+	if( !in_eventOldest || usec < in_eventOldest )
+		in_eventOldest = usec;
+	if( usec > in_eventNewest )
+		in_eventNewest = usec;
+}
+
+/*
+===============
+IN_RawMouseUsed
+
+GCMouse moves the view: captured with in_mouseRaw 1, a mouse found, no UI (a fullscreen UI's cursor moves by the
+movement events, like the cursor over a window).
+===============
+*/
+static qboolean IN_RawMouseUsed( void )
+{
+	return in_rawOn && in_rawMice.count > 0 && !in_guimouse;
+}
+
+/*
+===============
+IN_RawButtonsUsed
+
+GCMouse's buttons are the game's while its handlers are installed (captured, in_mouseRaw 1): they reach the process
+~1.8 ms before the button events reach the main thread (session 21, the user's mouse: 0.05 to 3.6 ms over 12 clicks).
+The button events then only release (MacOS_MouseButton).
+===============
+*/
+static qboolean IN_RawButtonsUsed( void )
+{
+	return in_rawOn && in_rawMice.count > 0;
+}
+
+/*
+===============
+IN_WatchRawButton
+===============
+*/
+static void IN_WatchRawButton( GCControllerButtonInput *input, int button, qboolean watch )
+{
+	if( !watch || button > 32 )
+	{
+		input.pressedChangedHandler = nil;
+		return;
+	}
+
+	input.pressedChangedHandler = ^( GCControllerButtonInput *b, float value, BOOL pressed )
+	{
+		os_unfair_lock_lock( &in_rawLock );
+		if( in_rawNumButtons < MAX_RAW_BUTTONS )
+			in_rawButtons[ in_rawNumButtons++ ] = pressed ? button : -button;
+		os_unfair_lock_unlock( &in_rawLock );
+	};
+}
+
+/*
+===============
+IN_WatchRawMouse
+
+Gives a mouse the handlers that add up its movement and list its buttons (left, right, middle, then the auxiliary
+ones as SDL's 4, 5, ...), or takes them away. The handlers run on in_rawQueue, a serial queue at the
+user-interactive QoS, at the mouse's polling rate.
+===============
+*/
+static void IN_WatchRawMouse( GCMouse *mouse, qboolean watch )
+{
+	GCMouseInput *input = mouse.mouseInput;
+	int i;
+
+	if( !input )
+		return;
+
+	IN_WatchRawButton( input.leftButton, SDL_BUTTON_LEFT, watch );
+	IN_WatchRawButton( input.rightButton, SDL_BUTTON_RIGHT, watch );
+	IN_WatchRawButton( input.middleButton, SDL_BUTTON_MIDDLE, watch );
+	for( i = 0; i < (int)input.auxiliaryButtons.count; i++ )
+		IN_WatchRawButton( input.auxiliaryButtons[ i ], SDL_BUTTON_X1 + i, watch );
+
+	if( !watch )
+	{
+		input.mouseMovedHandler = nil;
+		[in_rawMice removeObject:mouse];
+		return;
+	}
+
+	mouse.handlerQueue = in_rawQueue;
+	input.mouseMovedHandler = ^( GCMouseInput *m, float deltaX, float deltaY )
+	{
+		long long now = (long long)( clock_gettime_nsec_np( CLOCK_UPTIME_RAW ) / 1000 );
+
+		os_unfair_lock_lock( &in_rawLock );
+		in_rawX += deltaX;
+		in_rawY += deltaY;
+		if( !in_rawOldest )
+			in_rawOldest = now;
+		in_rawNewest = now;
+		os_unfair_lock_unlock( &in_rawLock );
+	};
+	[in_rawMice addObject:mouse];
+}
+
+/*
+===============
+IN_DropRawMotion
+===============
+*/
+static void IN_DropRawMotion( void )
+{
+	os_unfair_lock_lock( &in_rawLock );
+	in_rawX = in_rawY = 0;
+	in_rawOldest = in_rawNewest = 0;
+	os_unfair_lock_unlock( &in_rawLock );
+}
+
+/*
+===============
+IN_InitRawMouse
+
+Starts GameController's mouse discovery once (it finds the mice asynchronously): at the input's start with
+in_mouseRaw 1, so the mice are known by the first capture.
+===============
+*/
+static void IN_InitRawMouse( void )
+{
+	NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+	NSOperationQueue *main = [NSOperationQueue mainQueue];	// run inside the pump
+
+	if( in_rawQueue )
+		return;
+
+	in_rawQueue = dispatch_queue_create( "openmohaa.mouse",
+		dispatch_queue_attr_make_with_qos_class( DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0 ) );
+	in_rawMice = [NSMutableSet set];
+
+	[center addObserverForName:GCMouseDidConnectNotification object:nil queue:main usingBlock:^( NSNotification *n )
+	{
+		if( in_rawOn )
+			IN_WatchRawMouse( n.object, qtrue );
+	}];
+	[center addObserverForName:GCMouseDidDisconnectNotification object:nil queue:main usingBlock:^( NSNotification *n )
+	{
+		IN_WatchRawMouse( n.object, qfalse );
+	}];
+
+	@autoreleasepool
+	{
+		(void)GCMouse.mice;
+	}
+}
+
+/*
+===============
+IN_RawButtonsFrame
+
+GCMouse's buttons since the last frame, in their order.
+===============
+*/
+static void IN_RawButtonsFrame( void )
+{
+	int buttons[ MAX_RAW_BUTTONS ];
+	int numButtons, i;
+
+	os_unfair_lock_lock( &in_rawLock );
+	numButtons = in_rawNumButtons;
+	memcpy( buttons, in_rawButtons, numButtons * sizeof( buttons[ 0 ] ) );
+	in_rawNumButtons = 0;
+	os_unfair_lock_unlock( &in_rawLock );
+
+	if( !IN_RawButtonsUsed( ) )
+		return;
+
+	for( i = 0; i < numButtons; i++ )
+		IN_SendMouseButton( abs( buttons[ i ] ), buttons[ i ] > 0 );
+}
+
+/*
+===============
+IN_RawMouse
+
+GCMouse's handlers are installed only while its movement may be used: captured, with in_mouseRaw 1.
+===============
+*/
+static void IN_RawMouse( qboolean on )
+{
+	if( on == in_rawOn )
+		return;
+
+	// the buttons pressed or released while captured still count
+	if( !on )
+		IN_RawButtonsFrame( );
+
+	in_rawOn = on;
+	IN_InitRawMouse( );
+
+	@autoreleasepool
+	{
+		for( GCMouse *mouse in GCMouse.mice )
+			IN_WatchRawMouse( mouse, on );
+	}
+
+	IN_DropRawMotion( );
+}
+
+/*
+===============
+IN_RawMouseFrame
+
+GCMouse's buttons and movement since the last frame: the buttons in their order, then the movement's whole counts
+as one SE_MOUSE (the fractions stay for the next frame). GameController's y points up.
+===============
+*/
+static void IN_RawMouseFrame( void )
+{
+	qboolean used;
+	float x, y;
+	int dx = 0, dy = 0;
+	long long oldest, newest;
+
+	if( !in_rawOn )
+		return;
+
+	IN_RawButtonsFrame( );
+
+	used = IN_RawMouseUsed( );
+
+	os_unfair_lock_lock( &in_rawLock );
+	x = in_rawX;
+	y = in_rawY;
+	oldest = in_rawOldest;
+	newest = in_rawNewest;
+	if( used )
+	{
+		dx = (int)x;
+		dy = (int)y;
+		in_rawX = x - dx;
+		in_rawY = y - dy;
+	}
+	else
+		in_rawX = in_rawY = 0;
+	in_rawOldest = in_rawNewest = 0;
+	os_unfair_lock_unlock( &in_rawLock );
+
+	if( !dx && !dy )
+		return;
+
+	IN_MotionTime( oldest );
+	IN_MotionTime( newest );
+	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, -dy, 0, NULL );
+}
+
+/*
+===============
+MacOS_MouseMotion
+
+A movement event, from the pump (SDL's Cocoa_HandleMouseEvent, then sdl_input.c's SDL_MOUSEMOTION). Only the
+captured mouse moves the game here; the cursor's movement over the window comes through the content view
+(MacOS_MouseMoved). SDL's deltas are floats cut toward zero per event, so movement below a point per event is
+lost: in_mouseRaw 1 reads GCMouse instead.
+===============
+*/
+void MacOS_MouseMotion( NSEvent *event )
+{
+	CGFloat scale = 1;
+	int dx, dy;
+
+	if( !in_window )
+		return;
+
+	// the first movement after a capture is dropped
+	if( in_skipMotion )
+	{
+		in_skipMotion = qfalse;
+		return;
+	}
+
+	if( in_gobbleMotion || !in_captured || !mouseActive )
+		return;
+
+	// movement over the title bar
+	if( event.window && !NSMouseInRect( event.locationInWindow, event.window.contentView.frame, NO ) )
+		return;
+
+	if( in_guimouse )
+		scale = IN_PixelScale( );	// a fullscreen UI's cursor, in pixels
+	else if( IN_RawMouseUsed( ) )
+		return;
+
+	IN_MotionTime( (long long)( event.timestamp * 1e6 ) );
+
+	dx = (int)(float)( event.deltaX * scale );
+	dy = (int)(float)( event.deltaY * scale );
+	if( !dx && !dy )
+		return;
+
+	Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+}
+
+/*
+===============
+IN_MouseAt
+
+The cursor is at a point of the window (window coordinates; SDL_SendMouseMotion with absolute coordinates): the
+UI's cursor goes there. Leaving the window it stops at the edge, unless a button is down (SDL then captures the
+mouse and follows it outside). With in_nograb in a window the game takes the movement as deltas, in points.
+===============
+*/
+static void IN_MouseAt( NSPoint point, long long usec )
+{
+	NSSize size = in_window.contentView.bounds.size;
+	CGFloat scale = IN_PixelScale( );
+	int width = (int)size.width, height = (int)size.height;
+	int x = (int)point.x, y = (int)( height - point.y );	// SDL's position: points cut toward zero, y down
+	int px = (int)( point.x * scale ), py = (int)( ( height - point.y ) * scale );
+	qboolean followed = in_mouseButtons != 0 && in_focused;
+	qboolean clamp = !followed;
+	int dx, dy;
+
+	if( !followed && ( x < 0 || y < 0 || x >= width || y >= height ) )
+	{
+		if( !in_mouseInside )
+			return;
+		in_mouseInside = qfalse;	// the last position, at the edge
+	}
+	else
+		in_mouseInside = qtrue;
+
+	if( clamp )
+	{
+		px = px < 0 ? 0 : px >= cls.glconfig.vidWidth ? cls.glconfig.vidWidth - 1 : px;
+		py = py < 0 ? 0 : py >= cls.glconfig.vidHeight ? cls.glconfig.vidHeight - 1 : py;
+	}
+	in_mouseX = px;
+	in_mouseY = py;
+
+	dx = x - in_lastX;
+	dy = y - in_lastY;
+	in_lastX = x;
+	in_lastY = y;
+
+	if( mouseActive && !in_captured && !in_gobbleMotion && ( dx || dy ) )
+	{
+		IN_MotionTime( usec );
+		Com_QueueEvent( in_eventTime, SE_MOUSE, dx, dy, 0, NULL );
+	}
+}
+
+/*
+===============
+MacOS_MouseMoved
+
+The cursor moved over the window, or was dragged (SDL's -[Cocoa_WindowListener mouseMoved:]).
+===============
+*/
+void MacOS_MouseMoved( NSEvent *event )
+{
+	if( !in_window || in_captured )
+		return;
+
+	IN_MouseAt( event.locationInWindow, (long long)( event.timestamp * 1e6 ) );
+}
+
+/*
+===============
+IN_SendMouseButton
+
+SDL_SendMouseButton, then sdl_input.c's SDL_MOUSEBUTTONDOWN/UP: a button that is already down or up sends nothing.
+===============
+*/
+static void IN_SendMouseButton( int button, qboolean down )
+{
+	unsigned int bit = 1u << ( button - 1 );
+	keyNum_t key;
+
+	if( ( ( in_mouseButtons & bit ) != 0 ) == down )
+		return;
+
+	in_mouseButtons ^= bit;
+
+	switch( button )
+	{
+		case SDL_BUTTON_LEFT:   key = K_MOUSE1;     break;
+		case SDL_BUTTON_MIDDLE: key = K_MOUSE3;     break;
+		case SDL_BUTTON_RIGHT:  key = K_MOUSE2;     break;
+		case SDL_BUTTON_X1:     key = K_MOUSE4;     break;
+		case SDL_BUTTON_X2:     key = K_MOUSE5;     break;
+		default:                key = K_AUX1 + ( button - SDL_BUTTON_X2 + 1 ) % 16; break;
+	}
+	Com_QueueEvent( in_eventTime, SE_KEY, key, down, 0, NULL );
+}
+
+/*
+===============
+MacOS_MouseButton
+
+A button went down or up over the window (SDL's -[Cocoa_WindowListener mouseDown:] and mouseUp:). AppKit numbers
+left, right, middle 0, 1, 2; SDL's buttons are 1 (left), 3 (right), 2 (middle), then AppKit's number + 1.
+===============
+*/
+void MacOS_MouseButton( NSEvent *event, qboolean down )
+{
+	int button;
+
+	if( !in_window )
+		return;
+
+	// a press over the title bar isn't the game's
+	if( down && event.window && !NSMouseInRect( event.locationInWindow, event.window.contentView.frame, NO ) )
+		return;
+
+	// GCMouse presses the buttons first (a release still goes through: it may be a mouse GCMouse doesn't see)
+	if( down && IN_RawButtonsUsed( ) )
+		return;
+
+	switch( event.buttonNumber )
+	{
+		case 0:		button = SDL_BUTTON_LEFT;	break;
+		case 1:		button = SDL_BUTTON_RIGHT;	break;
+		case 2:		button = SDL_BUTTON_MIDDLE;	break;
+		default:	button = (byte)( event.buttonNumber + 1 ); break;
+	}
+
+	if( button >= 1 && button <= 32 )
+		IN_SendMouseButton( button, down );
+}
+
+/*
+===============
+IN_ResetMouseButtons
+
+Every button that is down goes up: the window goes away. (SDL lost these releases with its event queue at
+vid_restart, and then ignored the real releases: the buttons stayed down in the client.)
+===============
+*/
+static void IN_ResetMouseButtons( void )
+{
+	int button;
+
+	for( button = 1; button <= 32; button++ )
+		IN_SendMouseButton( button, qfalse );
+}
+
+/*
+===============
+MacOS_MouseWheel
+
+The wheel (SDL's Cocoa_HandleMouseWheel and SDL_SendMouseWheel, then sdl_input.c's SDL_MOUSEWHEEL). A wheel's
+notch is at least a whole step, a trackpad's fine deltas add up to whole steps (a change of direction starts
+over), and each event with steps presses and releases K_MWHEELUP or K_MWHEELDOWN once. The direction is the
+system's (natural scrolling included), as with SDL.
+===============
+*/
+void MacOS_MouseWheel( NSEvent *event )
+{
+	CGFloat delta = event.deltaY;
+	float y;
+	int steps;
+
+	if( !in_window )
+		return;
+
+	if( !event.hasPreciseScrollingDeltas )
+	{
+		if( delta > 0 )
+			delta = ceil( delta );
+		else if( delta < 0 )
+			delta = floor( delta );
+	}
+	y = (float)delta;
+
+	if( y > 0 )
+	{
+		if( in_wheelY < 0 )
+			in_wheelY = 0;
+	}
+	else if( y < 0 )
+	{
+		if( in_wheelY > 0 )
+			in_wheelY = 0;
+	}
+	else
+		return;
+
+	in_wheelY += y;
+	steps = in_wheelY > 0 ? (int)floor( in_wheelY ) : in_wheelY < 0 ? (int)ceil( in_wheelY ) : 0;
+	in_wheelY -= steps;
+
+	if( steps > 0 )
+	{
+		Com_QueueEvent( in_eventTime, SE_KEY, K_MWHEELUP, qtrue, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_KEY, K_MWHEELUP, qfalse, 0, NULL );
+	}
+	else if( steps < 0 )
+	{
+		Com_QueueEvent( in_eventTime, SE_KEY, K_MWHEELDOWN, qtrue, 0, NULL );
+		Com_QueueEvent( in_eventTime, SE_KEY, K_MWHEELDOWN, qfalse, 0, NULL );
+	}
+}
+
+/*
+===============
+IN_WindowCenter
+
+The center of the window's content in global display coordinates (points, the main display's top left at 0,0),
+from the window's position and size in whole points, as SDL computed it.
+===============
+*/
+static CGPoint IN_WindowCenter( void )
+{
+	NSRect frame = [in_window convertRectToScreen:in_window.contentView.frame];
+	CGFloat top = NSMaxY( NSScreen.screens.firstObject.frame ) - NSMaxY( frame );
+	int x = (int)NSMinX( frame ), y = (int)top, width = (int)NSWidth( frame ), height = (int)NSHeight( frame );
+
+	return CGPointMake( (float)( x + width / 2 ), (float)( y + height / 2 ) );
+}
+
+/*
+===============
+IN_UpdateCursor
+
+The cursor over the window changed: captured (none), or the UI's.
+===============
+*/
+static void IN_UpdateCursor( void )
+{
+	if( in_window )
+		[in_window invalidateCursorRectsForView:in_window.contentView];
+}
+
+/*
+===============
+IN_Capture
+
+The cursor is captured (SDL's relative mode, Cocoa_SetRelativeMouseMode): it goes to the window's center when the
+window has the keyboard, then it is detached from the mouse (the call right after the warp also ends the warp's
+short freeze of the mouse) and hidden, and the first movement event after it is dropped, as SDL drops it.
+Released, the cursor follows the mouse again and shows.
+===============
+*/
+static void IN_Capture( qboolean capture )
+{
+	if( capture == in_captured || !in_window )
+		return;
+
+	in_captured = capture;
+
+	@autoreleasepool
+	{
+		if( capture )
+		{
+			if( in_focused )
+			{
+				CGWarpMouseCursorPosition( IN_WindowCenter( ) );
+				in_skipMotion = qtrue;
+			}
+			CGAssociateMouseAndMouseCursorPosition( false );
+
+			if( in_focused && !in_cursorHidden )
+			{
+				[NSCursor hide];
+				in_cursorHidden = qtrue;
+			}
+		}
+		else
+		{
+			CGAssociateMouseAndMouseCursorPosition( true );
+
+			if( in_cursorHidden )
+			{
+				[NSCursor unhide];
+				in_cursorHidden = qfalse;
+			}
+		}
+
+		IN_UpdateCursor( );
+	}
+
+	IN_RawMouse( capture && in_mouseRaw->integer );
+}
+
+/*
+===============
+IN_WarpToCenter
+
+The released cursor goes to the window's center, which becomes the UI's cursor (sdl_input.c). SDL took the center
+from the drawable's pixels as points: on a 2x display the cursor went to the window's bottom right corner.
+===============
+*/
+static void IN_WarpToCenter( void )
+{
+	NSSize size = in_window.contentView.bounds.size;
+	CGFloat scale = IN_PixelScale( );
+	int x = (int)size.width / 2, y = (int)size.height / 2;
+
+	@autoreleasepool
+	{
+		CGWarpMouseCursorPosition( IN_WindowCenter( ) );
+	}
+	CGAssociateMouseAndMouseCursorPosition( true );
+
+	in_mouseX = (int)( x * scale );
+	in_mouseY = (int)( y * scale );
+	in_lastX = x;
+	in_lastY = y;
+	in_mouseInside = qtrue;
+}
+
+/*
+===============
+IN_GobbleMotionEvents
+
+The pending events are handled now, without their movement: a capture change drops it, GCMouse's too.
+===============
+*/
+static void IN_GobbleMotionEvents( void )
+{
+	in_gobbleMotion = qtrue;
+	MacOS_PumpEvents( );
+	in_gobbleMotion = qfalse;
+
+	IN_DropRawMotion( );
+}
+
+/*
+===============
+IN_ActivateMouse
+===============
+*/
+static void IN_ActivateMouse( qboolean isFullscreen )
+{
+	if( !mouseAvailable || !in_window )
+		return;
+
+	if( !mouseActive )
+	{
+		IN_Capture( isFullscreen || !in_nograb->integer );
+
+		IN_GobbleMotionEvents( );
+	}
+
+	// in_nograb makes no sense in fullscreen mode
+	if( !isFullscreen )
+	{
+		if( in_nograb->modified || !mouseActive )
+		{
+			IN_Capture( !in_nograb->integer );
+
+			in_nograb->modified = qfalse;
+		}
+	}
+
+	mouseActive = qtrue;
+}
+
+/*
+===============
+IN_DeactivateMouse
+===============
+*/
+static void IN_DeactivateMouse( void )
+{
+	if( !mouseAvailable || !in_window )
+		return;
+
+	if( mouseActive )
+	{
+		IN_GobbleMotionEvents( );
+
+		IN_Capture( qfalse );
+
+		// Don't warp the mouse unless the cursor is within the window
+		if( in_focused )
+			IN_WarpToCenter( );
+
+		mouseActive = qfalse;
+	}
+}
+
+/*
+===============
+MacOS_Cursor
+
+The cursor over the content view (its cursor rectangle): none while captured, else the UI's or the arrow.
+===============
+*/
+NSCursor *MacOS_Cursor( void )
+{
+	static NSCursor *invisible;
+
+	if( in_captured )
+	{
+		// a transparent 16x16 cursor, as SDL made its invisible one
+		if( !invisible )
+		{
+			NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:16
+				pixelsHigh:16 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+				colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:4 * 16 bitsPerPixel:32];
+			NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize( 16, 16 )];
+
+			memset( bitmap.bitmapData, 0, 4 * 16 * 16 );
+			[image addRepresentation:bitmap];
+			invisible = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
+		}
+		return invisible;
+	}
+
+	return in_cursor ?: [NSCursor arrowCursor];
+}
+
+/*
+==============
+Sys_MouseEventMonitor
+
+cl_latencyStats: while on, the input layer records the OS times of the mouse movement that reaches the game: the
+movement events' timestamps (NSEvent.timestamp: when the event entered the system, on the mach_absolute_time
+clock), or with GCMouse when its handler ran. (sys_osx.m's monitor of the dispatched events serves SDL.)
+==============
+*/
+void Sys_MouseEventMonitor( qboolean on )
+{
+	in_eventTimes = on;
+	in_eventOldest = in_eventNewest = 0;
+}
+
+/*
+==============
+Sys_TakeMouseEventTimes
+
+The oldest and newest mouse movement that reached the game since the last call (qfalse if none).
+==============
+*/
+qboolean Sys_TakeMouseEventTimes( long long *oldest, long long *newest )
+{
+	qboolean any = in_eventNewest != 0;
+
+	if( oldest )
+		*oldest = in_eventOldest;
+	if( newest )
+		*newest = in_eventNewest;
+	in_eventOldest = in_eventNewest = 0;
+	return any;
+}
+
+/*
+==============================================================================
+
 THE WINDOW
 
 ==============================================================================
@@ -863,13 +1700,22 @@ static void IN_WindowResized( void )
 IN_WindowFocused
 
 The window got or lost the keyboard. Losing it releases every key that is down and drops any text being composed
-(SDL resets its keyboard and stops text input).
+(SDL resets its keyboard and stops text input), and gives the cursor back to the system at once, where it was
+parked (SDL's windowDidResignKey); IN_Frame captures it again when the window has the keyboard. Getting it back
+reads where the cursor is (SDL's windowDidBecomeKey).
 ===============
 */
 static void IN_WindowFocused( qboolean focused )
 {
+	in_focused = focused;
+
 	if( focused )
+	{
 		IN_SyncCapsLock( );
+
+		if( !in_captured )
+			IN_MouseAt( in_window.mouseLocationOutsideOfEventStream, 0 );
+	}
 	else
 	{
 		NSView<NSTextInputClient> *client = IN_TextClient( );
@@ -877,6 +1723,10 @@ static void IN_WindowFocused( qboolean focused )
 		IN_ResetKeyboard( );
 		[client.inputContext discardMarkedText];
 		[client unmarkText];
+
+		IN_Capture( qfalse );
+		mouseActive = qfalse;
+		in_mouseInside = qfalse;
 	}
 
 	Cvar_SetValue( "com_unfocused", !focused );
@@ -936,6 +1786,8 @@ static void IN_ProcessEvents( void )
 
 	MacOS_PumpEvents( );
 
+	IN_RawMouseFrame( );
+
 	if( MacOS_TakeQuitRequest( ) )
 		Cbuf_ExecuteText( EXEC_NOW, "quit Closed window\n" );
 }
@@ -947,8 +1799,34 @@ IN_Frame
 */
 void IN_Frame( void )
 {
+	qboolean loading;
+
+	// If not DISCONNECTED (main menu) or ACTIVE (in game), we're loading
+	loading = ( clc.state != CA_DISCONNECTED && clc.state != CA_ACTIVE );
+
 	// update isFullscreen since it might of changed since the last vid_restart
 	cls.glconfig.isFullscreen = Cvar_VariableIntegerValue( "r_fullscreen" ) != 0;
+
+	if( !cls.glconfig.isFullscreen && ( Key_GetCatcher( ) & (KEYCATCH_CONSOLE|KEYCATCH_UI) ) )
+	{
+		// Console is down in windowed mode
+		IN_DeactivateMouse( );
+	}
+	else if( !cls.glconfig.isFullscreen && loading )
+	{
+		// Loading in windowed mode
+		IN_DeactivateMouse( );
+	}
+	else if( !in_focused )
+	{
+		// Window not got focus
+		IN_DeactivateMouse( );
+	}
+	else
+		IN_ActivateMouse( cls.glconfig.isFullscreen );
+
+	// GCMouse while captured with in_mouseRaw 1 (in_mouseRaw may change any time)
+	IN_RawMouse( in_captured && in_mouseRaw->integer );
 
 	IN_ProcessEvents( );
 
@@ -982,9 +1860,11 @@ void IN_Init( void *windowData )
 
 	in_keyboardDebug = Cvar_Get( "in_keyboardDebug", "0", CVAR_ARCHIVE );
 
-	// mouse variables (registered as SDL registers them, so configs keep them; used from slice 6d on)
-	Cvar_Get( "in_mouse", "1", CVAR_ARCHIVE );
-	Cvar_Get( "in_nograb", "0", CVAR_ARCHIVE );
+	// mouse variables
+	in_mouse = Cvar_Get( "in_mouse", "1", CVAR_ARCHIVE );
+	in_nograb = Cvar_Get( "in_nograb", "0", CVAR_ARCHIVE );
+	// 1 = GCMouse's raw deltas (no acceleration), 0 = the system cursor's deltas, as with SDL
+	in_mouseRaw = Cvar_Get( "in_mouseRaw", "0", CVAR_ARCHIVE );
 
 	Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
 	Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
@@ -993,6 +1873,14 @@ void IN_Init( void *windowData )
 	IN_SyncCapsLock( );
 
 	IN_ObserveWindow( );
+
+	// in_restart releases the mouse (before in_mouse 0 can keep SDL's capture on), IN_Frame captures it again
+	in_focused = in_window.keyWindow;
+	IN_DeactivateMouse( );
+	mouseAvailable = ( in_mouse->value != 0 );
+
+	if( in_mouseRaw->integer )
+		IN_InitRawMouse( );
 
 	Cvar_SetValue( "com_unfocused",	!in_window.keyWindow );
 	Cvar_SetValue( "com_minimized", in_window.miniaturized );
@@ -1004,13 +1892,18 @@ void IN_Init( void *windowData )
 ===============
 IN_Shutdown
 
-The window goes away (vid_restart or quit): the keys that are down go up. SDL queued the same key releases when it
-destroyed its window, but lost them with its event queue at vid_restart, which left them down in the client.
+The window goes away (vid_restart or quit): the mouse is released, and the keys and buttons that are down go up.
+SDL queued the same key releases when it destroyed its window, but lost them with its event queue at vid_restart,
+which left them down in the client.
 ===============
 */
 void IN_Shutdown( void )
 {
+	IN_DeactivateMouse( );
+	mouseAvailable = qfalse;
+
 	IN_ResetKeyboard( );
+	IN_ResetMouseButtons( );
 
 	IN_StopObservingWindow( );
 
@@ -1021,7 +1914,7 @@ void IN_Shutdown( void )
 ===============
 IN_Restart
 
-in_restart keeps the window and the keyboard's state.
+in_restart keeps the window and the keyboard's state; the mouse is released and captured again.
 ===============
 */
 void IN_Restart( void )
@@ -1032,23 +1925,60 @@ void IN_Restart( void )
 
 /*
 ===============
-IN_GetMousePosition (the mouse: slice 6d)
+IN_GetMousePosition
+
+The UI's cursor over the window, in the drawable's pixels.
 ===============
 */
 void IN_GetMousePosition( int *x, int *y )
 {
-	*x = *y = 0;
+	*x = in_mouseX;
+	*y = in_mouseY;
 }
 
 /*
 ===============
-IN_SetCursorFromImage (the color cursor: slice 6d)
+IN_SetCursorFromImage
+
+The UI's color cursor over the window from its RGBA pixels, hotspot at the top left, as SDL made it (Cocoa_CreateImage:
+alpha premultiplied, the image's size in points). The pixels are copied, so they are freed here (SDL kept pointing
+at them and never freed them).
 ===============
 */
 qboolean IN_SetCursorFromImage( const byte *pic, int width, int height, pCursorFree cursorFreeFn )
 {
+	NSBitmapImageRep *bitmap;
+
+	IN_FreeCursor( );
+
+	@autoreleasepool
+	{
+		bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
+			bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+			bytesPerRow:4 * width bitsPerPixel:32];
+		if( bitmap )
+		{
+			byte *pixels = bitmap.bitmapData;
+			NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize( width, height )];
+			int i;
+
+			memcpy( pixels, pic, 4 * width * height );
+			for( i = 0; i < width * height; i++, pixels += 4 )
+			{
+				pixels[ 0 ] = pixels[ 0 ] * pixels[ 3 ] / 255;
+				pixels[ 1 ] = pixels[ 1 ] * pixels[ 3 ] / 255;
+				pixels[ 2 ] = pixels[ 2 ] * pixels[ 3 ] / 255;
+			}
+
+			[image addRepresentation:bitmap];
+			in_cursor = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
+		}
+	}
+
 	cursorFreeFn( (byte *)pic );
-	return qfalse;
+	IN_UpdateCursor( );
+
+	return bitmap != nil;
 }
 
 /*
@@ -1058,14 +1988,18 @@ IN_FreeCursor
 */
 void IN_FreeCursor( void )
 {
+	in_cursor = nil;
+	IN_UpdateCursor( );
 }
 
 /*
 ===============
 IN_IsCursorActive
+
+The mouse is captured (the UI then draws its own cursor).
 ===============
 */
 qboolean IN_IsCursorActive( void )
 {
-	return qfalse;
+	return in_captured;
 }

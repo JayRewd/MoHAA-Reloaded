@@ -39,5 +39,10 @@ qboolean	MacOS_TakeQuitRequest( void );		// Cmd+Q, the close button or a quit fr
 // macos_input.m
 void		MacOS_KeyEvent( NSEvent *event );		// a key or modifier event, from the pump before AppKit dispatches it
 void		MacOS_InsertText( NSString *text );	// text from the window's text input client (the content view)
+void		MacOS_MouseMotion( NSEvent *event );	// a mouse movement, from the pump before AppKit dispatches it
+void		MacOS_MouseMoved( NSEvent *event );	// the cursor moved over the content view (from its responder methods)
+void		MacOS_MouseButton( NSEvent *event, qboolean down );	// a button, from the content view
+void		MacOS_MouseWheel( NSEvent *event );	// the wheel, from the content view
+NSCursor	*MacOS_Cursor( void );				// the cursor over the content view
 
 #endif

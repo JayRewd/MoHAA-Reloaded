@@ -115,6 +115,8 @@ char *Sys_StripAppBundle( char *dir )
 	return cwd;
 }
 
+// the native AppKit layer (USE_SDL off) records the times in its own pump (macos_input.m)
+#if defined(USE_SDL) || defined(DEDICATED)
 /*
 ==============
 Sys_MouseEventMonitor
@@ -172,3 +174,4 @@ qboolean Sys_TakeMouseEventTimes( long long *oldest, long long *newest )
 	sys_mouseOldest = sys_mouseNewest = 0;
 	return any;
 }
+#endif

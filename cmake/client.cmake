@@ -19,8 +19,9 @@ else()
         ${SOURCE_DIR}/macos/macos_app.m
         ${SOURCE_DIR}/macos/macos_input.m)
     set_source_files_properties(${CLIENT_INPUT_SOURCES} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-    # Carbon (HIToolbox): the keyboard layout's characters (TIS, UCKeyTranslate), as SDL used them
-    list(APPEND CLIENT_LIBRARIES "-framework Carbon")
+    # Carbon (HIToolbox): the keyboard layout's characters (TIS, UCKeyTranslate), as SDL used them;
+    # GameController: GCMouse, the mouse's raw movement (in_mouseRaw; SDL linked it too)
+    list(APPEND CLIENT_LIBRARIES "-framework Carbon" "-framework GameController")
 endif()
 
 set(CLIENT_SOURCES

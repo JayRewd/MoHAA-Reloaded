@@ -145,6 +145,69 @@ static void MTLimp_LeaveExclusive( void );
 {
 }
 
+// The mouse's buttons, its wheel and the cursor's movement over the window reach the input layer here, through the
+// responder chain, as SDL's did (macos_input.m); the captured mouse's movement is read in the pump.
+- (void)mouseDown:(NSEvent *)event
+{
+	MacOS_MouseButton( event, qtrue );
+}
+
+- (void)rightMouseDown:(NSEvent *)event
+{
+	MacOS_MouseButton( event, qtrue );
+}
+
+- (void)otherMouseDown:(NSEvent *)event
+{
+	MacOS_MouseButton( event, qtrue );
+}
+
+- (void)mouseUp:(NSEvent *)event
+{
+	MacOS_MouseButton( event, qfalse );
+}
+
+- (void)rightMouseUp:(NSEvent *)event
+{
+	MacOS_MouseButton( event, qfalse );
+}
+
+- (void)otherMouseUp:(NSEvent *)event
+{
+	MacOS_MouseButton( event, qfalse );
+}
+
+- (void)mouseMoved:(NSEvent *)event
+{
+	MacOS_MouseMoved( event );
+}
+
+- (void)mouseDragged:(NSEvent *)event
+{
+	MacOS_MouseMoved( event );
+}
+
+- (void)rightMouseDragged:(NSEvent *)event
+{
+	MacOS_MouseMoved( event );
+}
+
+- (void)otherMouseDragged:(NSEvent *)event
+{
+	MacOS_MouseMoved( event );
+}
+
+- (void)scrollWheel:(NSEvent *)event
+{
+	MacOS_MouseWheel( event );
+}
+
+// the UI's cursor over the window, none while the game has the mouse
+- (void)resetCursorRects
+{
+	[self addCursorRect:self.bounds cursor:MacOS_Cursor()];
+}
+
 // The text input client: the pump passes each key-down through interpretKeyEvents: (macos_input.m), so dead keys
 // and input methods compose text as in any text field. It is SDL's (SDLTranslatorResponder), without a subview: the
 // view's only layer stays the CAMetalLayer, which fullscreen needs to go direct to display.
