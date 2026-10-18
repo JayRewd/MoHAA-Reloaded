@@ -126,9 +126,13 @@ foreach(LIBRARY IN LISTS CLIENT_DEPLOY_LIBRARIES)
             ${LIBRARY}
             $<TARGET_FILE_DIR:${CLIENT_BINARY}>)
 
-    install(FILES ${LIBRARY} DESTINATION
-        # install() requires a relative path hence:
-        $<PATH:RELATIVE_PATH,$<TARGET_FILE_DIR:${CLIENT_BINARY}>,${CMAKE_BINARY_DIR}/$<CONFIG>>)
+    # A macOS bundle carries the copy above inside it: installing the library again would put it into an
+    # openmohaa.app/Contents/MacOS folder at the root of the install prefix
+    if(NOT BUILD_MACOS_APP)
+        install(FILES ${LIBRARY} DESTINATION
+            # install() requires a relative path hence:
+            $<PATH:RELATIVE_PATH,$<TARGET_FILE_DIR:${CLIENT_BINARY}>,${CMAKE_BINARY_DIR}/$<CONFIG>>)
+    endif()
 endforeach()
 
 set_target_properties(${CLIENT_BINARY} PROPERTIES DEBUG_POSTFIX ${CMAKE_DEBUG_POSTFIX})
