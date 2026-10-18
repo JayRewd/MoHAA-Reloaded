@@ -1157,6 +1157,7 @@ Gotchas found in session 17:
 - **No `timeout` on this Mac** (no coreutils): test cfgs end with `quit`, or wrap the command in `perl -e 'alarm shift; exec @ARGV' <s> …` as `latency.sh` does.
 - **`port/glcheck.sh`'s Python sits in single quotes:** an apostrophe in a comment there ends the quote ("unexpected EOF").
 - **`connect localhost` is the in-process loopback** ("localhost resolved to loopback"), so a client never reaches a separate `omohaaded` that way: "Connect to server timed out" every second (190k log lines). Use `connect 127.0.0.1`. A server on `net_ip 127.0.0.1` stays off the LAN; the client then takes UDP 12204 (12203 is taken).
+- **Archiving sessions can remove their shared notes folders** (`~/Library/Application Support/Claude/side-session-notes/<id>`): after the user had sessions 1–16 archived, 10 of their folders were gone. The repo is the lasting state; session 17 copied the port notes that were left to `build.noindex/notes-backup/`. The app refuses to archive a session with live work: Remote Control on (turn it off first) or a background shell still running.
 - **A `cd` in a Bash call still moves the session's working directory** (twice this session): use subshells or absolute paths.
 
 Gotchas found in session 16:
@@ -1196,7 +1197,7 @@ Gotchas found in session 12:
 - **The Bash tool refuses `sleep N; cmd` chains:** wait with a background `until …; do sleep 5; done` (run_in_background) or the Monitor tool.
 
 Gotchas found in session 11:
-- **`pgrep -f '<pattern>'` in a wait loop matches the loop's own shell** (its command line contains the pattern), so the loop never ends. Wait on a PID, a log line, or `pgrep -x openmohaa` instead. Three such stuck waiters from earlier sessions (`until ! pgrep -f "shot.sh regress"…`, `…"prof/pairs.sh"…`) are still running on the machine: harmless `sleep 3` loops, left alone, not ours to kill.
+- **`pgrep -f '<pattern>'` in a wait loop matches the loop's own shell** (its command line contains the pattern), so the loop never ends. Wait on a PID, a log line, or `pgrep -x openmohaa` instead. The stuck waiters from earlier sessions (`until ! pgrep -f "shot.sh regress"…`, `…"prof/pairs.sh"…`) ran until session 17, when the user asked to clean up the old sessions: two were left, both in session 10, and they kept the app from archiving it ("live work"); session 17 stopped them (`ps -Aww` shows the whole command line; plain `ps -A` cuts it).
 - **Metal's "safe" math mode still contracts within an expression** (front-end `fmuladd`, like clang's `-ffp-contract=on`). So `(a.x*b.x + a.y*b.y) + a.z*b.z` compiles to the same fma chain as the explicit `fma()`s. To change the rounding, change the association. MSL `uint3` in a struct is 16-byte aligned; the A/B capture struct uses `uint[3]`.
 - **Vertex functions that write a device buffer** ("writable resources in non-void vertex function") are a warning, an error under the shader build's `-Werror`: `skinab.sh` drops `-Werror` in its scratch copy only.
 - **`skinSurface_t` already exists** in `tr_local.h` (Q3 skins); the GPU-skinning tables are `skinCopySurface_t`/`skinCopyBoneMap_t`.
