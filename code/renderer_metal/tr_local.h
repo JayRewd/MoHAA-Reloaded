@@ -1703,6 +1703,7 @@ void	R_SelectTexture( int unit );
 void	R_TextureMode( const char *string );
 void	R_CheckErrors( void );
 void	R_State( unsigned long stateVector );
+void	R_PrecacheState( unsigned long stateBits, int numUnits, qboolean skin );
 void	R_TexEnv( int env );
 void	R_Cull( int cullType );
 

@@ -1749,6 +1749,9 @@ void RE_EndRegistration( void ) {
 	}
 
 	R_FreeUnusedImages();
+
+	// the level's pipelines still compiling: done before play
+	mbPrecacheFinish();
 }
 
 /*

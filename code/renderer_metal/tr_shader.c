@@ -3098,6 +3098,35 @@ static void VertexLightingCollapse( void ) {
 
 /*
 =========================
+R_PrecacheShaderPipelines
+
+Has the backend create the pipelines the shader's stages draw with, as the stage iterators set them up (tr_shade.c),
+when the shader is loaded rather than at its first draw in play.
+=========================
+*/
+static void R_PrecacheShaderPipelines( const shader_t *sh ) {
+	int i;
+
+	// RB_IterateStagesGeneric (RB_StageIteratorGeneric, the sky's cloud layers, the fast paths' fallback)
+	for ( i = 0; i < sh->numUnfoggedPasses && sh->unfoggedStages[i]; i++ ) {
+		R_PrecacheState( sh->unfoggedStages[i]->stateBits, sh->unfoggedStages[i]->bundle[1].image[0] ? 2 : 1, qfalse );
+	}
+	if ( !sh->numUnfoggedPasses || !sh->unfoggedStages[0] ) {
+		return;
+	}
+
+	if ( sh->optimalStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
+		// skeletal models drawn with GPU skinning
+		R_PrecacheState( sh->unfoggedStages[0]->stateBits, 1, qtrue );
+	} else if ( sh->optimalStageIteratorFunc == RB_StageIteratorLightmappedMultitextureUnfogged ) {
+		R_PrecacheState( GLS_DEFAULT | ( sh->unfoggedStages[0]->stateBits & GLS_ATEST_BITS ), 2, qfalse );
+	} else if ( sh->optimalStageIteratorFunc == RB_StageIteratorSky ) {
+		R_PrecacheState( 0, 1, qfalse );	// the outer box
+	}
+}
+
+/*
+=========================
 FinishShader
 
 Returns a freshly allocated shader with all the needed info
@@ -3109,6 +3138,7 @@ static shader_t *FinishShader( void ) {
 	int i;
 	int bundle;
 	qboolean hasLightmapStage;
+	shader_t *newShader;
 
 	if (!currentShader) {
 		currentShader = FindShaderText(shader.name);
@@ -3293,7 +3323,9 @@ static shader_t *FinishShader( void ) {
 	// determine which stage iterator function is appropriate
 	ComputeStageIteratorFunc();
 
-	return GeneratePermanentShader();
+	newShader = GeneratePermanentShader();
+	R_PrecacheShaderPipelines( newShader );
+	return newShader;
 }
 
 //========================================================================================
@@ -3966,4 +3998,8 @@ void R_SetupShaders()
     CreateInternalShaders();
     InitStaticShaders();
     CreateExternalShaders();
+
+    // ProjectDlightTexture's passes (models lit by dynamic lights, first seen in play)
+    R_PrecacheState(GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, 1, qfalse);
+    R_PrecacheState(GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE, 1, qfalse);
 }

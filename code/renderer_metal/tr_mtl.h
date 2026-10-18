@@ -215,6 +215,14 @@ qboolean	mbLatencyPoll( int *tag, long long *commitUsec, long long *gpuDoneUsec,
 
 extern qboolean	mbMultitexture;				// ARB_multitexture equivalent (r_ext_multitexture)
 
+// Pipelines ahead of their first draw: when a shader is loaded, the front end describes the state each of its stages
+// draws with (R_PrecacheState), and the backend creates the pipelines it doesn't have yet, compiling them on Metal's
+// compiler threads (a variant the system shader cache doesn't have takes 10-70 ms). A draw that needs one still
+// compiling waits for it; mbPrecacheFinish waits for all of them, at the end of a level's registration, so none is
+// compiled in play.
+void	mbPrecachePipeline( int numUnits, qboolean alphaTest, qboolean blend, int sfactor, int dfactor, qboolean skin );
+void	mbPrecacheFinish( void );
+
 //
 // state
 //

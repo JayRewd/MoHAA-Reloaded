@@ -536,6 +536,30 @@ void R_State( unsigned long stateBits )
 	glState.glStateBits = stateBits | glState.externalSetState;
 }
 
+/*
+** R_PrecacheState
+**
+** Has the backend create, ahead of the first draw, the pipeline that R_State( stateBits ) draws with when numUnits
+** texture units are bound (skin: with GPU skinning, RB_SkinBegin).
+*/
+void R_PrecacheState( unsigned long stateBits, int numUnits, qboolean skin )
+{
+	// R_State's blend factors by GLS_SRCBLEND_* and GLS_DSTBLEND_* >> 4 (0: not a factor)
+	static const int srcFactors[16] = { 0, MB_ZERO, MB_ONE, MB_DST_COLOR, MB_ONE_MINUS_DST_COLOR, MB_SRC_ALPHA,
+		MB_ONE_MINUS_SRC_ALPHA, MB_DST_ALPHA, MB_ONE_MINUS_DST_ALPHA, MB_SRC_ALPHA_SATURATE };
+	static const int dstFactors[16] = { 0, MB_ZERO, MB_ONE, MB_SRC_COLOR, MB_ONE_MINUS_SRC_COLOR, MB_SRC_ALPHA,
+		MB_ONE_MINUS_SRC_ALPHA, MB_DST_ALPHA, MB_ONE_MINUS_DST_ALPHA };
+	int src = stateBits & GLS_SRCBLEND_BITS;
+	int dst = ( stateBits & GLS_DSTBLEND_BITS ) >> 4;
+	qboolean blend = ( src || dst ) ? qtrue : qfalse;
+
+	if ( blend && ( src > 9 || dst > 8 || !src || !dst ) ) {
+		return;		// R_State drops the level for it
+	}
+	mbPrecachePipeline( numUnits, ( stateBits & GLS_ATEST_BITS ) ? qtrue : qfalse, blend,
+		srcFactors[src], dstFactors[dst], skin );
+}
+
 
 
 /*

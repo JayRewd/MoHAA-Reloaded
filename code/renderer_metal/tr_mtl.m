@@ -138,6 +138,7 @@ static _Atomic int		mb_statGPUFrames;
 static int			mb_statPipelines, mb_statRingGrowths;
 static uint64_t		mb_statPipelineTime, mb_statPipelineMax;		// mach ticks creating pipelines (total, slowest)
 static int			mb_statPipelinesCached;						// of mb_statPipelines, found in the pipeline cache
+static int			mb_statPipelinesAhead, mb_statPipelinesAtDraw;	// compiled on Metal's threads ahead of their first draw, created at it
 
 // cl_latencyStats (mbLatencyTag/mbLatencyPoll): when each tagged frame was committed, finished on the GPU and
 // shown. Records are polled in frame order; the command buffer's completed handler and the drawable's presented
@@ -254,6 +255,9 @@ static id<MTLRenderPipelineState>	mb_queryPipeline;
 static void MB_HarvestQueries( uint64_t completed );
 static void MB_ProcessReadbacks( uint64_t completed );
 static void *MB_Pipeline( uint32_t key );
+static void MB_PrecacheKey( uint32_t key );
+static void MB_PrecacheWaitAll( void );
+static void MB_PrecacheFinish( qboolean report );
 static void MB_SkinUniforms( void );
 
 /*
@@ -858,40 +862,76 @@ PIPELINE CACHE
 // Compiled pipelines are kept in an MTLBinaryArchive in <fs_homepath>/metal/, next to the list of the pipeline keys
 // used. The first mbInit of a run creates the listed pipelines from the archive: nothing is compiled, and no pipeline
 // is first created in the middle of a match (with a warm system shader cache, the first pipeline of a run took 42.6 ms
-// to create). A pipeline the archive lacks is compiled as before, and its descriptor is added to the archive when the
-// files are written: at mbShutdown (vid_restart, quit), never during play. The file names carry a hash of the embedded
-// metallib, the GPU and the OS version, so a new build, GPU or OS starts a new cache; the other files are deleted.
+// to create). A pipeline the archive lacks is compiled as before. When a run compiled any, both files are written at
+// mbShutdown (vid_restart, quit), never during play, the archive as a new one holding every pipeline the process
+// created: an archive read from a file, with pipelines added, fails to serialize for some sets of pipelines
+// ("expecting 'fragment' stage in pipeline no. N", macOS 26), and after a failure it writes only what was added after
+// it (session 27). The file names carry a hash of the embedded metallib, the GPU, the OS version and the cache
+// version, so a new build, GPU or OS starts a new cache; the other files are deleted.
 #define MB_CACHE_MAGIC		0x4350424d		// "MBPC"
-#define MB_CACHE_VERSION	1
+#define MB_CACHE_VERSION	2				// 1 added to the archive it read, which lost most of its pipelines
 
-static id<MTLBinaryArchive>		mb_archive;
-static NSMutableArray			*mb_archiveNew;		// descriptors of compiled pipelines, added at the next save
+static id<MTLBinaryArchive>		mb_archive;			// the archive read at startup (lookups only)
+static NSMutableArray			*mb_archiveDescs;	// descriptors of the pipelines created, for the next archive written
+static qboolean					mb_archiveDirty;	// a pipeline was compiled since the archive was read or written
 static NSString					*mb_archivePath, *mb_keysPath;
 static uint32_t					mb_cacheKeys[MB_PIPELINE_SLOTS];	// stage/clear pipeline keys created in this process
 static int						mb_numCacheKeys, mb_savedCacheKeys;
 static qboolean					mb_cacheOpened;
 
+// Pipelines compiling on Metal's threads (MB_PrecacheKey): the completion handler writes a slot's pipeline, error and
+// end time, then signals its semaphore; the main thread reads them after waiting on it (MB_PrecacheComplete).
+#define MB_PRECACHE_SLOTS	64
+
+static uint32_t						mb_precacheKeys[MB_PRECACHE_SLOTS];
+static MTLRenderPipelineDescriptor	*mb_precacheDescs[MB_PRECACHE_SLOTS];
+static dispatch_semaphore_t			mb_precacheDone[MB_PRECACHE_SLOTS];	// nil: the slot is complete
+static id<MTLRenderPipelineState>	mb_precacheResults[MB_PRECACHE_SLOTS];
+static NSError						*mb_precacheErrors[MB_PRECACHE_SLOTS];
+static uint64_t						mb_precacheSubmit[MB_PRECACHE_SLOTS], mb_precacheEnd[MB_PRECACHE_SLOTS];	// mach time
+static int							mb_numPrecache;
+static int							mb_precacheCompiled;	// since the last MB_PrecacheFinish
+static uint64_t						mb_precacheSlowest;		// mach ticks from submission to the end, since then
+
 /*
-** MB_NewRenderPipeline
+** MB_ArchivePipeline
 **
-** From the archive if it holds the pipeline, else compiled (and remembered for the archive).
+** The pipeline from the archive, nil if it doesn't hold it. Either way the descriptor is kept for the next archive.
 */
-static id<MTLRenderPipelineState> MB_NewRenderPipeline( MTLRenderPipelineDescriptor *desc, NSError **error )
+static id<MTLRenderPipelineState> MB_ArchivePipeline( MTLRenderPipelineDescriptor *desc )
 {
 	id<MTLRenderPipelineState> pipeline;
 
-	if ( mb_archive ) {
-		desc.binaryArchives = @[ mb_archive ];
-		pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss
-			reflection:nil error:nil];
-		if ( pipeline ) {
-			mb_statPipelinesCached++;
-			return pipeline;
-		}
+	if ( !mb_archive ) {
+		return nil;
 	}
-	pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc error:error];
-	if ( pipeline && mb_archive ) {
-		[mb_archiveNew addObject:desc];
+	desc.binaryArchives = @[ mb_archive ];
+	pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc options:MTLPipelineOptionFailOnBinaryArchiveMiss
+		reflection:nil error:nil];
+	desc.binaryArchives = nil;
+	[mb_archiveDescs addObject:desc];
+	if ( pipeline ) {
+		mb_statPipelinesCached++;
+	} else {
+		mb_archiveDirty = qtrue;
+	}
+	return pipeline;
+}
+
+/*
+** MB_NewRenderPipeline
+**
+** From the archive if it holds the pipeline, else compiled.
+*/
+static id<MTLRenderPipelineState> MB_NewRenderPipeline( MTLRenderPipelineDescriptor *desc, NSError **error )
+{
+	id<MTLRenderPipelineState> pipeline = MB_ArchivePipeline( desc );
+
+	if ( !pipeline ) {
+		pipeline = [mb_device newRenderPipelineStateWithDescriptor:desc error:error];
+		if ( !pipeline ) {
+			[mb_archiveDescs removeObjectIdenticalTo:desc];
+		}
 	}
 	return pipeline;
 }
@@ -899,7 +939,7 @@ static id<MTLRenderPipelineState> MB_NewRenderPipeline( MTLRenderPipelineDescrip
 /*
 ** MB_CacheHash
 **
-** FNV-1a over the metallib, the GPU's name and the OS version.
+** FNV-1a over the metallib, the GPU's name, the OS version and the cache version.
 */
 static uint32_t MB_CacheHash( void )
 {
@@ -918,7 +958,7 @@ static uint32_t MB_CacheHash( void )
 			hash = ( hash ^ (byte)*c ) * 16777619u;
 		}
 	}
-	return hash;
+	return ( hash ^ MB_CACHE_VERSION ) * 16777619u;
 }
 
 /*
@@ -977,14 +1017,15 @@ static void MB_OpenPipelineCache( void )
 			return;
 		}
 		mb_archive.label = @"pipeline cache";
-		mb_archiveNew = [NSMutableArray new];
+		mb_archiveDescs = [NSMutableArray new];
 	}
 }
 
 /*
 ** MB_PrewarmPipelines
 **
-** Creates the pipelines the cache lists (once per process, after the shader library is loaded).
+** Creates the pipelines the cache lists (once per process, after the shader library is loaded): those in the archive
+** at once, the others compiled in parallel on Metal's threads.
 */
 static void MB_PrewarmPipelines( void )
 {
@@ -992,7 +1033,7 @@ static void MB_PrewarmPipelines( void )
 	uint32_t header[3], key;
 	uint64_t t0;
 	FILE *f;
-	int i, count = 0;
+	int i, count, cached;
 
 	if ( done || !mb_archive ) {
 		return;
@@ -1004,14 +1045,15 @@ static void MB_PrewarmPipelines( void )
 		return;
 	}
 	t0 = mach_absolute_time();
+	count = mb_numCacheKeys;
+	cached = mb_statPipelinesCached;
 	if ( fread( header, sizeof( header ), 1, f ) == 1 && header[0] == MB_CACHE_MAGIC && header[1] == MB_CACHE_VERSION ) {
 		for ( i = 0; i < (int)header[2] && fread( &key, sizeof( key ), 1, f ) == 1; i++ ) {
-			if ( MB_Pipeline( key ) ) {
-				count++;
-			}
+			MB_PrecacheKey( key );
 		}
 	}
 	fclose( f );
+	MB_PrecacheFinish( qfalse );
 	mb_savedCacheKeys = mb_numCacheKeys;
 
 	{
@@ -1019,56 +1061,66 @@ static void MB_PrewarmPipelines( void )
 
 		mach_timebase_info( &tb );
 		ri.Printf( PRINT_ALL, "Metal: %d pipelines created up front (%d from the pipeline cache) in %.1f ms\n",
-			count, mb_statPipelinesCached, (double)( mach_absolute_time() - t0 ) * tb.numer / tb.denom / 1e6 );
+			mb_numCacheKeys - count, mb_statPipelinesCached - cached,
+			(double)( mach_absolute_time() - t0 ) * tb.numer / tb.denom / 1e6 );
 	}
 }
 
 /*
 ** MB_SavePipelineCache
 **
-** Adds the pipelines compiled since the last save to the archive and writes both files (each to a temporary file,
-** then renamed over the old one, which the archive may still have mapped).
+** When a pipeline was compiled since the archive was read or written, writes a new archive with every pipeline created
+** (to a temporary file, then renamed over the old one, which the archive read at startup may still have mapped; a
+** failure leaves the old one); and the keys file when the list grew. A key the archive lacks is compiled up front by
+** the next run, never in play, so the keys are written even when the archive isn't.
 */
 static void MB_SavePipelineCache( void )
 {
+	id<MTLBinaryArchive> archive;
 	MTLRenderPipelineDescriptor *desc;
 	NSString *tmp;
 	NSError *error = nil;
 	uint32_t header[3];
 	FILE *f;
 
-	if ( !mb_archive || ( !mb_archiveNew.count && mb_numCacheKeys == mb_savedCacheKeys ) ) {
+	if ( !mb_archive || ( !mb_archiveDirty && mb_numCacheKeys == mb_savedCacheKeys ) ) {
 		return;
 	}
 
 	@autoreleasepool {
-		for ( desc in mb_archiveNew ) {
-			if ( ![mb_archive addRenderPipelineFunctionsWithDescriptor:desc error:&error] ) {
-				ri.Printf( PRINT_WARNING, "Metal: pipeline cache: %s\n", error.localizedDescription.UTF8String );
+		if ( mb_archiveDirty ) {
+			archive = [mb_device newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&error];
+			for ( desc in mb_archiveDescs ) {
+				if ( archive && ![archive addRenderPipelineFunctionsWithDescriptor:desc error:&error] ) {
+					ri.Printf( PRINT_WARNING, "Metal: pipeline cache: %s\n", error.localizedDescription.UTF8String );
+				}
+			}
+
+			tmp = [mb_archivePath stringByAppendingString:@".tmp"];
+			error = nil;
+			if ( archive && [archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&error]
+				&& !rename( tmp.fileSystemRepresentation, mb_archivePath.fileSystemRepresentation ) ) {
+				mb_archiveDirty = qfalse;
+			} else {
+				ri.Printf( PRINT_ALL, "Metal: pipeline cache not written: %s\n", error ? error.localizedDescription.UTF8String : strerror( errno ) );
+				unlink( tmp.fileSystemRepresentation );
 			}
 		}
-		[mb_archiveNew removeAllObjects];
 
-		error = nil;
-		tmp = [mb_archivePath stringByAppendingString:@".tmp"];
-		if ( ![mb_archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&error]
-			|| rename( tmp.fileSystemRepresentation, mb_archivePath.fileSystemRepresentation ) ) {
-			ri.Printf( PRINT_WARNING, "Metal: pipeline cache not written: %s\n", error ? error.localizedDescription.UTF8String : strerror( errno ) );
-			return;
-		}
-
-		tmp = [mb_keysPath stringByAppendingString:@".tmp"];
-		f = fopen( tmp.fileSystemRepresentation, "wb" );
-		if ( !f ) {
-			return;
-		}
-		header[0] = MB_CACHE_MAGIC;
-		header[1] = MB_CACHE_VERSION;
-		header[2] = mb_numCacheKeys;
-		fwrite( header, sizeof( header ), 1, f );
-		fwrite( mb_cacheKeys, sizeof( mb_cacheKeys[0] ), mb_numCacheKeys, f );
-		if ( fclose( f ) == 0 ) {
-			rename( tmp.fileSystemRepresentation, mb_keysPath.fileSystemRepresentation );
+		if ( mb_numCacheKeys != mb_savedCacheKeys ) {
+			tmp = [mb_keysPath stringByAppendingString:@".tmp"];
+			f = fopen( tmp.fileSystemRepresentation, "wb" );
+			if ( !f ) {
+				return;
+			}
+			header[0] = MB_CACHE_MAGIC;
+			header[1] = MB_CACHE_VERSION;
+			header[2] = mb_numCacheKeys;
+			fwrite( header, sizeof( header ), 1, f );
+			fwrite( mb_cacheKeys, sizeof( mb_cacheKeys[0] ), mb_numCacheKeys, f );
+			if ( fclose( f ) == 0 ) {
+				rename( tmp.fileSystemRepresentation, mb_keysPath.fileSystemRepresentation );
+			}
 		}
 	}
 	mb_savedCacheKeys = mb_numCacheKeys;
@@ -1124,13 +1176,15 @@ static uint32_t MB_PipelineKey( void )
 	return key;
 }
 
-static void *MB_CreatePipeline( uint32_t key )
+/*
+** MB_PipelineDescriptor
+**
+** The descriptor of a stage/clear pipeline key, nil if its fragment function failed.
+*/
+static MTLRenderPipelineDescriptor *MB_PipelineDescriptor( uint32_t key )
 {
 	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
 	MTLRenderPipelineColorAttachmentDescriptor *color = desc.colorAttachments[0];
-	id<MTLRenderPipelineState> pipeline;
-	NSError *error = nil;
-	uint64_t t0;
 
 	if ( key & MB_PIPE_CLEAR ) {
 		desc.label = @"clear";
@@ -1141,7 +1195,7 @@ static void *MB_CreatePipeline( uint32_t key )
 		desc.vertexFunction = ( key & MB_PIPE_SKIN ) ? mb_skinVS : mb_stageVS;
 		desc.fragmentFunction = MB_StageFragmentFunction( key & 3, ( key >> 2 ) & 1 );
 		if ( !desc.fragmentFunction ) {
-			return NULL;
+			return nil;
 		}
 	}
 
@@ -1155,43 +1209,239 @@ static void *MB_CreatePipeline( uint32_t key )
 	}
 	desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 	desc.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-
-	t0 = mach_absolute_time();
-	pipeline = MB_NewRenderPipeline( desc, &error );
-	t0 = mach_absolute_time() - t0;
-	if ( !pipeline ) {
-		ri.Printf( PRINT_WARNING, "Metal: pipeline 0x%x failed: %s\n", key, error.localizedDescription.UTF8String );
-		return NULL;
-	}
-	mb_statPipelines++;
-	mb_statPipelineTime += t0;
-	if ( t0 > mb_statPipelineMax ) {
-		mb_statPipelineMax = t0;
-	}
-	return (__bridge_retained void *)pipeline;
+	return desc;
 }
 
-static void *MB_Pipeline( uint32_t key )
+// main-thread time spent creating pipelines (r_metalPresentStats)
+static void MB_PipelineTime( uint64_t ticks )
+{
+	mb_statPipelineTime += ticks;
+	if ( ticks > mb_statPipelineMax ) {
+		mb_statPipelineMax = ticks;
+	}
+}
+
+static double MB_TicksMs( uint64_t ticks )
+{
+	static mach_timebase_info_data_t tb;
+
+	if ( !tb.denom ) {
+		mach_timebase_info( &tb );
+	}
+	return (double)ticks * tb.numer / tb.denom / 1e6;
+}
+
+// the key's slot in mb_pipelines, or the empty slot it goes into
+static uint32_t MB_PipelineSlot( uint32_t key )
 {
 	uint32_t i = ( key * 2654435761u ) & ( MB_PIPELINE_SLOTS - 1 );
 
-	while ( mb_pipelines[i].key ) {
-		if ( mb_pipelines[i].key == key + 1 ) {
-			return mb_pipelines[i].object;
-		}
+	while ( mb_pipelines[i].key && mb_pipelines[i].key != key + 1 ) {
 		i = ( i + 1 ) & ( MB_PIPELINE_SLOTS - 1 );
+	}
+	return i;
+}
+
+static void MB_SetPipeline( uint32_t key, id<MTLRenderPipelineState> pipeline )
+{
+	uint32_t i = MB_PipelineSlot( key );
+
+	mb_pipelines[i].object = (__bridge_retained void *)pipeline;
+	mb_pipelines[i].key = key + 1;
+	mb_statPipelines++;
+	if ( mb_numCacheKeys < MB_PIPELINE_SLOTS ) {
+		mb_cacheKeys[mb_numCacheKeys++] = key;		// for the pipeline cache
+	}
+}
+
+/*
+** MB_PrecacheKey
+**
+** Creates a key's pipeline ahead of its first draw: from the archive at once, else compiled on Metal's threads.
+*/
+static void MB_PrecacheKey( uint32_t key )
+{
+	MTLRenderPipelineDescriptor *desc;
+	id<MTLRenderPipelineState> pipeline;
+	dispatch_semaphore_t done;
+	uint64_t t0;
+	int i, n;
+
+	if ( mb_pipelines[MB_PipelineSlot( key )].key ) {
+		return;
+	}
+	for ( i = 0; i < mb_numPrecache; i++ ) {
+		if ( mb_precacheKeys[i] == key && mb_precacheDone[i] ) {
+			return;
+		}
+	}
+	if ( mb_numPrecache == MB_PRECACHE_SLOTS ) {
+		MB_PrecacheWaitAll();
 	}
 
 	@autoreleasepool {
-		mb_pipelines[i].object = MB_CreatePipeline( key );
+		t0 = mach_absolute_time();
+		desc = MB_PipelineDescriptor( key );
+		if ( !desc ) {
+			return;
+		}
+		pipeline = MB_ArchivePipeline( desc );
+		if ( pipeline ) {
+			MB_PipelineTime( mach_absolute_time() - t0 );
+			MB_SetPipeline( key, pipeline );
+			return;
+		}
+
+		n = mb_numPrecache++;
+		mb_precacheSubmit[n] = t0;
+		mb_precacheKeys[n] = key;
+		mb_precacheDescs[n] = desc;
+		done = mb_precacheDone[n] = dispatch_semaphore_create( 0 );
+		[mb_device newRenderPipelineStateWithDescriptor:desc completionHandler:^( id<MTLRenderPipelineState> result, NSError *error ) {
+			mb_precacheResults[n] = result;
+			mb_precacheErrors[n] = error;
+			mb_precacheEnd[n] = mach_absolute_time();
+			dispatch_semaphore_signal( done );
+		}];
+		MB_PipelineTime( mach_absolute_time() - t0 );	// what the main thread spent on it
 	}
-	if ( mb_pipelines[i].object ) {
-		mb_pipelines[i].key = key + 1;
-		if ( mb_numCacheKeys < MB_PIPELINE_SLOTS ) {
-			mb_cacheKeys[mb_numCacheKeys++] = key;		// for the pipeline cache
+}
+
+/*
+** MB_PrecacheComplete
+**
+** Waits for a slot's compile and installs its pipeline.
+*/
+static void MB_PrecacheComplete( int n )
+{
+	dispatch_semaphore_wait( mb_precacheDone[n], DISPATCH_TIME_FOREVER );
+	if ( mb_precacheResults[n] ) {
+		MB_SetPipeline( mb_precacheKeys[n], mb_precacheResults[n] );
+		mb_statPipelinesAhead++;
+		mb_precacheCompiled++;
+		if ( mb_precacheEnd[n] - mb_precacheSubmit[n] > mb_precacheSlowest ) {
+			mb_precacheSlowest = mb_precacheEnd[n] - mb_precacheSubmit[n];
+		}
+	} else {
+		ri.Printf( PRINT_WARNING, "Metal: pipeline 0x%x failed: %s\n", mb_precacheKeys[n],
+			mb_precacheErrors[n].localizedDescription.UTF8String );
+		[mb_archiveDescs removeObjectIdenticalTo:mb_precacheDescs[n]];
+	}
+	mb_precacheDone[n] = nil;
+	mb_precacheDescs[n] = nil;
+	mb_precacheResults[n] = nil;
+	mb_precacheErrors[n] = nil;
+}
+
+static void MB_PrecacheWaitAll( void )
+{
+	int i;
+
+	for ( i = 0; i < mb_numPrecache; i++ ) {
+		if ( mb_precacheDone[i] ) {
+			MB_PrecacheComplete( i );
 		}
 	}
-	return mb_pipelines[i].object;
+	mb_numPrecache = 0;
+}
+
+/*
+** MB_PrecacheFinish
+**
+** Waits for every pipeline still compiling; report: prints what was compiled since the last call.
+*/
+static void MB_PrecacheFinish( qboolean report )
+{
+	uint64_t t0 = mach_absolute_time();
+
+	MB_PrecacheWaitAll();
+	if ( report && mb_precacheCompiled ) {
+		ri.Printf( PRINT_ALL, "Metal: %d pipelines compiled ahead of their first draw (the slowest in %.1f ms; %.1f ms waited for at the end)\n",
+			mb_precacheCompiled, MB_TicksMs( mb_precacheSlowest ), MB_TicksMs( mach_absolute_time() - t0 ) );
+	}
+	mb_precacheCompiled = 0;
+	mb_precacheSlowest = 0;
+}
+
+/*
+** mbPrecachePipeline
+**
+** The pipeline MB_PipelineKey gives for that state with the color mask on, for units 0..numUnits-1 bound.
+*/
+void mbPrecachePipeline( int numUnits, qboolean alphaTest, qboolean blend, int sfactor, int dfactor, qboolean skin )
+{
+	uint32_t key = ( numUnits > 1 && mbMultitexture ) ? 3 : 1;
+
+	if ( !mb_library || ( skin && !mb_skinVS ) ) {
+		return;
+	}
+	if ( alphaTest ) {
+		key |= 1u << 2;
+	}
+	if ( blend ) {
+		key |= ( 1u << 3 ) | ( (uint32_t)MB_BlendIndex( sfactor ) << 4 ) | ( (uint32_t)MB_BlendIndex( dfactor ) << 8 );
+	}
+	key |= (uint32_t)( MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue ) << 12;
+	if ( skin ) {
+		key |= MB_PIPE_SKIN;
+	}
+	MB_PrecacheKey( key );
+}
+
+/*
+** mbPrecacheFinish
+*/
+void mbPrecacheFinish( void )
+{
+	MB_PrecacheFinish( qtrue );
+}
+
+/*
+** MB_Pipeline
+**
+** The pipeline of a key: created at its first draw if nothing created it ahead (waited for if it is compiling).
+*/
+static void *MB_Pipeline( uint32_t key )
+{
+	uint32_t i = MB_PipelineSlot( key );
+	id<MTLRenderPipelineState> pipeline;
+	MTLRenderPipelineDescriptor *desc;
+	NSError *error = nil;
+	uint64_t t0;
+	int n;
+
+	if ( mb_pipelines[i].key ) {
+		return mb_pipelines[i].object;
+	}
+
+	for ( n = 0; n < mb_numPrecache; n++ ) {
+		if ( mb_precacheKeys[n] == key && mb_precacheDone[n] ) {
+			MB_PrecacheComplete( n );
+			i = MB_PipelineSlot( key );
+			if ( mb_pipelines[i].key ) {
+				return mb_pipelines[i].object;
+			}
+			break;
+		}
+	}
+
+	@autoreleasepool {
+		t0 = mach_absolute_time();
+		desc = MB_PipelineDescriptor( key );
+		pipeline = desc ? MB_NewRenderPipeline( desc, &error ) : nil;
+		t0 = mach_absolute_time() - t0;
+		if ( !pipeline ) {
+			if ( desc ) {
+				ri.Printf( PRINT_WARNING, "Metal: pipeline 0x%x failed: %s\n", key, error.localizedDescription.UTF8String );
+			}
+			return NULL;
+		}
+		MB_PipelineTime( t0 );
+		mb_statPipelinesAtDraw++;
+		ri.Printf( PRINT_DEVELOPER, "Metal: pipeline 0x%x created at its first draw in %.2f ms\n", key, MB_TicksMs( t0 ) );
+		MB_SetPipeline( key, pipeline );
+	}
+	return mb_pipelines[MB_PipelineSlot( key )].object;
 }
 
 // key bits: 0 depth test, 1-3 depth func, 4 depth write, 5 stencil test, 6-8 stencil func, 9-11 fail op,
@@ -1402,15 +1652,18 @@ static qboolean MB_CreatePipelines( void )
 		}
 	}
 
-	desc = [MTLRenderPipelineDescriptor new];
-	desc.label = @"final";
-	desc.vertexFunction = [mb_library newFunctionWithName:@"mb_final_vs"];
-	desc.fragmentFunction = [mb_library newFunctionWithName:@"mb_final_fs"];
-	desc.colorAttachments[0].pixelFormat = mb_layer.pixelFormat;
-	mb_finalPipeline = MB_NewRenderPipeline( desc, &error );
 	if ( !mb_finalPipeline ) {
-		ri.Printf( PRINT_ALL, "mbInit: final pipeline failed: %s\n", error.localizedDescription.UTF8String );
-		return qfalse;
+		// the layer's pixel format never changes
+		desc = [MTLRenderPipelineDescriptor new];
+		desc.label = @"final";
+		desc.vertexFunction = [mb_library newFunctionWithName:@"mb_final_vs"];
+		desc.fragmentFunction = [mb_library newFunctionWithName:@"mb_final_fs"];
+		desc.colorAttachments[0].pixelFormat = mb_layer.pixelFormat;
+		mb_finalPipeline = MB_NewRenderPipeline( desc, &error );
+		if ( !mb_finalPipeline ) {
+			ri.Printf( PRINT_ALL, "mbInit: final pipeline failed: %s\n", error.localizedDescription.UTF8String );
+			return qfalse;
+		}
 	}
 
 	return qtrue;
@@ -1852,6 +2105,7 @@ void mbShutdown( void )
 	MB_HarvestQueries( UINT64_MAX );
 	MB_ProcessReadbacks( UINT64_MAX );
 
+	MB_PrecacheWaitAll();
 	MB_SavePipelineCache();
 	MB_StopDrawableAcquisition();
 
@@ -1871,10 +2125,12 @@ void mbShutdown( void )
 			(double)mb_statDrawableWait * tb.numer / tb.denom / 1e6 / mb_statFrames,
 			(double)mb_statSlotWait * tb.numer / tb.denom / 1e6 / mb_statFrames );
 		ri.Printf( PRINT_ALL, "Metal: per frame %.1f draws, %.2f passes, %.2f clear quads, %.1f KB ring; "
-			"%d pipelines (%d from the cache; %.2f ms to create, slowest %.2f ms), %llu texture copies (in use), %d ring growths\n",
+			"%d pipelines (%d from the cache, %d compiled ahead of their first draw, %d at it; %.2f ms on the main thread, "
+			"slowest %.2f ms), %llu texture copies (in use), %d ring growths\n",
 			(double)mb_statDraws / mb_statFrames, (double)mb_statPasses / mb_statFrames,
 			(double)mb_statClearQuads / mb_statFrames, (double)mb_statRingBytes / mb_statFrames / 1024.0,
-			mb_statPipelines, mb_statPipelinesCached, (double)mb_statPipelineTime * tb.numer / tb.denom / 1e6,
+			mb_statPipelines, mb_statPipelinesCached, mb_statPipelinesAhead, mb_statPipelinesAtDraw,
+			(double)mb_statPipelineTime * tb.numer / tb.denom / 1e6,
 			(double)mb_statPipelineMax * tb.numer / tb.denom / 1e6,
 			(unsigned long long)mb_statOrphans, mb_statRingGrowths );
 		if ( mb_statGPUFrames ) {
@@ -1925,7 +2181,6 @@ void mbShutdown( void )
 
 	mb_sceneColor = nil;
 	mb_sceneDepth = nil;
-	mb_finalPipeline = nil;
 	mb_layer = nil;
 	mb_width = mb_height = 0;
 }
