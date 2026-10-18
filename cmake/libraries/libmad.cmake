@@ -10,6 +10,8 @@ set(OLD_VALUE ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 if(USE_INTERNAL_MAD)
+	# libmad's example program (minimad) is of no use here: no target for it
+	set(EXAMPLE OFF CACHE BOOL "" FORCE)
 	add_subdirectory("${SOURCE_DIR}/thirdparty/libmad" "./libmad" EXCLUDE_FROM_ALL)
 
     list(APPEND CLIENT_LIBRARIES mad)
