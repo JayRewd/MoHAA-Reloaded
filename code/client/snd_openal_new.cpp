@@ -4464,8 +4464,17 @@ bool openal_channel_two_d_stream::set_sfx(sfx_t *pSfx)
     this->pSfx = pSfx;
     Q_strncpyz(this->fileName, pSfx->name, sizeof(this->fileName));
 
+    // Added in the Metal port
+    //  A missing stream was searched for again on every start (every codec in every search path,
+    //  0.25-0.4 ms on the main thread, and a warning each time): remember the failure
+    if (pSfx->iFlags & SFX_FLAG_STREAM_FAILED) {
+        Com_DPrintf("OpenAL: Failed to load sound file.\n");
+        return false;
+    }
+
     streamHandle = S_CodecLoad(pSfx->name, NULL);
     if (!streamHandle) {
+        pSfx->iFlags |= SFX_FLAG_STREAM_FAILED;
         Com_DPrintf("OpenAL: Failed to load sound file.\n");
         return false;
     }

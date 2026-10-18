@@ -170,6 +170,8 @@ enum sfx_flags_t {
     SFX_FLAG_STREAMED      = 4,
     SFX_FLAG_NO_OFFSET     = 8,
     SFX_FLAG_NULL          = 16,
+    // Added in the Metal port
+    SFX_FLAG_STREAM_FAILED = 32, // the stream couldn't be opened; not searched for again until the next registration
 };
 
 enum loopsound_flags_t {

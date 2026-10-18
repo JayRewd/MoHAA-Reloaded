@@ -290,6 +290,12 @@ void S_BeginRegistration()
     s_inRegistration                    = true;
     s_knownSfx[0].registration_sequence = s_registrationSequence;
 
+    // Added in the Metal port
+    //  Search for streams that failed to open again (a download may have added them)
+    for (i = 0; i < s_numSfx; i++) {
+        s_knownSfx[i].iFlags &= ~SFX_FLAG_STREAM_FAILED;
+    }
+
     Com_Printf("------- Sound Begin Registration Complete -------\n");
 
     // Added in OPM
