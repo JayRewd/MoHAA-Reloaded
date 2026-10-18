@@ -44,7 +44,7 @@ port/prof.sh metal base 20         # `sample` of the main thread over the loopin
 port/shot.sh metal menu shot_menu.cfg      # in-game screenshots from a cfg (also: opengl1 = the GL1 reference), into build.noindex/shots
 port/shot.sh diff menu             # per-pixel difference GL1 vs Metal for every screenshot pair of that name
 port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views (fixedtime, tele/face): GL1 reference + Metal, per-view diffs
-port/shot.sh regress base-s9       # the six fixed views on Metal only: vs GL1 per view and vs a saved Metal baseline (port/shot.sh savebase <dir>); engine args after the dir go to every run
+port/shot.sh regress base-s29      # the six fixed views on Metal only: vs GL1 per view and vs a saved Metal baseline (port/shot.sh savebase <dir>; base-s29 since the µs limiter, base-s9 before); engine args after the dir go to every run
 port/latency.sh metal win-250 20   # cl_latencyStats in dm/mohdm6 with 20 s of synthetic mouse (takes the mouse!); TRACE=1 checks it against the display; OMM_FLAVOR=sdlref runs that install; MOUSE=0 LATSTATS=0 TRACE=1 = only what the display showed (no input, no probe)
 port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
 port/skinab.sh                     # GPU-skinning A/B flavor (metalab), then: port/bench.sh run metalab 1; grep SKINAB build.noindex/bench/metalab-1.log | tail -1 (every "differ" 0)
