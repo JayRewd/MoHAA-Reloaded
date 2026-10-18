@@ -3480,12 +3480,29 @@ Remaining:
   lowest: 1.5 ms uncapped, 2.1 at 250) the slack is under 0.5 ms: only
   less CPU and GPU time per frame lowers it. Not measured: a VRR or 240 Hz
   display, other compositors (GNOME's, wlroots), NVIDIA.
-- The engine's error dialog can hang a game that has loaded the Vulkan
-  driver: `Sys_Exec` (`code/sys/sys_unix.c`) forks and calls `exit(-1)`
-  in the child when `execvp` fails (no `zenity`: KDE without it), which
-  runs the parent's exit handlers in the child, and one of them (Mesa's
-  threads) waits forever; the parent waits for the child. `_exit` in the
-  child would fix it (upstream code; seen once in this step's tests).
+- The engine's error dialog hung games, with either renderer (fixed in
+  `code/sys/sys_unix.c`; upstream code, the same in ioq3 and openmohaa
+  today): `Sys_Exec` forked and called `exit(-1)` in the child when
+  `execvp` failed (no `zenity`: KDE without it), so the child ran the
+  parent's exit handlers, and OpenAL Soft's waits forever to join
+  PipeWire's event thread, which the child doesn't have (backtrace of the
+  child under gdb; not Mesa); the parent waits for the child. The child
+  now calls only `execvp` and `_exit(127)`, and the parent waits for that
+  pid and counts 127 or a killed program as no dialog. That made
+  `Sys_Dialog`'s fallback work for the first time (the failed child's 255
+  counted as an answer, so kdialog and xmessage were never tried), and the
+  fallback then showed `--title=Error` in place of the message: the zenity
+  command's two `va()` calls overwrote the caller's `va()` message (two
+  buffers); the command builders no longer use `va()`. The hang needs the
+  sound still up when the dialog starts: a plain fatal error shuts the
+  client down first, a recursive error (one raised while an error is
+  handled) goes straight to `Sys_Error`. Tested with a temporary
+  `error sys` command calling `Sys_Error` with the renderer and sound up,
+  `cl_renderer vulkan` and `opengl1`, no zenity: the old build hangs
+  (parent in `do_wait`, child in `futex_do_wait`), the new one shows
+  kdialog with the message, then xmessage when kdialog is killed, and
+  exits (status 3, crash log written) when the dialog closes or when no
+  dialog program is on the `PATH`; the plain `error` command the same.
 - The frame limiter (see Performance, Frame limiter): at caps of 60 and
   144 the tail of the input to present time is up to 0.25 ms longer than
   with the old limiter's 62.5 and 166.7 frames per second, after

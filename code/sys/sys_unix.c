@@ -88,34 +88,41 @@ static void Sys_AppendToExecBuffer( const char *text )
 /*
 ==============
 Sys_Exec
+
+Returns the program's exit code, or -1 if it couldn't be run or didn't exit
 ==============
 */
 static int Sys_Exec( void )
 {
 	pid_t pid = fork( );
+	int status;
 
 	if( pid < 0 )
 		return -1;
 
-	if( pid )
+	if( pid == 0 )
 	{
-		// Parent
-		int exitCode;
-
-		wait( &exitCode );
-
-		return WEXITSTATUS( exitCode );
-	}
-	else
-	{
-		// Child
+		// Child: nothing but exec and _exit. exit() would run the parent's
+		// atexit handlers and destructors here, and some wait forever on
+		// threads the child doesn't have (OpenAL joining PipeWire's thread)
 		execvp( execArgv[ 0 ], execArgv );
 
 		// Failed to execute
-		exit( -1 );
-
-		return -1;
+		_exit( 127 );
 	}
+
+	// Parent
+	while( waitpid( pid, &status, 0 ) < 0 )
+	{
+		if( errno != EINTR )
+			return -1;
+	}
+
+	// 127 is "not found", as in shells, so that Sys_Dialog tries the next program
+	if( !WIFEXITED( status ) || WEXITSTATUS( status ) == 127 )
+		return -1;
+
+	return WEXITSTATUS( status );
 }
 
 #ifdef __APPLE__
@@ -1045,6 +1052,22 @@ void Sys_ErrorDialog( const char *error )
 #ifndef __APPLE__
 /*
 ==============
+Sys_AppendOptionToExecBuffer
+
+Appends option and value as one argument, without va(): the value may be
+in a va() buffer (Sys_Dialog's message), which va() would overwrite
+==============
+*/
+static void Sys_AppendOptionToExecBuffer( const char *option, const char *value )
+{
+	char text[ sizeof( execBuffer ) ];
+
+	Com_sprintf( text, sizeof( text ), "%s%s", option, value );
+	Sys_AppendToExecBuffer( text );
+}
+
+/*
+==============
 Sys_ZenityCommand
 ==============
 */
@@ -1072,8 +1095,8 @@ static void Sys_ZenityCommand( dialogType_t type, const char *message, const cha
 			break;
 	}
 
-	Sys_AppendToExecBuffer( va( "--text=%s", message ) );
-	Sys_AppendToExecBuffer( va( "--title=%s", title ) );
+	Sys_AppendOptionToExecBuffer( "--text=", message );
+	Sys_AppendOptionToExecBuffer( "--title=", title );
 }
 
 /*
@@ -1097,7 +1120,7 @@ static void Sys_KdialogCommand( dialogType_t type, const char *message, const ch
 	}
 
 	Sys_AppendToExecBuffer( message );
-	Sys_AppendToExecBuffer( va( "--title=%s", title ) );
+	Sys_AppendOptionToExecBuffer( "--title=", title );
 }
 
 /*
