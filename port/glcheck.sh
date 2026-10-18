@@ -38,7 +38,7 @@ allowed = [
 	(r"^code/uilib/uilangamelist\.cpp$", r"EV_UILGL_"),
 	# upstream client/sys code kept for small diffs: the refimport hooks (no-ops on macOS, no longer called),
 	# the inactive USE_RENDERER_DLOPEN branch of CL_InitRef, a comment on matrix order
-	(r"^code/(renderercommon/tr_public\.h|client/cl_main\.cpp|sys/sys_local\.h|sys/sys_unix\.c|sys/sys_win32\.c)$", r"Sys_GLimp(Safe)?Init"),
+	(r"^code/(renderercommon/tr_public\.h|client/cl_main\.cpp|sys/sys_local\.h|sys/sys_unix\.c)$", r"Sys_GLimp(Safe)?Init"),
 	(r"^code/client/cl_main\.cpp$", r"Cvar_Get\(\"cl_renderer\", \"opengl1\""),
 	(r"^code/qcommon/q_math\.c$", r"the OpenGL order"),
 	# non-macOS platform files, deleted in Phase 7
