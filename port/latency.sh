@@ -14,7 +14,10 @@
 # The screen must be unlocked: while it is locked the WindowServer composites nothing (checked first).
 # The game window must have the keyboard focus, or SDL ignores the mouse: don't click elsewhere during a run.
 # Environment:
-#   MOUSE=0     no mouse movement (to look at presents alone; the probe then has no input frames)
+#   MOUSE=0     no mouse movement (to look at presents alone, or the user's own mouse; the probe then has no input
+#               frames unless the user moves it). With the synthetic movement the runs set in_mouseRaw 0 (the native
+#               layer's default is 1, GCMouse, which never sees it; SDL has no such cvar): the engine args can
+#               override it
 #   LATSTATS=2  cl_latencyStats 2: also log every frame's raw times (needed by TRACE's per-frame check);
 #               LATSTATS=0 leaves the probe off (with MOUSE=0 and TRACE=1: only what the display showed)
 #   TRACE=1     record 6 s of Instruments' Metal System Trace during the movement (-> <name>.trace, ~0.3 GB,
@@ -53,12 +56,15 @@ EOF
 
 LOG="$OUT/$NAME.log"
 rm -rf "$OMM_HOME/main/configs"
+RAW=()
+[ "${MOUSE:-1}" = 1 ] && RAW=(+set in_mouseRaw 0)
 if [ "$R" = opengl1 ]; then FLAVOR=gl; else FLAVOR="${OMM_FLAVOR:-metal}"; fi
 perl -e 'alarm shift; exec @ARGV' $(( SECS + 90 )) "$OMM_PORT/run.sh" "$FLAVOR" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
 	+set r_swapInterval 0 +set com_maxfps 250 +set com_maxfpsUnfocused 0 +set com_maxfpsMinimized 0 \
 	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 \
-	+set g_gametype 0 +set thereisnomonkey 1 "$@" +devmap dm/mohdm6 +exec lat_probe.cfg > "$LOG" 2>&1 &
+	+set g_gametype 0 +set thereisnomonkey 1 ${RAW[@]+"${RAW[@]}"} "$@" +devmap dm/mohdm6 +exec lat_probe.cfg \
+	> "$LOG" 2>&1 &
 GAME=$!
 
 # wait for the probe to start (or the game to end)

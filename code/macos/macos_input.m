@@ -828,7 +828,8 @@ detached from the mouse and hidden. The movement then comes from
   in_mouseRaw 0: each movement event's deltas cut toward zero, as SDL cut them: the system cursor's deltas, with
                  the system's acceleration, the same SE_MOUSE stream as SDL;
   in_mouseRaw 1: GCMouse's raw deltas (the mouse's own counts, no acceleration), added up off the main thread with
-                 their fractions and queued once per frame.
+                 their fractions and queued once per frame. The default (the user's choice, docs/METAL_PORT_PLAN.md
+                 3.1 #14).
 Otherwise the system cursor shows over the window, with the UI's color cursor, and its position is the UI's cursor,
 in the drawable's pixels (SDL gave window points: on a 2x display the UI's cursor reached only the top left quarter).
 A fullscreen UI keeps the mouse captured and draws its own cursor, moved by the deltas, in pixels too.
@@ -1877,8 +1878,9 @@ void IN_Init( void *windowData )
 	// mouse variables
 	in_mouse = Cvar_Get( "in_mouse", "1", CVAR_ARCHIVE );
 	in_nograb = Cvar_Get( "in_nograb", "0", CVAR_ARCHIVE );
-	// 1 = GCMouse's raw deltas (no acceleration), 0 = the system cursor's deltas, as with SDL
-	in_mouseRaw = Cvar_Get( "in_mouseRaw", "0", CVAR_ARCHIVE );
+	// 1 = GCMouse's raw deltas (no acceleration; the default, the user's choice), 0 = the system cursor's deltas,
+	// as with SDL
+	in_mouseRaw = Cvar_Get( "in_mouseRaw", "1", CVAR_ARCHIVE );
 
 	// no gamepads or joysticks (the user's decision, 2026-10-18): in_joystick and joy_threshold are SDL's only
 
