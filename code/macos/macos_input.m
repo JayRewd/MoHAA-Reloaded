@@ -1430,7 +1430,7 @@ static CGPoint IN_WindowCenter( void )
 ===============
 IN_UpdateCursor
 
-The cursor over the window changed: captured (none), or the UI's.
+The UI's cursor over the window changed, or it shows again after a capture.
 ===============
 */
 static void IN_UpdateCursor( void )
@@ -1441,12 +1441,37 @@ static void IN_UpdateCursor( void )
 
 /*
 ===============
+IN_WarpCursor
+
+The cursor goes to a point in global display points, unless it is there already: a warp is a synchronous
+WindowServer call (0.1-1.8 ms in a window, the look 2 us), and the cursor a capture parked at the window's center
+is still there at the release. qfalse = no warp.
+===============
+*/
+static qboolean IN_WarpCursor( CGPoint point )
+{
+	CGEventRef event = CGEventCreate( NULL );
+	qboolean there = event && CGPointEqualToPoint( CGEventGetLocation( event ), point );
+
+	if( event )
+		CFRelease( event );
+	if( there )
+		return qfalse;
+
+	CGWarpMouseCursorPosition( point );
+	return qtrue;
+}
+
+/*
+===============
 IN_Capture
 
 The cursor is captured (SDL's relative mode, Cocoa_SetRelativeMouseMode): it goes to the window's center when the
 window has the keyboard, then it is detached from the mouse (the call right after the warp also ends the warp's
 short freeze of the mouse) and hidden, and the first movement event after it is dropped, as SDL drops it.
-Released, the cursor follows the mouse again and shows.
+Released, the cursor follows the mouse again and shows, as the UI's cursor at once. The capture leaves the cursor
+rects alone (SDL also put an invisible cursor there): the hide is enough, and rebuilding them cost 0.6-1.3 ms in a
+window, up to 2.5 ms after a load (docs/METAL_PORT_PLAN.md, Phase 5 "Session 38 result").
 ===============
 */
 static void IN_Capture( qboolean capture )
@@ -1462,7 +1487,7 @@ static void IN_Capture( qboolean capture )
 		{
 			if( in_focused )
 			{
-				CGWarpMouseCursorPosition( IN_WindowCenter( ) );
+				IN_WarpCursor( IN_WindowCenter( ) );
 				in_skipMotion = qtrue;
 			}
 			CGAssociateMouseAndMouseCursorPosition( false );
@@ -1482,9 +1507,9 @@ static void IN_Capture( qboolean capture )
 				[NSCursor unhide];
 				in_cursorHidden = qfalse;
 			}
-		}
 
-		IN_UpdateCursor( );
+			IN_UpdateCursor( );
+		}
 	}
 
 	IN_RawMouse( capture && in_mouseRaw->integer );
@@ -1506,9 +1531,10 @@ static void IN_WarpToCenter( void )
 
 	@autoreleasepool
 	{
-		CGWarpMouseCursorPosition( IN_WindowCenter( ) );
+		// the associate call ends the warp's freeze of the mouse
+		if( IN_WarpCursor( IN_WindowCenter( ) ) )
+			CGAssociateMouseAndMouseCursorPosition( true );
 	}
-	CGAssociateMouseAndMouseCursorPosition( true );
 
 	in_mouseX = (int)( x * scale );
 	in_mouseY = (int)( y * scale );
@@ -1606,30 +1632,11 @@ void MacOS_ReleaseMouse( void )
 ===============
 MacOS_Cursor
 
-The cursor over the content view (its cursor rectangle): none while captured, else the UI's or the arrow.
+The cursor over the content view (its cursor rectangle): the UI's or the arrow (hidden while captured).
 ===============
 */
 NSCursor *MacOS_Cursor( void )
 {
-	static NSCursor *invisible;
-
-	if( in_captured )
-	{
-		// a transparent 16x16 cursor, as SDL made its invisible one
-		if( !invisible )
-		{
-			NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:16
-				pixelsHigh:16 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
-				colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:4 * 16 bitsPerPixel:32];
-			NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize( 16, 16 )];
-
-			memset( bitmap.bitmapData, 0, 4 * 16 * 16 );
-			[image addRepresentation:bitmap];
-			invisible = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
-		}
-		return invisible;
-	}
-
 	return in_cursor ?: [NSCursor arrowCursor];
 }
 

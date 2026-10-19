@@ -203,7 +203,7 @@ static void MTLimp_LeaveExclusive( qboolean minimize );
 	MacOS_MouseWheel( event );
 }
 
-// the UI's cursor over the window, none while the game has the mouse
+// the UI's cursor over the window (hidden while the game has the mouse)
 - (void)resetCursorRects
 {
 	[self addCursorRect:self.bounds cursor:MacOS_Cursor()];
