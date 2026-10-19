@@ -818,6 +818,22 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
         }
     }
 
+    if (iRadiusCull == CULL_OUT && radius != 2.0f * tiki->load_scale * ent->e.scale) {
+        //
+        // outside a side plane of the view, with a margin for the vertexes that the blends and the bone controllers
+        // move past the animation's radius (up to 6.5 units, 7.6% of it, on the retail data's soldiers): nothing of
+        // the model is in this view, so it needs no frame, bones, morphs or surfaces here (tags and radius come
+        // from the skeletor, and a view that draws it copies its own bones). A model past the far plane alone is
+        // still drawn, fogged, as before, and so is one whose radius is the skeletor's 2 for no animation.
+        //
+        for (i = 0; i < 4; i++) {
+            if (DotProduct(tiki_worldorigin, tr.viewParms.frustum[i].normal) - tr.viewParms.frustum[i].dist
+                < -(radius * 1.1f + 16)) {
+                return;
+            }
+        }
+    }
+
     newFrame = (skelAnimFrame_t *)ri.Hunk_AllocateTempMemory(
         sizeof(skelAnimFrame_t) + ri.TIKI_GetNumChannels(tiki) * sizeof(SkelMat4)
     );
