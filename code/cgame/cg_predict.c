@@ -439,8 +439,10 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
 }
 
 // The client's decoupled mode (cl_cmdRate, Metal port): the position before
-// the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), and
-// what only pmove sets after it (the snapshot doesn't carry it)
+// the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), what
+// only pmove sets after it (the snapshot doesn't carry it), and the time the
+// last frame's live usercmd ran from (cl_cmdDisplay 1, 0 when none ran)
+static int     cg_liveFromTime;
 static int     cg_lerpCmdNum;
 static int     cg_lerpTime;
 static vec3_t  cg_lerpOrigin;
@@ -487,8 +489,12 @@ void CG_PredictPlayerState(void)
     qboolean      ranNewest;
     float         frac;
     int           i;
+    int           oldCommandTime;
 
     cg.hyperspace = qfalse; // will be set if touching a trigger_teleport
+
+    oldCommandTime  = cg_liveFromTime;
+    cg_liveFromTime = 0;
 
     // if this is the first frame we must guarantee
     // predicted_player_state is valid even if there is some
@@ -551,6 +557,12 @@ void CG_PredictPlayerState(void)
 
     // save the state before the pmove so we can detect transitions
     oldPlayerState = cg.predicted_player_state;
+    // (after the decoupled mode's live usercmd, the time it ran from: the
+    // commands below never meet the live usercmd's own, and a teleport
+    // would keep the prediction off the next snapshot)
+    if (!oldCommandTime) {
+        oldCommandTime = oldPlayerState.commandTime;
+    }
 
     current = cgi.GetCurrentCmdNumber();
 
@@ -611,7 +623,7 @@ void CG_PredictPlayerState(void)
         // from the snapshot, but on a wan we will have
         // to predict several commands to get to the point
         // we want to compare
-        if (cg.predicted_player_state.commandTime == oldPlayerState.commandTime) {
+        if (cg.predicted_player_state.commandTime == oldCommandTime) {
             if (cg.thisFrameTeleport) {
                 // a teleport will not cause an error decay
                 VectorClear(cg.predictedError);
@@ -678,6 +690,20 @@ void CG_PredictPlayerState(void)
     if (live) {
         if (cg_cmdDisplay->integer == 1 && !cg_pmove.pmove_fixed
             && liveCmd.serverTime > cg.predicted_player_state.commandTime) {
+            // the ground under the player stays the newest usercmd's: the
+            // live usercmd's step of a few milliseconds finds it as a client
+            // sending a usercmd every millisecond does, and flickers where a
+            // slope changes or against a wall (landing sounds and footsteps a
+            // stock client at the command rate never plays; the server runs
+            // whole usercmds only)
+            int      groundEntityNum = cg.predicted_player_state.groundEntityNum;
+            qboolean walking         = cg.predicted_player_state.walking;
+            qboolean groundPlane     = cg.predicted_player_state.groundPlane;
+            trace_t  groundTrace     = cg.predicted_player_state.groundTrace;
+            vec3_t   falldir;
+
+            VectorCopy(cg.predicted_player_state.falldir, falldir);
+            cg_liveFromTime = cg.predicted_player_state.commandTime;
             cg_pmove.cmd = liveCmd;
             if (cg_pmove.ps->feetfalling && (cg_pmove.waterlevel < 2)) {
                 cg_pmove.cmd.forwardmove = 0;
@@ -685,6 +711,11 @@ void CG_PredictPlayerState(void)
             }
             Pmove(&cg_pmove);
             moved = qtrue;
+            cg.predicted_player_state.groundEntityNum = groundEntityNum;
+            cg.predicted_player_state.walking         = walking;
+            cg.predicted_player_state.groundPlane     = groundPlane;
+            cg.predicted_player_state.groundTrace     = groundTrace;
+            VectorCopy(falldir, cg.predicted_player_state.falldir);
         } else if (cg_cmdDisplay->integer == 2 && cg_lerpCmdNum == current
                    && latestCmd.serverTime > cg_lerpTime && latestCmd.serverTime - cg_lerpTime < 250
                    && liveCmd.serverTime >= latestCmd.serverTime) {
