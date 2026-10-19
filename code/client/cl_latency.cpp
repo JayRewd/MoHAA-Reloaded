@@ -32,6 +32,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //            display swap that starts showing it). A frame that skipped its present (no drawable ready) or was
 //            replaced before the compositor took it shows its input only with a later frame, so that frame's
 //            present time counts: the moment the input really became visible.
+// And by time on screen: the age of the newest mouse event in the image on screen (since its OS timestamp), sampled
+// every 10 us from one present to the next while newer input exists (the mouse moves): what a continuous movement
+// looks like on the display. Unlike the per-frame times it includes how long each image stays up, so it shows what
+// presenting more often gains.
 // GL1 can't report these times; there the probe ends when EndFrame returns (after glFinish and SwapBuffers),
 // a lower bound. All times are microseconds on the mach_absolute_time clock (Core Animation's host time).
 // Percentiles come from 10 us histograms: printed every cl_latencyStatsFrames input frames, and for the whole
@@ -54,6 +58,7 @@ enum {
 	LAT_PUMP_GPU,		// pump -> GPU done
 	LAT_PUMP_PRESENT,	// pump -> present (GL1: EndFrame return)
 	LAT_EVENT_PRESENT,	// newest event -> present (GL1: EndFrame return)
+	LAT_EVENT_SCREEN,	// the newest event's age on screen, by time (10 us samples; not GL1)
 	LAT_NUM
 };
 
@@ -93,6 +98,9 @@ static latInput_t	lat_tagged[LAT_RING];	// tagged frames waiting for the rendere
 static latInput_t	lat_waiting[LAT_RING];	// reported frames waiting for a frame that is shown
 static int			lat_numWaiting;
 static latStats_t	lat_window, lat_total;
+static long long	lat_screenSince;		// the last present, 0 = none yet
+static long long	lat_screenEvent;		// the newest event in the image on screen since then
+static long long	lat_newestEvent;		// the newest event pumped
 
 /*
 ==================
@@ -216,9 +224,9 @@ CL_LatencyPrint
 static void CL_LatencyPrint( const latStats_t *s, const char *what ) {
 	static const char *labels[2][LAT_NUM] = {
 		{ "newest event -> pump", "oldest event -> pump", NULL, NULL,
-		  "pump -> EndFrame return", "newest event -> EndFrame return" },
+		  "pump -> EndFrame return", "newest event -> EndFrame return", NULL },
 		{ "newest event -> pump", "oldest event -> pump", "pump -> commit", "pump -> GPU done",
-		  "pump -> present", "newest event -> present" }
+		  "pump -> present", "newest event -> present", "input age on screen (by time)" }
 	};
 	static const float p[3] = { 0.50f, 0.95f, 0.99f };
 	qboolean presentTimes = qtrue;
@@ -246,7 +254,7 @@ static void CL_LatencyPrint( const latStats_t *s, const char *what ) {
 		if ( !label || !s->hist[i].count ) {
 			continue;
 		}
-		if ( !presentTimes && ( i == LAT_PUMP_PRESENT || i == LAT_EVENT_PRESENT ) ) {
+		if ( !presentTimes && ( i == LAT_PUMP_PRESENT || i == LAT_EVENT_PRESENT || i == LAT_EVENT_SCREEN ) ) {
 			continue;
 		}
 
@@ -276,6 +284,7 @@ static void CL_LatencyReset( void ) {
 	lat_endFrameTag = 0;
 	Com_Memset( lat_tagged, 0, sizeof( lat_tagged ) );
 	lat_numWaiting = 0;
+	lat_screenSince = lat_screenEvent = lat_newestEvent = 0;
 	Com_Memset( &lat_window, 0, sizeof( lat_window ) );
 	Com_Memset( &lat_total, 0, sizeof( lat_total ) );
 }
@@ -365,6 +374,9 @@ void CL_LatencyMouseEvent( void ) {
 		lat_pending.eventOldest = oldest;
 	}
 	lat_pending.eventNewest = newest;
+	if ( newest > lat_newestEvent ) {
+		lat_newestEvent = newest;
+	}
 	lat_pending.pump = lat_pump;
 }
 
@@ -495,9 +507,24 @@ void CL_LatencyAfterEndFrame( void ) {
 				}
 			}
 			if ( present > 0 ) {
+				// the image before this one was on screen until now, with its newest event's age growing
+				// (not after the movement stopped: then nothing newer is missing from it)
+				if ( lat_screenSince && lat_screenEvent && lat_newestEvent > lat_screenEvent
+					&& present - lat_screenEvent <= LAT_STALE_USEC ) {
+					long long t;
+
+					for ( t = lat_screenSince; t < present; t += LAT_BIN_USEC ) {
+						CL_LatencySample( LAT_EVENT_SCREEN, t - lat_screenEvent );
+					}
+				}
+				lat_screenSince = present;
+
 				// this frame shows the input of every frame still waiting
 				for ( i = 0; i < lat_numWaiting; i++ ) {
 					CL_LatencyShown( &lat_waiting[i], present, tag && lat_waiting[i].tag == tag );
+					if ( lat_waiting[i].eventNewest > lat_screenEvent ) {
+						lat_screenEvent = lat_waiting[i].eventNewest;
+					}
 				}
 				lat_numWaiting = 0;
 			}

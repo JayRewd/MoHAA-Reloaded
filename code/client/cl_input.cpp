@@ -785,6 +785,13 @@ void CL_FinishMove( usercmd_t *cmd ) {
 			cmd->serverTime = cmd_stamp;
 		}
 		cmd_stamp = cls.realtime + cl.serverTimeDelta - tn;
+		// never back (CL_SetCGameTime's guarantee): a usercmd's time is sent
+		// as an 8-bit step from the one before when that step is below 256,
+		// so a step back reaches the server as a step forward, and the
+		// server then drops every usercmd until real time passes it
+		if ( cmd_stamp < cmd->serverTime ) {
+			cmd_stamp = cmd->serverTime;
+		}
 		cmd_stampSet = qtrue;
 	} else {
 		cmd_stampSet = qfalse;
@@ -1219,16 +1226,17 @@ CL_CmdInterval
 The decoupled mode's usercmd interval in whole milliseconds, or 0 for one
 usercmd per frame (stock): cl_cmdRate usercmds a second, 85 to 250 (more
 bends movement, rule 7 of the port's plan), rates that don't divide 1000 at
-the next lower one that does (240 is 200). Only with a gamestate and in real
-time: not paused, not in a timedemo, at fixedtime or recording AVI frames
-(Metal port).
+the next lower one that does (240 is 200). Only in play and in real time:
+from the first snapshot on (before it the time delta isn't set, and a usercmd
+stamped with it can be far ahead of the server's clock), not paused, not in a
+timedemo, at fixedtime or recording AVI frames (Metal port).
 =================
 */
 static int CL_CmdInterval( void ) {
 	int		rate;
 
 	rate = cl_cmdRate->integer;
-	if ( rate <= 0 || clc.state < CA_PRIMED || ( com_sv_running->integer && paused->integer )
+	if ( rate <= 0 || clc.state != CA_ACTIVE || ( com_sv_running->integer && paused->integer )
 		|| cl_timedemo->integer || com_fixedtime->integer || ( CL_VideoRecording() && cl_aviFrameRate->integer ) ) {
 		return 0;
 	}

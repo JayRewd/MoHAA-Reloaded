@@ -18,6 +18,9 @@
 #               frames unless the user moves it). With the synthetic movement the runs set in_mouseRaw 0 (the native
 #               layer's default is 1, GCMouse, which never sees it; sdlref's SDL has no such cvar): the engine
 #               args can override it
+#   MOUSEHZ=997 the synthetic mouse's event rate (default 1000). At exactly 1000 Hz its events keep one phase against
+#               the game's millisecond frames for the whole run (event -> pump differed by up to ~0.8 ms between runs,
+#               session 32); 997 Hz drifts through every phase within a run, as a real mouse's own clock does
 #   LATSTATS=2  cl_latencyStats 2: also log every frame's raw times (needed by TRACE's per-frame check);
 #               LATSTATS=0 leaves the probe off (with MOUSE=0 and TRACE=1: only what the display showed)
 #   TRACE=1     record 6 s of Instruments' Metal System Trace during the movement (-> <name>.trace, ~0.3 GB,
@@ -81,7 +84,7 @@ if grep -q '^latency-probe-start' "$LOG"; then
 			--all-processes > "$OUT/$NAME-xctrace.log" 2>&1 ) &
 	fi
 	if [ "${MOUSE:-1}" = 1 ]; then
-		"$TOOL" "$SECS" 1000 2 400 > "$OUT/$NAME-mouse.txt" 2>&1
+		"$TOOL" "$SECS" "${MOUSEHZ:-1000}" 2 400 > "$OUT/$NAME-mouse.txt" 2>&1
 	else
 		rm -f "$OUT/$NAME-mouse.txt"
 		sleep "$SECS"
@@ -91,7 +94,7 @@ wait
 
 cat "$OUT/$NAME-mouse.txt" 2>/dev/null
 grep -E '^Metal: [0-9]+ frames' "$LOG"
-grep -A7 '^cl_latencyStats, whole run' "$LOG" | grep -v '^RE_Shutdown'
+grep -A8 '^cl_latencyStats, whole run' "$LOG" | grep -v '^RE_Shutdown'
 if [ "${TRACE:-0}" = 1 ]; then
 	/usr/bin/python3 -I "$OMM_PORT/display_trace.py" "$TRACE_FILE" "$LOG"
 fi
