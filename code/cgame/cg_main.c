@@ -49,6 +49,7 @@ cvar_t *cg_debugAnimWatch;
 cvar_t *cg_errorDecay;
 cvar_t *cg_nopredict;
 cvar_t *cg_showmiss;
+cvar_t *cg_cmdDisplay;
 cvar_t *cg_addMarks;
 cvar_t *cg_maxMarks;
 cvar_t *cg_viewsize;
@@ -137,6 +138,8 @@ void CG_RegisterCvars(void)
     cg_errorDecay                 = cgi.Cvar_Get("cg_errordecay", "100", 0);
     cg_nopredict                  = cgi.Cvar_Get("cg_nopredict", "0", 0);
     cg_showmiss                   = cgi.Cvar_Get("cg_showmiss", "0", 0);
+    // the client's decoupled mode's movement between usercmds (cl_cmdRate, Metal port)
+    cg_cmdDisplay                 = cgi.Cvar_Get("cl_cmdDisplay", "1", CVAR_ARCHIVE);
     cg_stats                      = cgi.Cvar_Get("cg_stats", "0", 0);
     cg_hidetempmodels             = cgi.Cvar_Get("cg_hidetempmodels", "0", 0);
     cg_synchronousClients         = cgi.Cvar_Get("g_synchronousClients", "0", 0);

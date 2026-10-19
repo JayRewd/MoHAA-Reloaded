@@ -2749,6 +2749,8 @@ void CL_Frame ( int msec ) {
 	if ( com_renderFrame ) {
 		SCR_UpdateScreen();
 	}
+	// a fire click's frame keeps its eye info for its usercmd's packet (cl_cmdRate, Metal port)
+	CL_ClickEyeInfo();
 
 	// update audio
 	S_Update();
@@ -3535,6 +3537,8 @@ void CL_Init( void ) {
 	cl_maxpackets = Cvar_Get ("cl_maxpackets", "30", CVAR_ARCHIVE );
 	// usercmds a second on their own clock, the frames at any rate (Metal port); 0: one per frame
 	cl_cmdRate = Cvar_Get ("cl_cmdRate", "0", CVAR_ARCHIVE );
+	// its movement between usercmds, cgame's: 1 predicted up to now, 2 JayRewd's lerp, 0 the newest usercmd's (Metal port)
+	Cvar_Get ("cl_cmdDisplay", "1", CVAR_ARCHIVE );
 	cl_packetdup = Cvar_Get ("cl_packetdup", "1", CVAR_ARCHIVE );
 
 	cl_run = Cvar_Get( "cl_run", "1", CVAR_ARCHIVE );

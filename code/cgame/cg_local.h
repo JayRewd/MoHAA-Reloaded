@@ -445,6 +445,7 @@ extern "C" {
     extern cvar_t *cg_errorDecay;
     extern cvar_t *cg_nopredict;
     extern cvar_t *cg_showmiss;
+    extern cvar_t *cg_cmdDisplay;
     extern cvar_t *cg_addMarks;
     extern cvar_t *cg_maxMarks;
     extern cvar_t *cg_viewsize;

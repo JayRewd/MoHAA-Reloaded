@@ -438,6 +438,18 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
     out->fLeanAngle = LerpAngle(prev->ps.fLeanAngle, next->ps.fLeanAngle, f);
 }
 
+// The client's decoupled mode (cl_cmdRate, Metal port): the position before
+// the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), and
+// what only pmove sets after it (the snapshot doesn't carry it)
+static int     cg_lerpCmdNum;
+static int     cg_lerpTime;
+static vec3_t  cg_lerpOrigin;
+static int     cg_newestCmdNum;
+static qboolean cg_newestWalking;
+static qboolean cg_newestGroundPlane;
+static trace_t cg_newestGroundTrace;
+static vec3_t  cg_newestFalldir;
+
 /*
 =================
 CG_PredictPlayerState
@@ -471,6 +483,10 @@ void CG_PredictPlayerState(void)
     qboolean      moved;
     usercmd_t     latestCmd;
     usercmd_t     liveCmd;
+    qboolean      live;
+    qboolean      ranNewest;
+    float         frac;
+    int           i;
 
     cg.hyperspace = qfalse; // will be set if touching a trigger_teleport
 
@@ -570,7 +586,8 @@ void CG_PredictPlayerState(void)
     cg_pmove.pmove_msec  = pmove_msec->integer;
 
     // run cmds
-    moved = qfalse;
+    moved     = qfalse;
+    ranNewest = qfalse;
     for (cmdNum = current - CMD_BACKUP + 1; cmdNum <= current; cmdNum++) {
         // get the command
         cgi.GetUserCmd(cmdNum, &cg_pmove.cmd);
@@ -616,18 +633,69 @@ void CG_PredictPlayerState(void)
                 pmove_msec->integer * ((cg_pmove.cmd.serverTime + pmove_msec->integer - 1) / pmove_msec->integer);
         }
 
+        if (cmdNum == current) {
+            cg_lerpCmdNum = current;
+            cg_lerpTime   = cg_pmove.ps->commandTime;
+            VectorCopy(cg_pmove.ps->origin, cg_lerpOrigin);
+        }
+
         Pmove(&cg_pmove);
 
         moved = qtrue;
+        if (cmdNum == current) {
+            ranNewest = qtrue;
+        }
 
         // add push trigger movement effects
         // CG_TouchTriggerPrediction();
     }
 
     // The client's decoupled mode (cl_cmdRate, Metal port) sends usercmds on
-    // their own clock and turns the view every frame: one past the newest
-    // command it gives the angles of now (never sent, no movement)
-    if (cgi.GetUserCmd(current + 1, &liveCmd)) {
+    // their own clock and turns the view every frame. One past the newest
+    // command it gives the next usercmd so far (never sent): its moves up to
+    // now, a time as far into the next window and the angles of now.
+    // cl_cmdDisplay 1 runs it, so the player moves on every frame (predicted
+    // again from the snapshot each frame, it leaves nothing behind); 2 shows
+    // the position between the last two usercmds' (JayRewd's lerp, up to one
+    // usercmd behind); 0 the newest usercmd's. The view takes its angles.
+    live = cgi.GetUserCmd(current + 1, &liveCmd);
+    if (live && ranNewest) {
+        cg_newestCmdNum      = current;
+        cg_newestWalking     = cg.predicted_player_state.walking;
+        cg_newestGroundPlane = cg.predicted_player_state.groundPlane;
+        cg_newestGroundTrace = cg.predicted_player_state.groundTrace;
+        VectorCopy(cg.predicted_player_state.falldir, cg_newestFalldir);
+    } else if (live && !moved && cg_newestCmdNum == current) {
+        // the snapshot holds the newest usercmd (a LAN, between usercmds):
+        // its state lacks what only pmove sets, which a stock client never
+        // shows (each of its frames predicts a new usercmd), so keep that
+        // from the newest usercmd's prediction (walking: landing sounds)
+        cg.predicted_player_state.walking     = cg_newestWalking;
+        cg.predicted_player_state.groundPlane = cg_newestGroundPlane;
+        cg.predicted_player_state.groundTrace = cg_newestGroundTrace;
+        VectorCopy(cg_newestFalldir, cg.predicted_player_state.falldir);
+    }
+    if (live) {
+        if (cg_cmdDisplay->integer == 1 && !cg_pmove.pmove_fixed
+            && liveCmd.serverTime > cg.predicted_player_state.commandTime) {
+            cg_pmove.cmd = liveCmd;
+            if (cg_pmove.ps->feetfalling && (cg_pmove.waterlevel < 2)) {
+                cg_pmove.cmd.forwardmove = 0;
+                cg_pmove.cmd.rightmove   = 0;
+            }
+            Pmove(&cg_pmove);
+            moved = qtrue;
+        } else if (cg_cmdDisplay->integer == 2 && cg_lerpCmdNum == current
+                   && latestCmd.serverTime > cg_lerpTime && latestCmd.serverTime - cg_lerpTime < 250
+                   && liveCmd.serverTime >= latestCmd.serverTime) {
+            frac = (float)(liveCmd.serverTime - latestCmd.serverTime) / (latestCmd.serverTime - cg_lerpTime);
+            if (frac < 1) {
+                for (i = 0; i < 3; i++) {
+                    cg.predicted_player_state.origin[i] =
+                        cg_lerpOrigin[i] + frac * (cg.predicted_player_state.origin[i] - cg_lerpOrigin[i]);
+                }
+            }
+        }
         PM_UpdateViewAngles(&cg.predicted_player_state, &liveCmd);
     }
 

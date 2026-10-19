@@ -36,6 +36,16 @@ static int		cmd_lastRealtime;	// cls.realtime at the last usercmd
 static float	cmd_mouseSide, cmd_mouseForward;	// the mouse's strafe and move since the last usercmd
 static qboolean	cmd_mouseMoved;		// since the last usercmd (BUTTON_ANY)
 static long long	cmd_viewUs;		// Sys_Microseconds at the last view move (the acceleration's rate)
+static int		cmd_stamp;			// the next usercmd's time, taken at the usercmd before it (its window's start)
+static qboolean	cmd_stampSet;		// cmd_stamp holds one
+// click-time aim: the usercmd that carries a click made between usercmds
+// takes the angles of the click's frame, and its packet that frame's eye info
+static int		cmd_aimCmd;			// that usercmd's number; 0: none
+static qboolean	cmd_aimAngled;		// the click came before its usercmd's frame: cmd_aimAngles
+static vec3_t	cmd_aimAngles;
+static qboolean	cmd_aimEyePending;	// take the eye info after the click's frame
+static qboolean	cmd_aimEyeSet;
+static usereyes_t	cmd_aimEye;
 
 /*
 ===============================================================================
@@ -758,23 +768,37 @@ void CL_FinishMove( usercmd_t *cmd ) {
 	if ( cmd_interval ) {
 		int		tn;
 
-		// cl_cmdRate (Metal port): the usercmd takes its own frame's time,
-		// CL_SetCGameTime's (after this) without its clamp to the last drawn
-		// frame, so its step is the interval plus the time delta's steps, as
-		// a stock client's at that frame rate: the frame before is no whole
-		// interval back, and at thousands of frames a second the clamp would
-		// take the -2 ms steps away
+		// cl_cmdRate (Metal port): the usercmd takes the time of the usercmd
+		// frame before it (its window's start), as a stock client takes the
+		// frame before's cl.serverTime, computed as CL_SetCGameTime does but
+		// without its clamp to the last drawn frame: the frame before is no
+		// whole interval back, and at thousands of frames a second the clamp
+		// would take the -2 ms steps away. Its step is the interval plus the
+		// time delta's steps, as a stock client's at that frame rate.
 		tn = cl_timeNudge->integer;
 		if ( tn < -30 ) {
 			tn = -30;
 		} else if ( tn > 30 ) {
 			tn = 30;
 		}
-		cmd->serverTime = cls.realtime + cl.serverTimeDelta - tn;
+		if ( cmd_stampSet ) {
+			cmd->serverTime = cmd_stamp;
+		}
+		cmd_stamp = cls.realtime + cl.serverTimeDelta - tn;
+		cmd_stampSet = qtrue;
+	} else {
+		cmd_stampSet = qfalse;
 	}
 
 	for (i=0 ; i<3 ; i++) {
 		cmd->angles[i] = ANGLE2SHORT(cl.viewangles[i]);
+	}
+
+	// click-time aim: the angles of the click's frame
+	if ( cmd_aimAngled && cmd_aimCmd == cl.cmdNumber ) {
+		for ( i = 0 ; i < 3 ; i++ ) {
+			cmd->angles[i] = ANGLE2SHORT( cmd_aimAngles[i] );
+		}
 	}
 }
 
@@ -1137,6 +1161,16 @@ void CL_WritePacket( void ) {
 		MSG_WriteByte( &buf, count );
 
 		CL_EyeInfo( &eyeInfo );
+		// click-time aim (cl_cmdRate, Metal port): the click's frame's eye
+		// info for the packet with the click's usercmd; one sent before that
+		// frame drew keeps the last drawn frame's
+		if ( cmd_aimCmd && cmd_aimCmd <= cl.cmdNumber ) {
+			if ( cmd_aimEyeSet && cmd_aimCmd > cl.outPackets[ ( clc.netchan.outgoingSequence - 1 ) & PACKET_MASK ].p_cmdNumber ) {
+				eyeInfo = cmd_aimEye;
+			}
+			cmd_aimCmd = 0;
+			cmd_aimEyePending = cmd_aimEyeSet = qfalse;
+		}
 		MSG_WriteDeltaEyeInfo( &buf, &cl.outPackets[ oldPacketNum ].p_eyeinfo, &eyeInfo );
 		// use the checksum feed in the key
 		key = clc.checksumFeed;
@@ -1231,24 +1265,119 @@ int CL_CmdClock( long long *nextCmdUs ) {
 
 /*
 =================
+CL_KeyStateSoFar
+
+CL_KeyState over the window so far, without taking it (Metal port).
+=================
+*/
+static float CL_KeyStateSoFar( kbutton_t *key, int window ) {
+	int		msec;
+	float	val;
+
+	msec = key->msec;
+	if ( key->active ) {
+		msec += key->downtime ? com_frameTime - key->downtime : window;
+	}
+
+	val = (float)msec / window;
+	if ( val < 0 ) {
+		val = 0;
+	}
+	if ( val > 1 ) {
+		val = 1;
+	}
+	return val;
+}
+
+/*
+=================
 CL_LiveViewCmd
 
-The decoupled mode's view for cgame (cl_cmdRate): the newest usercmd with the
-angles of now, never sent; qfalse in the stock mode. Metal port.
+The decoupled mode's usercmd for cgame (cl_cmdRate), never sent: the next
+usercmd as far as its window has come, its moves and buttons so far (nothing
+taken from the next usercmd), the angles of now and a time between the
+newest usercmd's and its own by the part of the window gone (the newest's at
+its start, so a usercmd's frame shows the newest alone). qfalse in the stock
+mode. Metal port.
 =================
 */
 qboolean CL_LiveViewCmd( usercmd_t *ucmd ) {
-	int		i;
+	usercmd_t	*last;
+	int			i, gone, window, movespeed, forward, side, up;
 
 	if ( !cmd_interval || !cl.cmdNumber ) {
 		return qfalse;
 	}
 
-	*ucmd = cl.cmds[ cl.cmdNumber & CMD_MASK ];
+	last = &cl.cmds[ cl.cmdNumber & CMD_MASK ];
+	*ucmd = *last;
 	for ( i = 0 ; i < 3 ; i++ ) {
 		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
 	}
+
+	gone = com_frameTime - old_com_frameTime;
+	window = cmd_nextTime - old_com_frameTime;
+	if ( !cmd_stampSet || gone <= 0 || window <= 0 ) {
+		return qtrue;
+	}
+	if ( gone > window ) {
+		gone = window;
+	}
+	ucmd->serverTime = last->serverTime + ( cmd_stamp - last->serverTime ) * gone / window;
+
+	// CL_CmdButtons without the latches' and the weapon commands' taking
+	ucmd->buttons = 0;
+	for ( i = 0 ; i < 15 ; i++ ) {
+		if ( in_buttons[i].active || in_buttons[i].wasPressed ) {
+			ucmd->buttons |= 1 << i;
+		}
+	}
+	if ( UI_MenuActive() || UI_ConsoleIsOpen() ) {
+		ucmd->buttons |= BUTTON_TALK;
+	}
+	if ( in_speed.active ^ cl_run->integer ) {
+		ucmd->buttons |= BUTTON_RUN;
+	}
+	if ( anykeydown && Key_GetCatcher() == 0 ) {
+		ucmd->buttons |= BUTTON_MOUSE;
+	}
+	if ( anykeydown || cmd_mouseMoved ) {
+		ucmd->buttons |= BUTTON_ANY;
+	}
+
+	// CL_KeyMove over the window so far, and the mouse's parts so far
+	movespeed = 127;
+	forward = side = up = 0;
+	if ( in_strafe.active ) {
+		side += movespeed * CL_KeyStateSoFar( &in_right, gone );
+		side -= movespeed * CL_KeyStateSoFar( &in_left, gone );
+	}
+	side += movespeed * CL_KeyStateSoFar( &in_moveright, gone );
+	side -= movespeed * CL_KeyStateSoFar( &in_moveleft, gone );
+	up += movespeed * CL_KeyStateSoFar( &in_up, gone );
+	up -= movespeed * CL_KeyStateSoFar( &in_down, gone );
+	forward += movespeed * CL_KeyStateSoFar( &in_forward, gone );
+	forward -= movespeed * CL_KeyStateSoFar( &in_back, gone );
+	ucmd->forwardmove = ClampChar( ClampChar( forward ) - cmd_mouseForward );
+	ucmd->rightmove = ClampChar( ClampChar( side ) + cmd_mouseSide );
+	ucmd->upmove = ClampChar( up );
 	return qtrue;
+}
+
+/*
+=================
+CL_ClickEyeInfo
+
+After a frame of the decoupled mode (cl_cmdRate): a fire click's frame keeps
+its eye info for the packet with the click's usercmd. Metal port.
+=================
+*/
+void CL_ClickEyeInfo( void ) {
+	if ( cmd_aimEyePending ) {
+		CL_EyeInfo( &cmd_aimEye );
+		cmd_aimEyePending = qfalse;
+		cmd_aimEyeSet = qtrue;
+	}
 }
 
 /*
@@ -1283,13 +1412,15 @@ Called every frame to builds and sends a command packet to the server.
 void CL_SendCmd( void ) {
 	// don't send any message if not connected
 	if ( clc.state < CA_CONNECTED ) {
-		cmd_interval = cmd_nextTime = 0;
+		cmd_interval = cmd_nextTime = cmd_aimCmd = 0;
+		cmd_stampSet = cmd_aimEyePending = cmd_aimEyeSet = qfalse;
 		return;
 	}
 
 	// don't send commands if paused
 	if ( com_sv_running->integer && paused->integer  ) {
-		cmd_interval = cmd_nextTime = 0;
+		cmd_interval = cmd_nextTime = cmd_aimCmd = 0;
+		cmd_stampSet = cmd_aimEyePending = cmd_aimEyeSet = qfalse;
 		return;
 	}
 
@@ -1301,6 +1432,8 @@ void CL_SendCmd( void ) {
 	cmd_interval = CL_CmdInterval();
 	if ( !cmd_interval ) {
 		cmd_nextTime = 0;
+		cmd_aimCmd = 0;
+		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
 		// a frame inside the last usercmd's millisecond (the one cl_cmdRate
 		// went off in) makes none: the server would drop it, and its latched
 		// buttons with it
@@ -1309,6 +1442,23 @@ void CL_SendCmd( void ) {
 		}
 	} else {
 		CL_ViewMove();
+
+		// Click-time aim: a fire click seen between usercmds gives the next
+		// usercmd the angles of its frame and the packet with that usercmd
+		// the frame's eye info (the server aims with the packet's), so the
+		// shot goes where the view was at the click, not at the usercmd; a
+		// usercmd made in the click's frame has its angles already
+		if ( ( in_buttons[0].wasPressed || in_buttons[1].wasPressed ) && !cmd_aimCmd ) {
+			cmd_aimCmd = cl.cmdNumber + 1;
+			cmd_aimAngled = qfalse;
+			cmd_aimEyePending = qtrue;
+			cmd_aimEyeSet = qfalse;
+			if ( cmd_nextTime && com_frameTime < cmd_nextTime ) {
+				cmd_aimAngled = qtrue;
+				VectorCopy( cl.viewangles, cmd_aimAngles );
+			}
+		}
+
 		if ( cmd_nextTime ) {
 			if ( com_frameTime < cmd_nextTime ) {
 				return;

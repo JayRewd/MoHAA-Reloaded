@@ -593,6 +593,7 @@ void CL_InitInput (void);
 void CL_ShutdownInput(void);
 void CL_SendCmd (void);
 qboolean CL_LiveViewCmd( usercmd_t *ucmd );
+void CL_ClickEyeInfo( void );
 void CL_ClearState (void);
 void CL_ReadPackets (void);
 
