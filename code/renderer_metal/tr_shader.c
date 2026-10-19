@@ -2931,19 +2931,28 @@ Positions the most recently created shader in the tr.sortedShaders[]
 array so that the shader->sort key is sorted reletive to the other
 shaders.
 
+Metal: within SS_OPAQUE, the alphaTestLast shaders come after the
+others. Apple's GPUs reject hidden opaque fragments before shading,
+but an alpha-tested fragment is shaded before its depth is known:
+drawn after the opaque surfaces, the finished depth rejects its hidden
+fragments first (the foliage maps' GPU time: plan §2, sessions 34-35).
+
 Sets shader->sortedIndex
 ==============
 */
 static void SortNewShader( void ) {
 	int		i;
 	float	sort;
+	qboolean	last;
 	shader_t	*newShader;
 
 	newShader = tr.shaders[ tr.numShaders - 1 ];
 	sort = newShader->sort;
+	last = newShader->alphaTestLast;
 
 	for ( i = tr.numShaders - 2 ; i >= 0 ; i-- ) {
-		if ( tr.sortedShaders[ i ]->sort <= sort ) {
+		if ( tr.sortedShaders[ i ]->sort < sort
+			|| ( tr.sortedShaders[ i ]->sort == sort && tr.sortedShaders[ i ]->alphaTestLast <= last ) ) {
 			break;
 		}
 		tr.sortedShaders[i+1] = tr.sortedShaders[i];
@@ -3318,6 +3327,19 @@ static shader_t *FinishShader( void ) {
 		}
 
 		shader.numUnfoggedPasses++;
+	}
+
+	// Metal: an opaque shader whose depth comes from an alpha test is
+	// drawn after the other opaque shaders (SortNewShader)
+	shader.alphaTestLast = qfalse;
+	if ( shader.sort == SS_OPAQUE ) {
+		for ( stage = 0; stage < shader.numUnfoggedPasses; stage++ ) {
+			if ( ( unfoggedStages[stage].stateBits & GLS_ATEST_BITS )
+				&& ( unfoggedStages[stage].stateBits & GLS_DEPTHMASK_TRUE ) ) {
+				shader.alphaTestLast = qtrue;
+				break;
+			}
+		}
 	}
 
 	// determine which stage iterator function is appropriate

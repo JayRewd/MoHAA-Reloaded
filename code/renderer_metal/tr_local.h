@@ -536,6 +536,8 @@ typedef struct shader_s {
 	int			sortedIndex;			// this shader == tr.sortedShaders[sortedIndex]
 
 	float		sort;					// lower numbered shaders draw before higher numbered
+	qboolean	alphaTestLast;			// SS_OPAQUE with an alpha-tested, depth-writing stage: sorted after
+										// the other SS_OPAQUE shaders (sort itself stays SS_OPAQUE)
 
 	qboolean	defaultShader;			// we want to return index 0 if the shader failed to
 										// load for some reason, but R_FindShader should
