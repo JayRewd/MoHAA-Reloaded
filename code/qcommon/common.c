@@ -145,6 +145,8 @@ int		time_backend;		// renderer backend time
 int			com_frameTime;
 int			com_frameNumber;
 int			com_frameMsec;
+qboolean	com_renderFrame = qtrue;	// qfalse: the frame only makes cl_cmdRate's usercmd (Metal port)
+static qboolean	com_cmdClock;		// the client's decoupled mode, cl_cmdRate (Metal port)
 
 // Metal port benchmark: microseconds spent waiting in Com_Frame's 1 ms frame limiter during a timedemo,
 // so the timedemo can report the frame work time even when frames are padded to 1 ms.
@@ -2185,7 +2187,10 @@ int Com_ModifyMsec( int msec ) {
 	}
 
 	// don't let it scale below 1 msec
-	if ( msec < 1 && com_timescale->value) {
+	// (Metal port: cl_cmdRate's frames inside a millisecond stay 0 ms at
+	// timescale 1, or they would run the game clock fast)
+	if ( msec < 1 && com_timescale->value
+		&& !( com_cmdClock && msec == 0 && com_timescale->value == 1.0f ) ) {
 		msec = 1;
 	}
 
@@ -2270,10 +2275,11 @@ Com_Frame
 */
 void Com_Frame( void ) {
 
-	int		msec, minMsec, maxfps;
+	int		msec, minMsec, maxfps, cmdMsec;
 	static int	lastTime = 0;
 	static long long	nextFrameUs;	// the frame rate cap's deadline
-	long long	periodUs, deadlineUs, nowUs, pollUs;
+	static long long	frameStartUs, frameGuardUs;	// the decoupled mode's frame start, a recent frame's longest work
+	long long	periodUs, deadlineUs, nowUs, pollUs, renderUs, cmdUs, alignUs, us;
 	long long	waitStartUsec;
  
 	int		timeBeforeFirstEvents;
@@ -2328,10 +2334,13 @@ void Com_Frame( void ) {
 	}
 
     // Figure out how much time we have: at least 1 ms of Sys_Milliseconds (no
-    // frame of 0 ms, so at most 1000 frames a second, also uncapped), a
-    // dedicated server's frame, and the period of a client's frame rate cap
+    // frame of 0 ms, so at most 1000 frames a second, also uncapped; not in
+    // the client's decoupled mode), a dedicated server's frame, the period of
+    // a client's frame rate cap and the decoupled mode's next usercmd
     minMsec = 1;
     periodUs = 0;
+    cmdUs = 0;
+    cmdMsec = 0;
     if (!com_timedemo->integer)
     {
         if (com_dedicated->integer)
@@ -2345,13 +2354,27 @@ void Com_Frame( void ) {
             else
                 maxfps = com_maxfps->integer;
 
+#ifndef DEDICATED
+            // The client's decoupled mode (cl_cmdRate, Metal port): usercmds
+            // come on their own clock of whole milliseconds, so the frames
+            // need no whole millisecond and render at any rate, any cap
+            cmdMsec = CL_CmdClock(&cmdUs);
+#endif
+            if (cmdMsec)
+            {
+                minMsec = 0;
+                if (maxfps > 0)
+                    periodUs = (1000000 + maxfps - 1) / maxfps;
+            }
             // 1000 and more: no cap, only the 1 ms (as uncapped)
-            if (maxfps > 0 && maxfps < 1000)
+            else if (maxfps > 0 && maxfps < 1000)
                 periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
         }
     }
 
+    com_cmdClock = cmdMsec != 0;
     deadlineUs = (com_frameTime + minMsec) * 1000LL;
+    nowUs = Sys_Microseconds();
 
     // The cap's deadline advances by exactly one period (Metal port, ideas
     // from the Vulkan port's 413c50d1 and e43e3e1d): caps that don't divide
@@ -2364,14 +2387,47 @@ void Com_Frame( void ) {
     // frames at 250).
     if (periodUs)
     {
-        nowUs = Sys_Microseconds();
-        nextFrameUs += periodUs;
+        if (com_renderFrame)
+            nextFrameUs += periodUs;
         if (nowUs - nextFrameUs > periodUs)
             nextFrameUs = nowUs;
         if (periodUs % 1000 == 0)
+        {
             nextFrameUs -= nextFrameUs % 1000;
+
+            // The decoupled mode: where the cap's frames and the usercmds are
+            // both whole milliseconds (250 and 125 or 250, 500, 1000), the
+            // cap's frames keep to the usercmds' ticks, one frame for both
+            if (cmdUs)
+            {
+                for (alignUs = periodUs, us = cmdMsec * 1000LL; us; )
+                {
+                    long long r = alignUs % us;
+                    alignUs = us;
+                    us = r;
+                }
+                us = (cmdUs - nextFrameUs) % alignUs;
+                nextFrameUs += us < 0 ? us + alignUs : us;
+            }
+        }
         if (deadlineUs < nextFrameUs)
             deadlineUs = nextFrameUs;
+    }
+
+    // In the decoupled mode a usercmd that comes before the cap's frame gets
+    // a frame of its own, which doesn't render (the cap's deadline stays);
+    // a frame due less than a recent frame's work before it waits for it, so
+    // no frame runs across the usercmd's tick and every usercmd's frame
+    // starts on it, as a capped stock client's frames do
+    renderUs = deadlineUs;
+    if (cmdUs)
+    {
+        us = frameStartUs ? nowUs - frameStartUs : 0;
+        frameGuardUs -= frameGuardUs / 16;
+        if (frameGuardUs < us)
+            frameGuardUs = us < 1000 ? us : 1000;
+        if (cmdUs - (deadlineUs > nowUs ? deadlineUs : nowUs) < frameGuardUs)
+            deadlineUs = cmdUs;
     }
 
     // The wait polls its last millisecond, a focused client the second half
@@ -2390,9 +2446,13 @@ void Com_Frame( void ) {
         com_timedemoWaitUsec += Com_Microseconds() - waitStartUsec;
     }
 
+    frameStartUs = Sys_Microseconds();
+    com_renderFrame = deadlineUs == renderUs || frameStartUs >= renderUs;
+
 #ifndef DEDICATED
     // The frame starts: let the renderer wake an idle GPU, so it is up when the frame commits (Metal port).
-    CL_WakeGPU();
+    if (com_renderFrame)
+        CL_WakeGPU();
 #endif
 
     IN_Frame();
@@ -2509,7 +2569,7 @@ void Com_Frame( void ) {
 					 com_frameNumber, all, sv, ev, cl, time_game, time_frontend, time_backend );
 	}
 
-	if (fps->integer) {
+	if (fps->integer && com_renderFrame) {
 		fps_time_t fpstime;
 		fps_delta_t delta;
 

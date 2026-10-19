@@ -1030,6 +1030,7 @@ extern	cvar_t	*developer;
 extern	cvar_t	*com_dedicated;
 extern	cvar_t	*com_speeds;
 extern	cvar_t	*com_timescale;
+extern	cvar_t	*com_fixedtime;
 extern	cvar_t	*com_sv_running;
 extern	cvar_t	*com_cl_running;
 extern	cvar_t	*com_viewlog;			// 0 = hidden, 1 = visible, 2 = minimized
@@ -1088,6 +1089,7 @@ extern	int		time_backend;		// renderer backend time
 
 extern	int		com_frameTime;
 extern	int		com_frameMsec;
+extern	qboolean	com_renderFrame;	// qfalse: the frame only makes cl_cmdRate's usercmd (Metal port)
 extern	long long	com_timedemoWaitUsec;	// time spent in the frame limiter during a timedemo
 
 extern	qboolean	com_errorEntered;
@@ -1211,6 +1213,7 @@ void CL_FinishedStartStage(void);
 void CL_SetFrameNumber(int frameNumber);
 void CL_Frame( int msec );
 void CL_WakeGPU( void );
+int CL_CmdClock( long long *nextCmdUs );
 qboolean CL_GameCommand( void );
 void CL_KeyEvent (int key, qboolean down, unsigned time);
 

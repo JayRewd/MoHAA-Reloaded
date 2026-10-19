@@ -27,6 +27,16 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 unsigned	frame_msec;
 int			old_com_frameTime;
 
+// Metal port: the decoupled mode (cl_cmdRate). Usercmds come on their own
+// clock of whole milliseconds and the mouse turns the view every frame.
+static int		cmd_interval;		// ms from one usercmd to the next; 0: one per frame (stock)
+static int		cmd_nextTime;		// com_frameTime of the next usercmd; 0: not started
+static int		cmd_frametime;		// game time of the usercmd's window, for the keyboard's turning
+static int		cmd_lastRealtime;	// cls.realtime at the last usercmd
+static float	cmd_mouseSide, cmd_mouseForward;	// the mouse's strafe and move since the last usercmd
+static qboolean	cmd_mouseMoved;		// since the last usercmd (BUTTON_ANY)
+static long long	cmd_viewUs;		// Sys_Microseconds at the last view move (the acceleration's rate)
+
 /*
 ===============================================================================
 
@@ -344,9 +354,9 @@ void CL_AdjustAngles( void ) {
 	float	speed;
 
 	if ( in_speed.active ) {
-		speed = 0.001 * cls.frametime * cl_anglespeedkey->value;
+		speed = 0.001 * cmd_frametime * cl_anglespeedkey->value;
 	} else {
-		speed = 0.001 * cls.frametime;
+		speed = 0.001 * cmd_frametime;
 	}
 
 	if ( !in_strafe.active ) {
@@ -518,9 +528,9 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 	}
 
 	if ( in_speed.active ) {
-		anglespeed = 0.001 * cls.frametime * cl_anglespeedkey->value;
+		anglespeed = 0.001 * cmd_frametime * cl_anglespeedkey->value;
 	} else {
-		anglespeed = 0.001 * cls.frametime;
+		anglespeed = 0.001 * cmd_frametime;
 	}
 
 	if ( !in_strafe.active ) {
@@ -545,11 +555,27 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 /*
 =================
 CL_MouseMove
+
+With no cmd, cl_cmdRate's view move (Metal port): the view turns now, the
+strafe and move parts wait for the next usercmd.
 =================
 */
 void CL_MouseMove( usercmd_t *cmd ) {
 	float	mx, my;
 	float	cgameSensitivity;
+	float	msec;
+	long long	nowUs;
+
+	// the acceleration's rate: per ms of the frame (the view move's real time)
+	msec = frame_msec;
+	if ( !cmd ) {
+		nowUs = Sys_Microseconds();
+		msec = ( nowUs - cmd_viewUs ) * 0.001f;
+		if ( msec < 0.001f ) {
+			msec = 0.001f;
+		}
+		cmd_viewUs = nowUs;
+	}
 
 	// allow mouse smoothing
 	if (m_filter->integer)
@@ -579,7 +605,7 @@ void CL_MouseMove( usercmd_t *cmd ) {
 			float accelSensitivity;
 			float rate;
 			
-			rate = sqrt(mx * mx + my * my) / (float) frame_msec;
+			rate = sqrt(mx * mx + my * my) / msec;
 
 			accelSensitivity = cl_sensitivity->value + rate * cl_mouseAccel->value;
 			mx *= accelSensitivity;
@@ -598,8 +624,8 @@ void CL_MouseMove( usercmd_t *cmd ) {
 			// cl_mouseAccelOffset is the rate for which the acceleration will have doubled the non accelerated amplification
 			// NOTE: decouple the config cvars for independent acceleration setup along X and Y?
 
-			rate[0] = fabs(mx) / (float) frame_msec;
-			rate[1] = fabs(my) / (float) frame_msec;
+			rate[0] = fabs(mx) / msec;
+			rate[1] = fabs(my) / msec;
 			power[0] = powf(rate[0] / cl_mouseAccelOffset->value, cl_mouseAccel->value);
 			power[1] = powf(rate[1] / cl_mouseAccelOffset->value, cl_mouseAccel->value);
 
@@ -627,18 +653,32 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	mx *= cgameSensitivity;
 	my *= cgameSensitivity;
 
-	cmd->buttons |= BUTTON_ANY;
+	if ( !cmd ) {
+		// cl_cmdRate: the view turns now, the rest waits for the usercmd
+		cmd_mouseMoved = qtrue;
+		if(in_strafe.active)
+			cmd_mouseSide += m_side->value * mx;
+		else
+			cl.viewangles[YAW] -= m_yaw->value * mx;
 
-	// add mouse X/Y movement to cmd
-	if(in_strafe.active)
-		cmd->rightmove = ClampChar(cmd->rightmove + m_side->value * mx);
-	else
-		cl.viewangles[YAW] -= m_yaw->value * mx;
+		if ((in_mlooking || cl_freelook->integer) && !in_strafe.active)
+			cl.viewangles[PITCH] += m_pitch->value * my;
+		else
+			cmd_mouseForward += m_forward->value * my;
+	} else {
+		cmd->buttons |= BUTTON_ANY;
 
-	if ((in_mlooking || cl_freelook->integer) && !in_strafe.active)
-		cl.viewangles[PITCH] += m_pitch->value * my;
-	else
-		cmd->forwardmove = ClampChar(cmd->forwardmove - m_forward->value * my);
+		// add mouse X/Y movement to cmd
+		if(in_strafe.active)
+			cmd->rightmove = ClampChar(cmd->rightmove + m_side->value * mx);
+		else
+			cl.viewangles[YAW] -= m_yaw->value * mx;
+
+		if ((in_mlooking || cl_freelook->integer) && !in_strafe.active)
+			cl.viewangles[PITCH] += m_pitch->value * my;
+		else
+			cmd->forwardmove = ClampChar(cmd->forwardmove - m_forward->value * my);
+	}
 
 	if (!isfinite(cl.viewangles[PITCH]) || !isfinite(cl.viewangles[YAW])) {
 		Com_DPrintf("Invalid client viewangles encountered (view pitch: %f, view yaw: %f)!\n", cl.viewangles[PITCH], cl.viewangles[YAW]);
@@ -715,6 +755,24 @@ void CL_FinishMove( usercmd_t *cmd ) {
 	// can be determined without allowing cheating
 	cmd->serverTime = cl.serverTime;
 
+	if ( cmd_interval ) {
+		int		tn;
+
+		// cl_cmdRate (Metal port): the usercmd takes its own frame's time,
+		// CL_SetCGameTime's (after this) without its clamp to the last drawn
+		// frame, so its step is the interval plus the time delta's steps, as
+		// a stock client's at that frame rate: the frame before is no whole
+		// interval back, and at thousands of frames a second the clamp would
+		// take the -2 ms steps away
+		tn = cl_timeNudge->integer;
+		if ( tn < -30 ) {
+			tn = -30;
+		} else if ( tn > 30 ) {
+			tn = 30;
+		}
+		cmd->serverTime = cls.realtime + cl.serverTimeDelta - tn;
+	}
+
 	for (i=0 ; i<3 ; i++) {
 		cmd->angles[i] = ANGLE2SHORT(cl.viewangles[i]);
 	}
@@ -743,7 +801,18 @@ usercmd_t CL_CreateCmd( void ) {
 	CL_KeyMove( &cmd );
 
 	// get basic movement from mouse
-	CL_MouseMove( &cmd );
+	if ( cmd_interval ) {
+		// cl_cmdRate: the view took it every frame, the strafe and move parts wait here
+		if ( cmd_mouseMoved ) {
+			cmd.buttons |= BUTTON_ANY;
+		}
+		cmd.rightmove = ClampChar( cmd.rightmove + cmd_mouseSide );
+		cmd.forwardmove = ClampChar( cmd.forwardmove - cmd_mouseForward );
+		cmd_mouseSide = cmd_mouseForward = 0;
+		cmd_mouseMoved = qfalse;
+	} else {
+		CL_MouseMove( &cmd );
+	}
 
 	// get basic movement from joystick
 	CL_JoystickMove( &cmd );
@@ -802,6 +871,18 @@ void CL_CreateNewCommands( void ) {
 		frame_msec = 200;
 	}
 	old_com_frameTime = com_frameTime;
+
+	// the keyboard's turning: the frame's game time, or cl_cmdRate's window (Metal port)
+	cmd_frametime = cls.frametime;
+	if ( cmd_interval ) {
+		cmd_frametime = cls.realtime - cmd_lastRealtime;
+		if ( cmd_frametime < 0 ) {
+			cmd_frametime = 0;
+		} else if ( cmd_frametime > 200 ) {
+			cmd_frametime = 200;
+		}
+	}
+	cmd_lastRealtime = cls.realtime;
 
 
 	// generate a command for this frame
@@ -1099,6 +1180,101 @@ void CL_WritePacket( void ) {
 
 /*
 =================
+CL_CmdInterval
+
+The decoupled mode's usercmd interval in whole milliseconds, or 0 for one
+usercmd per frame (stock): cl_cmdRate usercmds a second, 85 to 250 (more
+bends movement, rule 7 of the port's plan), rates that don't divide 1000 at
+the next lower one that does (240 is 200). Only with a gamestate and in real
+time: not paused, not in a timedemo, at fixedtime or recording AVI frames
+(Metal port).
+=================
+*/
+static int CL_CmdInterval( void ) {
+	int		rate;
+
+	rate = cl_cmdRate->integer;
+	if ( rate <= 0 || clc.state < CA_PRIMED || ( com_sv_running->integer && paused->integer )
+		|| cl_timedemo->integer || com_fixedtime->integer || ( CL_VideoRecording() && cl_aviFrameRate->integer ) ) {
+		return 0;
+	}
+
+	if ( rate < 85 ) {
+		rate = 85;
+	} else if ( rate > 250 ) {
+		rate = 250;
+	}
+	return ( 1000 + rate - 1 ) / rate;
+}
+
+/*
+=================
+CL_CmdClock
+
+For Com_Frame: in the decoupled mode (cl_cmdRate), whose frames have no whole
+millisecond and render at any rate, the usercmd interval in ms and the next
+usercmd's time in *nextCmdUs (0: the next frame starts the clock); 0 in the
+stock mode. Metal port.
+=================
+*/
+int CL_CmdClock( long long *nextCmdUs ) {
+	int		interval;
+
+	if ( !com_cl_running || !com_cl_running->integer ) {
+		return 0;
+	}
+
+	interval = CL_CmdInterval();
+	*nextCmdUs = interval ? cmd_nextTime * 1000LL : 0;
+	return interval;
+}
+
+/*
+=================
+CL_LiveViewCmd
+
+The decoupled mode's view for cgame (cl_cmdRate): the newest usercmd with the
+angles of now, never sent; qfalse in the stock mode. Metal port.
+=================
+*/
+qboolean CL_LiveViewCmd( usercmd_t *ucmd ) {
+	int		i;
+
+	if ( !cmd_interval || !cl.cmdNumber ) {
+		return qfalse;
+	}
+
+	*ucmd = cl.cmds[ cl.cmdNumber & CMD_MASK ];
+	for ( i = 0 ; i < 3 ; i++ ) {
+		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
+	}
+	return qtrue;
+}
+
+/*
+=================
+CL_ViewMove
+
+The decoupled mode's frame between usercmds: the mouse turns the view.
+=================
+*/
+static void CL_ViewMove( void ) {
+	vec3_t	oldAngles;
+
+	VectorCopy( cl.viewangles, oldAngles );
+
+	CL_MouseMove( NULL );
+
+	// check to make sure the angles haven't wrapped
+	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {
+		cl.viewangles[PITCH] = oldAngles[PITCH] + 90;
+	} else if ( oldAngles[PITCH] - cl.viewangles[PITCH] > 90 ) {
+		cl.viewangles[PITCH] = oldAngles[PITCH] - 90;
+	}
+}
+
+/*
+=================
 CL_SendCmd
 
 Called every frame to builds and sends a command packet to the server.
@@ -1107,12 +1283,41 @@ Called every frame to builds and sends a command packet to the server.
 void CL_SendCmd( void ) {
 	// don't send any message if not connected
 	if ( clc.state < CA_CONNECTED ) {
+		cmd_interval = cmd_nextTime = 0;
 		return;
 	}
 
 	// don't send commands if paused
 	if ( com_sv_running->integer && paused->integer  ) {
+		cmd_interval = cmd_nextTime = 0;
 		return;
+	}
+
+	// The decoupled mode (cl_cmdRate, Metal port): the mouse turns the view
+	// every frame; a usercmd comes every cmd_interval ms of com_frameTime and
+	// covers that window, as a frame's does in the stock mode; only usercmds
+	// send packets. A usercmd late by less than an interval is made up by the
+	// next one, after a later one the clock starts again (as Com_Frame's).
+	cmd_interval = CL_CmdInterval();
+	if ( !cmd_interval ) {
+		cmd_nextTime = 0;
+		// a frame inside the last usercmd's millisecond (the one cl_cmdRate
+		// went off in) makes none: the server would drop it, and its latched
+		// buttons with it
+		if ( clc.state >= CA_PRIMED && com_frameTime == old_com_frameTime ) {
+			return;
+		}
+	} else {
+		CL_ViewMove();
+		if ( cmd_nextTime ) {
+			if ( com_frameTime < cmd_nextTime ) {
+				return;
+			}
+			cmd_nextTime += cmd_interval;
+		}
+		if ( cmd_nextTime <= com_frameTime ) {
+			cmd_nextTime = com_frameTime + cmd_interval;
+		}
 	}
 
 	// we create commands even if a demo is playing,

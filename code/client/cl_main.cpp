@@ -52,6 +52,7 @@ cvar_t	*rconAddress;
 cvar_t	*cl_timeout;
 cvar_t	*cl_connect_timeout;
 cvar_t	*cl_maxpackets;
+cvar_t	*cl_cmdRate;
 cvar_t	*cl_packetdup;
 cvar_t	*cl_master;
 cvar_t	*cl_timeNudge;
@@ -2744,8 +2745,10 @@ void CL_Frame ( int msec ) {
     // Added in OPM
     CL_UpdateMouse();
 
-	// update the screen
-	SCR_UpdateScreen();
+	// update the screen (not on a frame of cl_cmdRate's usercmd ahead of the frame rate cap's, Metal port)
+	if ( com_renderFrame ) {
+		SCR_UpdateScreen();
+	}
 
 	// update audio
 	S_Update();
@@ -3530,6 +3533,8 @@ void CL_Init( void ) {
 	cl_anglespeedkey = Cvar_Get ("cl_anglespeedkey", "1.5", 0);
 
 	cl_maxpackets = Cvar_Get ("cl_maxpackets", "30", CVAR_ARCHIVE );
+	// usercmds a second on their own clock, the frames at any rate (Metal port); 0: one per frame
+	cl_cmdRate = Cvar_Get ("cl_cmdRate", "0", CVAR_ARCHIVE );
 	cl_packetdup = Cvar_Get ("cl_packetdup", "1", CVAR_ARCHIVE );
 
 	cl_run = Cvar_Get( "cl_run", "1", CVAR_ARCHIVE );

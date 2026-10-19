@@ -419,6 +419,7 @@ extern	cvar_t	*cl_debuggraph;
 extern	cvar_t	*cl_timeout;
 extern	cvar_t	*cl_connect_timeout;
 extern	cvar_t	*cl_maxpackets;
+extern	cvar_t	*cl_cmdRate;
 extern	cvar_t	*cl_packetdup;
 extern	cvar_t	*cl_shownet;
 extern	cvar_t	*cl_netprofile;
@@ -591,6 +592,7 @@ void CL_UpdateMouse();
 void CL_InitInput (void);
 void CL_ShutdownInput(void);
 void CL_SendCmd (void);
+qboolean CL_LiveViewCmd( usercmd_t *ucmd );
 void CL_ClearState (void);
 void CL_ReadPackets (void);
 

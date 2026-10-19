@@ -407,7 +407,10 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
         int       cmdNum;
 
         cmdNum = cgi.GetCurrentCmdNumber();
-        cgi.GetUserCmd(cmdNum, &cmd);
+        // the client's decoupled mode (cl_cmdRate, Metal port): one past the newest, its angles of now
+        if (!cgi.GetUserCmd(cmdNum + 1, &cmd)) {
+            cgi.GetUserCmd(cmdNum, &cmd);
+        }
 
         PM_UpdateViewAngles(out, &cmd);
     }
@@ -467,6 +470,7 @@ void CG_PredictPlayerState(void)
     playerState_t oldPlayerState;
     qboolean      moved;
     usercmd_t     latestCmd;
+    usercmd_t     liveCmd;
 
     cg.hyperspace = qfalse; // will be set if touching a trigger_teleport
 
@@ -618,6 +622,13 @@ void CG_PredictPlayerState(void)
 
         // add push trigger movement effects
         // CG_TouchTriggerPrediction();
+    }
+
+    // The client's decoupled mode (cl_cmdRate, Metal port) sends usercmds on
+    // their own clock and turns the view every frame: one past the newest
+    // command it gives the angles of now (never sent, no movement)
+    if (cgi.GetUserCmd(current + 1, &liveCmd)) {
+        PM_UpdateViewAngles(&cg.predicted_player_state, &liveCmd);
     }
 
     if (cg_showmiss->integer > 1) {
