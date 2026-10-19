@@ -856,7 +856,8 @@ static qboolean mouseActive = qfalse;
 
 static qboolean		in_focused;				// the window has the keyboard (SDL_WINDOW_INPUT_FOCUS)
 static qboolean		in_captured;			// the cursor is captured (SDL's relative mode)
-static qboolean		in_cursorHidden;		// [NSCursor hide] is in effect
+static qboolean		in_cursorHidden;		// the capture hid the cursor (CGDisplayHideCursor)
+static dispatch_queue_t	in_cursorQueue;		// the capture's WindowServer calls, off the main thread
 static qboolean		in_skipMotion;			// the next movement event is dropped (SDL's justEnabledRelative)
 static qboolean		in_gobbleMotion;		// the pump drops the movement (IN_GobbleMotionEvents)
 static qboolean		in_mouseInside;			// the cursor is over the window (SDL's mouse focus)
@@ -1430,7 +1431,7 @@ static CGPoint IN_WindowCenter( void )
 ===============
 IN_UpdateCursor
 
-The UI's cursor over the window changed, or it shows again after a capture.
+The UI's cursor over the window changed, or it shows again after a capture without the keyboard.
 ===============
 */
 static void IN_UpdateCursor( void )
@@ -1471,7 +1472,11 @@ window has the keyboard, then it is detached from the mouse (the call right afte
 short freeze of the mouse) and hidden, and the first movement event after it is dropped, as SDL drops it.
 Released, the cursor follows the mouse again and shows, as the UI's cursor at once. The capture leaves the cursor
 rects alone (SDL also put an invisible cursor there): the hide is enough, and rebuilding them cost 0.6-1.3 ms in a
-window, up to 2.5 ms after a load (docs/METAL_PORT_PLAN.md, Phase 5 "Session 38 result").
+window, up to 2.5 ms after a load. The detach and the hide wait for the WindowServer (0.3-1 ms in a window), so
+they run on in_cursorQueue, in order, and the frame goes on; the cursor is hidden before the next frame starts.
+The warp stays here: the first movement after it is the one dropped. The release first waits for that queue, then
+sets the UI's cursor while the cursor is still hidden (0.3 ms, ~1 ms once it shows; the rects' rebuild took
+1.2-1.5) and shows it (docs/METAL_PORT_PLAN.md, Phase 5 "Session 38 result", "Session 39 result").
 ===============
 */
 static void IN_Capture( qboolean capture )
@@ -1485,30 +1490,40 @@ static void IN_Capture( qboolean capture )
 	{
 		if( capture )
 		{
+			qboolean hide = in_focused && !in_cursorHidden;
+
 			if( in_focused )
 			{
 				IN_WarpCursor( IN_WindowCenter( ) );
 				in_skipMotion = qtrue;
 			}
-			CGAssociateMouseAndMouseCursorPosition( false );
-
-			if( in_focused && !in_cursorHidden )
-			{
-				[NSCursor hide];
+			if( hide )
 				in_cursorHidden = qtrue;
-			}
+
+			dispatch_async( in_cursorQueue, ^{
+				CGAssociateMouseAndMouseCursorPosition( false );
+				if( hide )
+					CGDisplayHideCursor( kCGNullDirectDisplay );
+			} );
 		}
 		else
 		{
-			CGAssociateMouseAndMouseCursorPosition( true );
+			dispatch_sync( in_cursorQueue, ^{
+				CGAssociateMouseAndMouseCursorPosition( true );
+			} );
+
+			if( in_focused )
+				[MacOS_Cursor( ) set];
 
 			if( in_cursorHidden )
 			{
-				[NSCursor unhide];
+				CGDisplayShowCursor( kCGNullDirectDisplay );
 				in_cursorHidden = qfalse;
 			}
 
-			IN_UpdateCursor( );
+			// without the keyboard the cursor is another window's; the rects set it when the window gets it back
+			if( !in_focused )
+				IN_UpdateCursor( );
 		}
 	}
 
@@ -1896,6 +1911,10 @@ void IN_Init( void *windowData )
 	IN_SyncCapsLock( );
 
 	IN_ObserveWindow( );
+
+	if( !in_cursorQueue )
+		in_cursorQueue = dispatch_queue_create( "openmohaa.cursor",
+			dispatch_queue_attr_make_with_qos_class( DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0 ) );
 
 	// in_restart releases the mouse (before in_mouse 0 can keep SDL's capture on), IN_Frame captures it again
 	in_focused = in_window.keyWindow;
