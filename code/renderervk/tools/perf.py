@@ -90,10 +90,10 @@ runs `cl_renderer timed`, which loads renderer_<renderer>.so and measures
 with a microsecond clock the time the main thread spends in the renderer
 per frame (RenderScene: front end; EndFrame: back end, driver, GPU waits
 and presentation): "renderer", "scene" and "end" in the output. That is
-what to compare: when a frame takes less than a millisecond, Com_Frame
-waits for the next whole millisecond (`com_maxfps 0` still means at most
-1000 frames per second) and com_speeds' whole-millisecond rf/bk are
-measured right after that tick.
+what to compare: com_speeds' rf/bk are whole milliseconds, and in engine
+builds before 2026-10-19 a frame shorter than a millisecond waited for the
+next one (`com_maxfps 0` meant at most 1000 frames per second; since then
+uncapped is uncapped, see the README's Command rate).
 
 While the frames run, gpu_busy_percent of amdgpu (sysfs) and the clock of
 the core that runs the game's main thread are sampled every 5 ms. The

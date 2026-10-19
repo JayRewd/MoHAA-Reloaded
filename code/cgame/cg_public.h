@@ -445,6 +445,10 @@ functions exported to the main executable
         clientAnim_t *anim;
         stopWatch_t  *stopWatch;
 
+        // the newest command with this frame's view angles: commands come at
+        // cl_cmdfps, the view turns every frame
+        void (*GetViewUserCmd)(usercmd_t *ucmd);
+
     } clientGameImport_t;
 
     /*

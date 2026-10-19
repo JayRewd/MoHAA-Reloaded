@@ -26,6 +26,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 unsigned	frame_msec;
 int			old_com_frameTime;
+static int	old_look_frameTime;	// com_frameTime of the last CL_ApplyLook
+
+cvar_t		*cl_cmdfps;			// usercmds a second, whatever the frame rate
 
 /*
 ===============================================================================
@@ -500,12 +503,46 @@ void CL_UpdateMouse() {
 
 /*
 =================
+CL_JoystickLook
+
+The joystick's turning, every frame (CL_ApplyLook)
+=================
+*/
+static void CL_JoystickLook( void ) {
+	float	anglespeed;
+
+	float yaw     = j_yaw->value     * cl.joystickAxis[j_yaw_axis->integer];
+	float right   = j_side->value    * cl.joystickAxis[j_side_axis->integer];
+	float forward = j_forward->value * cl.joystickAxis[j_forward_axis->integer];
+	float pitch   = j_pitch->value   * cl.joystickAxis[j_pitch_axis->integer];
+
+	if ( in_speed.active ) {
+		anglespeed = 0.001 * cls.frametime * cl_anglespeedkey->value;
+	} else {
+		anglespeed = 0.001 * cls.frametime;
+	}
+
+	if ( !in_strafe.active ) {
+		cl.viewangles[YAW] += anglespeed * yaw;
+	} else {
+		cl.viewangles[YAW] += anglespeed * right;
+	}
+
+	if ( in_mlooking ) {
+		cl.viewangles[PITCH] += anglespeed * forward;
+	} else {
+		cl.viewangles[PITCH] += anglespeed * pitch;
+	}
+}
+
+/*
+=================
 CL_JoystickMove
+
+The joystick's movement, into each usercmd
 =================
 */
 void CL_JoystickMove( usercmd_t *cmd ) {
-	float	anglespeed;
-
 	float yaw     = j_yaw->value     * cl.joystickAxis[j_yaw_axis->integer];
 	float right   = j_side->value    * cl.joystickAxis[j_side_axis->integer];
 	float forward = j_forward->value * cl.joystickAxis[j_forward_axis->integer];
@@ -516,25 +553,15 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 		cmd->buttons |= BUTTON_RUN;
 	}
 
-	if ( in_speed.active ) {
-		anglespeed = 0.001 * cls.frametime * cl_anglespeedkey->value;
-	} else {
-		anglespeed = 0.001 * cls.frametime;
-	}
-
 	if ( !in_strafe.active ) {
-		cl.viewangles[YAW] += anglespeed * yaw;
 		cmd->rightmove = ClampChar( cmd->rightmove + (int)right );
 	} else {
-		cl.viewangles[YAW] += anglespeed * right;
 		cmd->rightmove = ClampChar( cmd->rightmove + (int)yaw );
 	}
 
 	if ( in_mlooking ) {
-		cl.viewangles[PITCH] += anglespeed * forward;
 		cmd->forwardmove = ClampChar( cmd->forwardmove + (int)pitch );
 	} else {
-		cl.viewangles[PITCH] += anglespeed * pitch;
 		cmd->forwardmove = ClampChar( cmd->forwardmove + (int)forward );
 	}
 
@@ -543,10 +570,13 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 
 /*
 =================
-CL_MouseMove
+CL_MouseLook
+
+The mouse's turning, every frame (CL_ApplyLook); its strafe and BUTTON_ANY
+wait for the next usercmd (CL_CreateCmd)
 =================
 */
-void CL_MouseMove( usercmd_t *cmd ) {
+static void CL_MouseLook( void ) {
 	float	mx, my;
 	float	cgameSensitivity;
 
@@ -624,18 +654,18 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	mx *= cgameSensitivity;
 	my *= cgameSensitivity;
 
-	cmd->buttons |= BUTTON_ANY;
+	cl.lookButtons |= BUTTON_ANY;
 
-	// add mouse X/Y movement to cmd
+	// add mouse X/Y movement to the next cmd
 	if(in_strafe.active)
-		cmd->rightmove = ClampChar(cmd->rightmove + m_side->value * mx);
+		cl.lookMove[0] += m_side->value * mx;
 	else
 		cl.viewangles[YAW] -= m_yaw->value * mx;
 
 	if ((in_mlooking || cl_freelook->integer) && !in_strafe.active)
 		cl.viewangles[PITCH] += m_pitch->value * my;
 	else
-		cmd->forwardmove = ClampChar(cmd->forwardmove - m_forward->value * my);
+		cl.lookMove[1] -= m_forward->value * my;
 
 	if (!isfinite(cl.viewangles[PITCH]) || !isfinite(cl.viewangles[YAW])) {
 		Com_DPrintf("Invalid client viewangles encountered (view pitch: %f, view yaw: %f)!\n", cl.viewangles[PITCH], cl.viewangles[YAW]);
@@ -720,30 +750,44 @@ void CL_FinishMove( usercmd_t *cmd ) {
 
 /*
 =================
-CL_CreateCmd
+CL_ApplyLook
+
+Turns the view with this frame's input: the keyboard, the mouse and the
+joystick, every frame. Usercmds come at cl_cmdfps (CL_CreateNewCommands) and
+carry the angles of the frame that makes them; cgame turns the view of the
+frames between them (CL_GetViewUserCmd). What the mouse adds to the movement
+(strafe, BUTTON_ANY) waits for the next usercmd.
 =================
 */
-usercmd_t CL_CreateCmd( void ) {
-	usercmd_t	cmd;
+static void CL_ApplyLook( void ) {
 	vec3_t		oldAngles;
+	unsigned	cmdMsec;
 
 	VectorCopy( cl.viewangles, oldAngles );
+
+	// the keys and the mouse rate take the fraction of this frame; a frame
+	// in the same millisecond as the last one counts as 1 ms, as in
+	// CL_CreateNewCommands
+	cmdMsec = frame_msec;
+	frame_msec = com_frameTime - old_look_frameTime;
+	if ( frame_msec < 1 ) {
+		frame_msec = 1;
+	}
+	if ( frame_msec > 200 ) {
+		frame_msec = 200;
+	}
+	old_look_frameTime = com_frameTime;
 
 	// keyboard angle adjustment
 	CL_AdjustAngles ();
 
-	Com_Memset( &cmd, 0, sizeof( cmd ) );
-
-	CL_CmdButtons( &cmd );
-
-	// get basic movement from keyboard
-	CL_KeyMove( &cmd );
-
 	// get basic movement from mouse
-	CL_MouseMove( &cmd );
+	CL_MouseLook();
 
 	// get basic movement from joystick
-	CL_JoystickMove( &cmd );
+	CL_JoystickLook();
+
+	frame_msec = cmdMsec;
 
 	// check to make sure the angles haven't wrapped
 	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {
@@ -751,9 +795,6 @@ usercmd_t CL_CreateCmd( void ) {
 	} else if ( oldAngles[PITCH] - cl.viewangles[PITCH] > 90 ) {
 		cl.viewangles[PITCH] = oldAngles[PITCH] - 90;
 	}
-
-	// store out the final values
-	CL_FinishMove( &cmd );
 
 	// draw debug graphs of turning for mouse testing
 	if ( cl_debugMove->integer ) {
@@ -764,6 +805,35 @@ usercmd_t CL_CreateCmd( void ) {
 			SCR_DebugGraph( fabs(cl.viewangles[PITCH] - oldAngles[PITCH]) );
 		}
 	}
+}
+
+/*
+=================
+CL_CreateCmd
+=================
+*/
+usercmd_t CL_CreateCmd( void ) {
+	usercmd_t	cmd;
+
+	Com_Memset( &cmd, 0, sizeof( cmd ) );
+
+	CL_CmdButtons( &cmd );
+
+	// get basic movement from keyboard
+	CL_KeyMove( &cmd );
+
+	// what the mouse added since the last cmd (CL_ApplyLook)
+	cmd.buttons |= cl.lookButtons;
+	cmd.rightmove = ClampChar( cmd.rightmove + cl.lookMove[0] );
+	cmd.forwardmove = ClampChar( cmd.forwardmove + cl.lookMove[1] );
+	cl.lookButtons = 0;
+	cl.lookMove[0] = cl.lookMove[1] = 0;
+
+	// get basic movement from joystick
+	CL_JoystickMove( &cmd );
+
+	// store out the final values
+	CL_FinishMove( &cmd );
 
 	return cmd;
 }
@@ -773,16 +843,42 @@ usercmd_t CL_CreateCmd( void ) {
 =================
 CL_CreateNewCommands
 
-Create a new usercmd_t structure for this frame
+Create the usercmds of this frame. In the game they come at a fixed rate,
+whatever the frame rate: one every 1000 / cl_cmdfps whole milliseconds of
+server time (85 to 125 a second; 1000 / 85 is 11 ms, 1000 / 125 is 8), so that
+every pmove step has that length, at 144 frames a second as at 250 or 2000,
+also when the server time drifts (CL_AdjustTimeDelta). A frame that passes
+none makes none (the view still turns, CL_ApplyLook), a frame longer than
+the step makes several, with the same input (up to 100 ms of them).
 =================
 */
 void CL_CreateNewCommands( void ) {
-	usercmd_t	*cmd;
-	int			cmdNum;
+	usercmd_t	cmd;
+	int			interval, elapsed, cmdTime, count, i;
 
 	// no need to create usercmds until we have a gamestate
 	if ( clc.state < CA_PRIMED ) {
 		return;
+	}
+
+	// before the first snapshot cl.serverTime doesn't run: one per frame
+	interval = 0;
+	count = 1;
+	cmdTime = cl.serverTime;
+	if ( clc.state == CA_ACTIVE ) {
+		interval = 1000 / (int)Com_Clamp( 85, 125, cl_cmdfps->integer );
+		elapsed = cl.serverTime - cl.cmds[cl.cmdNumber & CMD_MASK].serverTime;
+		// else the first one, or the time went back (map_restart) or jumped
+		// (a hitch, or under 10 frames a second: one step of all of it, as
+		// before, so that a packet with the last one's usercmds
+		// (cl_packetdup) stays within MAX_PACKET_USERCMDS): from now on
+		if ( elapsed >= 0 && elapsed <= 100 ) {
+			if ( elapsed < interval ) {
+				return;
+			}
+			count = elapsed / interval;
+			cmdTime = cl.cmds[cl.cmdNumber & CMD_MASK].serverTime + interval;
+		}
 	}
 
 	frame_msec = com_frameTime - old_com_frameTime;
@@ -800,12 +896,39 @@ void CL_CreateNewCommands( void ) {
 	}
 	old_com_frameTime = com_frameTime;
 
+	// generate the commands for this frame
+	cmd = CL_CreateCmd ();
+	for ( i = 0; i < count; i++ ) {
+		if ( i ) {
+			// the weapon command goes into a set number of usercmds
+			// (CG_WeaponCommandButtonBits)
+			cmd.buttons &= ~GetWeaponCommandMask( WEAPON_COMMAND_MAX_VER17 );
+			if ( cge ) {
+				cmd.buttons |= cge->CG_WeaponCommandButtonBits();
+			}
+		}
+		cmd.serverTime = cmdTime + i * interval;
+		cl.cmdNumber++;
+		cl.cmds[cl.cmdNumber & CMD_MASK] = cmd;
+	}
+}
 
-	// generate a command for this frame
-	cl.cmdNumber++;
-	cmdNum = cl.cmdNumber & CMD_MASK;
-	cl.cmds[cmdNum] = CL_CreateCmd ();
-	cmd = &cl.cmds[cmdNum];
+/*
+=================
+CL_GetViewUserCmd
+
+The newest usercmd with the view angles of this frame, for cgame to turn the
+view in the frames between usercmds (CL_ApplyLook). Prediction runs the
+usercmds as they were made, the angles they were sent with.
+=================
+*/
+void CL_GetViewUserCmd( usercmd_t *ucmd ) {
+	int		i;
+
+	*ucmd = cl.cmds[cl.cmdNumber & CMD_MASK];
+	for ( i = 0; i < 3; i++ ) {
+		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
+	}
 }
 
 /*
@@ -1112,8 +1235,21 @@ void CL_SendCmd( void ) {
 		return;
 	}
 
+	// the view turns every frame, usercmds come at cl_cmdfps
+	if ( clc.state >= CA_PRIMED ) {
+		CL_ApplyLook();
+	}
+
 	// we create commands even if a demo is playing,
 	CL_CreateNewCommands();
+
+	// nothing new for the server: no usercmd since the last packet and no
+	// reliable command waiting
+	if ( clc.state == CA_ACTIVE
+		&& cl.cmdNumber == cl.outPackets[ ( clc.netchan.outgoingSequence - 1 ) & PACKET_MASK ].p_cmdNumber
+		&& clc.reliableSequence <= clc.reliableAcknowledge ) {
+		return;
+	}
 
 	// don't send a packet if the last packet was sent too recently
 	if ( !CL_ReadyToSendPacket() ) {
@@ -1210,6 +1346,7 @@ void CL_InitInput( void ) {
 
 	cl_nodelta = Cvar_Get ("cl_nodelta", "0", 0);
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
+	cl_cmdfps = Cvar_Get ("cl_cmdfps", "100", CVAR_ARCHIVE);
 }
 
 /*

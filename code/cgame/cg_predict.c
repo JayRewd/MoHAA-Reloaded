@@ -39,6 +39,10 @@ static int        cg_numTriggerEntities;
 
 // static	centity_t	*cg_triggerEntities[MAX_ENTITIES_IN_SNAPSHOT];
 
+// the last pmove result and its command (CG_PredictPlayerState)
+static playerState_t cg_lastPredicted;
+static int           cg_lastPredictedCmd = -1;
+
 /*
 ====================
 CG_BuildSolidList
@@ -402,12 +406,11 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
     CG_InterpolatePlayerStateCamera();
 
     // if we are still allowing local input, short circuit the view angles
+    // (this frame's, the commands come at cl_cmdfps)
     if (grabAngles) {
         usercmd_t cmd;
-        int       cmdNum;
 
-        cmdNum = cgi.GetCurrentCmdNumber();
-        cgi.GetUserCmd(cmdNum, &cmd);
+        cgi.GetViewUserCmd(&cmd);
 
         PM_UpdateViewAngles(out, &cmd);
     }
@@ -622,6 +625,29 @@ void CG_PredictPlayerState(void)
 
     if (cg_showmiss->integer > 1) {
         cgi.Printf("[%i : %i] ", cg_pmove.cmd.serverTime, cg.time);
+    }
+
+    // The commands come at cl_cmdfps, the frames as often as they can: in the
+    // frames between commands the snapshot can have run all of them. Its
+    // playerState then lacks what isn't networked, which the pmove of the same
+    // command gave (walking: the view bob, the view model and the landing)
+    if (moved) {
+        cg_lastPredicted    = cg.predicted_player_state;
+        cg_lastPredictedCmd = current;
+    } else if (current == cg_lastPredictedCmd && !cg.thisFrameTeleport && !cg.nextFrameTeleport
+               && cg.predicted_player_state.commandTime == cg_lastPredicted.commandTime) {
+        cg.predicted_player_state.walking     = cg_lastPredicted.walking;
+        cg.predicted_player_state.groundPlane = cg_lastPredicted.groundPlane;
+        cg.predicted_player_state.groundTrace = cg_lastPredicted.groundTrace;
+    }
+
+    // the view turns with this frame's look; the commands were predicted with
+    // the angles they were sent with
+    {
+        usercmd_t viewCmd;
+
+        cgi.GetViewUserCmd(&viewCmd);
+        PM_UpdateViewAngles(&cg.predicted_player_state, &viewCmd);
     }
 
     // interpolate the camera if necessary

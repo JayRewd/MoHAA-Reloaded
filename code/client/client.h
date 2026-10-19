@@ -125,6 +125,11 @@ typedef struct {
 	int			mouseDx[2], mouseDy[2];	// added to by mouse events
 	int			mouseIndex;
 
+	// what the mouse look of each frame leaves for the next usercmd
+	// (commands come at cl_cmdfps, see CL_ApplyLook)
+	int			lookButtons;		// BUTTON_ANY
+	float		lookMove[2];		// mouse strafe: rightmove, forwardmove
+
 	int				mousex, mousey;
 	unsigned int	mouseButtons;
 
@@ -598,6 +603,7 @@ void CL_UpdateMouse();
 void CL_InitInput (void);
 void CL_ShutdownInput(void);
 void CL_SendCmd (void);
+void CL_GetViewUserCmd( usercmd_t *ucmd );
 void CL_ClearState (void);
 void CL_ReadPackets (void);
 

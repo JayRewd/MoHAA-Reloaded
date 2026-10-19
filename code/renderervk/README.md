@@ -217,6 +217,28 @@ below are done.
   99.9th percentiles too (`o4match` at 1920x1080: 1.631 and 2.134 ms to
   1.555 and 2.019), the input to present time a little; the same frames to
   the bit (see Performance, Skeletal culling)
+- command rate (2026-10-19, an engine, client and cgame change, for both
+  renderers): the client makes its usercmds, the steps of the player's
+  movement, at a fixed rate (`cl_cmdfps`, 85 to 125 a second, default 100) instead of
+  one per frame, the same steps at every frame rate, and the frame rate is
+  no longer held at 1000 a second (`com_maxfps` above 1000 or 0); the view
+  turns with every frame's mouse look, the own position moves once per
+  command. From JayRewd's `cl_cmdfps` (omaha 1620f310) and his limiter
+  change (b26d8a67), with commands on a fixed grid of server time (his steps
+  depend on the frame rate), the look applied to the view only and no
+  smoothing of the own position. Short steps get stuck on small bumps that
+  longer ones get over: on `dm/mohdm2` 1 ms steps (1000 frames a second
+  before) stopped 3 to 4 times as many walks as 8 to 12 ms, 4 ms (250) 1.6
+  to 2 times as many, and no step got over every bump; why is in Performance,
+  Command rate. The commands' steps are exact at 60 to 3300 frames a
+  second, a walk makes the same moves to the bit at 144, 250, 1000 and
+  uncapped, nothing is lost between commands, the input to display time
+  at 250 and 1000 is the same as before; uncapped it is 0.32 to 0.41 ms
+  lower where the GPU keeps up (640x480: 1800 to 2100 frames a second),
+  higher where it limits (1920x1080 on this machine). Buttons and movement
+  keys reach the server with the next command: 5 ms after the frame on
+  average at the default, 2 at 250 frames a second before. The `fps`
+  counter counts in microseconds
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -272,7 +294,14 @@ client's default `cl_renderer` (`vulkan` when `BUILD_RENDERER_VULKAN` is on:
 the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
 in `code/qcommon/net_ip.c`, their declarations in `code/qcommon/qcommon.h`:
 `com_maxfps` caps in microseconds, those that divide 1000 on the
-millisecond tick, see Performance, Frame limiter).
+millisecond tick, see Performance, Frame limiter), and the command rate
+(`code/client/cl_input.cpp`: `cl_cmdfps`, `CL_CreateNewCommands`,
+`CL_ApplyLook`, `CL_GetViewUserCmd`, `CL_SendCmd`; `code/client/client.h`;
+`code/client/cl_cgame.cpp` and `code/cgame/cg_public.h`: the cgame import
+`GetViewUserCmd`; `code/cgame/cg_predict.c`; `code/cgame/cg_specialfx.cpp`;
+`Com_Frame` and `Com_ModifyMsec` in `code/qcommon/common.c`: caps above
+1000 and uncapped, frames of 0 ms, the `fps` counter in microseconds; see
+Performance, Command rate).
 
 ## Build and run
 
@@ -1247,10 +1276,13 @@ no privileges (perf is refused with the default
 
 What makes simpler measurements misleading:
 
-- `com_maxfps 0` still means at most 1000 frames per second: `Com_Frame`
-  waits until a whole millisecond has passed since the last frame. On an
-  idle machine most views reach that at 640x480 with both renderers, so the
-  frame time no longer shows differences; the renderer time does.
+- `com_maxfps 0` meant at most 1000 frames per second until 2026-10-19:
+  `Com_Frame` waited until a whole millisecond had passed since the last
+  frame. On an idle machine most views reached that at 640x480 with both
+  renderers, so the frame time showed no differences; the renderer time
+  did. The tables below with 0.999 or 1.000 ms are from then. Since the
+  command rate change (see Command rate) uncapped means uncapped, and
+  `perf.py`'s uncapped frame times are the views' own.
 - `com_speeds`' `rf` and `bk` are whole milliseconds, read right after the
   frame limiter's millisecond tick, and `bk` only counts the last batch of
   render commands of a frame; most of the back end runs before it, inside
@@ -2122,8 +2154,10 @@ started on the millisecond tick.
 Now a cap is a deadline in microseconds (`Sys_Microseconds`:
 `CLOCK_MONOTONIC`, `QueryPerformanceCounter` on Windows) that advances by
 exactly one period (1000000 / cap, rounded up so that the rate never
-exceeds the cap; a cap of 1000 or more has no deadline, only the
-millisecond below, like uncapped; a cap that divides 1000 has its deadline
+exceeds the cap; a cap of 1000 or more had no deadline, only the
+millisecond below, like uncapped, until the command rate change of
+2026-10-19 (see Command rate: now 1000 waits for the millisecond, a cap
+above it for its deadline alone, uncapped for nothing); a cap that divides 1000 has its deadline
 in whole milliseconds since the change described at the end of this part,
 Caps that divide 1000). A frame late by less than a period is
 made up by the next one; after a later one the deadline starts again from
@@ -2132,7 +2166,7 @@ waits until `Sys_Milliseconds` has passed the previous frame's start
 (`com_frameTime`) by `minMsec`: 1 ms for a client, so that no frame lasts
 0 ms of game time (`Com_ModifyMsec` would make it 1 ms and the game would
 run ahead of real time) and uncapped still means at most 1000 frames per
-second; a dedicated server's frame (`SV_FrameMsec`). The game time of a
+second (both changed on 2026-10-19, see Command rate); a dedicated server's frame (`SV_FrameMsec`). The game time of a
 frame alternates where the period isn't whole milliseconds (6 and 7 ms at
 144). `com_timedemo`, `com_busyWait`, `com_maxfpsUnfocused`,
 `com_maxfpsMinimized` and the local server's queued packets
@@ -3219,6 +3253,240 @@ see Remaining: 27.6 to 30.8 ms from run to run in both builds.)
   0.589, 0.943 / 0.894, 1.114 / 1.110. Lower, never higher: the cull only
   removes work between the input read and the present; nothing else
   changes (no frame more in flight, the acquire where it was).
+
+Command rate (2026-10-19, Plan 18; an engine, client and cgame change,
+for both renderers). The client made one usercmd per frame, and a
+usercmd is a step of the player's movement (pmove, run by the server and
+predicted by cgame) as long as the frame: 1 ms at 1000 frames a second, 4
+ms at 250 (and 2 and 5 ms when the clock drifts, `CL_AdjustTimeDelta`), 7
+ms at 144 (4 to 8), 14 to 18 ms at 60. The frame rate was held at 1000 a
+second (`Com_Frame` waited for a new millisecond of `Sys_Milliseconds`,
+since `Com_ModifyMsec` counted a frame of 0 ms as 1 ms and the game would
+have run ahead of real time). Players report that the short steps of high
+frame rates get stuck on small bumps of `dm/mohdm2` that longer steps get
+over; JayRewd's omaha commit 1620f310 (`cl_cmdfps`) separated the command
+rate from the frame rate, and his b26d8a67 let the frame rate pass 1000.
+What was taken, and how it differs:
+
+- Usercmds at a fixed rate whatever the frame rate (`CL_CreateNewCommands`):
+  `cl_cmdfps` (archived, 85 to 125 a second, default 100), a command every
+  1000 / `cl_cmdfps` whole milliseconds of server time (8 to 11 ms, 10 by
+  default, the user's choice from the bump test below; 12 ms, 83 a second,
+  is outside the range). JayRewd's waits until that much
+  server time has passed since the last command and stamps it with the
+  frame's time, so its step is the first multiple of the frame time at or
+  above it (by its code about 14 ms at 144 frames a second, 8 at 250).
+  Here each command is stamped one step after the one before, so every
+  step has the same length at every frame rate, also when the clock
+  drifts: a frame that passes no step makes no command, a frame longer
+  than a step makes several with the same input (the weapon command, which
+  cgame sends in three commands, is asked for each), up to 100 ms of them:
+  below 10 frames a second, after a hitch or when the server time jumps,
+  one command of all of it as before, so that a packet with the last
+  packet's commands (`cl_packetdup`) stays within `MAX_PACKET_USERCMDS`.
+  Until the first snapshot (`CA_PRIMED`) one per frame as before.
+- The view turns every frame: `CL_ApplyLook` applies the mouse, the keys
+  that turn and the joystick every frame, and cgame turns the view with
+  this frame's angles through a new import, `GetViewUserCmd` (the newest
+  command with this frame's view angles), after it has predicted the
+  commands with the angles they were sent with (`CG_PredictPlayerState`,
+  and `CG_InterpolatePlayerState` for noclip and spectators). No command
+  changes once it is made; JayRewd's writes each frame's angles into the
+  newest command, sent or not, and predicts it with them, so cgame's
+  prediction of that command differs from the server's. What the mouse
+  adds to the movement (strafe, `BUTTON_ANY`) waits for the next command.
+  Buttons, taps and weapon commands are read only when a command is made,
+  so none is lost between commands; a key held for part of a command's
+  time moves it by that part, as before (JayRewd's counts a tap as the
+  whole command and resamples the keys into the newest command for
+  prediction, input the server never gets: not taken).
+- No packet without a new command unless reliable commands wait
+  (`CL_SendCmd`): a frame between commands sends nothing.
+- cgame: in the frames between commands the snapshot can have run every
+  command already, and its playerState lacks what the network doesn't
+  carry, which cgame then took from the snapshot (`walking` false in a
+  `nextSnap`: the view bob, the view model and the landing would flicker).
+  It now takes `walking`, `groundPlane` and `groundTrace` from its last
+  pmove of the same command and the rest from the snapshot (JayRewd's keeps
+  the whole predicted state, the server's position included).
+- Not taken: JayRewd's display lerp of the own position between the last
+  two commands (it shows the player up to a step behind), extrapolation, a
+  partial step ahead of the last command. The own position moves once per
+  command, every 10 ms at the default (every second or third frame at 250
+  frames a second, every tenth at 1000), and lags the world drawn at the
+  frame's time by 0 to 10 ms, as at 100 frames a second before; the view
+  turns every frame, the other players are interpolated every frame.
+- What the fixed rate costs: a button (fire, use, jump) or a movement key
+  reaches the server with the next command, 0 to 10 ms after the frame
+  that read it at the default (5 on average), where one command per frame
+  sent it within 4 ms at 250 frames a second (2 on average) and within 1 ms
+  at 1000: 3 ms more on average than at 250. The view's turning is in
+  every frame and goes to the server with the next command, as before
+  with the frame's.
+- The limiter (`Com_Frame`): at a timescale of 1, a client cap above 1000
+  waits for its deadline in microseconds alone, an uncapped client
+  (`com_maxfps 0`) for nothing, and `Com_ModifyMsec` no longer counts a
+  frame of 0 ms as 1 ms (JayRewd's b26d8a67 and 1620f310; his also drop
+  the millisecond at other timescales, where a frame of 0 ms still counts
+  as 1 ms, so scaled time, a demo in slow motion for one, would run fast:
+  they keep it here). Caps up to 1000 (the default is 85) and dedicated
+  servers are as before. The `fps` counter takes the frame times in
+  microseconds (`Sys_Microseconds`; whole milliseconds over 16 frames
+  showed 1455 or 1600 at 1515 frames a second, 2667 or 3200 at 3000).
+  The world is still drawn at whole milliseconds of game time (`cg.time`):
+  a frame in the same millisecond as the one before shows the same moment
+  of the world with the newest view. One division by the frame time in
+  cgame (the water ripples) is guarded against 0.
+
+The bump. A temporary cgame command (not kept) walked the player's pmove
+the way the server runs it (`Player::ClientMove`: no ground entity before
+the move, the velocity clipped to the ground plane after it, a move
+shorter than 0.005 units undone; cgame's prediction does none of these)
+from every floor of a grid over `dm/mohdm2` in 8 directions for 1.5 s at
+each step and recorded where each walk ended. Walks that stopped short
+where another step from the same start went on (under half of the longest
+of them), of 29,315 (a 96-unit grid; the 64-unit grid at 4, 8 and 12 ms
+gave the same order):
+
+| step (ms) | 1 | 4 | 8 | 9 | 10 | 11 | 12 | 16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| walks stopped | 193 | 103 | 66 | 58 | 48 | 57 | 59 | 47 |
+| of them only at this step | 81 | 6 | 2 | 1 | 0 | 3 | 4 | 6 |
+
+Then in the game, the server and the client's real commands (a test build
+that set the step, `fixedtime 16`), three bumps where the shorter steps
+stopped, each walked into from 29 positions (64 to 256 units before it, 8
+units to either side): the walks that got more than 32 units past it in
+2.5 s:
+
+| bump (where, direction) | 1 ms | 4 | 8 | 9 | 10 | 11 | 12 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| C1 `-2624 331 38`, south: the edge where the dirt terrain meets the cobbles, at a house corner | 0 | 1 | 12 | 13 | 15 | 14 | 18 |
+| C3 `-2817 -1485 18`, north | 27 | 21 | 25 | 25 | 27 | 27 | 26 |
+| C7 `-1330 -3587 -6`, north-west | 19 | 17 | 17 | 18 | 20 | 19 | 24 |
+
+Why, from pmove with debug prints at C1: the bump is a lip 1.5 units high
+whose edge is a bevel of 70° about 0.55 units wide. When a move is
+blocked, `PM_StepSlideMove` tries it again 18 units higher and traces back
+down; when that trace lands on a surface too steep to walk on
+(`MIN_WALK_NORMAL`: the bevel) the step is refused and the blocked move is
+kept, whose slide along the bevel has taken nearly all the forward speed.
+The raised move covers one command's distance from where the command
+started, so the step is refused when the command started too close to the
+lip for its distance to carry the box past the bevel, about the bevel's
+width out of each step's length: at a running speed of 264 units a second,
+0.55 out of 1.1 units at 4 ms, of 2.1 at 8 ms, of 3.2 at 12 ms. Once the
+speed is gone a command from a standstill moves 0.17 units at 8 ms (0.38
+at 12, 0.68 at 16): never past the bevel again, and the player stays there until
+turning or jumping. So a shorter step stops more often at such an edge, a
+longer one less, none never; other bumps stop longer steps more (C7 at 4
+to 11 ms the same, the sweep's 16 ms as many as 10 ms). A fix would be in
+pmove (the step-up refused on a short bevel), which the server runs, not
+in the client.
+
+Checks, with a test build (not kept) that logged every command, packet and
+server move and cgame's view and prediction, in a local game of
+`dm/mohdm2` (the player running in circles for 8.5 s with two button taps,
+a weapon change and a use; `cl_cmdfps` 125, 8 ms, the default then, also in
+the first latency batch below):
+
+| `com_maxfps` | frames a second | usercmds a second | steps (ms) | usercmds per frame | packets without a new usercmd | server moves of 8 ms | before: steps (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 60 | 60 | 125.3 | 8 (1045 of 1045) | 1 to 3 | 0 | all but the first | 14 to 18 |
+| 144 | 144 | 125.2 | 8 | 0 or 1 | 0 | all but the first | 4 to 8 (993 of 1216 7 ms) |
+| 250 | 250 | 125.0 | 8 | 0 or 1 | 0 | all but the first | 2, 4, 5 (169 of 2116 not 4) |
+| 1000 | 1000 | 125.0 | 8 | 0 or 1 | 0 | all but the first | 0, 1, 2 (231 of 8483 not 1; the server runs no 0 ms one) |
+| 0 | 3272 | 125.1 | 8 | 0 or 1 | 0 | all but the first | as at 1000 |
+
+- Nothing lost between commands: each attack tap is in one command (two at
+  60 frames a second, whose frames make two commands), the use tap too, the
+  weapon change in three commands, at every cap, as before.
+- The view turns in the frames without a command: while turning with the
+  keys, the view's yaw changed in 88 of 120 such frames at 144, 579 of 802
+  at 250, 4108 of 5675 at 1000 (keys turn by whole milliseconds, so frames
+  within one millisecond don't turn; the mouse turns the view in every
+  frame that has its input).
+- The same walk at 144, 250, 1000 frames a second and uncapped (`+forward`
+  from a standstill, into C1 and from the Allied spawn): the server's moves
+  are the same to the bit at every cap (311 and 374 moves of 8 ms).
+- Prediction: the server's result for each predicted command, at every
+  cap, before and after: the same errors (median 0.02 to 0.04 units, 90th
+  percentile 0.05 to 0.12, maximum 0.5 to 3.4) in both builds, from what
+  the server does that cgame doesn't (above).
+
+Latency (the build before against this one, interleaved, 5 runs of 10 s,
+1920x1080 fullscreen with tearing, `r_swapInterval 0`, `libinlat.so` with
+`INLAT_DISPLAY=1` and `INLAT_FBPOLL_US=250`, `framelog.py --display`; ms,
+medians of the runs (their range) and of their percentiles; uncapped is
+1000 frames a second before and 1500 now):
+
+| view | `com_maxfps` | build | input to present: median, p99 | input to GPU done | input to display: median (runs), p99, p99.9 |
+| --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 250 | before | 0.501, 0.810 | 1.398 | 1.925 (1.848 to 2.062), 2.562, 2.845 |
+| | | now | 0.499, 0.823 | 1.381 | 2.010 (1.937 to 2.081), 2.509, 2.761 |
+| | 1000 | before | 0.427, 0.620 | 0.982 | 1.502 (1.407 to 1.593), 1.753, 1.900 |
+| | | now | 0.430, 0.640 | 0.985 | 1.602 (1.473 to 1.637), 1.852, 2.112 |
+| | 0 | before | 0.428, 0.610 | 0.981 | 1.542 (1.402 to 1.674), 1.820, 2.041 |
+| | | now | 0.627, 0.837 | 1.466 | 1.777 (1.732 to 1.809), 2.083, 2.192 |
+| `o2match` | 250 | before | 0.518, 0.956 | 1.305 | 1.901 (1.849 to 1.948), 2.671, 3.140 |
+| | | now | 0.523, 0.964 | 1.315 | 2.046 (1.927 to 2.084), 2.827, 3.136 |
+| | 1000 | before | 0.501, 1.216 | 1.065 | 1.497 (1.456 to 1.613), 3.126, 3.428 |
+| | | now | 0.495, 1.201 | 1.051 | 1.570 (1.458 to 1.583), 3.151, 3.507 |
+| | 0 | before | 0.502, 1.212 | 1.056 | 1.531 (1.507 to 1.593), 3.143, 3.469 |
+| | | now | 0.563, 1.221 | 1.194 | 1.545 (1.495 to 1.547), 3.161, 3.554 |
+
+(One run of this build at 250 in `o2match` didn't go fullscreen and is
+left out.) At 250 and 1000 the input to present and to GPU done are the
+same; input to display was 0.07 to 0.15 ms higher in all four cells of
+this batch, inside the runs' range, so a second batch with the final build
+(`cl_cmdfps` 100) and 8 runs each: `o2match` 1.466 (1.404 to 1.598)
+against 1.498 (1.413 to 1.628) ms at 1000 and 1.978 against 1.965 at 250,
+the yard 1.551 against 1.579 and 1.995 against 2.039: the same within the
+spread, both ways.
+
+Frame times and CPU (the same runs, `renderer_timed.so`): at 250 and 1000
+the same as before (the yard 4.000 and 0.999 ms on the median, 99th
+percentile 4.099 and 1.091 against 4.098 and 1.090; `o2match` 1.266
+against 1.283 at 1000; the game 0.45 and 1.08 CPUs in both builds).
+Uncapped, 1498 frames a second in the yard and 1516 in `o2match` (0.666
+and 0.626 ms on the median, 99th percentile 0.975 and 1.284, 99.9th 1.276
+and 1.726), the GPU 87 and 81 % busy, the game's main thread a whole core.
+On this machine (Radeon 780M) uncapped at 1920x1080 is where the GPU
+limits, and a frame then waits for the one before it on the GPU (input to
+GPU done 1.47 against 0.98 ms in the yard): uncapped beyond what the GPU
+can draw shows the newest input later, not earlier. Where the GPU keeps up
+(640x480, fullscreen with tearing, 5 runs), uncapped is what the change
+was for: 2083 frames a second in the yard and 1816 in `o2match` against
+the 1000 before, input to display 0.936 (0.930 to 1.043) against 1.257
+(1.163 to 1.335) ms and 1.062 (1.048 to 1.072) against 1.470 (1.316 to
+1.504), p99 1.155 against 1.510 and 1.915 against 1.973, input to GPU
+done 0.606 against 0.739 and 0.724 against 0.865; at a cap of 1000 the
+same as before (1.216 against 1.247, 1.403 against 1.453). The game then
+takes 1.12 CPUs (its main thread never waits).
+
+View lists against the build before (`run.sh`, `tgadiff.py`, 640x480,
+`r_vkValidation 1`, the 41 lists, 177 views, at `cl_cmdfps` 125: two
+commands a frame under `fixedtime 16`): 143 views give the same frames to
+the bit, among them every view of the `dm`, `obj` and multiplayer lists
+but the snow of `mohdm5_fog` and the near-camera ±1 of `d7_alley` and
+`d7_arch`, the menus, the dynamic light, decal, fog, sun flare and debug
+drawing lists. The others are the random content and run-to-run noise
+named in Testing (`m1l1`, `m1l2a`, `m1l3a`, `m2l1_skyportal`, `m3l1a`,
+`m5l1a`, `m5l2a`, `m6l1a`, `mohdm5_fog`, a particle in `m53_street`, a
+pixel of `m33_grass`) and the first view of two single-player lists,
+`m32_house` (`m3l2`) and `m62_square` (`m6l2a`, 38 and 26 % of the pixels,
+nearly all at edges): the eye is at the same place and the view is turned
+by one unit of the 16-bit angle (0.0055°: the frames match shifted by 0.05
+pixel; `viewpos` prints -59 against -60, the server's `coord` -60.00 in
+both). `face` sets the view from the angles of the last command the server
+got, and after the spawn that is another command now. No validation
+message. With the final default (100 a second, 10 ms: one or
+two commands a frame) on 9 of the lists again (`mohdm1`, `obj_team2`,
+`mp_mohdm1`, `mp_obj_team4`, `menus`, `m3l2`, `m6l2a`, `mohdm1_dlight`,
+`m2l3`, 48 views): the same, those two first views and the rest to the
+bit. The final engine differs from the one these lists ran with in
+`Com_Frame` alone (`objdump -d`, addresses left out: the timescale
+condition and the `fps` counter) and in `cl_cmdfps`'s default.
 
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
@@ -4477,6 +4745,25 @@ Done:
     views, the slow frames and the input to present time lower; the same
     frames to the bit.
 
+18. Command rate (2026-10-19, see Performance, Command rate), from
+    JayRewd's `cl_cmdfps` (omaha 1620f310) and limiter change (b26d8a67):
+    usercmds at a fixed rate (`cl_cmdfps`, 85 to 125 a second) on a grid of
+    server time, every step the same length at every frame rate (his
+    depend on it), several per frame below the rate; the view turned every
+    frame through a new cgame import (`GetViewUserCmd`), no command
+    rewritten after it is made, no smoothing of the own position; no packet
+    without a new command; cgame keeps what the network doesn't carry when
+    the snapshot has run every command; client caps above 1000 and uncapped
+    on the microsecond deadline, frames of 0 ms counted as 0 ms, the `fps`
+    counter in microseconds. Default 100 commands a second. Why short
+    steps get stuck on bumps (pmove's step-up refused on a steep bevel,
+    then the speed lost) was found with a pmove sweep of `dm/mohdm2` and
+    walks in the game: 1 ms steps stop 3 to 4 times as many walks as 8 to
+    12 ms, 4 ms 1.6 to 2 times, no step none. Steps exact from 60 to 3300 frames a
+    second, the same moves to the bit at 144, 250, 1000 and uncapped,
+    nothing lost between commands, prediction errors and input to present
+    as before.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -4615,10 +4902,27 @@ Remaining:
   divide 1000 start on the millisecond tick again: GL1's 99th percentile
   of input to present in `o2match` at 250 is then about 0.08 ms higher
   than with a deadline anywhere in the millisecond (the old limiter's
-  level), Vulkan's about the same; not explained. The usercmd's step still
-  moves by 1 or -2 ms on every snapshot (`CL_AdjustTimeDelta`, Quake 3's
+  level), Vulkan's about the same; not explained. The usercmd's step
+  moved by 1 or -2 ms on every snapshot (`CL_AdjustTimeDelta`, Quake 3's
   clock drift: 8 % of the usercmds at 250 in a local game), whatever the
-  limiter.
+  limiter, until the command rate change (steps on a fixed grid since).
+- The command rate (see Performance, Command rate): no step gets over
+  every bump of `dm/mohdm2` (the default, 100 a second, 10 ms, stopped the
+  fewest walks of the sweep). The step-up that pmove refuses when
+  its trace back down lands on a short steep bevel (the cause at the bump
+  measured) could be fixed in pmove itself, for the servers that run this
+  game code and cgame's prediction alike; not done (a gameplay change).
+  The world is drawn at whole milliseconds of game time (`cg.time` is an
+  integer): above 1000 frames a second consecutive frames in the same
+  millisecond show the same moment of the world (the view turns); a render
+  time in microseconds for interpolation and animation was proposed, not
+  done. The own position moves once per command (no smoothing, by the no
+  added lag rule). A button or movement key waits for the next command (5
+  ms on average at 100 a second, 2 at 250 frames a second before): an
+  early command when a button is pressed between commands would take most
+  of that off (a shorter step now and then); proposed, not done. Uncapped beyond what the GPU can draw (1500 frames
+  a second at 1920x1080 on this machine) shows the input later than a cap
+  just below it.
 - Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
   forests most batches still go through the CPU because of them: in
   `m6l1a`, `m3l3`, `dm/mohdm3` and `obj/obj_team2` a surface of the tree

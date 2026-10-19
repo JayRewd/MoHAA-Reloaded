@@ -2180,8 +2180,10 @@ int Com_ModifyMsec( int msec ) {
 		msec *= com_timescale->value;
 	}
 
-	// don't let it scale below 1 msec
-	if ( msec < 1 && com_timescale->value) {
+	// don't let it scale below 1 msec; at timescale 1 a frame shorter than a
+	// millisecond (client caps above 1000, uncapped) lasts 0 ms, else the game
+	// would run ahead of real time
+	if ( msec < 1 && com_timescale->value && com_timescale->value != 1.0f ) {
 		msec = 1;
 	}
 
@@ -2374,9 +2376,13 @@ void Com_Frame( void ) {
 		timeBeforeFirstEvents = Sys_Milliseconds ();
 	}
 
-    // Figure out how much time we have: at least 1 ms of Sys_Milliseconds
-    // (no frame of 0 ms, so at most 1000 frames per second, also uncapped),
-    // a dedicated server's frame, and the period of a client's frame rate cap
+    // Figure out how much time we have: a dedicated server's frame, and the
+    // period of a client's frame rate cap. Caps up to 1000 also wait for 1 ms
+    // of Sys_Milliseconds (no frame of 0 ms); at a timescale of 1, a client
+    // cap above 1000 waits only for its deadline in microseconds and an
+    // uncapped client not at all: its frames can last 0 ms of game time
+    // (Com_ModifyMsec, which makes them 1 ms at other timescales), the
+    // commands to the server come at their own rate (cl_cmdfps)
     minMsec = 1;
     periodUs = 0;
     periodMs = 0;
@@ -2393,14 +2399,22 @@ void Com_Frame( void ) {
             else
                 maxfps = com_maxfps->integer;
 
-            // 1000 and more: minMsec alone, as uncapped
-            if (maxfps > 0 && maxfps < 1000)
+            // 1000: minMsec alone, a frame per tick of Sys_Milliseconds
+            if (maxfps > 1000)
+            {
+                periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
+                if (com_timescale->value == 1.0f)
+                    minMsec = 0;
+            }
+            else if (maxfps > 0 && maxfps < 1000)
             {
                 if (1000 % maxfps == 0)
                     periodMs = 1000 / maxfps;
                 else
-                    periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
+                    periodUs = (1000000 + maxfps - 1) / maxfps;
             }
+            else if (maxfps <= 0 && com_timescale->value == 1.0f)
+                minMsec = 0;
         }
     }
 
@@ -2554,7 +2568,9 @@ void Com_Frame( void ) {
 #ifdef __cplusplus
 		fpstime = fps_clock_t::now();
 #else
-		fpstime = Sys_Milliseconds();
+		// microseconds: frames shorter than a millisecond (above 1000 a
+		// second) made whole milliseconds a coarse measure
+		fpstime = Sys_Microseconds();
 #endif
 
 		delta = fpstime - fpslasttime;
@@ -2572,7 +2588,7 @@ void Com_Frame( void ) {
 		}
 #else
 		if (fpstotal) {
-			currentfps = MAX_FPS_TIMES / (fpstotal / 1000.0);
+			currentfps = MAX_FPS_TIMES / (fpstotal / 1000000.0);
 		} else {
 			currentfps = 0.0;
 		}

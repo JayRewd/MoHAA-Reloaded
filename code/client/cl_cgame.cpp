@@ -832,6 +832,7 @@ void CL_InitCGameDLL( clientGameImport_t *cgi, clientGameExport_t **cge ) {
 	cgi->HudDrawElements			= cls.HudDrawElements;
 	cgi->anim						= &cls.anim;
 	cgi->stopWatch					= &cls.stopwatch;
+	cgi->GetViewUserCmd				= CL_GetViewUserCmd;
 	// FIXME
 	//cgi->pUnknownVar				= NULL;
 
