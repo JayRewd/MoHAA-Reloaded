@@ -1683,6 +1683,7 @@ extern  cvar_t* lod_tris;
 extern  cvar_t* lod_position;
 extern  cvar_t* lod_save;
 extern  cvar_t* lod_tool;
+extern  cvar_t* r_skelCull;		// skeletal models outside the view left out (R_SkelOutsideView)
 extern	cvar_t* sys_cpuid;
 extern	cvar_t* r_sse;
 extern	cvar_t* r_static_shaderdata0;

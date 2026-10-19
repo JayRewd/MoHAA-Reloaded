@@ -204,10 +204,26 @@ below are done.
   none is created in the match and the load takes as long as before; the
   same frames, the same input to present time (see Performance, Pipelines
   and skin data at load)
+- skeletal culling (2026-10-19): skeletal models wholly outside the view
+  are no longer prepared and drawn (GL1 did, and the GPU clipped them): the
+  sphere of the animation frame with a margin and the entity's axes,
+  against the view's side planes, measured over 20 real matches and the
+  41 view lists with a verification build that computed every posed
+  vertex (no culled model had a vertex in view; JayRewd's rule, which this
+  started from, hid splash drops in view and hasn't the margin for players
+  aiming up or down). The renderer's CPU time goes down 6.5 and 8.5 % in
+  `o2match` and `o4match` at 640x480 (-22 and -61 µs), 4 to 13 % in the
+  soldier views (34 % in one that looks away from them), their 99th and
+  99.9th percentiles too (`o4match` at 1920x1080: 1.631 and 2.134 ms to
+  1.555 and 2.019), the input to present time a little; the same frames to
+  the bit (see Performance, Skeletal culling)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
-- `renderergl1` is unchanged; it is the visual reference
+- `renderergl1` is unchanged. It was the visual reference until
+  2026-10-19; since then the look may change where that buys performance,
+  and comparisons with GL1 (and with the build before) check for bugs and
+  show what changed instead of requiring the same pixels
 
 ## Layout
 
@@ -291,6 +307,7 @@ Cvars of the backend:
 | `r_ext_multisample` (latched, shared with GL1) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
+| `r_skelCull` (default 1) | 0 prepares and draws skeletal models outside the view too, as GL1 does (see Implementation notes, Skeletal culling) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
@@ -1090,6 +1107,29 @@ main menu matches GL1 (fan masked; `menus.txt`: 0 pixels in every menu
 but the 17 of `mn_video`, the views over `m1_spawn` 5.2 to 7.4 %).
 `renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
 `GetRefAPI`.
+
+Skeletal culling (2026-10-19, see Performance, Skeletal culling), against
+the verification build of that step (`run.sh`, `tgadiff.py`, 640x480, the
+41 view lists, 177 views): that build draws every model as the build
+before does and only adds the checks (the same frames as the build before
+to the bit in `m3l3`, `mohdm1_debug`, `obj_team2` and `mp_mohdm1`); 144
+views give the same frames to the bit, among them every view of the `dm`,
+`obj` and multiplayer lists but the snow of `mohdm5_fog`, the near-camera
+±1 of `d7_alley` and `d7_arch` and 2 pixels of `pm7_front`, of the
+menus, the dynamic light, decal, fog and sun flare lists, `m2l3`, `m3l2`,
+`m6l2a` and `m6l3a`. The others are in the lists with random content or
+run-to-run noise named above (`m1l1`, `m1l2a`, `m1l3a`, `m2l1_skyportal`,
+`m3l1a`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m6l1a`, `mohdm5_fog`, `mohdm7`,
+`pm7_front`, a particle in `m53_street`, one pixel of `m33_grass`, which
+two runs of the build before also differ in), and `dbg_normals`
+(`mohdm1_debug`, `r_shownormals`): it draws the normals of batches that
+don't compute them, what earlier batches left in `tess.normal`, and a
+culled model no longer leaves its own, so the cull is off with
+`r_shownormals` (as world culling's is); with that the view is the same
+to the bit. The final build against the build before on `m3l3`,
+`mohdm1_debug`, `obj_team2` and `mp_mohdm1`: the same frames to the bit
+(the four soldiers beside the camera of the `mp_*` front views are
+culled). No validation message in these runs (`r_vkValidation 1`).
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -3052,6 +3092,134 @@ match: the skin data of the models announced in the match, 214 and 106 KB,
 which their first draws added before), and the frames that used to add
 skin data and create pipelines at a first draw don't any more.
 
+Skeletal culling (2026-10-19, Plan 17; see Implementation notes, Skeletal
+culling). GL1 prepares every skeletal model of the scene, in view or not:
+its bones, morphs and surfaces, then in the back end its lighting (the sun
+trace of a moving entity, the sphere's lights) and its draws, which the GPU
+clips away. JayRewd's fork (b26d8a67) returns from `R_AddSkelSurfaces`
+before the bones when the sphere of the model's animation frame, with its
+radius plus 16 times the entity's scale, is outside the view, and reported
+-22 and -61 µs per frame in `o2match` and `o4match`. The frame radius comes
+from the animation files and isn't a bound of the mesh, so before taking it
+a temporary verification build (not kept) measured how far the vertexes
+really reach. It drew every model as before and, for every model the cull
+could reject (not the player's own body, the view weapon, mirror views or
+`lod_tool`), computed each vertex of each drawn surface as `RB_SkelMesh`
+does (bones, weights, morphs; every vertex, so every level of detail,
+whose vertexes are a subset) in world space with the entity's axes; it
+recorded per TIKI how far the vertexes reach from the sphere's center, and
+for a set of candidate margins checked each model the sphere would cull:
+all its vertexes must lie outside one plane of the clip volume (x = ±w or y
+= ±w, in double precision, by more than float32's rounding; the world
+culling's check), else no triangle of it can be in view. It ran over 20
+matches of real players played frame by frame (`fixedtime 16`, 1920x1080, up
+to 40000 frames each: 5 of `obj/obj_team2` with `o2match`, 5 of
+`obj/obj_team4` with `o4match`, 4 of `obj/obj_team1`, 4 of `dm/mohdm6`, one
+of `dm/mohdm4` and of `obj/obj_team3`; a 21st switched to a map the game
+data doesn't have) and over the 41 view lists (single-player AI, vehicles,
+the landing craft, the convoy, the sky portal, the soldier views):
+
+| content | models checked | culled by the final rule | with a vertex in view | closest culled model | radius alone: with a vertex in view | JayRewd's rule: with a vertex in view |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20 matches | 11.68 M | 6.12 M (52.4 %) | 0 | 1.16 px outside the edge | 151 | 0 |
+| 41 view lists | 1.22 M | 0.53 M (43.6 %) | 0 | 5.09 px | 0 | 23 |
+
+What the radius misses, the largest reaches found (from the sphere's
+center, against the frame's radius; TIKI units are world units divided by
+the TIKI's `load_scale` times the entity's scale):
+
+- players, while the bone controllers turn the torso and the head (aiming
+  up or down, throwing a grenade): up to 1.20 times the radius, 35 TIKI
+  units past it (`german_winter_1` in a `dm/mohdm6` match: 110.4 units
+  for a radius of 92.1; `allied_airborne` 109.2, `american_ranger` 108.0);
+  the bones alone reach 11 units past it, so the controllers, not the
+  skin, make most of it; the morphs (faces) move vertexes by 0.5 units at
+  most. Without the controllers 1.09 at most (the soldier views and the
+  single-player AI 1.07);
+- the stick grenade: its frame radius is 4.7 units, its vertexes reach
+  14.0 (2.96 times);
+- muzzle flashes are drawn with axes 2.4 times longer than unit vectors,
+  splash drops (`fx/water_splash_drop.tik`) with axes up to 69 times longer
+  and with a negative scale (mirrored): measured in world space their
+  vertexes reach 2.3 and 44 times the radius, and a negative scale makes
+  the radius negative, which turns the sphere test around (it culls what is
+  inside). JayRewd's rule culled such drops in view in `m3l1a` (23 cases,
+  the drops of the beach) and hasn't the margin for the players either:
+  the worst one above is 2.3 units past his sphere (it was out of view
+  then);
+- vehicles, weapons, items, debris: within their radius.
+
+The final rule: the radius (absolute) times 1.25 plus 32 TIKI units
+(absolute), times how much the entity's axes can lengthen a vector, and
+only the four side planes. With it the farthest vertex reaches 0.84 of the
+sphere (the `german_winter_1` above: 110.4 of 131.8 units), the grenade
+0.56; 1.25 + 32 culls 52.4 % of the matches' models against 54.6 % for the
+radius alone and 53.2 % for JayRewd's rule (51.1 % for 1.5 + 48, 49.3 %
+for 2 + 64): most culled models are far outside the view, so the margin
+costs few culls. Models whose shaders deform vertexes are kept (0.2 % of
+the culls: the bullet hole puffs).
+
+Results (idle machine: other processes 1.0 CPU at most, no Plex
+transcoding; the build before (`base`) and this one interleaved, medians
+of 5 runs; the renderer's main-thread time per frame, its front end
+(`scene`) and the 2D calls with the 3D back end, the GPU time of the main
+command buffer and the draws per frame; the soldier views 1000 frames, the
+demos 15000; ms):
+
+| view | size | renderer base | new | scene base / new | 2D and back end base / new | GPU base / new | draws base / new |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `pm1_front` | 640x480 | 0.565 | 0.540 (-4 %) | 0.145 / 0.136 | 0.345 / 0.332 | 0.516 / 0.516 | 553 / 531 |
+| `pm1_side` | 640x480 | 0.359 | 0.236 (-34 %) | 0.107 / 0.052 | 0.179 / 0.115 | 0.393 / 0.299 | 315 / 174 |
+| `po1_front` | 640x480 | 0.381 | 0.351 (-8 %) | 0.119 / 0.103 | 0.187 / 0.175 | 0.422 / 0.413 | 343 / 299 |
+| `po4_front` | 640x480 | 0.447 | 0.390 (-13 %) | 0.152 / 0.135 | 0.219 / 0.182 | 0.388 / 0.373 | 333 / 285 |
+| `pm7_flash` | 640x480 | 0.494 | 0.457 (-8 %) | 0.147 / 0.129 | 0.274 / 0.248 | 0.383 / 0.358 | 386 / 334 |
+| `o2match` | 640x480 | 0.341 | 0.319 (-6.5 %) | 0.061 / 0.057 | 0.206 / 0.190 | 0.273 / 0.264 | |
+| `o4match` | 640x480 | 0.720 | 0.659 (-8.5 %) | 0.207 / 0.193 | 0.436 / 0.391 | 0.363 / 0.341 | |
+| `pm1_front` | 1920x1080 | 1.085 | 1.071 | 0.168 / 0.163 | 0.836 / 0.825 | 1.225 / 1.222 | |
+| `po4_front` | 1920x1080 | 0.482 | 0.428 (-11 %) | 0.171 / 0.153 | 0.239 / 0.200 | 0.780 / 0.774 | |
+| `o2match` | 1920x1080 | 0.365 | 0.345 (-5.5 %) | 0.067 / 0.062 | 0.225 / 0.210 | 0.537 / 0.526 | |
+| `o4match` | 1920x1080 | 0.833 | 0.779 (-6.5 %) | 0.265 / 0.247 | 0.493 / 0.452 | 0.721 / 0.703 | |
+
+The frame times of the demos (medians of the 5 runs' percentiles, and
+"content", each frame's median over the runs, see Frame spikes), ms:
+
+| demo | size | mean base / new | p99 base / new | p99.9 base / new | content p99 base / new | content p99.9 base / new | max base / new |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 640x480 | 1.003 / 1.003 | 1.033 / 1.030 | 1.291 / 1.253 | 1.031 / 1.030 | 1.271 / 1.227 | 21.3 / 20.9 |
+| `o4match` | 640x480 | 1.032 / 1.017 | 1.323 / 1.261 | 1.669 / 1.615 | 1.295 / 1.238 | 1.599 / 1.558 | 27.7 / 28.8 |
+| `o2match` | 1920x1080 | 1.004 / 1.003 | 1.112 / 1.059 | 1.532 / 1.457 | 1.073 / 1.044 | 1.446 / 1.314 | 21.5 / 21.2 |
+| `o4match` | 1920x1080 | 1.111 / 1.081 | 1.631 / 1.555 | 2.134 / 2.019 | 1.553 / 1.500 | 1.892 / 1.864 | 28.8 / 30.2 |
+
+(1.000 is the 1000 frames per second limit, which most frames of
+`o2match` reach; the maxima are registration in the middle of the match,
+see Remaining: 27.6 to 30.8 ms from run to run in both builds.)
+
+- What is saved per culled model: its bones (`R_GetFrame`, the engine's
+  skeletor), morphs and surfaces in the front end, and in the back end its
+  lighting sphere (with the sun trace of a model that moves) and one draw
+  per surface (`vkinfo`: 553 to 531 draws in `pm1_front`, 315 to 174 in
+  `pm1_side`, which looks away from the 16 soldiers of the front view). The
+  GPU time goes down a little too (the culled triangles were set up and
+  clipped). In the matches 6.3 and 10.1 models a view are culled (counted
+  with a temporary timing build), 52 % of the skeletal models in all the
+  matches above.
+- The pose isn't skipped: the frame radius comes from it (`SetPose` takes
+  the largest radius of the animation frames it blends), so culling before
+  it would need a bound of every animation the model can play, or the
+  engine giving the radius without posing. It costs the culled models 1.0
+  and 1.9 µs a view in `o2match` and `o4match` (the temporary timing build:
+  pose and radius of 6.1 and 8.5 models a view that cgame hadn't posed
+  already for their tags), against 1.6 µs a model for the bones, morphs
+  and surfaces that are left out in the front end alone.
+- Input read to present (`libinlat.so`, `perf.py --caps 0,250 --seconds 10
+  --preload libinlat.so`, 1920x1080 in a window, 5 runs; ms, base / new):
+  `o2match` uncapped median 0.481 / 0.465, p99 1.067 / 1.031, p99.9 1.429
+  / 1.369, at 250 0.534 / 0.523, 0.942 / 0.941, 1.324 / 1.323; `po4_front`
+  uncapped 0.550 / 0.515, 0.810 / 0.741, 1.105 / 0.935, at 250 0.647 /
+  0.589, 0.943 / 0.894, 1.114 / 1.110. Lower, never higher: the cull only
+  removes work between the input read and the present; nothing else
+  changes (no frame more in flight, the acquire where it was).
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -3750,6 +3918,43 @@ selects the sample count (see Implementation notes).
   bone to no channel or reads more morph weights than the entity has, and
   what doesn't fit in the skin or frame data. `r_gpuSkinning 0` skins
   everything on the CPU.
+- **Skeletal culling** (`R_SkelOutsideView` in `tr_model.cpp`, `r_skelCull`;
+  see Performance, Skeletal culling). GL1 prepared every skeletal model of
+  the scene whether it was in view or not (`R_AddSkelSurfaces` let
+  `CULL_OUT` through and `R_CullSkelModel` returns `CULL_IN`, "FIXME: not
+  working properly"): its bones, morphs and surfaces, and in the back end
+  its lighting (sun traces, the sphere's lights) and draws, which the GPU
+  then clipped away. Now, once the skeleton is posed (the pose gives the
+  radius of the animation frames), a model whose sphere lies wholly behind
+  one of the view's four side planes returns before its bones: the sphere
+  around the TIKI's origin with the frame's radius times 1.25 plus 32 units
+  of the TIKI (`load_scale` times the entity's scale), both taken absolute
+  (splash drops have a negative scale), times how much the entity's axes can
+  lengthen a vector (the square root of the largest row sum of their
+  absolute Gram matrix: 1 for a rotation; muzzle flashes and splash drops
+  are drawn with scaled axes). The frame radius alone doesn't hold every
+  vertex: the bone controllers turn the torso and the head past it (players
+  reach up to 1.2 times it), and a stick grenade's vertexes reach three
+  times its radius; the margin comes from a verification build that computed
+  every posed vertex of every model the cull would reject (see Performance).
+  Not culled: models drawn with a shader that deforms vertexes (any skin, or
+  the custom shader), `RF_THIRD_PERSON`, `RF_FIRST_PERSON` and
+  `RF_DEPTHHACK` models (the player's own body, the view weapon), mirror and
+  portal views, `lod_tool`, `r_nocull`, and `r_shownormals` (it draws the
+  normals of batches that don't compute them, what earlier batches left in
+  `tess.normal`, which a culled model would change). The farplane's plane
+  isn't used: a model beyond it is drawn in the fog color, which shows where
+  the sky is behind it (`obj/obj_team4` has both). What a culled model
+  leaves out isn't read by anything else: the bone and morph caches
+  (`bonestart`, `morphstart`), its level of detail, skin frame data and
+  lighting sphere are only used by its surfaces in the back end; cgame poses
+  the skeleton itself for tags and shadows (`RE_TIKI_Orientation`), the lens
+  flares of `RF_LENSFLARE` entities go through the entity list on their own.
+  The one side effect left out is the skeletor's blink: its morph weights
+  (`SKEL_GetMorphWeightFrame`) draw a `rand()` for a head whose blink is due
+  (every frame once the blink timer, a `short`, has wrapped after 33 s), so
+  the client's random sequence (seeded from the clock at every start anyway)
+  moves differently.
 - **Push constants** (`vkPushConstants_t`, the guaranteed 128 bytes).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -4255,6 +4460,23 @@ Done:
     input to present time. The frame log no longer charges what happens
     between frames (a load) to the first frame after it.
 
+17. Skeletal culling (2026-10-19, see Performance, Skeletal culling, and
+    Implementation notes, Skeletal culling), from JayRewd's b26d8a67: a
+    skeletal model whose sphere lies behind one of the view's side planes
+    returns from `R_AddSkelSurfaces` before its bones, morphs and surfaces
+    (and its lighting and draws in the back end). A temporary verification
+    build computed every posed vertex of every model the cull could reject
+    in 20 matches and the 41 view lists (12.9 million models): the
+    animation frame's radius is exceeded by up to 1.2 times for players
+    whose bone controllers turn the torso, 3 times by the stick grenade,
+    and by the scaled axes of muzzle flashes and splash drops, whose
+    negative scale also made the radius negative (JayRewd's rule culled
+    such drops in view); radius times 1.25 plus 32 TIKI units, times the
+    axes' norm, never culled a model with a vertex in view. The renderer's
+    CPU time 6.5 to 8.5 % lower in the matches, 4 to 13 % in the soldier
+    views, the slow frames and the input to present time lower; the same
+    frames to the bit.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -4430,14 +4652,10 @@ Remaining:
 - After step 3, skeletal models: the shaders that don't take the
   vertex-lit iterator (`alphaGen distFade`, `tcGen environment`, deforms,
   about 150 of the 870 `lightingSpherical` shaders of the game data) are
-  still skinned on the CPU. Skeletal models entirely outside the view are
-  still prepared as in GL1 (`R_AddSkelSurfaces` lets `CULL_OUT` through
-  and `R_CullSkelModel` returns `CULL_IN`, "FIXME: not working properly"):
-  their skeleton (the engine's skeletor, 7 to 8 % of the multiplayer
-  views with all models) and their sphere setup and draws (the GPU clips
-  them); the skeletor's frame radius comes from the animation files, so
-  culling with it needs a proof that it bounds every mesh (a verification
-  build, as for the dynamic lights). The sun visibility traces of the
+  still skinned on the CPU. Skeletal models outside the view are culled
+  since Plan 17; their pose is still set (the radius comes from it: 1 to 2
+  µs a frame in the matches), and models drawn with vertex deforms are
+  never culled (0.2 % of the culls). The sun visibility traces of the
   entities that move (5 to 8 % of those views) are the engine's collision
   code. The `m3l3` path, whose sun traces took 23 % of the frame, wasn't
   measured again after the trace cache fix. The LOD terrain, re-split

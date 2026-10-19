@@ -716,6 +716,82 @@ void RB_DrawSkeletor(trRefEntity_t *ent)
 
 surfaceType_t skelSurface = SF_TIKI_SKEL;
 
+// the cull radius of a skeletal model: its animation frame's radius times
+// SKEL_CULL_SCALE plus SKEL_CULL_SLACK units of the TIKI (see R_SkelOutsideView)
+#define SKEL_CULL_SCALE 1.25f
+#define SKEL_CULL_SLACK 32.0f
+
+/*
+==============
+R_SkelOutsideView
+
+Whether a skeletal model lies wholly outside the view, so that its bones,
+morphs and surfaces (and with them its lighting and draws in the back end)
+can be left out: a sphere around it lies behind one of the view's side
+planes. Not the farplane's: a model beyond it is drawn in the fog color,
+which can show against the sky. The radius of the animation frame doesn't
+hold every vertex (bone controllers turn the torso and the head, the skin
+reaches past the bones, a stick grenade's vertexes reach three times its
+radius), hence the margin, and the axes can scale the model (muzzle
+flashes, splash drops): a verification build measured how far the vertexes
+reach (README, Performance, Skeletal culling). Models drawn with a shader
+that deforms vertexes are kept
+==============
+*/
+static qboolean R_SkelOutsideView(const trRefEntity_t *ent, const dtiki_t *tiki, const vec3_t origin, float radius, float scale)
+{
+    const vec3_t *axis = ent->e.axis;
+    float         norm2 = 1.0f;
+    float         cullRadius;
+    int           i, j;
+
+    // r_shownormals draws the normals of batches that don't fill them: what
+    // earlier batches left, which a culled model no longer writes
+    if (!r_skelCull->integer || r_nocull->integer || r_shownormals->integer || lod_tool->integer
+        || tr.viewParms.isPortal || (ent->e.renderfx & (RF_THIRD_PERSON | RF_FIRST_PERSON | RF_DEPTHHACK))) {
+        return qfalse;
+    }
+
+    // how much the axes can lengthen a vector: the square root of the
+    // largest row sum of the absolute Gram matrix (1 for a rotation)
+    for (i = 0; i < 3; i++) {
+        float s = fabs(DotProduct(axis[i], axis[0])) + fabs(DotProduct(axis[i], axis[1]))
+                + fabs(DotProduct(axis[i], axis[2]));
+        if (s > norm2) {
+            norm2 = s;
+        }
+    }
+    // a negative scale (mirrored splash drops) gives a negative radius
+    cullRadius = sqrt(norm2) * (fabs(radius) * SKEL_CULL_SCALE + SKEL_CULL_SLACK * fabs(scale));
+
+    for (i = 0; i < 4; i++) {
+        const cplane_t *frust = &tr.viewParms.frustum[i];
+
+        if (DotProduct(origin, frust->normal) - frust->dist < -cullRadius) {
+            break;
+        }
+    }
+    if (i == 4) {
+        return qfalse;
+    }
+
+    // deforms move vertexes away from where the bones put them
+    if (ent->e.customShader && R_GetShaderByHandle(ent->e.customShader)->numDeforms) {
+        return qfalse;
+    }
+    for (i = 0; i < tiki->num_surfaces; i++) {
+        const dtikisurface_t *dsurf = &tiki->surfaces[i];
+
+        for (j = 0; j == 0 || j < dsurf->numskins; j++) {
+            if (tr.shaders[dsurf->hShader[j]]->numDeforms) {
+                return qfalse;
+            }
+        }
+    }
+
+    return qtrue;
+}
+
 /*
 ==============
 R_AddSkelSurfaces
@@ -804,6 +880,10 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
             tr.pc.c_sphere_cull_md3_out++;
             break;
         }
+    }
+
+    if (R_SkelOutsideView(ent, tiki, tiki_worldorigin, radius, tiki_scale)) {
+        return;
     }
 
     if (tiki->a->bIsCharacter) {

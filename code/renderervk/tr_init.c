@@ -212,6 +212,7 @@ cvar_t* lod_tris;
 cvar_t* lod_position;
 cvar_t* lod_save;
 cvar_t* lod_tool;
+cvar_t* r_skelCull;
 
 cvar_t* sys_cpuid;
 cvar_t* r_sse;
@@ -1538,6 +1539,8 @@ void R_Register( void )
 	r_staticGeometry = ri.Cvar_Get("r_staticGeometry", "1", 0);
 	// 0 skins and lights skeletal models on the CPU (tr_skin.c)
 	r_gpuSkinning = ri.Cvar_Get("r_gpuSkinning", "1", 0);
+	// 0 prepares and draws skeletal models outside the view too (tr_model.cpp)
+	r_skelCull = ri.Cvar_Get("r_skelCull", "1", 0);
 	r_drawbrushes = ri.Cvar_Get("r_drawbrushes", "1", CVAR_CHEAT);
 	r_drawbrushmodels = ri.Cvar_Get("r_drawbrushmodels", "1", CVAR_CHEAT);	
 	r_drawterrain = ri.Cvar_Get("r_drawterrain", "1", CVAR_CHEAT);
