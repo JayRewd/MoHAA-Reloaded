@@ -75,7 +75,10 @@ below are done.
   a map and with a mode change, a demo and shutdown; with the submit
   thread (2026-10-19), none with synchronization validation through
   startup, map loads, live resizes, minimize, fullscreen toggles, switching
-  it on and off, mode changes and shutdown (see Testing)
+  it on and off, mode changes and shutdown; with the redundant state
+  skipped (2026-10-20), none with synchronization validation through map
+  loads, a screenshot, `vid_restart`, a demo and 7 connects to a dedicated
+  server (see Testing)
 - performance (milestone 6, see [Performance](#performance)): on an idle
   machine Vulkan spends 13 to 28 % less main-thread time in the renderer
   than GL1 in the measured views at 1920x1080 (fence waits left out; after
@@ -259,6 +262,21 @@ below are done.
   Hz); at 250 frames a second the same frames and input to display within
   the noise, input to present 0.005 to 0.02 ms longer (the hand-off). The
   same frames to the bit (see Performance, Submit thread)
+- redundant state and empty flushes (2026-10-20, from JayRewd's b26d8a67
+  without its 2D batching): the setters of the viewport, the scissor, the
+  matrices and the fog range return when the value doesn't change, and a
+  flush of the render commands with none queued returns at once (each 2D
+  call of the HUD flushes first: 120 of the 122 flushes of a match's frame
+  were empty). The renderer's time per frame 4 to 7 % lower in two matches
+  and the `dm/mohdm3` overview at 640x480 (-21 to -28 µs), 2 % in the
+  `obj_team2` yard, the matches' 99th and 99.9th percentiles lower too, and
+  at 1920x1080 their input to present 0.01 to 0.05 ms lower uncapped and
+  at 250; the same frames to the bit. And a world loaded without `RE_BeginRegistration`
+  (the client does that when it connects to another server from a game)
+  started with the previous map's view cluster: when its first view was in
+  a cluster of the same number, nothing of the world was drawn until the
+  view left it (GL1 too); the view cluster is reset at load now (see
+  Performance, Redundant state and empty flushes)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -1232,6 +1250,25 @@ of FIFO, mailbox and the frame logs ran with differs from the final one in
 `VK_CreateSwapchain` alone (a test override of the image count, removed),
 the earlier batches' build in the frame count being a variable (for the
 test with 3) and two such overrides.
+
+Redundant state and empty flushes (2026-10-20, see Performance, Redundant
+state and empty flushes), against the build before (`run.sh`,
+`tgadiff.py`, 640x480, `r_vkValidation 1`) on 12 of the lists (`mohdm1`,
+`mohdm2_fog`, `dm/mohdm3`, `m2l1_skyportal`, `obj_team2`, `obj_team4`,
+`mp_mohdm1`, `mp_obj_team4`, `menus`, `mohdm1_dlight`, `mohdm1_debug`,
+`mohdm1_texenv`; 60 views), `mohdm1_dlight` with `r_fastdlights 1` and
+`mohdm1_texenv` with `r_ext_texture_env_add 1`: the same frames to the bit
+but 14 and 21 pixels of `s2_a` and `s2_b` (`m2l1_skyportal`: a figure in
+the distance, the bottom edge), where two runs of the build before differ
+in 15 and 22. Each part on its own (the setters and the flush, separate
+builds) on `mohdm1`, `obj_team2`, `mp_mohdm1`, `menus` and `mohdm1_debug`:
+the same frames as the build before. No validation message in these runs,
+nor with synchronization validation (`r_vkValidation 2`) in a script that
+loads `dm/mohdm1`, takes a screenshot, runs `vid_restart`, loads
+`obj/obj_team2`, plays the `o2match` demo and quits, nor in a session that
+connects to a local dedicated server 7 times (each new world loaded without
+a registration, see Performance). `renderer_vulkan.so` imports no GL or
+Vulkan symbol and exports only `GetRefAPI`.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -3713,6 +3750,105 @@ frames, wasn't measured here: input to display there, with and without the
 thread, would need the tester's runs (`libinlat.so` with `INLAT_DISPLAY=1`
 works on any Vulkan driver under X11 or Wayland).
 
+Redundant state and empty flushes (2026-10-20, Plan 20). From JayRewd's
+b26d8a67 (one of its steps: "leave viewport, scissor, projection,
+modelview and fog range alone when the value is unchanged, and return
+from an empty render-command flush"), as he wrote it but without the
+hooks of his 2D batching, which isn't taken. The back end sets the
+viewport, the scissor, the projection, the modelview and the fog range for
+every batch and every 2D call (`Set2DWindow`, `RB_SetGL2D`, the entity
+changes of `RB_RenderDrawSurfList`, each static model of a merged batch),
+mostly to the values they have, and each set marked the dynamic state or
+the vertex push constants to be set again by the next draw
+(`vkCmdSetViewport`, the projection times modelview product,
+`vkCmdPushConstants`); the setters now return when the value doesn't
+change. And every 2D export (`DrawStretchPic`, `DrawString`, ...) first
+flushes the render commands (`R_IssuePendingRenderCommands`), which with
+none queued still ran the back end's command loop and its two reads of the
+clock; it now returns. Counted per frame with a temporary build (skipped of
+all calls; the fixed views of `perf.py` have no HUD):
+
+| view | empty flushes | viewport | scissor | projection | modelview | fog range |
+| --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 120 of 122 | 9 of 47 | 52 of 92 | 12 of 49 | 87 of 184 | 46 of 46 |
+| `o4match` | 124 of 126 | 9 of 45 | 51 of 90 | 12 of 47 | 91 of 362 | 44 of 46 |
+| `obj_team2` yard | 7 of 9 | 3 of 5 | 7 of 9 | 1 of 7 | 4 of 110 | 4 of 4 |
+| `dm/mohdm3` overview | 7 of 9 | 3 of 5 | 7 of 9 | 1 of 7 | 19 of 380 | 4 of 6 |
+
+Why the frames can't change: what a setter marks is applied by the next
+draw, so a value equal to the one set before is applied already or will
+be; every command buffer starts with everything marked (also the new one
+after a mid-frame flush); and the one place that changes the state behind
+the setters, the color clear drawn as a quad (`VK_ClearColor`), marks it
+when it restores it. An empty flush did nothing but set `backEnd.pc.msec`,
+which only `RE_EndFrame` reads, after a flush that is never empty (it
+holds the swap). The frames are the same to the bit (see Testing).
+
+Results (idle machine: other processes 0.7 CPUs at most, no Plex
+transcoding; the build before (`base`, d00f1b1d), the setters alone
+(`skip`), the flush alone (`flush`) and both (`new`) interleaved, medians
+of 5 runs, 640x480 uncapped; the fixed views 5000 frames, the demos 15000;
+ms; the frame time percentiles are the medians of the runs'):
+
+| view | renderer base / skip / flush / new | 2D and back end base / new | frame time base / new (fps) | p99 base / new | p99.9 base / new |
+| --- | --- | --- | --- | --- | --- |
+| `obj_team2` yard | 0.358 / 0.350 / 0.358 / 0.352 | 0.189 / 0.182 | 0.436 / 0.432 (2292 / 2312) | 0.529 / 0.559 | 0.906 / 0.900 |
+| `dm/mohdm3` overview | 0.452 / 0.437 / 0.447 / 0.431 (-4.6 %) | 0.275 / 0.255 | 0.513 / 0.495 (1949 / 2021) | 0.618 / 0.578 | 1.005 / 0.999 |
+| `o2match` | 0.332 / 0.322 / 0.324 / 0.310 (-6.6 %) | 0.204 / 0.182 | 0.459 / 0.437 (2179 / 2286) | 0.911 / 0.877 | 1.285 / 1.171 |
+| `o4match` | 0.684 / 0.657 / 0.674 / 0.656 (-4.1 %) | 0.411 / 0.384 | 0.856 / 0.824 (1168 / 1213) | 1.326 / 1.282 | 1.694 / 1.586 |
+
+(The runs' ranges of the renderer time don't overlap between `base` and
+`new` but in the yard: 0.354 to 0.362 against 0.349 to 0.359; the yard's
+99th percentile spreads from run to run, 0.512 to 0.558 against 0.515 to
+0.606, and the frame by frame medians over the runs give 0.481 against
+0.480. JayRewd measured -12, -15 and 0 µs in the yard, `o2match` and
+`o4match` with his renderer under this engine.) The two parts add up
+roughly, the flush mostly in the demos, where the HUD makes the 2D calls;
+the front end doesn't change (it calls none of these). In the demos'
+99th and 99.9th percentiles the runs' ranges of `o4match` don't overlap
+(1.307 to 1.332 against 1.241 to 1.295, 1.628 to 1.761 against 1.564 to
+1.608); `o2match`'s 99.9th percentile spreads more (1.204 to 1.352
+against 1.098 to 1.284).
+
+At 1920x1080 in a window, uncapped and at the user's cap of 250 (`perf.py
+--caps 0,250 --seconds 10 --preload libinlat.so --framelog`, 5 runs; input
+read to present from `libinlat.so`, the median of the runs' medians with
+their range, and of their percentiles; ms):
+
+| demo | `com_maxfps` | renderer base / new | frames a second | frame time p99, p99.9: base / new | input to present, median (runs): base / new | p99, p99.9: base / new |
+| --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 0.453 / 0.418 | 1605 / 1719 | 1.130, 1.492 / 1.107, 1.460 | 0.526 (0.522 to 0.535) / 0.485 (0.480 to 0.506) | 1.084, 1.448 / 1.055, 1.407 |
+| | 250 | 0.451 / 0.430 | 250 | 4.029, 4.346 / 4.030, 4.306 | 0.543 (0.538 to 0.565) / 0.514 (0.509 to 0.538) | 0.951, 1.517 / 0.927, 1.372 |
+| `o4match` | 0 | 0.817 / 0.761 | 986 / 1043 | 1.641, 2.119 / 1.581, 2.057 | 0.946 (0.928 to 0.955) / 0.897 (0.885 to 0.908) | 1.591, 2.104 / 1.518, 2.041 |
+| | 250 | 0.748 / 0.727 | 250 | 4.037, 4.600 / 4.037, 4.627 | 0.878 (0.874 to 0.906) / 0.868 (0.861 to 0.872) | 1.461, 2.028 / 1.429, 2.059 |
+
+The saved work lies between the frame's input read and its present, so
+input to present goes down by about as much (0.01 to 0.05 ms on the
+median); nothing else changes in the frame (no wait, no frame more in
+flight, the acquire where it was).
+
+The view cluster: `RE_BeginRegistration` resets `tr.viewCluster` (GL1's
+"force markleafs to regenerate"), but the client doesn't always register
+before loading a world. `CL_StartHunkUsers` calls `CL_BeginRegistration`
+only when `cls.rendererRegistered` is false, which `CL_FlushMemory` sets
+on a local map load, on a disconnect and when a gamestate arrives while
+cgame runs; a `connect` to another server during a game goes through
+`CL_Disconnect`, which stops cgame first, so the new gamestate arrives
+with cgame stopped, nothing is flushed and cgame loads the new world
+(`R_LoadWorldMap`) with the old map's last cluster in `tr.viewCluster`.
+When the new map's first view is in a cluster of that number (and the
+area mask is the same), `R_MarkLeaves` keeps what it has: in GL1 no node
+of the new world is marked, here no leaf is listed, and no world surface
+or sky is drawn until the view's cluster changes. A dedicated server
+(`omohaaded`, `dm/mohdm1`, free for all) and a client that connected to
+it 25 times in one session, spectating at a random spawn point, with a
+temporary build that printed the cluster at each load: no
+`RE_BeginRegistration` after the first; with the old code one connect of
+24 found its old cluster again (269) and drew only the models, on black
+(49 % of its pixels black, 1 to 14 % in the other shots); with
+`RE_LoadWorldMap` resetting the cluster, as JayRewd's b26d8a67 does, every
+first view lists its leaves.
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -3893,7 +4029,8 @@ in the fog-colored background of `m2l3`).
   before the first command of a frame: the frame starts lazily on the first
   operation. In OpenMoHAA the back end mostly runs inside the 2D exports:
   `Set2DWindow`, `DrawStretchPic`, `DrawString`, ... call
-  `R_IssuePendingRenderCommands` and draw at once, and the UI calls
+  `R_IssuePendingRenderCommands` (which returns at once when no command is
+  queued, as for most of them) and draw at once, and the UI calls
   `Set2DWindow` before and after the 3D view, so the 3D view's draw
   surfaces are executed there, not in `RE_EndFrame`.
 - The color contents of the frame are undefined until it draws or clears
@@ -4341,7 +4478,11 @@ selects the sample count (see Implementation notes).
   of, by more than a unit (not for faces whose shader deforms vertexes,
   the sky, portals and the sky portal's faces: `viewCull` 0; not in the
   leaves dynamic lights reach, nor with `r_shownormals`:
-  `R_FaceViewPlanes`). Brush models keep GL1's culling.
+  `R_FaceViewPlanes`). Brush models keep GL1's culling. `RE_LoadWorldMap`
+  resets the view cluster (`tr.viewCluster`), as `RE_BeginRegistration`
+  does: the client loads a world without a registration when it connects
+  to another server from a game, and `R_MarkLeaves`, finding the old map's
+  last cluster again at the new map's first view, listed no leaf.
 - **Dynamic lights** (`r_fastdlights 0`, the default; `tr_light.c`,
   `vk_add_dlights`, `vk_set_lightmap_dlights`). GL1 relit the lightmap of
   every surface a light reached, texel by texel (`R_RealDlightFace`,
@@ -4521,7 +4662,12 @@ selects the sample count (see Implementation notes).
   dynamic lights of the draw (first light of its list in the frame's
   dlight buffer and the mask of those it adds, see Dynamic lights), pushed
   when they change. Both ranges are pushed at the start of every command
-  buffer.
+  buffer. The back end sets the matrices, the viewport, the scissor and
+  the fog range for every batch and 2D call, mostly to the values they
+  have: `vk_set_projection`, `vk_set_modelview`, `vk_set_viewport`,
+  `vk_set_scissor` and `vk_set_fog_range` return then, without marking
+  anything to set or push again (see Performance, Redundant state and
+  empty flushes).
 - **Pipelines** (`vk_pipeline.c`). The key packs blend factors, depth
   test/write/func, polygon mode, cull mode, topology, RGB color mask, alpha
   function (and its reference value), polygon offset on/off, color array or
@@ -4725,6 +4871,12 @@ Differences from GL1 (all in paths that were dead, broken or debug only):
   later than GL1 and don't force a `glFinish`-like wait (see Flares).
 - `GLS_CLAMP_EDGE` is ignored. Nothing sets it; GL1 handled it by changing
   the wrap mode of the textures bound at that moment, permanently.
+- A world loaded without `RE_BeginRegistration` (the client's `connect` to
+  another server from a game) starts with no view cluster. GL1 keeps the
+  previous map's, and when the new map's first view is in a cluster of the
+  same number its `R_MarkLeaves` marks nothing: no world surface and no sky
+  is drawn (only models, on whatever the image held) until the view's
+  cluster changes. Seen with a local dedicated server, 1 of 24 connects.
 - Depth and stencil reads return 0 (`vk_queue_depth_reads`: lost) in a
   frame whose depth buffer isn't readable yet: the first frame with reads,
   unless `vk_want_depth_reads` announced them (`r_measureOverdraw` does, so
@@ -5073,6 +5225,21 @@ Done:
     frames to the bit, no validation message (synchronization validation
     too) through resizes, minimize, fullscreen, `vid_restart`, mode
     changes and switching it on and off, on RADV and llvmpipe.
+
+20. Redundant state and empty flushes (2026-10-20, see Performance,
+    Redundant state and empty flushes), from JayRewd's b26d8a67 without its
+    2D batching: the setters of the viewport, the scissor, the projection,
+    the modelview and the fog range return when the value doesn't change
+    (what they mark is applied by the next draw, and every command buffer
+    starts with all of it marked), and `R_IssuePendingRenderCommands`
+    returns when no command is queued (each 2D call flushes first: 120 of
+    122 flushes a frame in a match were empty). The renderer's CPU time 4
+    to 7 % lower in two matches and the `dm/mohdm3` overview, the matches'
+    99th and 99.9th percentiles lower; the same frames to the bit. With it,
+    JayRewd's one-line fix of a world loaded without `RE_BeginRegistration`
+    (an in-game `connect`): `RE_LoadWorldMap` resets the view cluster, which
+    otherwise kept the old map's, so a first view in a cluster of that
+    number drew no world (seen with a dedicated server).
 
 Remaining:
 

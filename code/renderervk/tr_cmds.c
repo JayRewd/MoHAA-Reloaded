@@ -123,11 +123,12 @@ void R_IssueRenderCommands( qboolean runPerformanceCounters ) {
 ====================
 R_IssuePendingRenderCommands
 
-Issue any pending commands and wait for them to complete.
+Issue any pending commands and wait for them to complete. Nothing to do
+when none is queued: the 2D exports call it before each of their draws
 ====================
 */
 void R_IssuePendingRenderCommands( void ) {
-	if ( !tr.registered ) {
+	if ( !tr.registered || !backEndData->commands.used ) {
 		return;
 	}
 	R_IssueRenderCommands( qfalse );

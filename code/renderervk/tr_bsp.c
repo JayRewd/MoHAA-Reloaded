@@ -2436,6 +2436,11 @@ void RE_LoadWorldMap( const char *name ) {
 
     // only set tr.world now that we know the entire level has loaded properly
     tr.world = &s_worldData;
+    // the client loads a world without RE_BeginRegistration when it connects
+    // to a server from a game (CL_StartHunkUsers): tr.viewCluster then holds
+    // the old map's last cluster, and R_MarkLeaves, finding it again at the
+    // first view, would list no leaf of this world
+    tr.viewCluster = -1;
 
     ri.FS_CloseFile(h);
 

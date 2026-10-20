@@ -2243,6 +2243,11 @@ RENDER STATE
 ====================================================================
 */
 
+// The setters of the viewport, scissor, matrices and fog range return when
+// the value doesn't change (the back end sets them again for every batch
+// and 2D call): what they mark in vk_dirty is applied by the next draw, and
+// every command buffer starts with all of it dirty
+
 void vk_set_state( unsigned long stateBits ) {
 	vks.stateBits = stateBits;
 }
@@ -2297,6 +2302,9 @@ void vk_set_fog_color( const vec4_t color ) {
 }
 
 void vk_set_fog_range( float start, float end ) {
+	if ( vks.fogStart == start && vks.fogEnd == end ) {
+		return;
+	}
 	vks.fogStart = start;
 	vks.fogEnd = end;
 	vk_dirty |= VK_DIRTY_FOG;
@@ -2393,16 +2401,25 @@ void vk_set_lightmap_dlights( int tmu, int handle, unsigned int mask, qboolean b
 }
 
 void vk_set_projection( const float *matrix ) {
+	if ( !memcmp( vks.projection, matrix, sizeof( vks.projection ) ) ) {
+		return;
+	}
 	Com_Memcpy( vks.projection, matrix, sizeof( vks.projection ) );
 	vk_dirty |= VK_DIRTY_MVP;
 }
 
 void vk_set_modelview( const float *matrix ) {
+	if ( !memcmp( vks.modelview, matrix, sizeof( vks.modelview ) ) ) {
+		return;
+	}
 	Com_Memcpy( vks.modelview, matrix, sizeof( vks.modelview ) );
 	vk_dirty |= VK_DIRTY_MVP;
 }
 
 void vk_set_viewport( int x, int y, int width, int height ) {
+	if ( vks.viewport[0] == x && vks.viewport[1] == y && vks.viewport[2] == width && vks.viewport[3] == height ) {
+		return;
+	}
 	vks.viewport[0] = x;
 	vks.viewport[1] = y;
 	vks.viewport[2] = width;
@@ -2411,6 +2428,9 @@ void vk_set_viewport( int x, int y, int width, int height ) {
 }
 
 void vk_set_scissor( int x, int y, int width, int height ) {
+	if ( vks.scissor[0] == x && vks.scissor[1] == y && vks.scissor[2] == width && vks.scissor[3] == height ) {
+		return;
+	}
 	vks.scissor[0] = x;
 	vks.scissor[1] = y;
 	vks.scissor[2] = width;
