@@ -3535,8 +3535,8 @@ void CL_Init( void ) {
 	cl_anglespeedkey = Cvar_Get ("cl_anglespeedkey", "1.5", 0);
 
 	cl_maxpackets = Cvar_Get ("cl_maxpackets", "30", CVAR_ARCHIVE );
-	// usercmds a second on their own clock, the frames at any rate (Metal port); 0: one per frame
-	cl_cmdRate = Cvar_Get ("cl_cmdRate", "0", CVAR_ARCHIVE );
+	// usercmds a second on their own clock, the frames at any rate (Metal port; 100 by default, the user's choice); 0: one per frame
+	cl_cmdRate = Cvar_Get ("cl_cmdRate", "100", CVAR_ARCHIVE );
 	// its movement between usercmds, cgame's: 1 predicted up to now, 2 JayRewd's lerp, 0 the newest usercmd's (Metal port)
 	Cvar_Get ("cl_cmdDisplay", "1", CVAR_ARCHIVE );
 	cl_packetdup = Cvar_Get ("cl_packetdup", "1", CVAR_ARCHIVE );
