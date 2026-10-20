@@ -744,6 +744,7 @@ private:
     spawnthing_t              m_localemitter; // local emitter used by animation commands
     ctempmodel_t              m_active_tempmodels;
     ctempmodel_t             *m_free_tempmodels;
+    int                       m_iNumActiveTempModels; // Added in the Metal port: the active list's length
     ctempmodel_t              m_tempmodels[MAX_TEMPMODELS];
     cvssource_t               m_active_vsssources;
     cvssource_t              *m_free_vsssources;

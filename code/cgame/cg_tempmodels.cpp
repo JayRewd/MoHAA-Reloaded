@@ -64,6 +64,7 @@ ctempmodel_t *ClientGameCommandManager::AllocateTempModel(void)
     p->prev                        = &m_active_tempmodels;
     m_active_tempmodels.next->prev = p;
     m_active_tempmodels.next       = p;
+    m_iNumActiveTempModels++;
 
     return p;
 }
@@ -87,6 +88,7 @@ void ClientGameCommandManager::FreeTempModel(ctempmodel_t *p)
     // remove from the doubly linked active list
     p->prev->next = p->next;
     p->next->prev = p->prev;
+    m_iNumActiveTempModels--;
 
     // the free list is only singly linked
     p->next           = m_free_tempmodels;
@@ -131,18 +133,18 @@ void ClientGameCommandManager::FreeAllTempModels(void)
 //===============
 void ClientGameCommandManager::FreeSomeTempModels(void)
 {
-    ctempmodel_t *model;
-    int           count = 0;
-    unsigned int  i;
-    unsigned int  numToFree;
+    int          count;
+    unsigned int i;
+    unsigned int numToFree;
 
     if (!m_free_tempmodels) {
         return;
     }
 
-    for (model = m_active_tempmodels.prev; model != &m_active_tempmodels; model = model->prev) {
-        count++;
-    }
+    // Added in the Metal port
+    //  The active list's length is kept as models are linked and unlinked, instead of walking the list
+    //  every frame
+    count = m_iNumActiveTempModels;
 
     if (cg_reserve_tempmodels->integer <= (cg_max_tempmodels->integer - count)) {
         // nothing to free
@@ -217,6 +219,7 @@ void ClientGameCommandManager::InitializeTempModels(void)
 
     m_active_tempmodels.next = &m_active_tempmodels;
     m_active_tempmodels.prev = &m_active_tempmodels;
+    m_iNumActiveTempModels   = 0;
 
     m_free_tempmodels = &m_tempmodels[0];
 

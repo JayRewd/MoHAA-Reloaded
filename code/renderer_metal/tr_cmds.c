@@ -130,6 +130,11 @@ void R_IssuePendingRenderCommands( void ) {
 	if ( !tr.registered ) {
 		return;
 	}
+	// nothing queued: MOHAA's 2D draws flush before each draw, almost always with nothing queued
+	// (an empty list only set backEnd.pc.msec, which RE_EndFrame's batch sets again)
+	if ( !backEndData->commands.used ) {
+		return;
+	}
 	R_IssueRenderCommands( qfalse );
 }
 

@@ -6103,6 +6103,17 @@ void ClientGameCommandManager::ArchiveToMemory(MemArchiver& archiver)
     }
 
     if (archiver.IsReading()) {
+        ctempmodel_t *p;
+
+        // Added in the Metal port
+        //  Recount the restored active list (FreeSomeTempModels reads the count)
+        m_iNumActiveTempModels = 0;
+        for (p = m_active_tempmodels.prev; p != &m_active_tempmodels; p = p->prev) {
+            m_iNumActiveTempModels++;
+        }
+    }
+
+    if (archiver.IsReading()) {
         archiver.ArchiveInteger(&num);
         if (m_iAllocatedvsssources != num) {
             m_iAllocatedvsssources = num;

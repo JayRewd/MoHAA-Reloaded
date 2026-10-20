@@ -389,9 +389,16 @@ typedef struct {
 
 static mbVSUniforms_t	mb_vsu;
 
+// what mb_vsu's transform was computed from (MB_UpdateTransform)
+static float		mb_vsuProjection[16], mb_vsuModelview[16];
+static double		mb_vsuClipPlaneEye[4];
+static qboolean		mb_vsuClipPlaneOn, mb_vsuTransformValid;
+
 // what the current encoder has
 static uint32_t		mb_encPipelineKey;
 static void			*mb_encDepthStencil;
+static mbFSUniforms_t	mb_encFSU;
+static qboolean		mb_encFSUValid;
 static void			*mb_encTexture[MB_MAX_UNITS], *mb_encSampler[MB_MAX_UNITS];
 static __unsafe_unretained id<MTLBuffer>	mb_encRing;
 static uint32_t		mb_texMask;							// units sampled by the current draw
@@ -740,6 +747,7 @@ static void MB_InvalidateEncoderState( void )
 
 	mb_encPipelineKey = 0xffffffff;
 	mb_encDepthStencil = NULL;
+	mb_encFSUValid = qfalse;
 	mb_encRing = nil;
 	mb_encSkin = nil;
 	for ( i = 0; i < MB_MAX_UNITS; i++ ) {
@@ -1738,6 +1746,7 @@ static void MB_ResetState( void )
 
 	memset( &mb_vsu, 0, sizeof( mb_vsu ) );
 	mb_vsu.color[0] = mb_vsu.color[1] = mb_vsu.color[2] = mb_vsu.color[3] = 1.0f;
+	mb_vsuTransformValid = qfalse;
 
 	mb_pendingClear = 0;
 	mb_dirty = MB_DIRTY_ALL;
@@ -2750,27 +2759,31 @@ void mbLineStipple( int factor, unsigned short pattern ) {}
 
 void mbFogf( int pname, float param )
 {
+	float *value;
+
 	switch ( pname ) {
 	case MB_FOG_START:
-		mb_fogStart = param;
+		value = &mb_fogStart;
 		break;
 	case MB_FOG_END:
-		mb_fogEnd = param;
+		value = &mb_fogEnd;
 		break;
 	default:
 		return;
 	}
-	mb_dirty |= MB_DIRTY_FSUNIFORMS;
+	if ( memcmp( value, &param, sizeof( param ) ) ) {
+		*value = param;
+		mb_dirty |= MB_DIRTY_FSUNIFORMS;
+	}
 }
 
 void mbFogfv( int pname, const float *params )
 {
 	if ( pname == MB_FOG_COLOR ) {
-		mb_fogColor[0] = params[0];
-		mb_fogColor[1] = params[1];
-		mb_fogColor[2] = params[2];
-		mb_fogColor[3] = params[3];
-		mb_dirty |= MB_DIRTY_FSUNIFORMS;
+		if ( memcmp( mb_fogColor, params, sizeof( mb_fogColor ) ) ) {
+			memcpy( mb_fogColor, params, sizeof( mb_fogColor ) );
+			mb_dirty |= MB_DIRTY_FSUNIFORMS;
+		}
 	} else {
 		mbFogf( pname, params[0] );
 	}
@@ -2924,6 +2937,19 @@ static void MB_UpdateTransform( void )
 {
 	const float *mv = mb_modelview[mb_modelviewDepth];
 	int c;
+
+	// the 2D window and the entities reload the matrices they already have: nothing to recompute then
+	if ( mb_vsuTransformValid && mb_vsuClipPlaneOn == mb_clipPlaneOn
+		&& !memcmp( mb_vsuModelview, mv, sizeof( mb_vsuModelview ) )
+		&& !memcmp( mb_vsuProjection, mb_projection[mb_projectionDepth], sizeof( mb_vsuProjection ) )
+		&& ( !mb_clipPlaneOn || !memcmp( mb_vsuClipPlaneEye, mb_clipPlaneEye, sizeof( mb_vsuClipPlaneEye ) ) ) ) {
+		return;
+	}
+	memcpy( mb_vsuModelview, mv, sizeof( mb_vsuModelview ) );
+	memcpy( mb_vsuProjection, mb_projection[mb_projectionDepth], sizeof( mb_vsuProjection ) );
+	memcpy( mb_vsuClipPlaneEye, mb_clipPlaneEye, sizeof( mb_vsuClipPlaneEye ) );
+	mb_vsuClipPlaneOn = mb_clipPlaneOn;
+	mb_vsuTransformValid = qtrue;
 
 	MB_MultiplyMatrix( mb_projection[mb_projectionDepth], mv, mb_vsu.mvp );
 
@@ -3115,7 +3141,11 @@ static qboolean MB_PrepareDraw( void )
 		fsu.env1 = mb_units[1].env;
 		fsu.flags = mb_texFlags | ( mb_fog ? MB_FS_FOG : 0 );
 		fsu.pad = 0;
-		[mb_enc setFragmentBytes:&fsu length:sizeof( fsu ) atIndex:0];
+		if ( !mb_encFSUValid || memcmp( &mb_encFSU, &fsu, sizeof( fsu ) ) ) {
+			[mb_enc setFragmentBytes:&fsu length:sizeof( fsu ) atIndex:0];
+			mb_encFSU = fsu;
+			mb_encFSUValid = qtrue;
+		}
 	}
 
 	if ( mb_dirty & MB_DIRTY_TRANSFORM ) {
@@ -3250,6 +3280,7 @@ static void MB_ClearQuad( unsigned int mask )
 	// the draw state must be set again
 	mb_encPipelineKey = 0xffffffff;
 	mb_encDepthStencil = NULL;
+	mb_encFSUValid = qfalse;
 	mb_dirty |= MB_DIRTY_VIEWPORT | MB_DIRTY_RASTER | MB_DIRTY_DEPTHSTENCIL | MB_DIRTY_STENCILREF
 		| MB_DIRTY_PIPELINE | MB_DIRTY_FSUNIFORMS;
 }

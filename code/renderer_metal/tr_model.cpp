@@ -1801,7 +1801,18 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
     bFound = qfalse;
     for (mesh = 0; mesh < tiki->numMeshes; mesh++) {
         skelmodel = ri.TIKI_GetSkel(tiki->mesh[mesh]);
-        psurface  = skelmodel->pSurfaces;
+
+        // a model's surfaces are one block right before its bones (TIKI_CacheFileSkel): a range test
+        // instead of following the surfaces' list, which jumps over each surface's vertexes
+        if (skelmodel->pBones) {
+            if ((byte *)sf >= (byte *)skelmodel->pSurfaces && (byte *)sf < (byte *)skelmodel->pBones) {
+                bFound = qtrue;
+                break;
+            }
+            continue;
+        }
+
+        psurface = skelmodel->pSurfaces;
 
         // find the surface
         for (surf = 0; surf < skelmodel->numSurfaces; surf++) {

@@ -603,6 +603,9 @@ FS_CorrectCase
 void FS_CorrectCase( char *path ) {
 	int		getOut;
 	char	*ptr;
+	char	*cuts[MAX_OSPATH];
+	int		numCuts, low, high, mid;
+	qboolean	missing;
 
 	if( !access( path, 0 ) ) {
 		return;
@@ -616,6 +619,33 @@ void FS_CorrectCase( char *path ) {
 		ptr = path;
 	}
 
+	// Added in the Metal port
+	//  The walk below changes nothing while access() finds the prefix, and a prefix it can't find makes every
+	//  longer one fail too: find the first such prefix by bisection (~4 access() calls instead of one per
+	//  component from the root, for every file that misses a directory search path), then walk from there
+	//  (that prefix known to be missing)
+	numCuts = 0;
+	for( char *cut = strchr( ptr, '/' ); cut && numCuts < MAX_OSPATH; cut = strchr( cut + 1, '/' ) ) {
+		cuts[numCuts++] = cut;
+	}
+	// the prefix ending at cuts[i] for i < numCuts, the whole path (known to fail) for i == numCuts
+	low = 0;
+	high = numCuts;
+	while( low < high ) {
+		mid = ( low + high ) / 2;
+		*cuts[mid] = 0;
+		if( access( path, 0 ) ) {
+			high = mid;
+		} else {
+			low = mid + 1;
+		}
+		*cuts[mid] = '/';
+	}
+	if( low > 0 ) {
+		ptr = cuts[low - 1] + 1;
+	}
+	missing = qtrue;
+
 	do
 	{
 		ptr = strchr( ptr, '/' );
@@ -624,9 +654,10 @@ void FS_CorrectCase( char *path ) {
 			*ptr = 0;
 		}
 
-		if( access(path, 0) ) {
+		if( missing || access(path, 0) ) {
 			getOut = !check_filecase( path );
 		}
+		missing = qfalse;
 
 		if( !ptr ) {
 			break;
