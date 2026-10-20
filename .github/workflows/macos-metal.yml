@@ -72,21 +72,23 @@ jobs:
         # arm64 only, and nothing loaded from outside the system or the app (no Homebrew paths)
         for f in "$D/openmohaa.app/Contents/MacOS/openmohaa" "$D/openmohaa.app/Contents/Frameworks/libopenal.1.dylib" \
                  "$D/game.dylib" "$D/cgame.dylib" "$D/omohaaded"; do
-          lipo -archs "$f" | grep -qx arm64
+          [ "$(lipo -archs "$f")" = arm64 ]
           if otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/)'; then
             echo "$f loads a library from outside the system or the app" >&2; exit 1
           fi
         done
 
     - name: Package
-      run: port/release.sh "$PWD/install/lib/openmohaa" "$PWD/dist"
+      run: |
+        port/release.sh "$PWD/install/lib/openmohaa" "$PWD/dist"
+        { echo '### Release zip (workflow artifact, not a release)'; echo; echo '```'; cat dist/*.zip.sha256; echo '```'; \
+          echo; echo "Commit $GITHUB_SHA"; } >> "$GITHUB_STEP_SUMMARY"
 
+    # archive: false uploads the zip itself (one file), not wrapped in another zip
     - name: Upload the release zip
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
-        name: openmohaa-metal-macos-arm64
-        path: |
-          dist/*.zip
-          dist/*.zip.sha256
+        path: dist/openmohaa-metal-*-macos-arm64.zip
+        archive: false
         if-no-files-found: error
         retention-days: 30

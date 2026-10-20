@@ -18,7 +18,7 @@ Developed and measured on one machine: an M4 Mac mini (10-core GPU, 16 GB) on ma
 You need:
 
 - An Apple Silicon Mac with macOS 26 or later.
-- Xcode with the macOS 26 SDK (tested with Xcode 27.1), and its **Metal Toolchain** component. Since Xcode 26 the Metal shader compiler is a separate download: Xcode → Settings → Components, or
+- Xcode with the macOS 26 SDK (built with Xcode 27.1 on the developer's Mac and Xcode 26.6 in CI), and its **Metal Toolchain** component. Since Xcode 26 the Metal shader compiler is a separate download: Xcode → Settings → Components, or
   ```bash
   xcodebuild -downloadComponent MetalToolchain
   ```
@@ -33,7 +33,7 @@ Then configure, build and install. CMake finds the Metal compiler by itself, in 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON
 ```
 
-Only if the build stops with "Metal shader compiler not found" (for example because the Metal Toolchain component was installed after the first configure), pass the folder that holds `metal` and `metallib` yourself: add `-DMETAL_TOOLCHAIN_BIN="$(dirname "$(xcrun -f metallib)")"` to the configure command. (The developer's machine mounts the same toolchain from a disk image, so this route through Xcode's component wasn't tried there.)
+Only if the build stops with "Metal shader compiler not found" (for example because the Metal Toolchain component was installed after the first configure), pass the folder that holds `metal` and `metallib` yourself: add `-DMETAL_TOOLCHAIN_BIN="$(dirname "$(xcrun -f metallib)")"` to the configure command. (CI builds with exactly these commands on every push, without that flag: a clean macOS 26 runner, Xcode 26.6, the component installed with the command above; `.github/workflows/macos-metal.yml`.)
 
 ```bash
 cmake --build build
@@ -51,8 +51,18 @@ The scripts in `port/` are the port's development tools (benchmark, screenshot c
 
 You need the retail game data: the folder of an installed MOHAA with `main/` (`Pak0.pk3` to `Pak6`), plus `mainta/` for Spearhead and `maintt/` for Breakthrough. Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer with `innoextract`.
 
-1. Copy `openmohaa.app`, `game.dylib` and `cgame.dylib` (and `omohaaded` if you want a local server) from `install/lib/openmohaa/` into that game folder, next to `main/`. The game reads its data from the folder that holds the app.
-2. Start it from Finder, or from a terminal in the game folder. Allied Assault:
+**From the release zip** (`openmohaa-metal-<version>-macos-arm64.zip` on the [Releases](https://github.com/pstngh/openmohaa-metal/releases) page): it holds `openmohaa.app`, `game.dylib`, `cgame.dylib`, `omohaaded`, the licenses and an `INSTALL.txt` with these steps. The app is signed ad hoc and not notarized by Apple, so macOS quarantines the download and refuses to run it. Clear the quarantine once, before the first start: in Terminal, type `xattr -dr com.apple.quarantine ` (with the trailing space), drag the unzipped folder onto the window, and press Return. For example:
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
+```
+
+"Open Anyway" in System Settings → Privacy & Security is not enough for this game (checked on macOS 26.6): macOS then runs the app from a temporary read-only copy (App Translocation), where it can't find `main/` ("Couldn't load default.cfg"), and it still refuses to load the quarantined `game.dylib` and `cgame.dylib` ("library load disallowed by system policy"). A quarantined `omohaaded` is blocked even when started from Terminal.
+
+Then, from the zip's folder or from your own build:
+
+1. Copy `openmohaa.app`, `game.dylib` and `cgame.dylib` (and `omohaaded` if you want a local server) from the zip's folder or `install/lib/openmohaa/` into that game folder, next to `main/`. The game reads its data from the folder that holds the app.
+2. Start it from Finder, or from a terminal in the game folder. If the game folder is on an external drive (or in a folder macOS protects, such as Documents or Desktop), the first start asks whether `openmohaa` may access files there: allow it. Allied Assault:
    ```bash
    open openmohaa.app
    ```
@@ -64,7 +74,7 @@ You need the retail game data: the folder of an installed MOHAA with `main/` (`P
    open openmohaa.app --args +set com_target_game 2
    ```
 
-Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
+Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/configs/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
 
 ## Online
 
@@ -153,7 +163,7 @@ Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They sa
 ## Not done, parked and known issues
 
 - **Parked:** a still black window over the other displays in exclusive fullscreen, so that mode would match the Space's latency.
-- **Not done:** low-latency vsync (frame pacing for a tear-free mode without vsync's extra refresh), a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off and of audio latency, release builds (no CI, notarization or downloads: build from source).
+- **Not done:** low-latency vsync (frame pacing for a tear-free mode without vsync's extra refresh), a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off and of audio latency, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
 - **Removed on purpose:** gamepads and joysticks, the `openmohaa://` link handler, the update checker.
 - **Upstream behavior, kept:** doors, lifts and other moving brushwork are lit only by the scene's first dynamic light. Custom maps with terrain of 3 or more lightmap texels per step hang when a dynamic light reaches it (no retail map has such terrain).
 - **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the terrain's own per-vertex work). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).

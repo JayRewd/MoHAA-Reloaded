@@ -11,28 +11,39 @@ https://github.com/pstngh/openmohaa-metal
 Install
 -------
 
-1. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
+1. Unzip the download (double-click it). You get the folder this file is in.
+
+2. Clear the download's quarantine, once. This build is signed ad hoc and not notarized by Apple, so
+   macOS refuses to run the downloaded files until the quarantine is cleared. Open Terminal, type the
+   line below followed by a space, drag this folder onto the Terminal window (that types its path),
+   and press Return:
+
+     xattr -dr com.apple.quarantine
+
+   For example: xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-@VERSION@-macos-arm64
+
+   "Open Anyway" in System Settings > Privacy & Security is not enough for this game: macOS then runs
+   the app from a temporary read-only copy, where it can't find your game data ("Couldn't load
+   default.cfg"), and it still refuses to load game.dylib and cgame.dylib ("Not Opened").
+
+3. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
    Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:
    https://github.com/pstngh/openmohaa-metal/blob/metal/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
 
-2. Copy openmohaa.app, game.dylib and cgame.dylib from this folder into the game folder, next to main/.
-   The game reads its data from the folder that holds the app. omohaaded (a dedicated server) is optional.
+4. Copy openmohaa.app, game.dylib and cgame.dylib into the game folder, next to main/. The game reads
+   its data from the folder that holds the app. omohaaded (a dedicated server) is optional.
+   (If you copied them before step 2, run the step 2 command on the game folder instead.)
 
-3. This build is not notarized by Apple (it is signed ad hoc), so macOS blocks it the first time.
-   Before the first start, remove the download's quarantine in Terminal (cd to the game folder first):
-
-     xattr -dr com.apple.quarantine openmohaa.app game.dylib cgame.dylib omohaaded
-
-   (Provisional: being verified.)
-
-4. Start openmohaa.app. Allied Assault starts by default. For Spearhead or Breakthrough, open Terminal in
-   the game folder and run one of:
+5. Start openmohaa.app. If the game folder is on an external drive (or in a folder macOS protects, such
+   as Documents or Desktop), macOS asks once whether openmohaa may access files there: click Allow.
+   Allied Assault starts by default. For Spearhead or Breakthrough, open Terminal in the game folder and
+   run one of:
 
      open openmohaa.app --args +set com_target_game 1
      open openmohaa.app --args +set com_target_game 2
 
-Configs, logs and screenshots go to ~/Library/Application Support/openmohaa/ (main/omconfig.cfg for
-Allied Assault). The settings that matter for this port (cl_cmdRate, com_maxfps, the display modes,
+Configs, logs and screenshots go to ~/Library/Application Support/openmohaa/ (main/configs/omconfig.cfg
+for Allied Assault). The settings that matter for this port (cl_cmdRate, com_maxfps, the display modes,
 in_mouseRaw) are described in the README:
 https://github.com/pstngh/openmohaa-metal#settings-that-matter-here
 
