@@ -35,7 +35,8 @@ Install
    (If you copied them before step 2, run the step 2 command on the game folder instead.)
 
 5. Start openmohaa.app. If the game folder is on an external drive (or in a folder macOS protects, such
-   as Documents or Desktop), macOS asks once whether openmohaa may access files there: click Allow.
+   as Documents or Desktop), macOS asks whether openmohaa may access files there: click Allow. It asks
+   again after each update (the permission belongs to that exact build), as step 2 is needed again.
    Allied Assault starts by default. For Spearhead or Breakthrough, open Terminal in the game folder and
    run one of:
 

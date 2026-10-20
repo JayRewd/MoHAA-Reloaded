@@ -8,13 +8,14 @@
 
 Standing requirement, added by the user on 2026-10-16: "can we also optimize for lowest input lag/delay possible? like lowest overhead". Judge every design choice on input-to-photon latency and overhead as well as fps. Rules in the plan, §4b.
 
-**Status: all phases (0–8) are done** (session 44, 2026-10-20). `docs/METAL_PORT_PLAN.md` holds the closing summary (at the top), every decision (§3), the measurements (§2) and, in §6, what is optional, parked or needs the user. `README.md`'s first section is the user-facing description. New work starts only when the user brings it up: read the plan's closing summary and §6 first.
+**Status: all phases (0–8) are done** (session 44, 2026-10-20). `docs/METAL_PORT_PLAN.md` holds the closing summary (at the top), every decision (§3), the measurements (§2) and, in §6, what is optional, parked or needs the user. `README.md`'s first section is the user-facing description. Release 1 (ad-hoc signed, `io.github.pstngh.openmohaa-metal` 1.0.0) is prepared since session 46: the tag and the GitHub release wait for the user (§6 "Release 1, what is left"). New work starts only when the user brings it up: read the plan's closing summary and §6 first.
 
 ## Repo layout
 
 - `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it. Phase 7a deleted the non-macOS and dead files on `metal`: a merge of `main` shows delete/modify conflicts for them; keep them deleted (the plan's §6, "Merging upstream").
 - `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
-- `port/` holds the port's tools: `env.sh` (this machine's paths), `build.sh` (flavors), `run.sh`, `bench.sh` (timedemo of `port/bench/`), `shot.sh` + `tgadiff.py` + `tgamontage.py` (screenshots against GL1 and a saved Metal baseline, cfgs in `port/shots/`), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present probe with synthetic mouse, checked against Instruments), `prof.sh` + `sample_tree.py` + `sample_by_library.py` (`sample` profiles), `glcheck.sh` (no OpenGL in the tree or the binary), `skinab.sh` (GPU against CPU skinning, bit for bit), `kbreplay.sh` (posted key and mouse events through SDL's last commit and the native layer, streams compared; the `Sys_Dialog` check), `gcmtest.m` (GCMouse against AppKit, with the user's mouse), `roqtest.py` (a RoQ test video).
+- `port/` holds the port's tools: `env.sh` (this machine's paths), `build.sh` (flavors), `run.sh`, `bench.sh` (timedemo of `port/bench/`), `shot.sh` + `tgadiff.py` + `tgamontage.py` (screenshots against GL1 and a saved Metal baseline, cfgs in `port/shots/`), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present probe with synthetic mouse, checked against Instruments), `prof.sh` + `sample_tree.py` + `sample_by_library.py` (`sample` profiles), `glcheck.sh` (no OpenGL in the tree or the binary), `skinab.sh` (GPU against CPU skinning, bit for bit), `kbreplay.sh` (posted key and mouse events through SDL's last commit and the native layer, streams compared; the `Sys_Dialog` check), `gcmtest.m` (GCMouse against AppKit, with the user's mouse), `roqtest.py` (a RoQ test video), `release.sh` + `release/INSTALL.txt` (the release zip; CI runs it too).
+- `.github/workflows/macos-metal.yml`: CI on every push to `metal` (README's build on a clean macOS 26 runner, the install checked, the zip as a workflow artifact; never a release). Read it with `gh run list/view --repo pstngh/openmohaa-metal`.
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, the sessions' scratch tools in `sNN/`; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules
@@ -45,6 +46,7 @@ port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views, GL1 + Metal, per-view diffs
 port/latency.sh metal win-250 20   # cl_latencyStats with 20 s of synthetic mouse (takes the mouse: the user's OK first); MOUSE=0 LATSTATS=0 TRACE=1 = only what the display showed (needs nobody)
 port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
 port/skinab.sh                     # GPU-skinning A/B flavor, then port/bench.sh run metalab 1; grep SKINAB build.noindex/bench/metalab-1.log | tail -1 (every "differ" 0)
+port/release.sh                    # the release zip from metal-install (clean tree, a build of HEAD) -> build.noindex/release/
 port/kbreplay.sh build             # then port/kbreplay.sh run | mouse win|full|hidpi | dialog win|full|full720|space|start: SDL against native, streams must be identical
 ```
 
@@ -61,6 +63,7 @@ Compare renderers on the **`work` ms/frame** figure: the stock mode pads every f
 - A game window takes the real mouse (the bench, the fixed views, replays, skinab): check `ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF/1e9; exit}'` first and ask if someone is at the machine. An unanswered question blocks the session, so don't ask while the user is away.
 - Every window run needs the screen unlocked (`ioreg -n Root -d1 -a | grep -A1 CGSSessionScreenIsLocked`: no output = unlocked). It locks ~20 minutes after the last input, even between runs: keep batches of window runs under one `caffeinate -d`.
 - Below ~960 frames a second the GPU clocks down: compare GPU times only at the same render rate. Report the cores in timing tests (`pthread_cpu_number_np`: 0–5 efficiency, 6–9 performance).
+- A game started through Launch Services (`open`, Finder) is its own responsible process: macOS asks once per build (ad-hoc: per code hash) for access to the SSD ("removable volume"), and the run waits on that prompt until the user answers. Runs through `run.sh` (a direct exec) don't ask. A downloaded zip's files are quarantined: Gatekeeper's prompts hold the app, the dylibs' `dlopen` and even `omohaaded` from a shell (plan §5 "Release 1"). Archive Utility here moves an expanded archive to the Trash.
 - `cl_cmdRate` defaults to 100, but a config that already holds `seta cl_cmdRate "0"` keeps 0 (the user's own config holds 125, their choice).
 
 ## Session hand-off protocol

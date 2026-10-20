@@ -62,7 +62,7 @@ xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
 Then, from the zip's folder or from your own build:
 
 1. Copy `openmohaa.app`, `game.dylib` and `cgame.dylib` (and `omohaaded` if you want a local server) from the zip's folder or `install/lib/openmohaa/` into that game folder, next to `main/`. The game reads its data from the folder that holds the app.
-2. Start it from Finder, or from a terminal in the game folder. If the game folder is on an external drive (or in a folder macOS protects, such as Documents or Desktop), the first start asks whether `openmohaa` may access files there: allow it. Allied Assault:
+2. Start it from Finder, or from a terminal in the game folder. If the game folder is on an external drive (or in a folder macOS protects, such as Documents or Desktop), the first start asks whether `openmohaa` may access files there: allow it (again after each update: with an ad-hoc signature the permission belongs to that exact build). Allied Assault:
    ```bash
    open openmohaa.app
    ```
