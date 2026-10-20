@@ -168,7 +168,7 @@ Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They sa
 - **Upstream behavior, kept:** doors, lifts and other moving brushwork are lit only by the scene's first dynamic light. Custom maps with terrain of 3 or more lightmap texels per step hang when a dynamic light reaches it (no retail map has such terrain).
 - **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the terrain's own per-vertex work). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
 
-The full record (every decision, measurement and session) is [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md). The `main` branch mirrors upstream; this work is on `metal`.
+The full record (every decision, measurement and session) is [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md). This work is on `main` (named `metal` until 2026-10-20); upstream's own history is at [openmoh/openmohaa](https://github.com/openmoh/openmohaa).
 
 ---
 

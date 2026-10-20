@@ -60,7 +60,7 @@ On fixed test views across multiplayer, objective and single-player maps, it mat
 
 ## Source and licenses
 
-Built from the `metal` branch at the tagged commit, with OpenMoHAA 0.83.0 (upstream `a2f34019`, 2026-04-23, upstream's latest) as its base. The full record of the port (every decision and measurement) is [`docs/METAL_PORT_PLAN.md`](https://github.com/pstngh/openmohaa-metal/blob/metal/docs/METAL_PORT_PLAN.md). OpenMoHAA is GPL-2.0 (`COPYING.txt` in the zip); the bundled libraries' licenses are in the zip's `licenses/` and in the app (openal-soft). This software is based in part on the work of the Independent JPEG Group.
+Built from the `main` branch at the tagged commit, with OpenMoHAA 0.83.0 (upstream `a2f34019`, 2026-04-23, upstream's latest) as its base. The full record of the port (every decision and measurement) is [`docs/METAL_PORT_PLAN.md`](https://github.com/pstngh/openmohaa-metal/blob/main/docs/METAL_PORT_PLAN.md). OpenMoHAA is GPL-2.0 (`COPYING.txt` in the zip); the bundled libraries' licenses are in the zip's `licenses/` and in the app (openal-soft). This software is based in part on the work of the Independent JPEG Group.
 
 Thanks to the OpenMoHAA team for the engine this is built on, and to JayRewd, whose ideas were measured and re-implemented here.
 

@@ -28,7 +28,7 @@ Install
 
 3. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
    Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:
-   https://github.com/pstngh/openmohaa-metal/blob/metal/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
+   https://github.com/pstngh/openmohaa-metal/blob/main/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
 
 4. Copy openmohaa.app, game.dylib and cgame.dylib into the game folder, next to main/. The game reads
    its data from the folder that holds the app. omohaaded (a dedicated server) is optional.

@@ -12,10 +12,9 @@ Standing requirement, added by the user on 2026-10-16: "can we also optimize for
 
 ## Repo layout
 
-- `main` is an untouched mirror of upstream (`upstream` = openmoh/openmohaa). Never commit to it or push it. Phase 7a deleted the non-macOS and dead files on `metal`: a merge of `main` shows delete/modify conflicts for them; keep them deleted (the plan's §6, "Merging upstream").
-- `metal` is the work branch. `origin` = pstngh/openmohaa-metal (public).
+- `main` is the work branch (named `metal` until 2026-10-20, when the user renamed it; GitHub redirects old `metal` links). `origin` = pstngh/openmohaa-metal (public). There is no local mirror of upstream any more: upstream is the remote `upstream` (= openmoh/openmohaa), merged as `upstream/main`. Phase 7a deleted the non-macOS and dead files: a merge of `upstream/main` shows delete/modify conflicts for them; keep them deleted (the plan's §6, "Merging upstream").
 - `port/` holds the port's tools: `env.sh` (this machine's paths), `build.sh` (flavors), `run.sh`, `bench.sh` (timedemo of `port/bench/`), `shot.sh` + `tgadiff.py` + `tgamontage.py` (screenshots against GL1 and a saved Metal baseline, cfgs in `port/shots/`), `latency.sh` + `mousemove.c` + `display_trace.py` (the input-to-present probe with synthetic mouse, checked against Instruments), `prof.sh` + `sample_tree.py` + `sample_by_library.py` (`sample` profiles), `glcheck.sh` (no OpenGL in the tree or the binary), `skinab.sh` (GPU against CPU skinning, bit for bit), `kbreplay.sh` (posted key and mouse events through SDL's last commit and the native layer, streams compared; the `Sys_Dialog` check), `gcmtest.m` (GCMouse against AppKit, with the user's mouse), `roqtest.py` (a RoQ test video), `release.sh` + `release/INSTALL.txt` (the release zip; CI runs it too).
-- `.github/workflows/macos-metal.yml`: CI on every push to `metal` (README's build on a clean macOS 26 runner, the install checked, the zip as a workflow artifact; never a release). Read it with `gh run list/view --repo pstngh/openmohaa-metal`.
+- `.github/workflows/macos-metal.yml`: CI on every push to `main` (README's build on a clean macOS 26 runner, the install checked, the zip as a workflow artifact; never a release). Read it with `gh run list/view --repo pstngh/openmohaa-metal`.
 - Gitignored, on the SSD: `build.noindex/` (build trees, installs, logs, the sessions' scratch tools in `sNN/`; safe to delete) and `home.noindex/` (the game's `fs_homepath`: configs, logs, demos, screenshots).
 
 ## Hard rules
@@ -26,8 +25,8 @@ Standing requirement, added by the user on 2026-10-16: "can we also optimize for
 - **Disk.** All build output, caches and temp files stay on the SSD (`/Volumes/1TB BLUE`), inside this repo in `build.noindex/` or `home.noindex/`. Always `source port/env.sh` (it sets TMPDIR and the clang module cache). Nothing goes on the internal disk except what macOS itself writes. Game data is read from `$OMM_GAME_DIR` (default `~/Documents/Games/moh`) and never copied or committed. Only the retail `Pak*.pk3` files are symlinked into the run layout, never the user's own dylibs, mods or configs.
 - **Metal shader compiler.** `xcrun metal` fails on this machine on purpose. The Metal Toolchain is an exported disk image under `/Volumes/1TB BLUE/gtav/toolchain.noindex/`. `omm_mount_metal` (from `port/env.sh`) mounts it read-only at `/Volumes/MetalToolchainCryptex`, and the compiler is `$OMM_METAL_BIN/metal`. Never write into `/Volumes/1TB BLUE/gtav`. **Never run `xcodebuild -downloadComponent`** (it installs a copy on the internal disk). (The README tells other people to install the component; that's for their Macs, not this one.)
 - **Style.** Match each file's existing code style, indentation and line endings. Keep changes outside the renderer small, so upstream merges stay easy. Keep upstream's part of `README.md` unchanged (the port's section sits above it).
-- **Commits.** Commit each finished slice on `metal`, with clear messages; credit JayRewd in the message when one of his ideas is used (ideas only, re-implemented).
-- **Push.** The user said yes: push `metal` to origin at the end of every phase or finished piece of work, once the build and benchmark pass (`git push origin metal`). Never push `main`. Nothing else public (a release, a tag, a PR to upstream) without the user.
+- **Commits.** Commit each finished slice on `main`, with clear messages; credit JayRewd in the message when one of his ideas is used (ideas only, re-implemented).
+- **Push.** The user said yes: push `main` to origin at the end of every phase or finished piece of work, once the build and benchmark pass (`git push origin main`). Never push to `upstream`. Nothing else public (a release, a tag, a PR to upstream) without the user.
 
 ## Build, run, check
 
@@ -77,6 +76,6 @@ The user asked for regular session switches, so context never gets compacted and
    - the run/benchmark check for the piece is done and its numbers are in the plan;
    - the plan's status lines are updated;
    - the plan's §6 says exactly where things stand, what to do next, and lists open bugs and gotchas;
-   - everything is committed on `metal`, and pushed when the piece is finished.
+   - everything is committed on `main`, and pushed when the piece is finished.
 4. If more work is queued, start the next session with `start_session`: context "fresh", cwd this repo, `use_worktree` false, a short title like "OpenMoHAA Metal port — session N: <piece>". The brief tells it to read CLAUDE.md and the plan's §6, and to do that piece under this same protocol. If the app refuses (for example because the turn was started by another session), propose it instead (initiation "own_initiative") so the user can start it with one click. Either way, end with a 2-3 line report.
 5. Big decisions that aren't in the plan's decision list go to the user before they're locked in.
