@@ -39,8 +39,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    the shader's), in a 3D view on the CPU (colors per vertex), from the
 //    static geometry (colors per vertex or a constant), from it with the
 //    effects shader (deforms, tcGen and tcMod, distFade, static models'
-//    dynamic lights: tr_staticgeom.c), skinned (the vertex-lit iterator,
-//    tr_skin.c);
+//    dynamic lights: tr_staticgeom.c), skinned (the vertex-lit iterator and
+//    the generic one's stages that R_SkinPasses takes, tr_skin.c);
 //  - fog: off, or the stage's GLS_FOG_ENABLED (GL_State keeps the fog of
 //    the previous state when the bit doesn't change, and Set2DWindow turns
 //    it off behind its back, so a fogged stage can draw without it); the
@@ -474,7 +474,11 @@ static int R_PrebuildShader( const shader_t *shader ) {
 		}
 		n += R_PrebuildStage( shader, shader->unfoggedStages[0], where & ~PB_2D, qtrue );
 	} else {
-		// generic, also the sky's cloud stages
+		// generic, also the sky's cloud stages; skinned when every stage
+		// can be (models' surfaces, custom shaders)
+		if ( !world && r_gpuSkinning->integer && R_SkinPasses( shader ) ) {
+			where |= PB_SKINNED;
+		}
 		for ( i = 0; i < MAX_SHADER_STAGES && shader->unfoggedStages[i]; i++ ) {
 			n += R_PrebuildStage( shader, shader->unfoggedStages[i], shader->isSky ? PB_CPU : where, qfalse );
 			if ( r_lightmap->integer && ( shader->unfoggedStages[i]->bundle[0].isLightmap || shader->unfoggedStages[i]->bundle[1].isLightmap

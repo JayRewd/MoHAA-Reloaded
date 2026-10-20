@@ -289,6 +289,26 @@ below are done.
   the `dm/mohdm3` overview, 2 to 3 % in two matches, their slow frames and
   input to present a little lower, no GPU time measurable at 3840x2160; the
   same frames to the bit (see Performance, Effects shader)
+- cgame caches (2026-10-20, a cgame change for both renderers, from
+  JayRewd's b26d8a67): the ground trace of an entity's shadow is kept while
+  its origin doesn't change, a temporary mark (the shadows of `cg_shadows`)
+  made again within a server snapshot takes the fragments and verts it got
+  before unless one is on a brush entity (a door moving under it within the
+  snapshot shows its part from the next one), the active temporary models
+  are counted when they are added and freed instead of every frame, and an
+  unused conversion to Euler angles per sprite is gone. cgame's time per
+  frame 2 to 4 µs lower in two matches (2 to 3.5 %); the same frames, also
+  with shadows on, and the same results as before in 20 matches checked
+  with a cgame that did both (see Performance, cgame caches)
+- skinned passes (2026-10-20, from JayRewd's a5f5a54a): the generic
+  iterator's skeletal model shaders whose stages are one texture or an
+  environment map, lit by the sphere or with a constant color, are skinned
+  in the vertex shader too (the Afrika Korps goggles, the tank commander,
+  the Focke-Wulf's windows, bullet-hit debris, sniper lenses), the
+  environment map's coordinates with the CPU's operations: the renderer's
+  time 11 to 14 % lower where these models are drawn, nothing measurable in
+  the two matches, the same frames to the bit (see Performance, Skinned
+  passes)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -313,7 +333,7 @@ below are done.
 | `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces (added when a model is registered), the frame data of each entity, the skinned batches (see Implementation notes) |
 | `tr_pipelines.c` | the pipelines of a registration's shaders, worked out from their stages as the stage iterators draw them and created at its end (see Implementation notes, Pipelines) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
-| `shaders/skinned.vert` | the vertex shader of skinned draws (skinning and `rgbGen lightingSpherical`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
+| `shaders/skinned.vert` | the vertex shader of skinned draws (skinning, `rgbGen lightingSpherical` and `tcGen environment`/`environmentmodel`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/effects.vert` | the vertex shader of the static geometry's draws with effects (deforms, `tcGen` and `tcMod`, `distFade`, static models' dynamic lights; see Implementation notes, Effects shader), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
@@ -353,7 +373,11 @@ millisecond tick, see Performance, Frame limiter), and the command rate
 `GetViewUserCmd`; `code/cgame/cg_predict.c`; `code/cgame/cg_specialfx.cpp`;
 `Com_Frame` and `Com_ModifyMsec` in `code/qcommon/common.c`: caps above
 1000 and uncapped, frames of 0 ms, the `fps` counter in microseconds; see
-Performance, Command rate).
+Performance, Command rate), and cgame's caches (`code/cgame/cg_marks.c`:
+temporary marks kept for the rest of a snapshot; `cg_modelanim.c` and
+`cg_local.h`: shadow traces kept by origin; `cg_tempmodels.cpp` and
+`cg_commands.cpp`/`.h`: the count of active temporary models; see
+Performance, cgame caches).
 
 ## Build and run
 
@@ -720,7 +744,11 @@ Test content:
   dozen pixels of one soldier's face. Now two runs of the same build give
   the same frames, but for 2 or 3 pixels of `pm7_front`.
   `views/perf_mp.txt` times them (`perf.py` takes the shots of a view
-  list with `views <list> [shot ...]`).
+  list with `views <list> [shot ...]`). `mp_shadows` gives the same
+  soldiers shadows (`rendereffects "+shadow"`, half of them
+  `preciseshadow`) and takes them with `cg_shadows 1` (blobs) and 2 (feet),
+  from the eye and from above: cgame's temporary marks (see Performance,
+  cgame caches).
 - Menus: `menus.txt` takes the main menu (fan masked), the options pages
   (options, controls, video, audio, advanced, multiplayer), the weapon
   selection, then in a game of `dm/mohdm1`, over a paused view, the weapon
@@ -763,6 +791,13 @@ Test content:
   deterministic views; the game's own shaders of that kind are in the
   forests, the water and windows of the other lists (counted with a
   temporary build, see Effects shader in the results below).
+- The skinned passes (see Implementation notes, Skeletal models):
+  `skin_passes` puts the models whose shaders the generic iterator skins on
+  the GPU in `dm/mohdm1` (the Afrika Korps goggles, the tank commander's
+  coat, hat and gloves, the bullet-hit debris scaled up, the sniper rifles
+  with their lenses) and takes them again with two dynamic lights next to
+  them (the sphere's lights in the vertex shader; the lenses, with an alpha
+  of their own, back on the CPU).
 - Debug drawing: `mohdm1_debug`. `r_showtris` and `r_shownormals` only draw
   with `developer 1` (`r_developer`), which is why they seemed to show
   nothing. The game's debug lines (`sv_showbboxes`, camera paths shown with
@@ -1331,6 +1366,48 @@ validation (`r_vkValidation 2`) on `fx_mohdm1`, `mohdm1_dlight2` and
 `dm/mohdm3`. (Demos aren't a frame check: screenshots taken during a demo
 played with `fixedtime 16` differ between two runs of the same build by up
 to 62 % of their pixels.)
+
+cgame's caches and the skinned passes (2026-10-20, see Performance, cgame
+caches, and Performance, Skinned passes), against the build before
+(`run.sh`, `tgadiff.py`, 640x480, `r_vkValidation 1`): on the 42 view lists
+and the two new ones, `mp_shadows` and `skin_passes` (190 views), the final
+renderer (a temporary copy that also counted what it skinned, whose frames
+are the final renderer's) with the final cgame gives the same frames to the
+bit in 158, among them every view of the `dm`, `obj`, multiplayer and new
+lists but the snow of `mohdm5_fog` and the near-camera ±1 of `d7_alley`
+and `d7_arch`; the others are in the lists with random content or run-to-run
+noise named above (`m1l1`, `m1l2a`, `m1l3a`, where AI fire put the red
+damage flash into the build before's `m13_sky`, `m2l1_skyportal`, `m3l1a`,
+`m3l3`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m5l3`, `m6l1a`). An earlier pass with
+a first version of the renderer's rule (without the stages' own alpha, see
+Implementation notes, Skeletal models) on 186 views, the renderer alone and
+with the cgame, gave the same. `mp_shadows` has the blob and feet shadows of
+`cg_shadows` 1 and 2 on its soldiers, `skin_passes` every shader that the
+generic iterator's skinned batches drew in these lists and in four real
+matches (counted with that copy: the Afrika Korps goggles in every
+multiplayer list, the windows of the Focke-Wulf in `dm/mohdm4` and
+`obj/obj_team4`, a caged light bulb, the gloves of `m4l1_fog`, the
+bullet-hit debris and the splash drops of `m3l1a`, the sniper lenses, the
+tank commander's coat, hat and gloves in an `obj/obj_team1` match), with
+and without dynamic lights next to them: its 4 views are the same with the
+build before, the new renderer and the new renderer with `r_gpuSkinning 0`
+(the CPU's skinning). In the same build, GPU against CPU skinning on
+`mp_mohdm1`, `obj_team4`, `mohdm4_fog`, `mohdm1_dlight` and `m4l1_fog`: the
+same frames but a pixel of `fm4_a` off by 1 (its known noise); with
+`r_vkFallbacks 3` (`mp_mohdm1`, `obj_team4`) the same as the build before
+with it; on llvmpipe the same as the build before (both 2 pixels of
+`pm1_front` and `pm1_flash` off by 1 from llvmpipe's CPU skinning, as
+before); GL1 with the new cgame against the cgame before (`mp_shadows`,
+`mohdm1`): the same frames. A temporary cgame that also did everything the
+caches skip and compared the results (the shadow trace, the mark's
+fragments and verts, the count of temporary models) found no difference in
+20 real matches played with `cg_shadows` 1 and 2 (0.26 million traces and
+0.59 million marks taken from the caches, 1.2 million counts). No
+validation message in these runs, nor with synchronization validation
+(`r_vkValidation 2`) on `mp_mohdm1`, `obj_team4` and `mp_shadows` and in
+3000 frames of the `o2match` demo with `cg_shadows 2`.
+`renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
+`GetRefAPI`.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -3972,6 +4049,107 @@ buffer from timestamps, ms): the `m6l1a` forest 3.982 / 3.977, the
 frames 4.025 / 4.019, 1.694 / 1.694, 2.473 / 2.474 ms.
 
 
+cgame caches (2026-10-20, Plan 22; cgame, both renderers). From JayRewd's
+b26d8a67, as he wrote it but for the structure of the code:
+
+- Shadow traces: `CG_EntityShadow` traces from each shadowed entity down to
+  the ground every frame (`cg_shadows` 1 and 2), against the world only
+  (brush model 0), so the trace is the same as long as the entity's origin
+  is: each entity keeps its last trace and the origin it was made from
+  (`cg.shadowTraces`), and an entity that hasn't moved takes it.
+- Temporary marks (the blob and feet shadows, temporary decals): projected
+  onto the world's brushes and terrain every frame, which don't move; a mark
+  made again in the same server snapshot with the same shader, origin,
+  direction, orientation and size takes the fragments it got before (16
+  slots), and its verts when its colors are the same too. A mark with a
+  fragment on a brush entity is built every frame; one without keeps its
+  fragments for the rest of the snapshot (50 ms at the usual 20 snapshots a
+  second), so a brush entity that moves under it within the snapshot, a
+  door, only gets its part of the shadow from the next one. The leaf lookup
+  that only kept marks use is left out for temporary ones.
+- The count of active temporary models: `FreeSomeTempModels` walked the
+  active list every frame to count them; `AllocateTempModel` and
+  `FreeTempModel` keep the count (a loaded save counts once).
+- A conversion of every sprite temporary model's axes to Euler angles whose
+  result nothing read (`MatrixToEulerAngles` in `AddTempModels`).
+
+`cg_shadows` is 0 by default, and then only the last two run. What the
+caches skip was checked with a temporary cgame that did it anyway and
+compared (see Testing): the same results in 20 matches. Results (idle
+machine: other processes 0.4 to 0.6 CPUs, no Plex video transcoding; the
+build before and the new cgame, each part alone and all four, interleaved,
+the Vulkan renderer of the build before, `o2match` and `o4match` at 640x480
+uncapped, 15000 frames; cgame's time per frame from `renderer_timed.so`'s
+frame files, the part of the frame between `BeginFrame` and `EndFrame`
+outside the renderer: the UI and cgame building the scene; µs, the median of
+the runs' means with their range):
+
+| demo | `cg_shadows` | before | count | Euler angles | shadow traces | temporary marks | all four (10 runs) | before (10 runs) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 100.1 (97.4-101.8) | 99.2 | 97.2 | | | 95.7 (94.8-98.8) | 97.8 (96.3-101.8) |
+| | 1 | 98.9 (97.1-101.5) | | | 97.7 | 98.3 | 95.4 (93.2-98.8) | 98.9 (96.9-101.5) |
+| `o4match` | 0 | 138.5 (135.5-142.4) | 138.9 | 139.3 | | | 135.1 (132.2-138.5) | 138.4 (135.5-142.4) |
+| | 1 | 137.6 (136.4-138.8) | | | 139.1 | 136.9 | 133.9 (131.5-137.1) | 137.7 (135.8-140.1) |
+
+(Each part on its own in the first batch of 5 runs; all four and the build
+before in that batch and a second one, 10 runs each.) Each part alone is
+within the run to run spread of 3 to 6 µs; all four take 2 to 4 µs off
+cgame's time per frame (2 to 3.5 %), 4 to 9 µs off its 99th percentile, as
+JayRewd measured (-3 to -5.5 µs). The renderer's time is the same (0.304
+to 0.312 ms in `o2match`, 0.626 to 0.640 in `o4match`). In the 20 matches
+of the check about a fifth of the shadow traces and a tenth (`cg_shadows`
+1) to a sixth (2) of the temporary marks came from the caches (at 16 ms
+frames; more at higher frame rates, which make more frames per snapshot). At 1920x1080 in
+a window, uncapped and at 250, with the skinned passes below (5 runs, input
+read to present from `libinlat.so`, ms, base / new): `o2match` uncapped
+0.484 / 0.483 (p99 1.069 / 1.064), at 250 0.516 / 0.513 (0.980 / 0.957);
+`o4match` uncapped 0.875 / 0.881 (1.537 / 1.538), at 250 0.849 / 0.851
+(1.452 / 1.448): the same within the runs' ranges, which overlap. Nothing waits or is queued for longer; the work taken off lies
+between the input read and the present.
+
+Skinned passes (2026-10-20, Plan 23; see Implementation notes, Skeletal
+models). Since step 3 the batches of the vertex-lit iterator are skinned
+and lit in the vertex shader; the other skeletal model shaders were skinned
+on the CPU. JayRewd's a5f5a54a also took the generic iterator's shaders
+whose passes are one texture or an environment map with the sphere's
+lighting or a constant color (`skinned.vert` computing the environment
+map's coordinates with `inversesqrt`, which moved a pixel of `mp_mohdm1`):
+taken, with `Q_rsqrt`'s operations instead (the same coordinates as the
+CPU's, so the same frames), the skin data and the pipelines of these
+shaders at load like the vertex-lit ones' (Pipelines and skin data at
+load), `lightingGrid` stages lit by the light grid as `ComputeColors` does
+(his took the sphere's lights for them when it had some), and stages with
+an alpha of their own when the color is one constant (his took none:
+`lightingGrid`, or `lightingSpherical` without lights). In the view lists
+and four real matches (counted with a temporary copy) these are few shaders:
+the Afrika Korps goggles, the tank commander's coat, hat and gloves, the
+Focke-Wulf's windows, bullet-hit debris and splash drops, sniper lenses, a
+caged light; what stays on the CPU among models is mostly effects with
+vertex alphas, `distFade`, waves, `tcMod`s or deforms (smoke, muzzle
+flashes, health packs, vehicle treads and wheels, fire). Results (idle
+machine, other processes 0.4 to 0.6 CPUs but one run at 1.9; the build
+before and this one interleaved, 640x480 uncapped, 5 runs, the fixed views
+1000 frames, the demos 15000; the renderer's main-thread time per frame,
+ms):
+
+| view | renderer before | after | 2D and back end before / after | frame time before / after (fps) |
+| --- | --- | --- | --- | --- |
+| `sp_front` (`skin_passes`) | 0.431 (0.422-0.438) | 0.382 (0.380-0.385), -11 % | 0.295 / 0.244 | 0.520 / 0.473 (1922 / 2113) |
+| `sp_lit` (with 2 dynamic lights) | 0.482 (0.474-0.490) | 0.414 (0.408-0.424), -14 % | 0.333 / 0.266 | 0.573 / 0.506 (1745 / 1975) |
+| `pm1_front` | 0.541 (0.529-0.550) | 0.534 (0.530-0.538) | 0.318 / 0.317 | 0.680 / 0.673 |
+| `po4_front` | 0.386 (0.380-0.398) | 0.391 (0.386-0.401) | 0.175 / 0.176 | 0.535 / 0.542 |
+| `o2match` | 0.308 (0.303-0.310) | 0.307 (0.306-0.309) | 0.179 / 0.179 | 0.437 / 0.435 |
+| `o4match` | 0.634 (0.629-0.642) | 0.635 (0.631-0.641) | 0.364 / 0.365 | 0.803 / 0.806 |
+
+Where these models are drawn the CPU's skinning of their surfaces is gone
+(`skin_passes`: 11 to 14 %); in the two matches they are too few to measure
+(JayRewd measured -3 to -5 µs there). The GPU time at 3840x2160 is the
+same (`sp_front` 3.168 / 3.163 ms, `sp_lit` 3.165 / 3.163, `pm1_front`
+3.863 / 3.867). With cold caches (`perf.py --cold`, `o4match` and an
+`obj/obj_team1` match) the load creates 16 pipelines more (the skinned
+draws of these shaders, about 40 ms of a cold load), the match the same 2
+as before (the head icons).
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -4752,7 +4930,7 @@ selects the sample count (see Implementation notes).
   maps them), when the TIKI is registered (`R_SkinRegisterModel` from
   `R_RegisterModelInternal`; cgame registers the models of the
   configstrings, the players' and their weapons, as server models), if one
-  of its surfaces has a shader that the vertex-lit iterator draws, and
+  of its surfaces has a shader that can be skinned on the GPU (`R_SkinPasses`), and
   those registered before the map load at the end of the registration
   (`R_SkinRegisteredModels`): its first draw used to add it, 0.6 ms more
   than GL1 in that frame for a player model; the first draw still adds
@@ -4761,7 +4939,8 @@ selects the sample count (see Implementation notes).
   models the map's cgame registers. What changes every
   frame goes into the frame data, a 2 MB host-visible buffer per frame
   slot (`vk_alloc_skin_frame`), once per entity and frame: its bones (the
-  `skelBoneCache_t` that `R_AddSkelSurfaces` filled), its morph weights,
+  `skelBoneCache_t` that `R_AddSkelSurfaces` filled) after the view origin
+  in its space, its morph weights,
   and its sphere's lights (`reallightinfo_t`: point, directional, spot),
   or the constant color the other lighting functions give
   (`RB_CalcLightGridColor`, `RB_Light_Fullbright`, `RB_Light_Real` without
@@ -4787,8 +4966,30 @@ selects the sample count (see Implementation notes).
   indexes from the CPU as `RB_SkelMesh` computes them, copied into the
   frame's vertex buffer. The pipelines of skinned
   draws have no vertex input (`VK_PIPE_SKINNED`); the fragment stage is
-  the same. Still skinned on the CPU: the other shaders (`alphaGen
-  distFade`, `tcGen environment`, deforms...), debug drawing (`r_showtris`,
+  the same. A batch of the generic iterator is skinned the same way when
+  every stage of its shader is one texture with the mesh's texture
+  coordinates or `tcGen environment`/`environmentmodel` without `tcMod`,
+  colored by `rgbGen lightingSpherical`, `lightingGrid`, `identity`,
+  `identityLighting`, `const` or `entity` with `alphaGen identity`, `skip`,
+  `entity` or `const`, and the shader has no deform and no polygon offset
+  (`R_SkinPasses`; from JayRewd's a5f5a54a, see Performance, Skinned
+  passes; his rule left out an alpha of the stage's own with lighting,
+  which takes the bullet-hit debris here: `lightingGrid` is one color per
+  entity, and so is `lightingSpherical` where the sphere has no light; with
+  lights the vertex shader's lighting gives alpha 1, and such a batch stays
+  on the CPU): the generic iterator runs as before, and
+  for each stage `RB_SkinStage` takes the place of `ComputeTexCoords` and
+  `ComputeColors` (the sphere's lights, or the constant `ComputeColors`
+  gives one vertex) and its draw is one draw per surface with draw records
+  of its own (the GPU reads them once the frame is recorded), whose
+  `firstVertex` carries the texture coordinates in its two high bits
+  (`VK_SKIN_ENV_*`): the vertex shader computes the environment map's like
+  `RB_CalcEnvironmentTexCoords` and `RB_CalcEnvironmentTexCoords2`, with
+  `Q_rsqrt`'s operations, from the view origin in front of the bones.
+  Stages with `rgbGen lightingSpherical` stay on the CPU where it leaves
+  the colors of an earlier batch (`r_drawspherelights 0`, a sphere without
+  a lighting function). Still skinned on the CPU: the other shaders
+  (`alphaGen distFade`, `tcMod`s, deforms, two textures...), debug drawing (`r_showtris`,
   `r_shownormals`), `lod_tool`, stencil shadows, a TIKI whose mesh maps a
   bone to no channel or reads more morph weights than the entity has, and
   what doesn't fit in the skin or frame data. `r_gpuSkinning 0` skins
@@ -5440,6 +5641,28 @@ Done:
     frames a second (its waits count frames: uncapped, the client of a
     large map like `m6l1a` hadn't connected yet when the view was set up).
 
+22. cgame caches (2026-10-20, see Performance, cgame caches), from
+    JayRewd's b26d8a67 (cgame, both renderers): shadow traces kept by origin,
+    temporary marks (the shadows of `cg_shadows`) kept for the rest of a
+    server snapshot when no fragment is on a brush entity, the active
+    temporary models counted as they are added and freed, a dead conversion
+    to Euler angles per sprite removed. A temporary cgame that also did all
+    of it found the same results in 20 matches with `cg_shadows` 1 and 2;
+    cgame's time per frame 2 to 4 µs lower in two matches; the same frames
+    (new list `mp_shadows`).
+
+23. Skinned passes (2026-10-20, see Performance, Skinned passes, and
+    Implementation notes, Skeletal models), from JayRewd's a5f5a54a: the
+    generic iterator's skeletal model shaders whose stages are one texture
+    or an environment map, colored by the sphere's lighting, the light grid
+    or a constant (with an alpha of their own where the color is one
+    constant), each stage one draw per surface with draw records of its
+    own, the environment map's coordinates in `skinned.vert` with
+    `Q_rsqrt`'s operations (his `inversesqrt` moved a pixel), their skin
+    data and pipelines at load. The same frames to the bit (new list
+    `skin_passes`); the renderer's time 11 to 14 % lower in its views,
+    unchanged in the matches, where these models are few.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -5638,10 +5861,12 @@ Remaining:
   that mode and is still needed in `r_fastdlights 0` for the surfaces of
   brush models that light 0 doesn't reach (and their triangle surfaces),
   so it stays.
-- After step 3, skeletal models: the shaders that don't take the
-  vertex-lit iterator (`alphaGen distFade`, `tcGen environment`, deforms,
-  about 150 of the 870 `lightingSpherical` shaders of the game data) are
-  still skinned on the CPU. Skeletal models outside the view are culled
+- After step 3, skeletal models: the shaders that neither take the
+  vertex-lit iterator nor have only stages that the skinned passes take
+  (Plan 23: vertex colors and alphas, `alphaGen distFade`, waves, `tcMod`s,
+  deforms, two textures: in the matches smoke, muzzle flashes, health
+  packs, explosives, vehicle wheels and treads, fire) are still skinned on
+  the CPU. Skeletal models outside the view are culled
   since Plan 17; their pose is still set (the radius comes from it: 1 to 2
   µs a frame in the matches), and models drawn with vertex deforms are
   never culled (0.2 % of the culls). The sun visibility traces of the

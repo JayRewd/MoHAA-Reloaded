@@ -23,12 +23,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // skinned.vert -- vertex shader of the skeletal models skinned and lit on
 // the GPU (tr_skin.c, vk_draw with drawGeometry_t::isSkinned)
 //
-// It does what RB_SkelMesh and RB_Light_Real (rgbGen lightingSpherical)
-// did on the CPU, with the same floating point operations in the same
-// order (precise: no fused multiply-adds the C code doesn't have), so
-// positions, normals and colors come out the same to the bit; divisions
-// get one correction step, which makes them correctly rounded like the
-// CPU's in all but very rare cases. The outputs are generic.vert's.
+// It does what RB_SkelMesh, RB_Light_Real (rgbGen lightingSpherical) and
+// RB_CalcEnvironmentTexCoords(2) (tcGen environment, environmentmodel) did
+// on the CPU, with the same floating point operations in the same order
+// (precise: no fused multiply-adds the C code doesn't have), so positions,
+// normals, colors and texture coordinates come out the same to the bit;
+// divisions get one correction step, which makes them correctly rounded
+// like the CPU's in all but very rare cases. The outputs are generic.vert's.
 //
 // The vertex comes from the skin data (gl_VertexIndex: the draw's
 // vertexOffset is the surface's first vertex record), what changes per
@@ -71,6 +72,11 @@ const uint LIGHT_SPOT_FAST = 3u;
 
 const uint NONE = 0xFFFFFFFFu;
 
+// the texture coordinates (vk.h, VK_SKIN_ENV_*)
+const uint ENV_SHIFT = 30u;
+const uint ENV_MAPPED = 1u;
+const uint ENV_MAPPED2 = 2u;
+
 float skinFloat( uint i ) {
 	return uintBitsToFloat( skin[i] );
 }
@@ -112,6 +118,15 @@ vec4 unpackColor( uint c ) {
 float dot3( vec3 a, vec3 b ) {
 	precise float d = a.x * b.x + a.y * b.y + a.z * b.z;
 	return d;
+}
+
+// Q_rsqrt of q_math.c
+float qRsqrt( float number ) {
+	precise float x2 = number * 0.5;
+	precise float y = intBitsToFloat( 0x5f3759df - ( floatBitsToInt( number ) >> 1 ) );
+	precise float t = x2 * y * y;
+	y = y * ( 1.5 - t );
+	return y;
 }
 
 // the first word of a bone in the frame data (skelBoneCache_t: offset,
@@ -186,7 +201,8 @@ vec4 lightColor( uint list, vec3 xyz, vec3 normal ) {
 void main() {
 	uint draw = uint( gl_InstanceIndex ) * 8u;
 	uint renderCount = frame[draw + 6u];
-	uint firstVertex = frame[draw + 7u];
+	uint firstVertex = frame[draw + 7u] & ( ( 1u << ENV_SHIFT ) - 1u );
+	uint env = frame[draw + 7u] >> ENV_SHIFT;
 	uint v = uint( gl_VertexIndex ) - firstVertex;
 
 	// RB_SkelMesh's collapse map at a lower level of detail
@@ -254,7 +270,30 @@ void main() {
 #endif
 
 	v_color = lights != NONE ? lightColor( lights, xyz, normal ) : unpackColor( frame[draw + 5u] );
-	v_st0 = vec2( skinFloat( vert + 3u ), skinFloat( vert + 4u ) );
+	if ( env == ENV_MAPPED || env == ENV_MAPPED2 ) {
+		// RB_CalcEnvironmentTexCoords, RB_CalcEnvironmentTexCoords2: the view
+		// origin in the entity's space is in front of its bones
+		precise vec3 viewer = frameVec3( frame[draw] - 4u ) - xyz;
+		precise vec3 reflected;
+		precise float d;
+		precise vec2 st;
+
+		viewer = viewer * qRsqrt( dot3( viewer, viewer ) );
+		d = dot3( normal, viewer );
+		if ( env == ENV_MAPPED ) {
+			reflected = ( normal * 2.0 ) * d - viewer;
+		} else if ( d > 0.0 ) {
+			reflected = viewer;
+		} else {
+			d = d * -2.0;
+			reflected = normal * d + viewer;
+		}
+		st.x = 0.5 + reflected.y * 0.5;
+		st.y = 0.5 - reflected.z * 0.5;
+		v_st0 = st;
+	} else {
+		v_st0 = vec2( skinFloat( vert + 3u ), skinFloat( vert + 4u ) );
+	}
 	v_st1 = vec2( 0.0 );
 	v_position = xyz;
 }

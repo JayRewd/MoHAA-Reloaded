@@ -402,13 +402,21 @@ to at a lower level of detail, in the surface), bone remap tables (bone of
 a mesh to bone of the entity) and indexes.
 
 Frame data: draw records (vkSkinDraw_t), the bones of each entity
-(skelBoneCache_t, 16 words each), its morph weights (ints), and light lists
-(count, ambient RGBA8, then a vkSkinLight_t per light).
+(skelBoneCache_t, 16 words each) after the view origin in its space (4
+words, for environment mapped passes), its morph weights (ints), and light
+lists (count, ambient RGBA8, then a vkSkinLight_t per light).
 
 ====================================================================
 */
 
 #define VK_SKIN_NONE	0xFFFFFFFFu
+
+// the texture coordinates of a skinned draw (vkSkinDraw_t::firstVertex):
+// the mesh's, RB_CalcEnvironmentTexCoords', RB_CalcEnvironmentTexCoords2's
+#define VK_SKIN_ENV_SHIFT	30
+#define VK_SKIN_ENV_NONE	0u
+#define VK_SKIN_ENV_MAPPED	1u
+#define VK_SKIN_ENV_MAPPED2	2u
 
 typedef struct {
 	uint32_t		bones;		// first word of the entity's bones
@@ -418,7 +426,7 @@ typedef struct {
 	float			scale;
 	uint32_t		color;		// RGBA8, without a light list
 	uint32_t		renderCount;	// level of detail: the vertexes from there are collapsed (vertex record word 7)
-	uint32_t		firstVertex;	// the surface's first vertex record
+	uint32_t		firstVertex;	// the surface's first vertex record, VK_SKIN_ENV_* << VK_SKIN_ENV_SHIFT
 } vkSkinDraw_t;
 
 typedef struct {

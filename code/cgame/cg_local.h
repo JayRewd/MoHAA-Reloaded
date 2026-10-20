@@ -191,6 +191,14 @@ extern "C" {
         int   numshaders;
     } crain_t;
 
+    // the ground trace of an entity's shadow (CG_EntityShadow), from the
+    // origin it had
+    typedef struct {
+        qboolean valid;
+        vec3_t   origin;
+        trace_t  trace;
+    } shadowTrace_t;
+
     //======================================================================
 
     // all cg.stepTime, cg.duckTime, cg.landTime, etc are set to cg.time when the action
@@ -344,6 +352,9 @@ extern "C" {
         float        ObjectivesDesiredAlpha;
         float        ObjectivesCurrentAlpha;
         int          ObjectivesCurrentIndex;
+
+        // the last shadow trace of each entity
+        shadowTrace_t shadowTraces[MAX_GENTITIES];
 
         // misc
         crain_t      rain;

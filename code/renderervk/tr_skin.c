@@ -33,7 +33,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // once to the skin data (vk_add_skin_data), and what changes every frame,
 // the entity's bones and morph weights and its sphere's lights (or the
 // constant color of the other lighting functions), goes into the frame data
-// (vk_alloc_skin_frame), once per entity and frame. Batches stay the same:
+// (vk_alloc_skin_frame), once per entity and frame. So is a batch of the
+// generic iterator whose stages are all one texture with the mesh's texture
+// coordinates or an environment map, lit by the sphere or with a color that
+// doesn't depend on the vertex (helmets, weapons with a shine pass: from
+// JayRewd's a5f5a54a): each stage is one draw per surface, with its own
+// draw records (R_SkinPasses, RB_SkinStage). Batches stay the same:
 // a skinned batch counts the vertexes and indexes it would have put into
 // tess, so it is split at the same surfaces, and draws each surface (with
 // the indexes of its level of detail) in the same order. Everything else
@@ -364,13 +369,88 @@ static const skinEntry_t *R_SkinTiki( dtiki_t *tiki ) {
 
 /*
 ===============
+R_SkinGenericStage
+
+A stage of the generic iterator that the skin shader can draw: one texture
+with the mesh's texture coordinates or an environment map, no tcMod, and
+colors that ComputeColors makes the same for every vertex or that are the
+sphere's lighting (an alpha of the stage's own only where the sphere has no
+lights, RB_SkinBatchAllowed: the vertex shader's lighting gives alpha 1)
+===============
+*/
+static qboolean R_SkinGenericStage( const shaderStage_t *stage ) {
+	const textureBundle_t *bundle = &stage->bundle[0];
+
+	if ( stage->bundle[1].image[0] || stage->multitextureEnv || bundle->numTexMods || bundle->isLightmap
+		|| bundle->vertexLightmap ) {
+		return qfalse;
+	}
+	if ( bundle->tcGen != TCGEN_TEXTURE && bundle->tcGen != TCGEN_ENVIRONMENT_MAPPED
+		&& bundle->tcGen != TCGEN_ENVIRONMENT_MAPPED2 ) {
+		return qfalse;
+	}
+
+	switch ( stage->rgbGen ) {
+	case CGEN_LIGHTING_GRID:
+	case CGEN_LIGHTING_SPHERICAL:
+	case CGEN_IDENTITY:
+	case CGEN_IDENTITY_LIGHTING:
+	case CGEN_CONSTANT:
+	case CGEN_ENTITY:
+		break;
+	default:
+		return qfalse;
+	}
+
+	switch ( stage->alphaGen ) {
+	case AGEN_IDENTITY:
+	case AGEN_SKIP:
+	case AGEN_ENTITY:
+	case AGEN_CONSTANT:
+		return qtrue;
+	default:
+		return qfalse;
+	}
+}
+
+/*
+===============
+R_SkinPasses
+
+How many draws per surface a batch of the shader takes when it is skinned
+on the GPU: 1 for the vertex-lit iterator, one per stage for the generic
+one when the skin shader can draw each of its stages, 0 when the shader is
+skinned on the CPU
+===============
+*/
+int R_SkinPasses( const shader_t *shader ) {
+	int i;
+
+	if ( shader->optimalStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
+		return 1;
+	}
+	if ( shader->optimalStageIteratorFunc != RB_StageIteratorGeneric || shader->numDeforms || shader->polygonOffset
+		|| shader->isSky ) {
+		return 0;
+	}
+	for ( i = 0; i < MAX_SHADER_STAGES && shader->unfoggedStages[i]; i++ ) {
+		if ( !R_SkinGenericStage( shader->unfoggedStages[i] ) ) {
+			return 0;
+		}
+	}
+	return i;
+}
+
+/*
+===============
 R_SkinRegisterModel
 
 A model registered (R_RegisterModelInternal: cgame registers the models of
 the configstrings, the players' and their weapons, as server models): a TIKI
-one of whose surfaces has a shader that the vertex-lit iterator draws (the
-batches RB_SkinBatchAllowed can take) gets its skin data now instead of at
-its first draw, which made that frame 0.6 ms longer for a player model.
+one of whose surfaces has a shader that can be skinned on the GPU
+(R_SkinPasses: the batches RB_SkinBatchAllowed can take) gets its skin data
+now instead of at its first draw, which made that frame 0.6 ms longer for a
+player model.
 Only once the map is loaded: its load clears the skin data
 (R_ClearSkinData), and R_SkinRegisteredModels adds those registered before
 ===============
@@ -395,7 +475,7 @@ void R_SkinRegisterModel( const model_t *mod ) {
 		for ( j = 0; j < surface->numskins; j++ ) {
 			int h = surface->hShader[j];
 
-			if ( h > 0 && h < tr.numShaders && tr.shaders[h]->optimalStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
+			if ( h > 0 && h < tr.numShaders && R_SkinPasses( tr.shaders[h] ) ) {
 				R_SkinTiki( tiki );
 				return;
 			}
@@ -432,7 +512,8 @@ BATCHES
 RB_SkinEntity
 
 The current entity's bones and morph weights in the frame data, once per
-frame (its e.bonestart changes with each view it is added to)
+frame (its e.bonestart changes with each view it is added to), the view
+origin in its space before them
 ===============
 */
 static qboolean RB_SkinEntity( unsigned int serial ) {
@@ -446,17 +527,19 @@ static qboolean RB_SkinEntity( unsigned int serial ) {
 
 	numBones = ri.TIKI_GetNumChannels( ent->e.tiki );
 	numMorphs = ent->e.hasMorph ? ent->numMorphs : 0;
-	first = vk_alloc_skin_frame( numBones * 16 + numMorphs, &data );
+	first = vk_alloc_skin_frame( 4 + numBones * 16 + numMorphs, &data );
 	if ( first < 0 ) {
 		return qfalse;
 	}
-	Com_Memcpy( data, &TIKI_Skel_Bones[ent->e.bonestart], sizeof( skelBoneCache_t ) * numBones );
-	Com_Memcpy( data + numBones * 16, &skeletorMorphCache[ent->e.morphstart], sizeof( int ) * numMorphs );
+	Com_Memcpy( data, backEnd.ori.viewOrigin, sizeof( vec3_t ) );
+	data[3] = 0;
+	Com_Memcpy( data + 4, &TIKI_Skel_Bones[ent->e.bonestart], sizeof( skelBoneCache_t ) * numBones );
+	Com_Memcpy( data + 4 + numBones * 16, &skeletorMorphCache[ent->e.morphstart], sizeof( int ) * numMorphs );
 
 	ent->skinSerial = serial;
 	ent->skinBonestart = ent->e.bonestart;
-	ent->skinBones = first;
-	ent->skinMorphs = ent->e.hasMorph ? first + numBones * 16 : VK_SKIN_NONE;
+	ent->skinBones = first + 4;
+	ent->skinMorphs = ent->e.hasMorph ? first + 4 + numBones * 16 : VK_SKIN_NONE;
 	ent->skinLights = VK_SKIN_NONE;
 	return qtrue;
 }
@@ -469,14 +552,14 @@ The lights of the current sphere (RB_Light_Real) in the frame data, once
 per entity and frame: the entity's sphere is computed once
 ===============
 */
-static qboolean RB_SkinLights( void ) {
+static qboolean RB_SkinLights( uint32_t *lights ) {
 	const sphereor_t *sphere = backEnd.currentSphere;
 	trRefEntity_t *ent = backEnd.currentEntity;
 	uint32_t *data;
 	int first, i;
 
 	if ( ent->skinLights != VK_SKIN_NONE ) {
-		tess.skinLights = ent->skinLights;
+		*lights = ent->skinLights;
 		return qtrue;
 	}
 
@@ -499,7 +582,7 @@ static qboolean RB_SkinLights( void ) {
 		out->unused[0] = out->unused[1] = out->unused[2] = out->unused[3] = 0;
 	}
 
-	ent->skinLights = tess.skinLights = first;
+	ent->skinLights = *lights = first;
 	return qtrue;
 }
 
@@ -508,9 +591,12 @@ static qboolean RB_SkinLights( void ) {
 RB_SkinBatchAllowed
 
 Whether the batch that starts can be skinned on the GPU: its shader takes
-the vertex-lit iterator, the entity's lighting is one of those the vertex
-shader does, and the TIKI and the frame's data fit. Decides the colors:
-the sphere's lights, or the constant the other lighting functions give
+the vertex-lit iterator or the generic one with stages the skin shader can
+draw (R_SkinPasses), the lighting of the entity's sphere is one the vertex
+shader does, and the TIKI and the frame's data fit. Puts the sphere's
+lights in the frame data when it has some, and for the vertex-lit iterator
+decides the colors: those lights, or the constant the other lighting
+functions give (RB_SkinStage does it for each stage of the generic one)
 ===============
 */
 static qboolean RB_SkinBatchAllowed( void ) {
@@ -519,12 +605,12 @@ static qboolean RB_SkinBatchAllowed( void ) {
 	const skinEntry_t *tiki;
 	unsigned int serial;
 	uint32_t *data;
-	int first;
+	int first, passes, i;
 
 	if ( !r_gpuSkinning->integer || !vk_skin_available() || tess.numVertexes || tess.numIndexes || lod_tool->integer ) {
 		return qfalse;
 	}
-	if ( tess.shader == tr.shadowShader || tess.currentStageIteratorFunc != RB_StageIteratorVertexLitTextureUnfogged ) {
+	if ( tess.shader == tr.shadowShader ) {
 		return qfalse;
 	}
 	// debug drawing reads the vertexes
@@ -532,10 +618,39 @@ static qboolean RB_SkinBatchAllowed( void ) {
 		return qfalse;
 	}
 
-	// what RB_StageIteratorVertexLitTextureUnfogged calls
-	lighting = backEnd.currentSphere->TessFunction && r_drawspherelights->integer
-		? backEnd.currentSphere->TessFunction : RB_CalcLightGridColor;
-	if ( lighting != RB_Light_Real && lighting != RB_CalcLightGridColor && lighting != RB_Light_Fullbright ) {
+	if ( tess.currentStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
+		// what the iterator calls
+		passes = 1;
+		lighting = backEnd.currentSphere->TessFunction && r_drawspherelights->integer
+			? backEnd.currentSphere->TessFunction : RB_CalcLightGridColor;
+	} else if ( tess.currentStageIteratorFunc == RB_StageIteratorGeneric ) {
+		// what ComputeColors calls for rgbGen lightingSpherical
+		passes = R_SkinPasses( tess.shader );
+		if ( !passes ) {
+			return qfalse;
+		}
+		lighting = NULL;
+		for ( i = 0; i < passes; i++ ) {
+			const shaderStage_t *stage = tess.xstages[i];
+
+			if ( stage->rgbGen == CGEN_LIGHTING_SPHERICAL ) {
+				// without either it leaves the colors of an earlier batch
+				if ( !r_drawspherelights->integer || !backEnd.currentSphere->TessFunction ) {
+					return qfalse;
+				}
+				lighting = backEnd.currentSphere->TessFunction;
+				// the vertex shader's lights give alpha 1, so the stage's
+				// own alpha needs the color to be a constant
+				if ( ( stage->alphaGen == AGEN_ENTITY || stage->alphaGen == AGEN_CONSTANT ) && lighting == RB_Light_Real
+					&& backEnd.currentSphere->numRealLights ) {
+					return qfalse;
+				}
+			}
+		}
+	} else {
+		return qfalse;
+	}
+	if ( lighting && lighting != RB_Light_Real && lighting != RB_CalcLightGridColor && lighting != RB_Light_Fullbright ) {
 		return qfalse;
 	}
 	if ( lighting == RB_Light_Real && backEnd.currentSphere->bUsesCubeMap ) {
@@ -553,27 +668,34 @@ static qboolean RB_SkinBatchAllowed( void ) {
 		return qfalse;
 	}
 
+	tess.skinSphereLights = VK_SKIN_NONE;
 	if ( lighting == RB_Light_Real && backEnd.currentSphere->numRealLights ) {
-		if ( !RB_SkinLights() ) {
+		if ( !RB_SkinLights( &tess.skinSphereLights ) ) {
 			return qfalse;
 		}
-	} else {
-		// a color that doesn't depend on the vertex
-		tess.numVertexes = 1;
-		lighting( (unsigned char *)tess.svars.colors );
-		tess.numVertexes = 0;
-		Com_Memcpy( &tess.skinColor, tess.svars.colors[0], 4 );
-		tess.skinLights = VK_SKIN_NONE;
 	}
+	if ( tess.currentStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
+		tess.skinLights = tess.skinSphereLights;
+		if ( tess.skinLights == VK_SKIN_NONE ) {
+			// a color that doesn't depend on the vertex
+			tess.numVertexes = 1;
+			lighting( (unsigned char *)tess.svars.colors );
+			tess.numVertexes = 0;
+			Com_Memcpy( &tess.skinColor, tess.svars.colors[0], 4 );
+		}
+	}
+	tess.skinEnv = VK_SKIN_ENV_NONE;
 
 	// a draw record for each surface (three times: R_AddSkelSurfaces may
-	// add a surface with the same shader up to three times)
-	first = vk_alloc_skin_frame( 3 * ent->e.tiki->num_surfaces * 8, &data );
+	// add a surface with the same shader up to three times) and pass: the
+	// GPU reads them once the whole frame is recorded
+	first = vk_alloc_skin_frame( passes * 3 * ent->e.tiki->num_surfaces * 8, &data );
 	if ( first < 0 ) {
 		return qfalse;
 	}
 	tess.skinRecords = (vkSkinDraw_t *)data;
 	tess.skinFirstRecord = first / 8;
+	tess.skinPassesLeft = passes;
 	tess.numSkinSurfs = 0;
 	return qtrue;
 }
@@ -662,14 +784,20 @@ qboolean RB_SkinSurface( skelSurfaceGame_t *sf, int mesh, int render_count ) {
 ===============
 RB_SkinDraw
 
-The draw of the vertex-lit iterator in a skinned batch: one draw per
-surface, with its draw record
+The draw of the vertex-lit iterator, or of a stage of the generic one, in
+a skinned batch: one draw per surface, with its draw record
 ===============
 */
 void RB_SkinDraw( drawGeometry_t *geometry ) {
 	trRefEntity_t *ent = backEnd.currentEntity;
 	float scale = ent->e.tiki->load_scale * ent->e.scale;
 	int i;
+
+	// the batch has draw records for each of its passes
+	assert( tess.skinPassesLeft > 0 );
+	if ( tess.skinPassesLeft <= 0 ) {
+		return;
+	}
 
 	geometry->isSkinned = qtrue;
 	geometry->isStatic = qfalse;
@@ -689,7 +817,8 @@ void RB_SkinDraw( drawGeometry_t *geometry ) {
 		// indexes computed here are collapsed already (and the collapse map
 		// of such a surface may not end)
 		record->renderCount = s->firstIndex >= 0 ? s->numVertexes : VK_SKIN_NONE;
-		record->firstVertex = s->vertex;
+		// the skin data has far fewer than 1 << VK_SKIN_ENV_SHIFT vertex records
+		record->firstVertex = s->vertex | tess.skinEnv << VK_SKIN_ENV_SHIFT;
 
 		geometry->numVertexes = s->numVertexes;
 		geometry->skinVertex = s->vertex;
@@ -697,4 +826,9 @@ void RB_SkinDraw( drawGeometry_t *geometry ) {
 		geometry->skinFirstIndex = s->firstIndex >= 0 ? s->firstIndex : -1;
 		vk_draw( PRIM_TRIANGLES, geometry, s->numIndexes, s->firstIndex >= 0 ? NULL : tess.indexes + ( -1 - s->firstIndex ) );
 	}
+
+	// the next pass writes its own
+	tess.skinRecords += tess.numSkinSurfs;
+	tess.skinFirstRecord += tess.numSkinSurfs;
+	tess.skinPassesLeft--;
 }

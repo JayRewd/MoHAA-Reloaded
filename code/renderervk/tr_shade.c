@@ -1458,6 +1458,38 @@ void RB_StaticStage( shaderStage_t *pStage ) {
 }
 
 /*
+===============
+RB_SkinStage
+
+ComputeTexCoords and ComputeColors for a stage of the generic iterator in a
+skinned batch (R_SkinPasses): the vertex shader's texture coordinates, and
+the sphere's lights (RB_SkinBatchAllowed) or a constant evaluated by
+ComputeColors for one vertex
+===============
+*/
+void RB_SkinStage( shaderStage_t *pStage ) {
+	if ( pStage->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED ) {
+		tess.skinEnv = VK_SKIN_ENV_MAPPED;
+	} else if ( pStage->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED2 ) {
+		tess.skinEnv = VK_SKIN_ENV_MAPPED2;
+	} else {
+		tess.skinEnv = VK_SKIN_ENV_NONE;
+	}
+
+	if ( pStage->rgbGen == CGEN_LIGHTING_SPHERICAL && tess.skinSphereLights != VK_SKIN_NONE ) {
+		tess.skinLights = tess.skinSphereLights;
+	} else {
+		int numVertexes = tess.numVertexes;
+
+		tess.numVertexes = 1;
+		ComputeColors( pStage );
+		tess.numVertexes = numVertexes;
+		Com_Memcpy( &tess.skinColor, tess.svars.colors[0], 4 );
+		tess.skinLights = VK_SKIN_NONE;
+	}
+}
+
+/*
 ** RB_IterateStagesGeneric
 */
 static void RB_IterateStagesGeneric( shaderCommands_t *input )
@@ -1482,6 +1514,8 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 
 		if (tess.staticBatch == STATIC_BATCH_ON) {
 			RB_StaticStage(pStage);
+		} else if (tess.staticBatch == STATIC_BATCH_SKINNED) {
+			RB_SkinStage(pStage);
 		} else {
 			ComputeTexCoords(pStage);
 			ComputeColors(pStage);
@@ -1557,8 +1591,9 @@ void RB_StageIteratorGeneric( void )
 		input->shaderTime = backEnd.refdef.floatTime - backEnd.shaderStartTime;
 	}
 
-	// the effects shader deforms static batches (RB_StaticFxRecord)
-	if ( tess.staticBatch != STATIC_BATCH_ON ) {
+	// the effects shader deforms static batches (RB_StaticFxRecord); skinned
+	// ones have no deforms (R_SkinPasses)
+	if ( tess.staticBatch != STATIC_BATCH_ON && tess.staticBatch != STATIC_BATCH_SKINNED ) {
 		RB_DeformTessGeometry();
 	}
 

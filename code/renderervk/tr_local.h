@@ -2086,13 +2086,17 @@ typedef struct shaderCommands_s
 
 	// a batch of skeletal model surfaces skinned on the GPU (tr_skin.c,
 	// STATIC_BATCH_SKINNED; it doesn't fill the vertex arrays either): its
-	// surfaces, their draw records, the light list or the color
+	// surfaces, the draw records of the pass being drawn, its light list or
+	// color and texture coordinates (RB_SkinStage), the sphere's light list
 	int			numSkinSurfs;
 	skinBatchSurf_t	skinSurfs[MAX_SKIN_SURFS];
 	vkSkinDraw_t	*skinRecords;
 	int			skinFirstRecord;
+	int			skinPassesLeft;		// the passes the records are for
 	uint32_t	skinLights;
 	uint32_t	skinColor;
+	uint32_t	skinEnv;			// VK_SKIN_ENV_*
+	uint32_t	skinSphereLights;
 } shaderCommands_t;
 
 extern	shaderCommands_t	tess;
@@ -2138,6 +2142,7 @@ staticColor_t RB_StaticStageColor( const shaderStage_t *pStage );
 staticSt_t RB_StaticStageSt( const textureBundle_t *bundle );
 int RB_StaticStageColorFx( const shaderStage_t *pStage );
 void RB_StaticStage( shaderStage_t *pStage );
+void RB_SkinStage( shaderStage_t *pStage );
 void RB_CheckOverflow( int verts, int indexes );
 
 // tr_shade_calc.c: the records of the effects shader (shaders/effects.vert)
@@ -2165,6 +2170,7 @@ void R_ClearFxTables( void );
 extern cvar_t *r_gpuSkinning;
 
 void R_ClearSkinData( void );
+int R_SkinPasses( const shader_t *shader );
 void R_SkinRegisterModel( const model_t *mod );
 void R_SkinRegisteredModels( void );
 qboolean RB_SkinSurface( skelSurfaceGame_t *sf, int mesh, int render_count );
