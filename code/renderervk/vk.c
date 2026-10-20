@@ -29,7 +29,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // size of the render target (a window resize before the vid_restart) or
 // can't be drawn to, an offscreen image blitted to the swapchain image at
 // present. Like a GL back buffer, the color target's contents are undefined
-// until the frame draws or clears it.
+// until the frame draws or clears it. With r_vkSubmitThread 1 every frame is
+// handed to a thread that submits and presents it and acquires the image of
+// the next frame (vk_submit.c).
 //
 // Each frame records into a main command buffer (draws, clears, readbacks
 // and uploads that must be ordered with draws) and an upload command buffer
@@ -513,7 +515,11 @@ void VK_BeginFrameIfNeeded( void ) {
 
 	frame = &vk.frames[vk.frameIndex];
 
-	// the last frame that used this slot must be done
+	// the last frame that used this slot must be done, and with the submit
+	// thread submitted (normally waited for at the end of the frame before)
+	if ( vk.submitThread ) {
+		VK_JoinSubmitJob( vk.frameIndex );
+	}
 	start = VK_Microseconds();
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &frame->fence, VK_TRUE, UINT64_MAX ) );
 	vk.stats.waitUs += VK_Microseconds() - start;
@@ -619,6 +625,8 @@ void VK_ReleaseHeldImage( void ) {
 	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 	VkSubmitInfo submit;
 
+	// the one the submit thread acquired for the next frame (drained)
+	VK_ReclaimSubmitThreadImage();
 	if ( !vk.heldImage ) {
 		return;
 	}
@@ -699,6 +707,11 @@ static void VK_SelectTarget( void ) {
 	vk.targetImage = vk.colorImage;
 	vk.targetFramebuffer = vk.framebuffer;
 
+	// what the submit thread found out of date (vk_submit.c)
+	if ( vk.submitThread ) {
+		VK_CollectSubmitJobs();
+	}
+
 	// recreate the swapchain when the window changed; there is none while
 	// the window has no area (minimized)
 	VK_GetDrawableSize( &width, &height );
@@ -709,14 +722,23 @@ static void VK_SelectTarget( void ) {
 		return;
 	}
 
-	// usually acquired right after the previous present
-	result = VK_AcquireNextImage( &vk.stats.acquireUs );
-	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-		// drawn offscreen; VK_Present recreates the swapchain
-		vk.swapchainOutOfDate = qtrue;
-		return;
+	if ( vk.submitThread ) {
+		// the image the submit thread acquired after its last present, if it
+		// has one by now; otherwise drawn offscreen and copied by the thread
+		if ( !VK_TakeSubmitThreadImage( &vk.heldIndex, &vk.heldSemaphore ) ) {
+			return;
+		}
+		vk.heldImage = qtrue;
+	} else {
+		// usually acquired right after the previous present
+		result = VK_AcquireNextImage( &vk.stats.acquireUs );
+		if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
+			// drawn offscreen; VK_Present recreates the swapchain
+			vk.swapchainOutOfDate = qtrue;
+			return;
+		}
+		VK_CHECK( result );
 	}
-	VK_CHECK( result );
 	index = vk.heldIndex;
 
 	vk.target = VK_TARGET_SWAPCHAIN;
@@ -766,22 +788,17 @@ void VK_EndRenderPass( void ) {
 
 /*
 ===============
-VK_SubmitFrameCommands
+VK_EndFrameCommands
 
-Submits what the current frame has recorded so far: the upload command
-buffer, then the main one. The first submission after the swapchain image
-was acquired waits for it; at the end of a frame drawn into the swapchain
-image (endOfFrame) the image goes to the presentation layout and signal is
-signaled for the present.
+Ends what the current frame has recorded so far, for a submission: the
+upload command buffer, then the main one, in cmds. At the end of a frame
+drawn into the swapchain image (endOfFrame) the image goes to the
+presentation layout.
 ===============
 */
-static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean endOfFrame ) {
+static uint32_t VK_EndFrameCommands( VkCommandBuffer *cmds, qboolean endOfFrame ) {
 	vkFrame_t *frame = vk.frame;
-	VkCommandBuffer cmds[2];
-	VkPipelineStageFlags waitStage;
-	VkSubmitInfo submit;
 	uint32_t numCmds;
-	uint64_t start;
 
 	numCmds = 0;
 	if ( vk.uploadCmdRecording ) {
@@ -807,6 +824,27 @@ static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean 
 	}
 	VK_CHECK( qvkEndCommandBuffer( frame->mainCmd ) );
 	cmds[numCmds++] = frame->mainCmd;
+	return numCmds;
+}
+
+/*
+===============
+VK_SubmitFrameCommands
+
+Submits what the current frame has recorded so far (VK_EndFrameCommands).
+The first submission after the swapchain image was acquired waits for it;
+at the end of a frame drawn into the swapchain image signal is signaled for
+the present.
+===============
+*/
+static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean endOfFrame ) {
+	VkCommandBuffer cmds[2];
+	VkPipelineStageFlags waitStage;
+	VkSubmitInfo submit;
+	uint32_t numCmds;
+	uint64_t start;
+
+	numCmds = VK_EndFrameCommands( cmds, endOfFrame );
 
 	Com_Memset( &submit, 0, sizeof( submit ) );
 	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -851,6 +889,8 @@ void VK_FlushAndWait( void ) {
 		return;
 	}
 
+	// the frames queued before go first, and the queue is this thread's
+	VK_DrainSubmitThread();
 	VK_SubmitFrameCommands( vk.frame->fence, VK_NULL_HANDLE, qfalse );
 	start = VK_Microseconds();
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frame->fence, VK_TRUE, UINT64_MAX ) );
@@ -921,58 +961,28 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 
 /*
 ===============
-VK_Present
+VK_RecordPresentCopy
 
-Frames drawn offscreen: copies the frame to a swapchain image and presents
-it; returns qfalse when there is nothing to present to (minimized window),
-the frame fence is then not submitted
+Records into cmd the copy of the offscreen color image of the frame to a
+swapchain image, which goes to the presentation layout; on the submit
+thread too (vk_submit.c), so it returns the error of a call that failed
 ===============
 */
-static qboolean VK_Present( vkFrame_t *frame ) {
+VkResult VK_RecordPresentCopy( vkFrame_t *frame, VkCommandBuffer cmd, VkImage image ) {
 	VkCommandBufferBeginInfo beginInfo;
-	VkPipelineStageFlags waitStage;
-	VkSubmitInfo submit;
 	VkImageBlit blit;
-	VkCommandBuffer cmd;
-	VkImage image;
-	uint32_t imageIndex;
 	VkResult result;
-	uint64_t start;
-	int width, height;
-
-	// recreate the swapchain when the window changed; there is none while
-	// the window has no area (minimized)
-	VK_GetDrawableSize( &width, &height );
-	if ( !vk.swapchain || vk.swapchainOutOfDate || width != vk.swapchainDrawableWidth || height != vk.swapchainDrawableHeight ) {
-		VK_CreateSwapchain();
-	}
-	if ( !vk.swapchain ) {
-		return qfalse;
-	}
-
-	result = VK_AcquireNextImage( &vk.stats.acquireUs );
-	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-		VK_CreateSwapchain();
-		if ( !vk.swapchain ) {
-			return qfalse;
-		}
-		result = VK_AcquireNextImage( &vk.stats.acquireUs );
-	}
-	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-		vk.swapchainOutOfDate = qtrue;
-		return qfalse;
-	}
-	VK_CHECK( result );
-	imageIndex = vk.heldIndex;
-
-	image = vk.swapchainImages[imageIndex];
-	cmd = frame->presentCmd;
 
 	Com_Memset( &beginInfo, 0, sizeof( beginInfo ) );
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	VK_CHECK( qvkBeginCommandBuffer( cmd, &beginInfo ) );
-	VK_WriteTimestamp( cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_TS_PRESENT_START );
+	result = qvkBeginCommandBuffer( cmd, &beginInfo );
+	if ( result != VK_SUCCESS ) {
+		return result;
+	}
+	if ( frame->queryPool ) {
+		qvkCmdWriteTimestamp( cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame->queryPool, VK_TS_PRESENT_START );
+	}
 
 	VK_ImageBarrier( cmd, vk.colorImage, VK_IMAGE_ASPECT_COLOR_BIT,
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1007,8 +1017,58 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
 
-	VK_WriteTimestamp( cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_TS_PRESENT_END );
-	VK_CHECK( qvkEndCommandBuffer( cmd ) );
+	if ( frame->queryPool ) {
+		qvkCmdWriteTimestamp( cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame->queryPool, VK_TS_PRESENT_END );
+		frame->timestampsWritten |= ( 1u << VK_TS_PRESENT_START ) | ( 1u << VK_TS_PRESENT_END );
+	}
+	return qvkEndCommandBuffer( cmd );
+}
+
+/*
+===============
+VK_Present
+
+Frames drawn offscreen: copies the frame to a swapchain image and presents
+it; returns qfalse when there is nothing to present to (minimized window),
+the frame fence is then not submitted
+===============
+*/
+static qboolean VK_Present( vkFrame_t *frame ) {
+	VkPipelineStageFlags waitStage;
+	VkSubmitInfo submit;
+	VkCommandBuffer cmd;
+	uint32_t imageIndex;
+	VkResult result;
+	uint64_t start;
+	int width, height;
+
+	// recreate the swapchain when the window changed; there is none while
+	// the window has no area (minimized)
+	VK_GetDrawableSize( &width, &height );
+	if ( !vk.swapchain || vk.swapchainOutOfDate || width != vk.swapchainDrawableWidth || height != vk.swapchainDrawableHeight ) {
+		VK_CreateSwapchain();
+	}
+	if ( !vk.swapchain ) {
+		return qfalse;
+	}
+
+	result = VK_AcquireNextImage( &vk.stats.acquireUs );
+	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
+		VK_CreateSwapchain();
+		if ( !vk.swapchain ) {
+			return qfalse;
+		}
+		result = VK_AcquireNextImage( &vk.stats.acquireUs );
+	}
+	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
+		vk.swapchainOutOfDate = qtrue;
+		return qfalse;
+	}
+	VK_CHECK( result );
+	imageIndex = vk.heldIndex;
+
+	cmd = frame->presentCmd;
+	VK_CHECK( VK_RecordPresentCopy( frame, cmd, vk.swapchainImages[imageIndex] ) );
 
 	Com_Memset( &submit, 0, sizeof( submit ) );
 	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1893,7 +1953,9 @@ static void VK_ReportCapabilities( void ) {
 	glConfig.stencilBits = ( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ? 8 : 0;
 
 	ri.Printf( PRINT_ALL, "Vulkan device: %s (%s)\n", glConfig.renderer_string, glConfig.version_string );
-	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d\n", VK_SwapchainPresentModeName(), vk.width, vk.height );
+	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d, %u swapchain images, %d frames in flight%s\n",
+		VK_SwapchainPresentModeName(), vk.width, vk.height, vk.swapchainImageCount, VK_MAX_FRAMES,
+		vk.submitThread ? ", submit thread (r_vkSubmitThread)" : "" );
 	// what the fallbacks replace (see README, Known risks); r_vkFallbacks forces them
 	ri.Printf( PRINT_ALL, "Vulkan present fences %s, view swizzle %s, stride 0 bindings %s, Bresenham lines %s, line stipple %s%s\n",
 		vk.presentFences ? "yes" : "no", vk.viewSwizzle ? "yes" : "no", vk.strideZero ? "yes" : "no",
@@ -1914,28 +1976,36 @@ static void VK_Info_f( void ) {
 	VkDeviceSize blockSize, blockUsed;
 	int numBlocks, numPipelines, prebuilt, prebuiltUsed;
 
+	// the submit thread's counters and its present fences and retired
+	// swapchains, as of every frame queued
+	VK_DrainSubmitThread();
+
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
 	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu skinDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
 		" swapchains=%llu vertexGrowth=%llu prebuiltPipelines=%llu skinUploads=%llu skinBytes=%llu"
 		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu prebuiltUs=%llu allocationUs=%llu textureUs=%llu"
-		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu\n",
+		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu"
+		" threadWaitUs=%llu threadFrames=%llu threadStartUs=%llu threadSubmits=%llu threadSubmitUs=%llu threadAcquireUs=%llu"
+		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
 		VK_DELTA( staticDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
 		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( swapchains ), VK_DELTA( vertexGrowth ),
 		VK_DELTA( prebuiltPipelines ), VK_DELTA( skinUploads ), VK_DELTA( skinBytes ),
 		VK_DELTA( waitUs ), VK_DELTA( flushUs ), VK_DELTA( submitUs ),
 		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( prebuiltUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
-		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ) );
+		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ),
+		VK_DELTA( threadWaitUs ), VK_DELTA( threadFrames ), VK_DELTA( threadStartUs ), VK_DELTA( threadSubmits ),
+		VK_DELTA( threadSubmitUs ), VK_DELTA( threadAcquireUs ), VK_DELTA( threadPresents ), VK_DELTA( threadPresentUs ), VK_DELTA( threadCopies ) );
 #undef VK_DELTA
 	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
 	VK_PipelineCounts( &numPipelines, &prebuilt, &prebuiltUsed );
 	ri.Printf( PRINT_ALL, "vkinfo: now %d device memory objects, %d of them texture memory blocks (%.1f MB, %.1f MB used), %d pipelines"
 		" (%d created at load, %d of them used), depth image %sreadable,"
-		" skin data %.1f MB of %d, %d present fences, %d retired swapchains\n",
+		" skin data %.1f MB of %d, %d present fences, %d retired swapchains, %d frames in flight%s, %u swapchain images\n",
 		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), numPipelines, prebuilt, prebuiltUsed,
 		vk.depthReadable ? "" : "not ", vk_skin.words / ( 256.0 * 1024.0 ), VK_SKIN_DATA_WORDS / ( 256 * 1024 ),
-		vk.numPresentFences, vk.numRetiredSwapchains );
+		vk.numPresentFences, vk.numRetiredSwapchains, VK_MAX_FRAMES, vk.submitThread ? " (submit thread)" : "", vk.swapchainImageCount );
 
 	vk.statsReported = vk.stats;
 }
@@ -1969,6 +2039,8 @@ static void VK_ResetState( void ) {
 void vk_initialize( void ) {
 	r_vkValidation = ri.Cvar_Get( "r_vkValidation", "0", CVAR_LATCH );
 	r_vkFallbacks = ri.Cvar_Get( "r_vkFallbacks", "0", CVAR_LATCH );
+	r_vkSubmitThread = ri.Cvar_Get( "r_vkSubmitThread", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images (2: and copies every frame, for tests; see the renderer's README)" );
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
 	VK_ResetState();
@@ -1979,6 +2051,10 @@ void vk_initialize( void ) {
 	vk.lastPresentFence = -1;
 
 	VK_CreateDevice();
+	// before the swapchain, whose images it decides
+	if ( r_vkSubmitThread->integer ) {
+		vk.submitThread = VK_StartSubmitThread();
+	}
 	VK_CreateFrames();
 	VK_PreparePresentFence();
 	VK_CreateSwapchain();
@@ -1997,6 +2073,10 @@ void vk_shutdown( void ) {
 	ri.Cmd_RemoveCommand( "vkinfo" );
 
 	if ( vk.device ) {
+		// every frame queued submitted, then the queue and the swapchain are
+		// this thread's
+		VK_StopSubmitThread();
+		vk.submitThread = qfalse;
 		qvkDeviceWaitIdle( vk.device );
 		// first: the held image's acquire semaphore is waited for, and the
 		// swapchains and their present semaphores go once their presents
@@ -2025,6 +2105,41 @@ void vk_shutdown( void ) {
 	Com_Memset( &vk, 0, sizeof( vk ) );
 }
 
+/*
+===============
+VK_QueueThreadFrame
+
+r_vkSubmitThread: hands the frame to the submit thread (vk_submit.c), which
+submits and presents it: drawn into the swapchain image it acquired
+(VK_SelectTarget), or offscreen, then it copies it to an image
+===============
+*/
+static void VK_QueueThreadFrame( vkFrame_t *frame ) {
+	VkCommandBuffer cmds[2];
+	VkSemaphore acquired = VK_NULL_HANDLE;
+	uint32_t numCmds;
+	int image = -1;
+
+	numCmds = VK_EndFrameCommands( cmds, qtrue );
+	VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
+	vk.lastSubmitFence = frame->fence;
+	if ( vk.target == VK_TARGET_SWAPCHAIN ) {
+		image = (int)vk.targetIndex;
+		// unless a mid-frame flush waited for it already
+		if ( vk.acquireWaitPending ) {
+			acquired = vk.acquireSemaphores[vk.heldSemaphore];
+			vk.acquireWaitPending = qfalse;
+		}
+		vk.heldImage = qfalse;
+	}
+	// a frame that drew nothing presents nothing: the window keeps the last
+	// frame; there is no swapchain while the window has no area (minimized)
+	VK_QueueSubmitJob( frame, cmds, numCmds, image >= 0 || ( vk.swapchain && vk.target == VK_TARGET_OFFSCREEN ), image, acquired );
+
+	// draws recorded from now on are in a new segment (see vk_image.c)
+	vk.segment++;
+}
+
 void vk_begin_frame( void ) {
 	if ( !vk.device ) {
 		return;
@@ -2042,7 +2157,9 @@ void vk_end_frame( void ) {
 	VK_BeginFrameIfNeeded();
 	frame = vk.frame;
 
-	if ( vk.target == VK_TARGET_SWAPCHAIN ) {
+	if ( vk.submitThread ) {
+		VK_QueueThreadFrame( frame );
+	} else if ( vk.target == VK_TARGET_SWAPCHAIN ) {
 		VK_SubmitFrameCommands( frame->fence, vk.presentSemaphores[vk.targetIndex], qtrue );
 		VK_QueuePresent( vk.targetIndex );
 
@@ -2074,8 +2191,9 @@ void vk_end_frame( void ) {
 	}
 
 	// after the present: the fence of the next one, and the retired
-	// swapchains whose presents are done (see vk_instance.c)
-	if ( vk.presentFences ) {
+	// swapchains whose presents are done (see vk_instance.c); the submit
+	// thread does this after its presents
+	if ( vk.presentFences && !vk.submitThread ) {
 		VK_PreparePresentFence();
 		if ( vk.numRetiredSwapchains ) {
 			VK_DestroyRetiredSwapchains( qfalse );
@@ -2086,11 +2204,32 @@ void vk_end_frame( void ) {
 	vk.frame = NULL;
 	vk.frameIndex = ( vk.frameIndex + 1 ) % VK_MAX_FRAMES;
 	vk.stats.frames++;
+
+	// with the submit thread, what the next frame would wait for is waited
+	// for now, before the game reads its input, rather than at its first
+	// command (VK_BeginFrameIfNeeded), which comes after the input: its frame
+	// slot, and with vsync (FIFO) the frame just queued, whose job ends with
+	// the acquire of the next frame's image, where the thread waits for the
+	// display; the next frame then reads its input once its image is
+	// acquired and is drawn into it, as without the thread. Without vsync
+	// that acquire doesn't wait and the thread works beside the next frame.
+	if ( vk.submitThread ) {
+		uint64_t start;
+
+		if ( vk.presentMode == VK_PRESENT_MODE_FIFO_KHR || vk.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ) {
+			VK_JoinSubmitJob( ( vk.frameIndex + VK_MAX_FRAMES - 1 ) % VK_MAX_FRAMES );
+		}
+		VK_JoinSubmitJob( vk.frameIndex );
+		start = VK_Microseconds();
+		VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frames[vk.frameIndex].fence, VK_TRUE, UINT64_MAX ) );
+		vk.stats.waitUs += VK_Microseconds() - start;
+	}
 }
 
 void vk_finish( void ) {
 	// like glFinish for what has been submitted; the commands of the frame
 	// being recorded are submitted at vk_end_frame
+	VK_DrainSubmitThread();
 	if ( vk.device && vk.lastSubmitFence ) {
 		VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.lastSubmitFence, VK_TRUE, UINT64_MAX ) );
 	}

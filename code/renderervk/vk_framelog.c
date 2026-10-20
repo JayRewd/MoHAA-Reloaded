@@ -30,7 +30,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // thread's time in the renderer's exports and between them, what the
 // backend did (the vkStats_t counters of that frame: waits, submissions,
 // acquires, presents, pipelines, textures and memory created, flushes, ...)
-// and the GPU time of the frame from its timestamps. `vkframelog [file]`
+// and the GPU time of the frame from its timestamps; with r_vkSubmitThread
+// also the submit thread's times for the frame. `vkframelog [file]`
 // writes the frames recorded since the last `vkframelog` to
 // <fs_homepath>/main/<file> (default vkframes.txt) and prints a summary;
 // `vkframelog clear` drops them. With r_vkFrameLog 0 nothing is wrapped and
@@ -77,6 +78,12 @@ typedef struct {
 	// GPU, from the timestamps (set when the frame slot is reused)
 	uint32_t	gpuMain;		// main command buffer
 	uint32_t	gpuStart, gpuEnd;	// since the first timestamp of the log; gpuEnd 0: none
+	// r_vkSubmitThread: the main thread's waits for the submit thread in
+	// the frame, and the thread's times for the frame (set when the main
+	// thread joins it): from the hand-off to its start, in vkQueueSubmit,
+	// vkAcquireNextImageKHR and vkQueuePresentKHR
+	uint32_t	threadWait;
+	uint32_t	threadStart, threadSubmit, threadAcquire, threadPresent;
 } vkFrameRecord_t;
 
 static struct {
@@ -147,6 +154,49 @@ void VK_FrameLogGpu( uint64_t serial, uint64_t mainStart, uint64_t mainEnd, uint
 			return;
 		}
 	}
+}
+
+// the record of a frame among the last few: the frame being recorded (its
+// serial is set when its EndFrame returns; with FIFO the submit thread's
+// frame is joined inside it) or one stored
+static vkFrameRecord_t *FL_FindRecord( uint64_t serial ) {
+	uint64_t i;
+
+	if ( fl.inFrame && ( fl.cur.serial == (uint32_t)serial || ( !fl.cur.serial && serial == vk.frameSerial ) ) ) {
+		return &fl.cur;
+	}
+	for ( i = fl.count; i > 0 && i + 8 > fl.count; i-- ) {
+		vkFrameRecord_t *r = &fl.records[( i - 1 ) % fl.size];
+
+		if ( r->serial == (uint32_t)serial ) {
+			return r;
+		}
+	}
+	return NULL;
+}
+
+/*
+===============
+VK_FrameLogThread
+
+The submit thread's times for a frame (vk_submit.c), when the main thread
+joins it: its present, and the times from the hand-off to its start and in
+its calls
+===============
+*/
+void VK_FrameLogThread( uint64_t serial, uint64_t presentAt, uint64_t startUs, uint64_t submitUs, uint64_t acquireUs, uint64_t presentUs ) {
+	vkFrameRecord_t *r;
+
+	if ( !fl.records || !( r = FL_FindRecord( serial ) ) ) {
+		return;
+	}
+	if ( presentAt > fl.base ) {
+		r->presentAt = FL_Clamp( presentAt - fl.base );
+	}
+	r->threadStart = FL_Clamp( startUs );
+	r->threadSubmit = FL_Clamp( submitUs );
+	r->threadAcquire = FL_Clamp( acquireUs );
+	r->threadPresent = FL_Clamp( presentUs );
 }
 
 /*
@@ -222,7 +272,8 @@ static void FL_EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	fl.lastEndReturn = t1;
 	fl.exportsAtEnd = FL_Exports( r );
 
-	// what the backend did since the last EndFrame
+	// what the backend did since the last EndFrame (the serial of the frame
+	// is set as it ends, before the submit thread's times can come)
 	r->serial = (uint32_t)vk.frameSerial;
 	if ( vk.lastPresentUs != fl.lastPresent && vk.lastPresentUs > fl.base ) {
 		r->presentAt = FL_Clamp( vk.lastPresentUs - fl.base );
@@ -251,6 +302,7 @@ static void FL_EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	r->renderPasses = FL_Clamp16( s->renderPasses - p->renderPasses );
 	r->depthTargets = FL_Clamp16( s->depthTargets - p->depthTargets );
 	r->swapchains = FL_Clamp16( s->swapchains - p->swapchains );
+	r->threadWait = FL_Clamp( s->threadWaitUs - p->threadWaitUs );
 	fl.stats = vk.stats;
 }
 
@@ -485,10 +537,11 @@ static void FL_Dump( const char *name ) {
 	}
 
 	FL_Printf( w, "# vkframelog 1: renderer_vulkan frame log (see code/renderervk/README.md, Performance)\n" );
-	FL_Printf( w, "# device %s, %s, present mode %s, %dx%d, %d swapchain images, r_swapInterval %d, com_maxfps %d, r_ext_multisample %d\n",
+	FL_Printf( w, "# device %s, %s, present mode %s, %dx%d, %d swapchain images, r_swapInterval %d, com_maxfps %d, r_ext_multisample %d,"
+		" r_vkSubmitThread %d, %d frames in flight\n",
 		glConfig.renderer_string, glConfig.version_string, VK_SwapchainPresentModeName(), vk.width, vk.height,
 		vk.swapchainImageCount, ri.Cvar_VariableIntegerValue( "r_swapInterval" ), ri.Cvar_VariableIntegerValue( "com_maxfps" ),
-		ri.Cvar_VariableIntegerValue( "r_ext_multisample" ) );
+		ri.Cvar_VariableIntegerValue( "r_ext_multisample" ), vk.submitThread, VK_MAX_FRAMES );
 	FL_Printf( w, "# %d frames%s, %.1f s\n", n,
 		fl.lost ? va( " (%llu older ones overwritten: raise r_vkFrameLog)", (unsigned long long)fl.lost ) : "",
 		( FL_Record( fl.count - 1 )->start - FL_Record( first )->start ) / 1e6 );
@@ -534,11 +587,14 @@ static void FL_Dump( const char *name ) {
 		char events[512];
 
 		FL_Events( r, events, sizeof( events ) );
-		Com_sprintf( line, sizeof( line ), "frame %d: %.3f = scene %.3f, 2d %.3f (fence %.3f), end %.3f (submit %.3f, present %.3f, acquire %.3f),"
-			" cgame %.3f, engine %.3f; gpu %.3f%s",
+		Com_sprintf( line, sizeof( line ), "frame %d: %.3f = scene %.3f, 2d %.3f (fence %.3f), end %.3f (submit %.3f, present %.3f, acquire %.3f%s),"
+			" cgame %.3f, engine %.3f; gpu %.3f%s%s",
 			worst[k], r->interval / 1000.0, r->scene / 1000.0, r->twoD / 1000.0, r->fenceWait / 1000.0, r->end / 1000.0,
-			r->submit / 1000.0, r->present / 1000.0, ( r->acquire + r->acquireAhead ) / 1000.0, FL_Cgame( r ) / 1000.0,
-			r->engine / 1000.0, r->gpuEnd ? r->gpuMain / 1000.0 : 0.0, events );
+			r->submit / 1000.0, r->present / 1000.0, ( r->acquire + r->acquireAhead ) / 1000.0,
+			r->threadWait ? va( ", submit thread %.3f", r->threadWait / 1000.0 ) : "", FL_Cgame( r ) / 1000.0,
+			r->engine / 1000.0, r->gpuEnd ? r->gpuMain / 1000.0 : 0.0,
+			vk.submitThread ? va( "; submit thread: start %.3f, submit %.3f, acquire %.3f, present %.3f", r->threadStart / 1000.0,
+				r->threadSubmit / 1000.0, r->threadAcquire / 1000.0, r->threadPresent / 1000.0 ) : "", events );
 		FL_Printf( w, "#   %s\n", line );
 		ri.Printf( PRINT_ALL, "  %s\n", line );
 	}
@@ -546,18 +602,21 @@ static void FL_Dump( const char *name ) {
 	FL_Printf( w, "# columns, microseconds unless named: frame start interval begin scene 2d end load cgame engine present_at"
 		" fence flush submit acquire acquire_ahead present gpu gpu_start gpu_end draws render_passes submits vertex_bytes staging_bytes"
 		" pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains"
-		" skin_uploads skin_bytes\n" );
+		" skin_uploads skin_bytes thread_wait thread_start thread_submit thread_acquire thread_present\n" );
 	FL_Printf( w, "# (frame: index in this log; start, present_at, gpu_start and gpu_end: since the log started, 0 and gpu_end 0: none;"
-		" engine: EndFrame's return to the next BeginFrame; cgame: the rest of the interval outside the exports)\n" );
+		" engine: EndFrame's return to the next BeginFrame; cgame: the rest of the interval outside the exports;"
+		" thread_wait: the main thread waiting for the submit thread; thread_*: the submit thread's times for the frame,"
+		" from the hand-off to its start and in its calls; submit, acquire, acquire_ahead, present: the main thread's)\n" );
 	for ( i = 0; i < n; i++ ) {
 		const vkFrameRecord_t *r = FL_Record( first + i );
 
-		FL_Printf( w, "%d %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
+		FL_Printf( w, "%d %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
 			i, r->start, r->interval, r->begin, r->scene, r->twoD, r->end, r->load, FL_Cgame( r ), r->engine, r->presentAt,
 			r->fenceWait, r->flushWait, r->submit, r->acquire, r->acquireAhead, r->present, r->gpuMain, r->gpuStart, r->gpuEnd,
 			r->draws, r->renderPasses, r->submits, r->vertexBytes, r->stagingBytes,
 			r->pipelines, r->pipelineUs, r->textures, r->textureUs, r->allocations, r->allocationUs, r->flushes,
-			r->vertexGrowth, r->depthTargets, r->swapchains, r->skinUploads, r->skinBytes );
+			r->vertexGrowth, r->depthTargets, r->swapchains, r->skinUploads, r->skinBytes,
+			r->threadWait, r->threadStart, r->threadSubmit, r->threadAcquire, r->threadPresent );
 	}
 	FL_Flush( w );
 	ri.FS_CloseFile( w->f );

@@ -22,6 +22,14 @@
  * and the intervals between input reads and between presents. tools/perf.py
  * --framelog sets INLAT_FRAMES. Built by build.sh.
  *
+ * The Vulkan renderer's submit thread (r_vkSubmitThread 1) presents on a
+ * thread of its own, when the main thread may have read the next frame's
+ * input already. The renderer then calls inlat_frame_queued(serial) on the
+ * main thread when it hands a frame to be presented to that thread (the
+ * frame's read is the first SDL_PollEvent since the last frame handed
+ * over) and inlat_frame_presenting(serial) on that thread right before its
+ * vkQueuePresentKHR, and the present gets the read of its frame.
+ *
  * Present timing (INLAT_DISPLAY=1; nothing of it runs otherwise): what
  * happened to each Vulkan present after the call, from what the window
  * system and the kernel tell an unprivileged client, written at exit to a
@@ -96,11 +104,19 @@
 typedef void ( *voidFunc_t )( void );
 typedef voidFunc_t ( *getProcAddr_t )( void *handle, const char *name );	// vkGet{Instance,Device}ProcAddr
 
+#define MAX_QUEUED	64		// frames handed to the renderer's submit thread, not presented yet
+
 static long long		( *in_frames )[2];	// read, present
 static int				in_numFrames;
-static long long		in_read;			// first SDL_PollEvent since the last present, 0: none
+static long long		in_read;			// first SDL_PollEvent since the last present (or frame queued), 0: none
 static getProcAddr_t	in_getInstanceProcAddr, in_getDeviceProcAddr;
 static PFN_vkQueuePresentKHR	in_queuePresent;
+
+// the submit thread's frames: the read of each frame queued, by serial
+static pthread_mutex_t	in_queueLock = PTHREAD_MUTEX_INITIALIZER;
+static struct { unsigned long long serial; long long read; } in_queued[MAX_QUEUED];
+static __thread int		in_threadPresent;	// this thread presents a queued frame
+static __thread long long	in_threadRead;		// its read
 
 static long long IN_Now( void ) {
 	struct timespec ts;
@@ -110,17 +126,42 @@ static long long IN_Now( void ) {
 }
 
 static void IN_Present( void ) {
-	long long now = IN_Now();
+	long long now = IN_Now(), read;
 
+	if ( in_threadPresent ) {
+		// a frame of the submit thread: the read of its frame (the main
+		// thread's in_read is the next frame's)
+		read = in_threadRead;
+		in_threadPresent = 0;
+	} else {
+		read = in_read;
+		in_read = 0;
+	}
 	if ( !in_frames ) {
 		in_frames = malloc( sizeof( *in_frames ) * MAX_FRAMES );
 	}
 	if ( in_frames && in_numFrames < MAX_FRAMES ) {
-		in_frames[in_numFrames][0] = in_read;
+		in_frames[in_numFrames][0] = read;
 		in_frames[in_numFrames][1] = now;
 		in_numFrames++;
 	}
+}
+
+// the renderer's main thread hands a frame to its submit thread
+void inlat_frame_queued( unsigned long long serial ) {
+	pthread_mutex_lock( &in_queueLock );
+	in_queued[serial % MAX_QUEUED].serial = serial;
+	in_queued[serial % MAX_QUEUED].read = in_read;
+	pthread_mutex_unlock( &in_queueLock );
 	in_read = 0;
+}
+
+// the submit thread presents that frame next
+void inlat_frame_presenting( unsigned long long serial ) {
+	pthread_mutex_lock( &in_queueLock );
+	in_threadRead = in_queued[serial % MAX_QUEUED].serial == serial ? in_queued[serial % MAX_QUEUED].read : 0;
+	pthread_mutex_unlock( &in_queueLock );
+	in_threadPresent = 1;
 }
 
 /*
@@ -562,7 +603,7 @@ static VkResult VKAPI_CALL IN_QueueSubmit( VkQueue queue, uint32_t count, const 
 	last->pNext = &values;
 	last->pSignalSemaphores = signals;
 	last->signalSemaphoreCount++;
-	in_submitValue++;	// the main thread submits and presents
+	in_submitValue++;	// one thread at a time submits and presents (the queue is externally synchronized)
 	return in_queueSubmit( queue, count, copy, fence );
 }
 

@@ -122,6 +122,17 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VK_DebugCallback( VkDebugUtilsMessageSever
 		level = "info";
 	}
 
+	// raised on the submit thread: printed by the main thread (vk_submit.c),
+	// formatted without va(), whose buffers aren't the thread's
+	{
+		char text[4096];
+
+		SDL_snprintf( text, sizeof( text ), "Vulkan validation %s" S_COLOR_WHITE ": %s", level, data->pMessage );
+		if ( VK_DeferThreadMessage( text ) ) {
+			return VK_FALSE;
+		}
+	}
+
 	// PRINT_WARNING only shows with developer set
 	ri.Printf( PRINT_ALL, "Vulkan validation %s" S_COLOR_WHITE ": %s\n", level, data->pMessage );
 
@@ -902,17 +913,19 @@ static qboolean VK_PresentFenceDone( vkPresentFence_t *slot ) {
 
 /*
 ===============
-VK_PreparePresentFence
+VK_TryPreparePresentFence
 
-Chooses and resets the fence of the next present
+Chooses and resets the fence of the next present; returns the error of a
+call that failed (the submit thread calls it, which mustn't raise errors)
 ===============
 */
-void VK_PreparePresentFence( void ) {
+VkResult VK_TryPreparePresentFence( void ) {
 	vkPresentFence_t *slot;
+	VkResult result;
 	int i, s;
 
 	if ( !vk.presentFences || vk.nextPresentFence >= 0 ) {
-		return;
+		return VK_SUCCESS;
 	}
 
 	// the slots are taken in turn: the one after the last taken holds the
@@ -926,11 +939,14 @@ void VK_PreparePresentFence( void ) {
 	if ( s < 0 && vk.numPresentFences < VK_PRESENT_FENCES ) {
 		VkFenceCreateInfo info;
 
-		s = vk.numPresentFences++;
-		slot = &vk.presentFenceSlots[s];
+		slot = &vk.presentFenceSlots[vk.numPresentFences];
 		Com_Memset( &info, 0, sizeof( info ) );
 		info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-		VK_CHECK( qvkCreateFence( vk.device, &info, NULL, &slot->fence ) );
+		result = qvkCreateFence( vk.device, &info, NULL, &slot->fence );
+		if ( result != VK_SUCCESS ) {
+			return result;
+		}
+		s = vk.numPresentFences++;
 		slot->pending = qfalse;
 		slot->uses = 0;
 	} else {
@@ -938,17 +954,28 @@ void VK_PreparePresentFence( void ) {
 			// VK_PRESENT_FENCES presents pending, more than any swapchain
 			// has images: not seen. Wait for the oldest
 			s = vk.presentFenceScan % vk.numPresentFences;
-			VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.presentFenceSlots[s].fence, VK_TRUE, UINT64_MAX ) );
+			result = qvkWaitForFences( vk.device, 1, &vk.presentFenceSlots[s].fence, VK_TRUE, UINT64_MAX );
+			if ( result != VK_SUCCESS ) {
+				return result;
+			}
 			vk.presentFenceSlots[s].pending = qfalse;
 		}
 		slot = &vk.presentFenceSlots[s];
 		if ( slot->uses ) {
-			VK_CHECK( qvkResetFences( vk.device, 1, &slot->fence ) );
+			result = qvkResetFences( vk.device, 1, &slot->fence );
+			if ( result != VK_SUCCESS ) {
+				return result;
+			}
 		}
 	}
 
 	vk.nextPresentFence = s;
 	vk.presentFenceScan = ( s + 1 ) % vk.numPresentFences;
+	return VK_SUCCESS;
+}
+
+void VK_PreparePresentFence( void ) {
+	VK_CHECK( VK_TryPreparePresentFence() );
 }
 
 /*
@@ -1118,6 +1145,10 @@ void VK_CreateSwapchain( void ) {
 	uint32_t imageCount;
 	int width, height;
 
+	// the submit thread acquires and presents: done with every frame
+	// queued before the swapchain changes
+	VK_DrainSubmitThread();
+
 	vk.swapchainOutOfDate = qfalse;
 
 	VK_CHECK( qvkGetPhysicalDeviceSurfaceCapabilitiesKHR( vk.physicalDevice, vk.surface, &caps ) );
@@ -1155,6 +1186,19 @@ void VK_CreateSwapchain( void ) {
 	// one more image than the minimum so acquiring doesn't wait on the
 	// presentation engine
 	imageCount = caps.minImageCount + 1;
+	if ( vk.submitThread ) {
+		// the submit thread acquires (vk_submit.c): five images without
+		// vsync, so that one is free whenever it acquires even while the
+		// compositor holds some (a fifth adds no lag: every present is shown
+		// or replaced at once); with vsync three, the fewest that let it
+		// acquire while one image is shown and one waits for the display
+		// (FIFO keeps every image presented until the display takes it, so
+		// more images would be more frames queued, more lag)
+		imageCount = vk.presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR || vk.presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? 5 : 3;
+		if ( imageCount < caps.minImageCount ) {
+			imageCount = caps.minImageCount;
+		}
+	}
 	if ( caps.maxImageCount && imageCount > caps.maxImageCount ) {
 		imageCount = caps.maxImageCount;
 	}
@@ -1229,6 +1273,7 @@ like a replaced one; vk_shutdown then waits for it (VK_DestroyRetiredSwapchains)
 */
 void VK_DestroySwapchain( void ) {
 	if ( vk.swapchain ) {
+		VK_DrainSubmitThread();
 		VK_ReleaseHeldImage();
 		// no VK_CHECK: also called by vk_shutdown, which can follow a lost
 		// device, and a second fatal error would skip the window shutdown

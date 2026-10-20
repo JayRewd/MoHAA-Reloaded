@@ -2,8 +2,9 @@
 
 Nothing of the Vulkan renderer or of the new frame limiter has run on
 Windows yet (the CI only builds it). This checks startup, presentation
-(resizes, minimize, fullscreen, `vid_restart`, quit) and the frame
-limiter's Windows wait. About 20 minutes. Sound can stay on.
+(resizes, minimize, fullscreen, `vid_restart`, quit), the same with the
+submit thread (`r_vkSubmitThread 1`) and the frame limiter's Windows wait.
+About 30 minutes. Sound can stay on.
 
 ## Setup
 
@@ -91,7 +92,10 @@ overwrites it). The console opens with the key below Esc.
    restore it; minimize it for 5 s (taskbar) and bring it back; in the
    console `set r_fullscreen 1`, wait 3 s, `set r_fullscreen 0`, then
    `vkinfo` and `quit`. Then once more, everything the same, with
-   `+set r_vkFallbacks 8` added (presents without fences) (`life_fb8.log`).
+   `+set r_vkFallbacks 8` added (presents without fences) (`life_fb8.log`),
+   and once more with `+set r_vkSubmitThread 1` added instead (the submit
+   thread, `life_thread.log`). `r_vkSubmitThread` is archived: the next runs
+   need `+set r_vkSubmitThread 0` (or the run's name says `thread`).
 2. **Frame limiter** (`limiter.log` and the five `lim_*.txt` files):
 
    ```
@@ -99,7 +103,9 @@ overwrites it). The console opens with the key below Esc.
    ```
 
    (`r_mode -2`: the desktop's resolution.) Don't touch anything for the
-   2 minutes it runs; it quits by itself.
+   2 minutes it runs; it quits by itself. Then once more with
+   `+set r_vkSubmitThread 1` added (`limiter_thread.log`; rename the five
+   `lim_*.txt` files of the first run before, e.g. to `lim_*_off.txt`).
    Look at the Task Manager's CPU column for openmohaa meanwhile if you
    can (one core busy is expected at 250 and uncapped).
 3. **GL1 for comparison** (`gl1.log`): run 1 again with
@@ -116,17 +122,21 @@ overwrites it). The console opens with the key below Esc.
   no `VK_*_swapchain_maintenance1`; with `r_vkFallbacks 8` it must say no).
 - No crash, hang or black window at resizes, minimize/restore,
   fullscreen, `vid_restart` and quit; quit takes under a second or two.
-- `vkinfo: now ...` ends with `N present fences, 0 retired swapchains`
+- `vkinfo: now ...` says `N present fences, 0 retired swapchains`
   (N about 2 to 4); no `WARNING: Vulkan: the last present of a swapchain
   didn't complete` and no `Vulkan validation` line.
 - In each `lim_*.txt` the line `# frame time ms:` has a median of
   1000 / cap: 16.667 at 60, 6.944 at 144, 6.061 at 165, 4.000 at 250
-  (uncapped: at most 1000 frames a second). The old limiter gave 6.000 at
-  144 and 165.
+  (uncapped: whatever the machine gives, above 1000 frames a second where it
+  can). The old limiter gave 6.000 at 144 and 165.
+- With `r_vkSubmitThread 1`: the line `Vulkan present mode: ...` ends with
+  `5 swapchain images, 2 frames in flight, submit thread (r_vkSubmitThread)`
+  (3 images with vsync), and the same as above: no crash, hang or black
+  window at resizes, minimize/restore, fullscreen, `vid_restart` and quit.
 
 ## Send back
 
-All the `.log` files and the five `lim_*.txt` files (zipped), the notes of
+All the `.log` files and the ten `lim_*.txt` files (zipped), the notes of
 setup step 4, and for anything that looked wrong: what you did, what you
 saw, a screenshot or phone video if it was visual. The `vkinfo` output is
 in the logs.

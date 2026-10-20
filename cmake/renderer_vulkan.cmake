@@ -62,6 +62,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/vk_instance.c
     ${SOURCE_DIR}/renderervk/vk_pipeline.c
     ${SOURCE_DIR}/renderervk/vk_shaders.c
+    ${SOURCE_DIR}/renderervk/vk_submit.c
 )
 
 # No OpenGL: the window is created by sdl_vkimp.c instead of sdl_glimp.c

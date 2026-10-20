@@ -72,7 +72,10 @@ below are done.
   runs of the build-against-build check (`r_vkValidation 1`); with the
   pipelines and skin data at load (2026-10-18), none with synchronization
   validation through startup, map loads and a map change, `vid_restart` in
-  a map and with a mode change, a demo and shutdown
+  a map and with a mode change, a demo and shutdown; with the submit
+  thread (2026-10-19), none with synchronization validation through
+  startup, map loads, live resizes, minimize, fullscreen toggles, switching
+  it on and off, mode changes and shutdown (see Testing)
 - performance (milestone 6, see [Performance](#performance)): on an idle
   machine Vulkan spends 13 to 28 % less main-thread time in the renderer
   than GL1 in the measured views at 1920x1080 (fence waits left out; after
@@ -239,6 +242,23 @@ below are done.
   keys reach the server with the next command: 5 ms after the frame on
   average at the default, 2 at 250 frames a second before. The `fps`
   counter counts in microseconds
+- submit thread (2026-10-19, `r_vkSubmitThread 1`, off by default): a
+  thread submits and presents the frames and acquires the next frame's
+  swapchain image right after each present, so the main thread no longer
+  waits in `vkQueueSubmit`, `vkQueuePresentKHR` or an acquire that stalls
+  (up to 1.8 ms in 15 to 67 of 15000 frames at 3840x2160 here, 1.3 ms
+  every 341 frames on a tester's NVIDIA card); frames are drawn into the
+  image the thread acquired, so they are not copied (JayRewd's version,
+  from which this started, copied every frame: 23 to 30 % of the frame
+  rate where the GPU limits), with 2 frames in flight as without it and 5
+  swapchain images (3 with FIFO). Uncapped where the CPU limits, 3 to 21 %
+  more frames a second and lower 99th and 99.9th percentiles in most
+  views; where the GPU limits, the same frame rate and 1 ms less input to
+  GPU done (the main thread waits for the GPU before the next input); with
+  FIFO one frame less queued (33.8 against 50.5 ms to the display at 60
+  Hz); at 250 frames a second the same frames and input to display within
+  the noise, input to present 0.005 to 0.02 ms longer (the hand-off). The
+  same frames to the bit (see Performance, Submit thread)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -258,6 +278,7 @@ below are done.
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file, the pipelines created before their first draw and the file of keys created after a load (`vkpipelines.keys`) |
 | `vk_framelog.c` | the frame log (`r_vkFrameLog`, `vkframelog`): the per-frame exports timed, the backend's counters and GPU time of every frame, the dump (see Performance, Frame spikes) |
+| `vk_submit.c` | the submit thread (`r_vkSubmitThread 1`): submits and presents the frames, acquires the swapchain image of the next frame after each present, copies a frame drawn offscreen (see Implementation notes, Submit thread) |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
 | `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces (added when a model is registered), the frame data of each entity, the skinned batches (see Implementation notes) |
 | `tr_pipelines.c` | the pipelines of a registration's shaders, worked out from their stages as the stage iterators draw them and created at its end (see Implementation notes, Pipelines) |
@@ -338,6 +359,7 @@ Cvars of the backend:
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
 | `r_skelCull` (default 1) | 0 prepares and draws skeletal models outside the view too, as GL1 does (see Implementation notes, Skeletal culling) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
+| `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
@@ -355,9 +377,14 @@ the waits of mid-frame flushes, which `flushUs` also counts), in `vkQueueSubmit`
 (before a present and right after one) and `vkQueuePresentKHR`, from the
 start of a frame's recording to its present, and the GPU time of the frames
 from timestamps (main command buffer, copy to the swapchain image, whole
-frame); then the device memory objects, memory blocks and pipelines that
-exist (with how many were created before their first draw and how many of
-those a draw has used) and whether the depth image is readable.
+frame), and with `r_vkSubmitThread 1` the submit thread's: the main
+thread's waits for it, its frames, the time from a frame's hand-off to its
+start, its submissions, acquires and presents with their times, and the
+frames it copied (`thread*`); then the device memory objects, memory
+blocks and pipelines that exist (with how many were created before their
+first draw and how many of those a draw has used), whether the depth image
+is readable, the present fences, retired swapchains, frames in flight and
+swapchain images.
 `tools/perf.py` reads it.
 
 With `r_vkFrameLog 1` (latched: on the command line, or set it and
@@ -549,7 +576,13 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   `libinlat.so`, the time from each frame's input read to its present
   (see Performance, Frame limiter) and, with `INLAT_DISPLAY=1`, what the
   presentation engine, the compositor and the display did with it (see
-  Performance, Present timing).
+  Performance, Present timing). With `r_vkSubmitThread 1` the present is
+  made by the submit thread, when the main thread may have read the next
+  frame's input already: the renderer then tells `libinlat.so` which frame
+  each present shows (`inlat_frame_queued` on the main thread at the
+  hand-off, `inlat_frame_presenting` on the thread; it looks them up once
+  with `SDL_LoadFunction`, not on Windows), and the present gets its own
+  frame's input read.
 - `framelog.py`: frame time percentiles and the causes of the slow frames
   from the Vulkan renderer's frame log (`r_vkFrameLog`, `vkframelog`) or
   `renderer_timed.so`'s frame files, a `perf.py --framelog` directory as a
@@ -1159,6 +1192,46 @@ to the bit. The final build against the build before on `m3l3`,
 `mohdm1_debug`, `obj_team2` and `mp_mohdm1`: the same frames to the bit
 (the four soldiers beside the camera of the `mp_*` front views are
 culled). No validation message in these runs (`r_vkValidation 1`).
+
+The submit thread (2026-10-19, see Performance, Submit thread), against
+the build before (`run.sh`, `tgadiff.py`, 640x480, `r_vkValidation 1`):
+with `r_vkSubmitThread 1` on the 41 view lists (177 views) 146 give the
+same frames to the bit, among them every view of the `dm`, `obj` and
+multiplayer lists but the snow of `mohdm5_fog` and the near-camera ±1 of
+`d7_alley` and `d7_arch`, the menus, the dynamic light, decal, fog, sun
+flare and debug drawing lists; the other 31 are in the lists with random
+content or run-to-run noise named above (`m1l1`, `m1l2a`, `m1l3a`,
+`m2l1_skyportal`, `m3l1a`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m6l1a`,
+`mohdm5_fog`, `mohdm7`, a particle in `m53_street`, 2 pixels of
+`m33_grass`). With `r_vkSubmitThread 0` and 2 (every frame drawn
+offscreen and copied by the thread) on 12 of the lists (`mohdm1`,
+`mohdm2_fog`, `dm/mohdm3`, `m2l1_skyportal`, `obj_team2`, `obj_team4`,
+`mp_mohdm1`, `mp_obj_team4`, `menus`, `mohdm1_dlight`, `mohdm1_debug`,
+`mohdm1_texenv`; 60 views each) the same, but the bottom edge of
+`s2_a`/`s2_b`. Screenshots read the frame's color target, the swapchain
+image or the offscreen one: what reaches the screen through the thread's
+copy was checked by capturing the window (`spectacle -b -n -a -e`, paused
+`m1_spawn`): the same pixels with the copy and drawn directly, and as the
+screenshot but for 14 pixels in the window's two rounded bottom corners
+(KWin). On llvmpipe `mohdm1` and `mp_mohdm1` give the same frames with
+`r_vkSubmitThread` 0, 1 and 2. No validation message in any of these
+runs, nor with synchronization validation (`r_vkValidation 2`) through
+startup, a map load, live resizes (a burst of 11 sizes 50 ms apart, the
+frames copied with scaling until their `vid_restart`), minimize and
+restore, fullscreen toggles, `r_vkSubmitThread` switched off and on (and 1
+and 2) with `vid_restart`, a mode change and quit, with immediate, FIFO
+and the copy, on RADV and llvmpipe; nor with a temporary build that
+reported a window without area for 1 s of every 3 (the minimized path of
+Windows: the swapchain destroyed and created again 6 times in 30 s, the
+frames between submitted without presenting, a `vid_restart` in it) with
+`r_vkSubmitThread` 0, 1 and 2. Against GL1 (`compare.sh` with the thread
+on): `dm/mohdm1` and `menus.txt` give the numbers of before (the main menu
+0 pixels with the fan masked, `mn_video` 17). `renderer_vulkan.so` imports
+no GL or Vulkan symbol and exports only `GetRefAPI`; the build the timings
+of FIFO, mailbox and the frame logs ran with differs from the final one in
+`VK_CreateSwapchain` alone (a test override of the image count, removed),
+the earlier batches' build in the frame count being a variable (for the
+test with 3) and two such overrides.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -1934,6 +2007,7 @@ frame, in microseconds:
 | `draws render_passes submits vertex_bytes staging_bytes` | per frame |
 | `pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains` | what was created in the frame and the time it took: pipelines, texture storages, device memory, mid-frame flushes, a frame vertex buffer replaced by a larger one (its size), the depth image replaced, a swapchain created |
 | `skin_uploads skin_bytes` | skin data of skeletal models added in the frame (`vk_add_skin_data` calls and bytes; GPU skinning, see Implementation notes, Skeletal models) |
+| `thread_wait thread_start thread_submit thread_acquire thread_present` | `r_vkSubmitThread 1`: the main thread's waits for the submit thread in the frame, and the thread's times for the frame (from its hand-off to the thread starting it, in `vkQueueSubmit`, `vkAcquireNextImageKHR`, the acquire of the next frame's image included, and `vkQueuePresentKHR`; `present_at` is then the thread's present). The columns `submit`, `acquire`, `acquire_ahead` and `present` are the main thread's |
 
 `tools/framelog.py file` prints the distributions and the causes of the
 slow frames (below). The log changes nothing of what the frames do or
@@ -3488,6 +3562,157 @@ bit. The final engine differs from the one these lists ran with in
 `Com_Frame` alone (`objdump -d`, addresses left out: the timescale
 condition and the `fps` counter) and in `cl_cmdfps`'s default.
 
+Submit thread (2026-10-19, Plan 19; see Implementation notes, Submit
+thread). JayRewd's commit a5f5a54a drew every frame offscreen and handed
+it to a thread that acquired a swapchain image, copied the frame into it,
+submitted and presented, with 8 frames in flight and at least 5 swapchain
+images, and `r_vkSubmitThread 1` by default. A tester (RTX 4070 Ti,
+2560x1440, fullscreen immediate, uncapped) measured 597 against 1074
+frames a second at the 99.9th percentile, and the slow frames it removed
+were an acquire of about 1.3 ms every 341 frames; on RADV it ran at 373
+frames a second against 470 (the copy). Here the 8 frames in flight added
+0.5 ms of input to GPU done at 3840x2160 even with the thread off, and when
+the GPU limits each frame in flight is a frame of lag. Taken (the user's
+decision): the thread and the 5 images, frames in flight cut back to 2 or
+3 (2 measured better, below), off by default. What differs from his
+version, each measured:
+
+- The thread acquires the next frame's image right after its present (as
+  `vk_end_frame` does without it), and a frame is drawn into that image
+  when the thread has it by the frame's first render pass, so frames are
+  not copied: in fullscreen 0.01 to 0.9 % of the frames uncapped (the
+  acquire not done yet; 3.5 to 5 % in a window at 2500 frames a second)
+  and none at 250 are drawn offscreen and copied. Always copying
+  (`r_vkSubmitThread 2`, his way) costs 0.40 to 0.57 ms of GPU time per
+  frame at 3840x2160: 23 to 30 % of the frame rate where the GPU limits,
+  and 1.2 to 1.8 ms more input to display than without the thread (2.4 to
+  3 ms more than drawing into the acquired image). His order (acquire,
+  then the frame and the copy in one submission, then the present) also
+  put the acquire between the hand-off and the present: input to present
+  +0.04 ms at 640x480 in the first version measured here, now -0.01 to
+  +0.02.
+- 2 frames in flight, waited for at the end of the frame, before the next
+  frame's input (see Implementation notes). With 3, uncapped frame rates
+  where the CPU and GPU are about even were higher (the `obj_team2` yard at
+  1920x1080: 1629 against 1432 frames a second), but uncapped every view
+  gained 0.1 to 0.3 ms of input to display at 1920x1080, and 1.2 to 2.1
+  ms of input to GPU done at 3840x2160, where the GPU limits (a frame
+  more queued); at 250 the same.
+- With FIFO the frame just handed over is waited for too (its job ends
+  with the acquire, where the thread waits for the display), and the
+  swapchain has 3 images, against the surface's minimum + 1 (4 here)
+  without the thread.
+
+Measured on the idle machine (other processes at most 1.4 CPUs, no Plex
+transcoding), with the build before (`base`, b19079eb), this build with
+`r_vkSubmitThread 0` (`off`) and with 1 (`thread`), interleaved, medians
+of 5 runs of 10 s (10000 frames uncapped, 2500 at 250); input read to
+present, GPU done and display from
+`libinlat.so` with `INLAT_DISPLAY=1` (`framelog.py --display`: the median
+of the runs' medians and of their 99th percentiles for input to present,
+the runs pooled for the others); frame time percentiles from
+`renderer_timed.so`; ms. Fullscreen immediate (tearing, `INLAT_FBPOLL_US
+=250`), the user's mode, at 640x480 (CPU-bound, about 2000 frames a
+second):
+
+| view | `com_maxfps` | frames a second: base / off / thread | frame time p99, p99.9: base / off / thread | input to present, median: base / off / thread | input to display, median, p99, p99.9: base / off / thread |
+| --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 1823 / 1796 / 2009 | 0.986, 1.367 / 0.996, 1.338 / 1.015, 1.281 | 0.463 / 0.472 / 0.479 | 1.06, 1.94, 2.48 / 1.08, 2.00, 2.58 / 1.07, 1.99, 2.50 |
+| | 250 | 250 | 4.029, 4.307 / 4.028, 4.372 / 4.029, 4.308 | 0.507 / 0.506 / 0.512 | 1.76, 2.38, 3.06 / 1.65, 2.40, 3.14 / 1.64, 2.48, 3.10 |
+| `o4match` | 0 | 1176 / 1160 / 1299 | 1.346, 1.779 / 1.432, 1.889 / 1.275, 1.647 | 0.797 / 0.803 / 0.783 | 1.72, 2.78, 3.83 / 1.74, 2.80, 3.82 / 1.69, 2.66, 3.58 |
+| | 250 | 250 | 4.038, 4.647 / 4.035, 4.656 / 4.035, 4.677 | 0.801 / 0.812 / 0.817 | 1.96, 3.11, 4.16 / 1.95, 2.80, 3.68 / 2.01, 2.77, 3.51 |
+| `obj_team2` yard | 0 | 1999 / 2004 / 2418 | 0.614, 0.987 / 0.673, 1.010 / 0.542, 0.884 | 0.428 / 0.427 / 0.414 | 0.97, 1.40, 1.78 / 0.96, 1.34, 1.73 / 0.87, 1.23, 1.49 |
+| | 250 | 250 | 4.106, 4.157 / 4.105, 4.148 / 4.109, 4.140 | 0.503 / 0.515 / 0.524 | 1.58, 2.27, 2.78 / 1.63, 2.38, 3.16 / 1.62, 2.36, 2.86 |
+
+At 1920x1080 (fullscreen immediate, where the yard's GPU is about as busy
+as its CPU):
+
+| view | `com_maxfps` | frames a second: base / off / thread | frame time p99, p99.9: base / off / thread | input to GPU done, median, p99: base / off / thread | input to display, median, p99, p99.9: base / off / thread |
+| --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 1498 / 1516 / 1549 | 1.311, 1.715 / 1.278, 1.657 / 1.230, 1.557 | 1.18, 2.77 / 1.19, 2.77 / 1.20, 2.40 | 1.53, 3.15, 3.52 / 1.53, 3.14, 3.53 / 1.55, 2.78, 3.05 |
+| | 250 | 250 | 4.027, 4.253 / 4.028, 4.278 / 4.028, 4.282 | 1.32, 2.07 / 1.29, 2.01 / 1.33, 2.13 | 1.98, 2.77, 3.17 / 1.92, 2.73, 3.15 / 1.98, 2.80, 3.15 |
+| `o4match` | 0 | 947 / 943 / 995 | 1.739, 2.217 / 1.733, 2.219 / 1.648, 2.220 | 1.78, 2.63 / 1.78, 2.60 / 1.74, 2.61 | 2.20, 3.17, 3.80 / 2.20, 3.13, 3.79 / 2.11, 3.16, 3.75 |
+| | 250 | 250 | 4.036, 4.593 / 4.036, 4.590 / 4.036, 4.565 | 1.85, 2.74 / 1.85, 2.82 / 1.86, 2.72 | 2.50, 3.50, 4.25 / 2.50, 3.56, 4.21 / 2.55, 3.43, 4.55 |
+| `obj_team2` yard | 0 | 1520 / 1526 / 1432 | 0.954, 1.248 / 0.930, 1.194 / 0.890, 1.185 | 1.45, 1.67 / 1.46, 1.68 / 1.41, 1.52 | 1.73, 2.05, 2.16 / 1.75, 2.06, 2.15 / 1.71, 1.90, 1.99 |
+| | 250 | 250 | 4.101, 4.130 / 4.104, 4.134 / 4.100, 4.125 | 1.36, 2.14 / 1.38, 1.77 / 1.39, 1.74 | 1.96, 2.69, (16.7) / 2.01, 2.61, 2.88 / 1.99, 2.50, 2.83 |
+
+(The 16.7 ms of the base build's yard at 250 is one frame shown a refresh
+late in one run.) At 3840x2160 in a window (the GPU limits uncapped; input
+to display through the compositor, about 11 ms more), with `r_vkSubmitThread
+2` (`copy`: every frame drawn offscreen and copied, JayRewd's way) and with
+3 frames in flight (`3 frames`):
+
+| view | `com_maxfps` | frames a second: base / off / thread / copy / 3 frames | frame time p99, p99.9: base / thread / copy | input to GPU done, median, p99: base / off / thread / copy / 3 frames | input to display, median: base / off / thread / copy / 3 frames |
+| --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 729 / 729 / 728 / 512 / 729 | 3.103, 3.598 / 3.038, 3.450 / 3.822, 4.265 | 3.15, 8.07 / 3.15, 8.07 / 2.51, 6.07 / 3.63, 7.62 / 3.75, 9.07 | 13.4 / 13.2 / 12.2 / 14.6 / 15.1 |
+| | 250 | 250 | 4.029, 4.341 / 4.030, 4.328 / 4.028, 4.620 | 2.60, 4.25 / 2.63, 4.27 / 2.60, 4.03 / 3.16, 4.57 / 2.54, 4.09 | 11.3 / 11.4 / 11.2 / 12.6 / 11.3 |
+| `o4match` | 0 | 466 / 466 / 466 / 357 / 466 | 3.163, 4.492 / 2.961, 4.200 / 3.716, 4.760 | 5.20, 7.62 / 5.20, 7.62 / 4.21, 5.82 / 5.54, 7.36 / 6.31, 8.73 | 14.9 / 15.0 / 13.7 / 16.7 / 17.5 |
+| | 250 | 250 | 4.043, 4.655 / 4.046, 4.762 / 4.091, 5.315 | 3.55, 4.83 / 3.57, 4.92 / 3.58, 4.75 / 3.78, 7.37 / 3.58, 4.81 | 13.9 / 13.0 / 13.1 / 14.4 / 13.1 |
+| `obj_team2` yard | 0 | 590 / 590 / 590 / 438 / 590 | 2.144, 2.664 / 1.981, 2.471 / 2.603, 3.043 | 4.54, 4.76 / 4.53, 4.75 / 3.36, 3.56 / 4.54, 4.77 / 5.05, 5.29 | 12.4 / 12.3 / 11.2 / 14.1 / 13.2 |
+| | 250 | 250 | 4.094, 4.114 / 4.098, 4.116 / 4.102, 4.148 | 3.27, 3.61 / 3.31, 3.71 / 3.29, 3.65 / 3.35, 4.14 / 3.31, 3.64 | 11.8 / 12.0 / 12.2 / 12.5 / 11.7 |
+
+- Uncapped where the CPU limits (640x480, the 1920x1080 demos) the thread
+  takes the submission, the present and the acquire off the main thread
+  (`EndFrame` 0.074 to 0.009 ms): 3 to 21 % more frames a second, lower
+  99th and 99.9th percentiles of the frame time in most views, and input
+  to display the same or lower (the yard at 640x480: 0.97 to 0.87 ms on
+  the median, 1.78 to 1.49 at the 99.9th percentile).
+- Where the GPU limits (3840x2160, uncapped) the frame rate is the same,
+  and input to GPU done is 1.0 to 1.2 ms lower on the median and 1.2 to 2
+  ms at the 99th percentile: the main thread waits for the GPU at the end
+  of the frame, before the next input, where without the thread it waits
+  after the input, at the next frame's first command. Where the CPU and GPU
+  are about even (the yard at 1920x1080) that wait costs frame rate (1432
+  against 1520 frames a second: the engine's work between frames no
+  longer overlaps the GPU's) for lower input to GPU done and display
+  (p99 1.90 against 2.05 ms).
+- At 250 (the user's cap) the frames are the same (the cap sets them);
+  input to present is 0.005 to 0.02 ms longer on the median (the thread
+  wakes up 10 to 12 µs after the hand-off when it slept a whole frame, 7
+  µs uncapped), input to GPU done and to display the same within the run to
+  run spread, both ways.
+- CPU: the thread uses 0.05 to 0.2 of a core uncapped (the game 1.27
+  against 1.13 CPUs in `o2match` at 640x480), nothing measurable at 250
+  (0.45 and 0.53 CPUs with and without it).
+
+FIFO (`r_swapInterval 1`, 640x480 fullscreen, the 60 Hz display, 600
+frames, the yard and `o2match` at caps 0 and 250, 5 runs each): input to
+display 33.8 ms on the median (99.9th percentile 33.9) against 50.5 (50.6)
+for the build before and `off`: one frame less queued (3 images, the
+surface's minimum, against 4). Input to present and to GPU done 0.04 to
+0.07 ms longer (0.828 against 0.775 and 1.37 against 1.30 in `o2match`;
+the thread sleeps a whole refresh and wakes up in 21 to 29 µs after the
+hand-off), the frame times the same (16.67 ms, p99.9 17.6), no frame
+copied.
+
+Mailbox (`INLAT_PRESENT_MODE=mailbox`, 1920x1080 fullscreen, direct
+scanout), 5 swapchain images against 3 with the thread: with 3 the thread
+hadn't acquired an image by the first render pass in 15 % of the frames
+uncapped (copied), and the tails were longer; with 5, `o2match` uncapped ran
+at 1772 frames a second against 1483 without the thread (1710 with 3),
+frame time p99 and p99.9 1.048 and 1.331 ms against 1.573 and 2.008, input
+to display 5.18 ms on the median against 5.16 and 9.81 against 12.73 at
+the 99.9th percentile; the yard 1870 against 1634 frames a second, p99 0.696
+against 1.135; at 250 the same frame times and input to display (6.81
+against 6.88 ms). Mailbox keeps 5 images.
+
+Where the acquire waits went (`r_vkFrameLog`, the two demos uncapped, 3
+runs of 15000 frames each): at 3840x2160 in a window without the thread
+the main thread's acquire after the present waited more than 0.3 ms in 15
+to 67 frames per run (up to 1.8 ms; Xwayland not releasing an image yet);
+with the thread the main thread never waits for it (its longest wait for
+the thread 0.14 ms), and the thread's own acquire waited more than 0.3 ms
+in 0 to 10 frames per run (5 images). At 640x480 neither waits. The
+frame log's `thread_*` columns give the thread's times per frame: the
+hand-off to its start 7 µs on the median (99.9th percentile 34 to 41 µs),
+`vkQueueSubmit` 20 to 26 µs, the acquire 26 to 30 µs, the present 10 to
+12 µs.
+
+The NVIDIA case, where the tester's acquire stalled 1.3 ms every 341
+frames, wasn't measured here: input to display there, with and without the
+thread, would need the tester's runs (`libinlat.so` with `INLAT_DISPLAY=1`
+works on any Vulkan driver under X11 or Wayland).
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -3851,9 +4076,10 @@ selects the sample count (see Implementation notes).
   1920x1080 with 4 samples. Without the extensions multisampling is off
   (with a warning). Barriers on the depth image include the resolve's color
   attachment stage and access.
-- **Frames.** Two frames in flight. Each frame slot has a command pool with
-  three command buffers (upload, main, and present for frames drawn
-  offscreen), a fence, a vertex/index buffer (4 MB, doubled when full), a
+- **Frames.** Two frames in flight, with the submit thread too. Each
+  frame slot has a command pool with three command buffers (upload, main,
+  and present for frames drawn offscreen), a fence, a vertex/index buffer
+  (4 MB, doubled when full), a
   32 MB staging buffer, a buffer for 256 depth reads and a query pool of 4
   GPU timestamps (`vkinfo`). A frame drawn into the swapchain image is
   submitted once, waiting for the image's acquire semaphore at the color
@@ -3915,6 +4141,70 @@ selects the sample count (see Implementation notes).
   (`vkReleaseSwapchainImagesKHR`), so a retired swapchain can free it. The
   acquire stays right after the present, and present fences add no wait
   (see Presentation semaphores and swapchains).
+- **Submit thread** (`vk_submit.c`, `r_vkSubmitThread 1`, latched; off by
+  default, see Performance, Submit thread). The main thread records a frame
+  as without it; at `vk_end_frame` it ends the frame's command buffers,
+  resets its fence and hands it to a thread (an SDL thread woken through a
+  condition variable), which submits and presents it and right after the
+  present acquires the swapchain image of the next frame, as `vk_end_frame`
+  does without it. At the next frame's first render pass `VK_SelectTarget`
+  takes that image if the thread has it, without waiting
+  (`VK_TakeSubmitThreadImage`), and the frame is drawn into it as without
+  the thread: its first submission waits for the acquire semaphore and
+  signals the image's present semaphore. When the thread hasn't acquired
+  it yet (or the swapchain doesn't fit the render target), the frame is
+  drawn into the offscreen color image, and the thread copies it into the
+  image it acquired since (or acquires one), the copy after the frame's
+  command buffers in the same `vkQueueSubmit`, only the copy waiting for
+  the image. JayRewd's version (a5f5a54a, from which this started) drew
+  every frame offscreen and acquired, copied and presented on the thread:
+  the copy costs GPU time (0.03 ms at 640x480, 0.5 ms at 3840x2160 on the
+  Radeon 780M) and the acquire came between the hand-off and the present.
+  - The queue and the swapchain are externally synchronized: while the
+    thread has frames, the main thread uses neither. It drains the thread
+    (`VK_DrainSubmitThread`: waits until every frame handed over is done)
+    to submit itself (mid-frame flushes, `vk_finish`, `vkinfo`) and before
+    it replaces or destroys the swapchain, which happens at a frame's first
+    render pass as without the thread (the window changed, or the thread
+    found the swapchain out of date). The present fences and the retired
+    swapchains are the thread's while it runs: it chooses the next
+    present's fence after each present and destroys the retired swapchains
+    whose presents are done; the main thread retires a swapchain only with
+    the thread drained, and hands the image the thread acquired ahead back
+    with its own (`VK_ReclaimSubmitThreadImage`, `VK_ReleaseHeldImage`).
+  - Frames in flight: as many as without the thread (`VK_FRAMES`, 2): a
+    frame slot is used again once the thread is done with its frame
+    (`VK_JoinSubmitJob`) and the frame's fence has signaled. The main
+    thread waits for that at the end of the frame, before the game reads
+    the next frame's input, not at the next frame's first command as
+    without the thread (after the input), and with FIFO it also waits for
+    the frame it just handed over, whose job ends with the acquire of the
+    next frame's image, where the thread waits for the display: the next
+    frame reads its input once its image is acquired and is drawn into it,
+    as without the thread. Without vsync that acquire doesn't wait and the
+    thread works beside the next frame.
+  - Acquire semaphores: the ring of `vk.numFrames` + 1, used by the thread
+    only. The acquire for frame k (at its job, or after the present of
+    frame k - 1) reuses the semaphore of an acquire for frame k - 3 or
+    earlier (3 semaphores, 2 frames in flight), and the main thread waited
+    for that frame's fence before it handed frame k - 1 over: the
+    submission that waited for it has completed.
+  - Swapchain images: 5 without vsync (immediate, mailbox), so an image is
+    free whenever the thread acquires even while the compositor holds
+    some, which adds no lag (every present is shown, or replaced, at once);
+    3 with FIFO, the fewest that let it acquire while one image is shown
+    and one waits for the display (FIFO keeps every presented image until
+    the display takes it: more images would be more frames queued). At
+    least the surface's minimum, at most its maximum.
+  - The thread calls no `ri` function (the engine's aren't thread-safe):
+    its times and the results of its calls stay with the frame's job until
+    the main thread joins the frame, which raises the errors then;
+    validation messages raised on the thread are kept (formatted without
+    `va()`) and printed by the main thread then. `vkinfo` and the frame log
+    report its times (`thread*`, `thread_*`).
+  - With `r_vkSubmitThread 0` the frames go the way they went before (the
+    same code: acquire after the present on the main thread, 2 frames in
+    flight, the surface's minimum + 1 images).
 - **Mid-frame flush.** `vk_read_pixels`, and uploads that don't fit in the
   staging buffer, submit what the frame recorded so far, wait for it and
   continue in the same command buffers (a new main-buffer "segment").
@@ -4336,7 +4626,8 @@ selects the sample count (see Implementation notes).
   serial). Nothing of the frames, submissions, presents or acquires
   changes; the wrappers cost about 15 µs per frame (two clock reads around
   each of the ~300 2D calls of the HUD) while the log is on.
-- **Shutdown and `vid_restart`.** `vk_shutdown` waits for the device,
+- **Shutdown and `vid_restart`.** `vk_shutdown` stops the submit thread
+  (every frame handed over submitted first), waits for the device,
   releases the held image and retires the swapchain, destroys the retired
   swapchains and their semaphores once their presents are done (present
   fences, see Presentation semaphores and swapchains), then the present
@@ -4764,6 +5055,25 @@ Done:
     nothing lost between commands, prediction errors and input to present
     as before.
 
+19. Submit thread (2026-10-19, see Performance, Submit thread, and
+    Implementation notes, Submit thread), from JayRewd's a5f5a54a, behind
+    `r_vkSubmitThread` (off by default): a thread submits and presents
+    the frames and acquires the next image right after each present; a
+    frame is drawn into that image when the thread has it by the frame's
+    first render pass (his version drew every frame offscreen and copied
+    it: 0.4 to 0.57 ms of GPU time per frame at 3840x2160), otherwise
+    offscreen and copied by the thread; 2 frames in flight (his 8), waited
+    for before the next frame's input, with FIFO the frame just handed over
+    too; 5 swapchain images, 3 with FIFO. The queue and the swapchain are
+    used by one thread at a time (the main thread drains the thread first),
+    the thread calls no engine function, and `libinlat.so` is told which
+    frame each present shows. Measured at 640x480, 1920x1080 and
+    3840x2160, immediate, FIFO and mailbox, uncapped and at 250, against
+    the build before and with the thread off: see Performance; the same
+    frames to the bit, no validation message (synchronization validation
+    too) through resizes, minimize, fullscreen, `vid_restart`, mode
+    changes and switching it on and off, on RADV and llvmpipe.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -4829,7 +5139,9 @@ Remaining:
      of them gives the same pixels where no world face covers the frame;
      JayRewd's exact early rejects in cgame's mark fragments
      (`R_MarkFragments`, 0.8 %).
-  4. CPU-side frame pacing where the GPU limits (3840x2160 fixed views):
+  4. CPU-side frame pacing where the GPU limits (3840x2160 fixed views;
+     with `r_vkSubmitThread 1` the wait comes at the end of the frame,
+     before the next input instead, see below):
      Vulkan's frame times spread more than GL1's (99th percentile 0.2 to
      0.4 ms higher) while the GPU finishes its frames as evenly as GL1's:
      the fence wait comes before cgame and the front end in the frame
@@ -4852,6 +5164,18 @@ Remaining:
      53 % of the slow frames at 3840x2160): GPU time, see the texture
      compression item below.
 
+- The submit thread (see Performance, Submit thread): not measured on
+  NVIDIA, where its gain was reported (a tester's input to display runs
+  with `libinlat.so` and `INLAT_DISPLAY=1`, the thread on and off, would
+  show whether the hand-off costs anything there), nor on Windows (see
+  [WINDOWS_TESTING.md](WINDOWS_TESTING.md)) or MoltenVK. Its wait for the
+  GPU at the end of the frame, before the next input, took 1.0 to 1.2 ms
+  of input to GPU done off where the GPU limits, at the cost of frame
+  rate where CPU and GPU are about even (the engine's work between frames
+  no longer overlaps the GPU); the same wait without the thread is a
+  candidate, the opposite of item 4 above (which moves the wait later,
+  for even frame starts). Off by default: at 250 frames a second it buys
+  nothing measurable here, uncapped it is the faster mode.
 - Present timing (see Performance, Present timing), pacing changes not
   made, each lowering input to display without adding lag (the waits come
   before the input read): (1) with FIFO, wait before the input read until

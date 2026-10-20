@@ -42,7 +42,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "tr_local.h"
 
-#define VK_MAX_FRAMES				2		// frames in flight
+#define VK_MAX_FRAMES				2		// frames in flight, with or without the submit thread
 #define VK_ACQUIRE_SEMAPHORES		( VK_MAX_FRAMES + 1 )	// see VK_AcquireNextImage in vk.c
 #define VK_MAX_SWAPCHAIN_IMAGES		16
 #define VK_PRESENT_FENCES			16		// presents whose fence may be pending (swapchain_maintenance1)
@@ -272,7 +272,7 @@ typedef struct {
 	VkCommandPool	commandPool;
 	VkCommandBuffer	uploadCmd;		// texture uploads that need no ordering with draws, submitted first
 	VkCommandBuffer	mainCmd;		// everything else, in the order the renderer issued it
-	VkCommandBuffer	presentCmd;		// copy to the swapchain image
+	VkCommandBuffer	presentCmd;		// copy to the swapchain image (recorded by the submit thread with r_vkSubmitThread)
 	VkFence			fence;			// signaled when every submission of the frame has completed
 	VkQueryPool		queryPool;		// VK_NUM_TIMESTAMPS timestamps, when the queue has them
 	uint32_t		timestampsWritten;	// bits of the VK_TS_* recorded in this frame
@@ -343,6 +343,19 @@ typedef struct {
 	uint64_t	gpuMainUs;			// the main command buffer (all segments of the frame)
 	uint64_t	gpuPresentUs;		// the copy to the swapchain image
 	uint64_t	gpuFrameUs;			// start of the main command buffer to the end of the copy
+	// the submit thread (r_vkSubmitThread, vk_submit.c): the main thread's
+	// waits for it, and its own times, taken when the main thread joins a
+	// frame; submits, submitUs, acquireUs and presentUs above are the main
+	// thread's only
+	uint64_t	threadWaitUs;		// the main thread waited for the thread to finish a frame
+	uint64_t	threadFrames;		// frames the thread finished
+	uint64_t	threadStartUs;		// from the hand-off of a frame to the thread starting it
+	uint64_t	threadSubmits;		// vkQueueSubmit calls of the thread
+	uint64_t	threadSubmitUs;
+	uint64_t	threadAcquireUs;	// vkAcquireNextImageKHR on the thread
+	uint64_t	threadPresents;		// vkQueuePresentKHR calls of the thread
+	uint64_t	threadPresentUs;
+	uint64_t	threadCopies;		// frames drawn offscreen and copied by the thread (no image was acquired at the first render pass)
 } vkStats_t;
 
 // a fence that a present signals (VK_KHR/EXT_swapchain_maintenance1) once
@@ -401,6 +414,11 @@ typedef struct {
 	uint32_t			queueFamily;
 	uint32_t			timestampValidBits;	// 0: the queue has no timestamps
 	VkQueue				queue;
+
+	// r_vkSubmitThread: a thread submits and presents the frames and
+	// acquires the swapchain images, and copies a frame drawn offscreen when
+	// no image was acquired by its first render pass (vk_submit.c)
+	qboolean			submitThread;
 
 	// swapchain
 	VkSwapchainKHR		swapchain;
@@ -502,6 +520,7 @@ typedef struct {
 	qboolean			heldImage;
 	uint32_t			heldIndex;
 	int					heldSemaphore;	// index in acquireSemaphores
+	// a ring, used by the submit thread when it runs (vk_submit.c)
 	VkSemaphore			acquireSemaphores[VK_ACQUIRE_SEMAPHORES];
 	uint64_t			acquireWaitSerial[VK_ACQUIRE_SEMAPHORES];	// frame whose submission waited for it, 0 for none
 	int					nextAcquireSemaphore;
@@ -543,6 +562,7 @@ void		VK_CreateSwapchain( void );
 void		VK_DestroySwapchain( void );
 void		VK_DestroyRetiredSwapchains( qboolean wait );
 void		VK_PreparePresentFence( void );
+VkResult	VK_TryPreparePresentFence( void );
 void		VK_PresentFenceUsed( void );
 void		VK_DestroyPresentFences( void );
 const char	*VK_SwapchainPresentModeName( void );
@@ -571,6 +591,18 @@ void		VK_ImageBarrier( VkCommandBuffer cmd, VkImage image, VkImageAspectFlags as
 				VkImageLayout oldLayout, VkImageLayout newLayout,
 				VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
 				VkPipelineStageFlags dstStage, VkAccessFlags dstAccess );
+VkResult	VK_RecordPresentCopy( vkFrame_t *frame, VkCommandBuffer cmd, VkImage image );
+
+// vk_submit.c: the submit thread (r_vkSubmitThread)
+qboolean	VK_StartSubmitThread( void );
+void		VK_StopSubmitThread( void );
+void		VK_QueueSubmitJob( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t numCmds, qboolean present, int image, VkSemaphore acquired );
+void		VK_JoinSubmitJob( int slot );
+void		VK_CollectSubmitJobs( void );
+void		VK_DrainSubmitThread( void );
+qboolean	VK_TakeSubmitThreadImage( uint32_t *index, int *semaphore );
+void		VK_ReclaimSubmitThreadImage( void );
+qboolean	VK_DeferThreadMessage( const char *text );
 
 // vk_image.c
 void		VK_InitTextures( void );
@@ -586,6 +618,7 @@ void		*VK_StagingAlloc( VkDeviceSize size, VkDeviceSize alignment, VkBuffer *buf
 // vk_framelog.c
 extern qboolean	vk_frameLog;	// r_vkFrameLog: the frame log records
 void		VK_FrameLogGpu( uint64_t serial, uint64_t mainStart, uint64_t mainEnd, uint64_t frameEnd, uint64_t mask, double usPerTick );
+void		VK_FrameLogThread( uint64_t serial, uint64_t presentAt, uint64_t startUs, uint64_t submitUs, uint64_t acquireUs, uint64_t presentUs );
 
 // vk_pipeline.c
 typedef struct {
@@ -676,4 +709,5 @@ extern const size_t		vk_spirv_skinned_clip_vert_size;
 // cvars
 extern cvar_t	*r_vkValidation;
 extern cvar_t	*r_vkFallbacks;
+extern cvar_t	*r_vkSubmitThread;
 extern cvar_t	*r_ext_multisample;

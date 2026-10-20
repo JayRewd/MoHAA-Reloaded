@@ -43,11 +43,14 @@ ended on the GPU.
 The causes: each slow frame (above the run's 99th percentile, or --above MS)
 is split into parts that don't overlap (engine, cgame, load, scene, and for
 the Vulkan log the fence wait, flushes, pipeline creation, submit/present/
-acquire and the rest of the back end; for rtimer files the back end with
-the swap) and every part's excess over its median in the run is summed:
-which parts make the slow frames slow. The frame's events (pipelines,
-textures, uploads, allocations, flushes, a vertex buffer grown, the depth
-image or swapchain replaced) are counted too.
+acquire, the wait for the submit thread (r_vkSubmitThread) and the rest of
+the back end; for rtimer files the back end with the swap) and every part's
+excess over its median in the run is summed: which parts make the slow
+frames slow. The frame's events (pipelines, textures, uploads, allocations,
+flushes, a vertex buffer grown, the depth image or swapchain replaced) are
+counted too. With r_vkSubmitThread the log also has the submit thread's
+times for each frame (from the hand-off to its start, its vkQueueSubmit,
+acquire and present), printed as distributions and with the slowest frames.
 
 Input to present: FILE can also be libinlat.so's $INLAT_FRAMES
 (tools/rtimer/inlat.c; perf.py --preload libinlat.so --framelog), every
@@ -81,7 +84,7 @@ import re
 import statistics
 import sys
 
-PARTS_VK = ["engine", "cgame", "load", "scene", "fence", "flush", "pipelines", "swap", "backend"]
+PARTS_VK = ["engine", "cgame", "load", "scene", "fence", "flush", "pipelines", "swap", "thread", "backend"]
 PARTS_RT = ["engine", "cgame", "load", "scene", "backend"]
 EVENTS = [("pipelines", "pipelines"), ("textures", "textures"), ("staging_bytes", "uploads"),
           ("allocations", "allocations"), ("flushes", "flushes"), ("vertex_growth", "vertex buffer grown"),
@@ -150,13 +153,22 @@ class Log:
     def vk_parts(self):
         c = self.cols
         swap = [s + a + aa + p for s, a, aa, p in zip(c["submit"], c["acquire"], c["acquire_ahead"], c["present"])]
+        # r_vkSubmitThread: the main thread waiting for the submit thread
+        thread = self.col("thread_wait")
         backend = []
         for i in range(self.n):
             inside = c["begin"][i] + c["2d"][i] + c["end"][i]
-            backend.append(max(inside - c["fence"][i] - c["flush"][i] - c["pipeline_us"][i] - swap[i], 0))
+            backend.append(max(inside - c["fence"][i] - c["flush"][i] - c["pipeline_us"][i] - swap[i] - thread[i], 0))
         return {"engine": c["engine"], "cgame": c["cgame"], "load": c["load"], "scene": c["scene"],
                 "fence": c["fence"], "flush": c["flush"], "pipelines": c["pipeline_us"], "swap": swap,
-                "backend": backend}
+                "thread": thread, "backend": backend}
+
+    def submit_thread(self):
+        """r_vkSubmitThread: the submit thread's times per frame (us; not the
+        main thread's, so not parts of the frame time), or None"""
+        if not any(self.col("thread_start")):
+            return None
+        return {k: self.col("thread_" + k) for k in ("start", "submit", "acquire", "present")}
 
     def events(self, i):
         out = []
@@ -262,6 +274,9 @@ def frame_text(log, i):
         f"{k} {p[k][i] / 1000:.3f}" for k in p if p[k][i] >= 20)
     if log.kind == "vk" and log.col("gpu_end")[i]:
         s += f"; gpu {log.col('gpu')[i] / 1000:.3f}"
+    st = log.submit_thread() if log.kind == "vk" else None
+    if st:
+        s += "; submit thread " + ", ".join(f"{k} {v[i] / 1000:.3f}" for k, v in st.items())
     ev = log.events(i)
     if ev:
         s += "; " + ", ".join(ev)
@@ -274,6 +289,16 @@ def inlat_values(rows):
     return {"input to present": [p - r for r, p in rows if r],
             "read to read": [b[0] - a[0] for a, b in zip(rows, rows[1:]) if a[0] and b[0]],
             "present to present": [b[1] - a[1] for a, b in zip(rows, rows[1:])]}
+
+
+def submit_thread_text(log, indent):
+    """r_vkSubmitThread: the distributions of the submit thread's times"""
+    st = log.submit_thread()
+    if not st:
+        return
+    names = {"start": "hand-off to start", "submit": "vkQueueSubmit", "acquire": "acquire", "present": "present"}
+    for k, v in st.items():
+        print(f"{indent}submit thread {names[k] + ' ms:':22s} " + dist_line(dist(v)))
 
 
 def summary(log, worst=0, above=None):
@@ -295,6 +320,7 @@ def summary(log, worst=0, above=None):
         if len(gi) > 1:
             print("  GPU end to end ms:     " + dist_line(dist(gi)))
             print("  GPU main pass ms:      " + dist_line(dist([g for g, e in zip(log.col("gpu"), log.col("gpu_end")) if e])))
+        submit_thread_text(log, "  ")
     print("  means ms: " + ", ".join(f"{k} {sum(v) / log.n / 1000:.3f}" for k, v in log.parts.items()))
     print("  slow frames:")
     print(causes_text(log, slow_frames(log, above), "    "), end="")
@@ -369,6 +395,7 @@ def batch(directory, above=None, svg=None, worst=0, labels=None):
                         print("    GPU main pass ms:      " + dist_line(dist(g)))
                         print(f"    GPU idle before a frame: median {statistics.median(gg) / 1000:.3f} ms,"
                               f" mean {sum(gg) / len(gg) / 1000:.3f}")
+                    submit_thread_text(log, "    ")
                     print(causes_text(log, slow_frames(log, above), "    "), end="")
                     if worst:
                         for i in sorted(range(log.n), key=lambda i: -log.interval[i])[:worst]:
