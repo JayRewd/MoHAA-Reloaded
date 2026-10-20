@@ -1311,7 +1311,7 @@ typedef struct {
 	int						frameCount;		// incremented every frame
 	int						sceneCount;		// incremented every scene
 	int						viewCount;		// incremented every view (twice a scene if portaled)
-											// and every R_MarkFragments call
+											// and every R_MarkFragments call not kept (tr_marks.c)
 
 	int						smpFrame;		// toggles from 0 to 1 every endFrame
 
@@ -2016,6 +2016,7 @@ LIGHTS
 */
 
 void R_DlightBmodel( bmodel_t *bmodel );
+void R_ClearLightGridCache(void);
 void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingGridValueFast(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingForDecal(vec3_t vLight, const vec3_t vFacing, const vec3_t vOrigin);
@@ -2093,6 +2094,7 @@ MARKERS, POLYGON PROJECTION ON WORLD POLYGONS
 
 int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projection,
 				   int maxPoints, vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer, float fRadiusSquared);
+void R_ClearMarkFragmentCache( void );
 
 int R_MarkFragmentsForInlineModel(clipHandle_t bmodel, const vec3_t vAngles, const vec3_t vOrigin, int numPoints,
 	const vec3_t* points, const vec3_t projection, int maxPoints, vec3_t pointBuffer,

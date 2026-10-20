@@ -68,6 +68,17 @@ typedef struct poolInfo_s {
     size_t   nFree;
 } poolInfo_t;
 
+// Added in the Metal port
+//  The patches the geomorph and the merge can change, one bit each in the patches' order: drawn in the last
+//  ter_cautiousframes + 10 views, or not reset since they were drawn (not dirty). A patch's bit is set when it is
+//  drawn (R_MarkTerrainPatch) and cleared once it is dirty and out of that window; every other patch did nothing
+//  in R_DoGeomorphs and R_DoTriMerging, which skip them. All are set when the terrain is tessellated anew and when
+//  ter_cautiousframes changes; past TERRAIN_WINDOW_MAX patches every patch is visited.
+#define TERRAIN_WINDOW_MAX 4096
+
+static unsigned int g_terWindow[TERRAIN_WINDOW_MAX / 32];
+static int          g_terWindowCautious;
+
 static int modeTable[8];
 
 terraTri_t    *g_pTris;
@@ -907,6 +918,11 @@ static void R_PreTessellateTerrain()
 
         R_ValidateHeightmapForVertex(pTri);
     }
+
+    // Added in the Metal port
+    //  Every patch is visited once
+    memset(g_terWindow, 0xff, sizeof(g_terWindow));
+    g_terWindowCautious = ter_cautiousframes->integer;
 }
 
 /*
@@ -1029,41 +1045,66 @@ static void R_DoTriSplitting()
 
 /*
 ================
+R_DoGeomorphsPatch
+================
+*/
+static void R_DoGeomorphsPatch(cTerraPatchUnpacked_t *patch)
+{
+    g_vert.iCur = patch->drawinfo.iVertHead;
+
+    if (patch->visCountDraw == g_terVisCount) {
+        if (patch->byDirty) {
+            while (g_vert.iCur) {
+                terrainVert_t *pVert = &g_pVert[g_vert.iCur];
+                R_CalcVertMorphHeight(pVert);
+                g_vert.iCur = pVert->iNext;
+            }
+
+            patch->byDirty = qfalse;
+        } else {
+            while (g_vert.iCur) {
+                terrainVert_t *pVert = &g_pVert[g_vert.iCur];
+                R_UpdateVertMorphHeight(pVert);
+                g_vert.iCur = pVert->iNext;
+            }
+        }
+    } else {
+        if (!patch->byDirty) {
+            patch->byDirty = qtrue;
+            while (g_vert.iCur) {
+                terrainVert_t *pVert = &g_pVert[g_vert.iCur];
+                pVert->xyz[2]        = pVert->fHgtAvg;
+                g_vert.iCur          = pVert->iNext;
+            }
+        }
+    }
+}
+
+/*
+================
 R_DoGeomorphs
 ================
 */
 static void R_DoGeomorphs()
 {
-    for (size_t n = 0; n < tr.world->numTerraPatches; n++) {
-        cTerraPatchUnpacked_t *patch = &tr.world->terraPatches[n];
+    int          w;
+    unsigned int bits;
 
-        g_vert.iCur = patch->drawinfo.iVertHead;
+    if (tr.world->numTerraPatches > TERRAIN_WINDOW_MAX) {
+        for (size_t n = 0; n < tr.world->numTerraPatches; n++) {
+            R_DoGeomorphsPatch(&tr.world->terraPatches[n]);
+        }
+        return;
+    }
 
-        if (patch->visCountDraw == g_terVisCount) {
-            if (patch->byDirty) {
-                while (g_vert.iCur) {
-                    terrainVert_t *pVert = &g_pVert[g_vert.iCur];
-                    R_CalcVertMorphHeight(pVert);
-                    g_vert.iCur = pVert->iNext;
-                }
+    for (w = 0; w * 32 < tr.world->numTerraPatches; w++) {
+        for (bits = g_terWindow[w]; bits; bits &= bits - 1) {
+            int n = w * 32 + __builtin_ctz(bits);
 
-                patch->byDirty = qfalse;
-            } else {
-                while (g_vert.iCur) {
-                    terrainVert_t *pVert = &g_pVert[g_vert.iCur];
-                    R_UpdateVertMorphHeight(pVert);
-                    g_vert.iCur = pVert->iNext;
-                }
+            if (n >= tr.world->numTerraPatches) {
+                break;
             }
-        } else {
-            if (!patch->byDirty) {
-                patch->byDirty = qtrue;
-                while (g_vert.iCur) {
-                    terrainVert_t *pVert = &g_pVert[g_vert.iCur];
-                    pVert->xyz[2]        = pVert->fHgtAvg;
-                    g_vert.iCur          = pVert->iNext;
-                }
-            }
+            R_DoGeomorphsPatch(&tr.world->terraPatches[n]);
         }
     }
 }
@@ -1138,28 +1179,59 @@ static qboolean R_MergeInternalCautious()
 
 /*
 ================
+R_DoTriMergingPatch
+================
+*/
+static void R_DoTriMergingPatch(const cTerraPatchUnpacked_t *patch, int iCautiousFrame)
+{
+    g_tri.iCur = patch->drawinfo.iMergeHead;
+    if (patch->visCountDraw >= iCautiousFrame) {
+        while (g_tri.iCur) {
+            if (!R_MergeInternalCautious()) {
+                g_tri.iCur = g_pTris[g_tri.iCur].iNext;
+            }
+        }
+    } else if (patch->visCountDraw > iCautiousFrame - 10) {
+        while (g_tri.iCur) {
+            if (!R_MergeInternalAggressive()) {
+                g_tri.iCur = g_pTris[g_tri.iCur].iNext;
+            }
+        }
+    }
+}
+
+/*
+================
 R_DoTriMerging
 ================
 */
 static void R_DoTriMerging()
 {
-    int iCautiousFrame = g_terVisCount - ter_cautiousframes->integer;
+    int          iCautiousFrame = g_terVisCount - ter_cautiousframes->integer;
+    int          w;
+    unsigned int bits;
 
-    for (size_t n = 0; n < tr.world->numTerraPatches; n++) {
-        const cTerraPatchUnpacked_t *patch = &tr.world->terraPatches[n];
+    if (tr.world->numTerraPatches > TERRAIN_WINDOW_MAX) {
+        for (size_t n = 0; n < tr.world->numTerraPatches; n++) {
+            R_DoTriMergingPatch(&tr.world->terraPatches[n], iCautiousFrame);
+        }
+        return;
+    }
 
-        g_tri.iCur = patch->drawinfo.iMergeHead;
-        if (patch->visCountDraw >= iCautiousFrame) {
-            while (g_tri.iCur) {
-                if (!R_MergeInternalCautious()) {
-                    g_tri.iCur = g_pTris[g_tri.iCur].iNext;
-                }
+    for (w = 0; w * 32 < tr.world->numTerraPatches; w++) {
+        for (bits = g_terWindow[w]; bits; bits &= bits - 1) {
+            int                          n = w * 32 + __builtin_ctz(bits);
+            const cTerraPatchUnpacked_t *patch;
+
+            if (n >= tr.world->numTerraPatches) {
+                break;
             }
-        } else if (patch->visCountDraw > iCautiousFrame - 10) {
-            while (g_tri.iCur) {
-                if (!R_MergeInternalAggressive()) {
-                    g_tri.iCur = g_pTris[g_tri.iCur].iNext;
-                }
+            patch = &tr.world->terraPatches[n];
+            R_DoTriMergingPatch(patch, iCautiousFrame);
+
+            // out of the window: nothing to do until it is drawn again
+            if (patch->byDirty && patch->visCountDraw <= iCautiousFrame - 10) {
+                g_terWindow[w] &= ~(1u << (n & 31));
             }
         }
     }
@@ -1172,6 +1244,13 @@ R_TessellateTerrain
 */
 void R_TessellateTerrain()
 {
+    // Added in the Metal port
+    //  A larger window may hold patches left out of it
+    if (g_terWindowCautious != ter_cautiousframes->integer) {
+        memset(g_terWindow, 0xff, sizeof(g_terWindow));
+        g_terWindowCautious = ter_cautiousframes->integer;
+    }
+
     R_DoTriSplitting();
     // Morph geometry according to the view
     R_DoGeomorphs();
@@ -1307,6 +1386,15 @@ void R_MarkTerrainPatch(cTerraPatchUnpacked_t *pPatch)
     pPatch->visCountDraw         = g_terVisCount;
     pPatch->pNextActive          = tr.world->activeTerraPatches;
     tr.world->activeTerraPatches = pPatch;
+
+    // Added in the Metal port
+    {
+        int n = pPatch - tr.world->terraPatches;
+
+        if (n < TERRAIN_WINDOW_MAX) {
+            g_terWindow[n >> 5] |= 1u << (n & 31);
+        }
+    }
 }
 
 /*
@@ -1498,6 +1586,10 @@ void R_TerrainRestart_f(void)
     R_TerrainFree();
 
     R_PreTessellateTerrain();
+
+    // Added in the Metal port
+    //  The mark fragments kept for the terrain
+    R_ClearMarkFragmentCache();
 }
 
 /*
@@ -1523,6 +1615,10 @@ void R_CraterTerrain(const vec3_t pos, const vec3_t dir, float fDepth, float fRa
     fArcRadius  = (fRadius * fRadius / fDepth + fDepth) * 0.5;
     fArcSquared = Square(fArcRadius);
     VectorMA(pos, fDepth - fArcRadius, dir, vArcCenter);
+
+    // Added in the Metal port
+    //  The mark fragments kept for the terrain's old heights
+    R_ClearMarkFragmentCache();
 
     for (i = 0; i < tr.world->numTerraPatches; i++) {
         pPatch = &tr.world->terraPatches[i];

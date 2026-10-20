@@ -575,11 +575,11 @@ void R_TessellateMarkFragments(
 
 /*
 =================
-R_MarkFragments
+R_MarkFragmentsWorld
 
 =================
 */
-int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projection,
+static int R_MarkFragmentsWorld( int numPoints, const vec3_t *points, const vec3_t projection,
 				   int maxPoints, vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer, float fRadiusSquared ) {
     int numsurfaces;
 	int i;
@@ -794,6 +794,119 @@ int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projectio
 	}
 	return returnedFragments;
 #endif
+}
+
+/*
+=================
+The mark fragment cache
+
+Added in the Metal port.
+A polygon's fragments on the world depend only on its points, the projection, the buffers' sizes, the radius,
+ter_minMarkRadius and the world's surfaces and terrain: a resting entity's blob shadow asks for the same ones
+every frame. They are kept by the exact bits of those inputs, direct-mapped by a hash of them, and cleared
+when the world loads or the terrain's heights change. A kept answer skips R_MarkFragmentsWorld's view count
+and surface stamps, which only keep a surface from being added twice within one call.
+=================
+*/
+#define MARKCACHE_ENTRIES		64		// a power of two
+#define MARKCACHE_VERTS			8
+#define MARKCACHE_POINTS		64
+#define MARKCACHE_FRAGMENTS		16
+
+typedef struct {
+	int				numPoints;
+	vec3_t			points[MARKCACHE_VERTS];
+	vec3_t			projection;
+	int				maxPoints;
+	int				maxFragments;
+	float			fRadiusSquared;
+	float			minMarkRadius;
+} markCacheKey_t;
+
+typedef struct {
+	markCacheKey_t	key;
+	qboolean		valid;
+	int				numFragments;
+	int				numPoints;
+	vec3_t			points[MARKCACHE_POINTS];
+	markFragment_t	fragments[MARKCACHE_FRAGMENTS];
+} markCacheEntry_t;
+
+static markCacheEntry_t	markCache[MARKCACHE_ENTRIES];
+
+/*
+=================
+R_ClearMarkFragmentCache
+=================
+*/
+void R_ClearMarkFragmentCache( void ) {
+	int		i;
+
+	for ( i = 0 ; i < MARKCACHE_ENTRIES ; i++ ) {
+		markCache[i].valid = qfalse;
+	}
+}
+
+/*
+=================
+R_MarkFragments
+
+=================
+*/
+int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projection,
+				   int maxPoints, vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer, float fRadiusSquared ) {
+	markCacheKey_t		key;
+	markCacheEntry_t	*entry;
+	const unsigned int	*word;
+	unsigned int		hash;
+	int					numFragments, numFragmentPoints;
+	int					i;
+
+	if ( numPoints < 0 || numPoints > MARKCACHE_VERTS ) {
+		return R_MarkFragmentsWorld( numPoints, points, projection, maxPoints, pointBuffer, maxFragments, fragmentBuffer, fRadiusSquared );
+	}
+
+	Com_Memset( &key, 0, sizeof( key ) );
+	key.numPoints = numPoints;
+	Com_Memcpy( key.points, points, numPoints * sizeof( vec3_t ) );
+	VectorCopy( projection, key.projection );
+	key.maxPoints = maxPoints;
+	key.maxFragments = maxFragments;
+	key.fRadiusSquared = fRadiusSquared;
+	key.minMarkRadius = ter_minMarkRadius->value;
+
+	// FNV-1a over the key's words
+	word = (const unsigned int *)&key;
+	hash = 2166136261u;
+	for ( i = 0 ; i < (int)( sizeof( key ) / sizeof( *word ) ) ; i++ ) {
+		hash = ( hash ^ word[i] ) * 16777619u;
+	}
+	entry = &markCache[( hash ^ ( hash >> 16 ) ) & ( MARKCACHE_ENTRIES - 1 )];
+
+	if ( entry->valid && !memcmp( &entry->key, &key, sizeof( key ) ) ) {
+		Com_Memcpy( pointBuffer, entry->points, entry->numPoints * sizeof( vec3_t ) );
+		Com_Memcpy( fragmentBuffer, entry->fragments, entry->numFragments * sizeof( markFragment_t ) );
+		return entry->numFragments;
+	}
+
+	numFragments = R_MarkFragmentsWorld( numPoints, points, projection, maxPoints, pointBuffer, maxFragments, fragmentBuffer, fRadiusSquared );
+
+	// the fragments' points are one run from the buffer's start
+	numFragmentPoints = 0;
+	for ( i = 0 ; i < numFragments ; i++ ) {
+		numFragmentPoints += fragmentBuffer[i].numPoints;
+	}
+
+	if ( numFragments <= MARKCACHE_FRAGMENTS && numFragmentPoints <= MARKCACHE_POINTS ) {
+		entry->key = key;
+		entry->valid = qtrue;
+		entry->numFragments = numFragments;
+		entry->numPoints = numFragmentPoints;
+		Com_Memcpy( entry->points, pointBuffer, numFragmentPoints * sizeof( vec3_t ) );
+		Com_Memcpy( entry->fragments, fragmentBuffer, numFragments * sizeof( markFragment_t ) );
+	}
+
+	return numFragments;
 }
 
 void R_BoxSurfacesForBModel_r(bmodel_t* pBmodel, const vec3_t mins, const vec3_t maxs, surfaceType_t** list, int listsize, int* listlength, const vec3_t dir)

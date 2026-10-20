@@ -119,6 +119,11 @@ cvar_t *ui_timemessage;
 cvar_t *cg_fov;
 cvar_t *cg_cheats;
 
+//
+// Added in the Metal port
+//
+cvar_t *cg_cmNoCurves;
+
 /*
 =================
 CG_RegisterCvars
@@ -216,6 +221,13 @@ void CG_RegisterCvars(void)
 
     cg_fov = cgi.Cvar_Get("cg_fov", "80", CVAR_ARCHIVE);
     cg_cheats = cgi.Cvar_Get("cheats", "0", CVAR_USERINFO | CVAR_SERVERINFO | CVAR_LATCH);
+
+    //
+    // Added in the Metal port
+    //
+
+    // the collision model's (cm_load.c), read by the blob shadow's kept trace
+    cg_cmNoCurves = cgi.Cvar_Get("cm_noCurves", "0", CVAR_CHEAT);
 }
 /*
 ===============

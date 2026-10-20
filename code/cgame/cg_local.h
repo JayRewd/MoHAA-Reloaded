@@ -132,6 +132,14 @@ extern "C" {
         qboolean bFootOnGround_Right;
         qboolean bFootOnGround_Left;
         int      iNextLandTime;
+
+        // Added in the Metal port
+        //  The blob shadow's trace to the ground, kept while the origin it started from is the same
+        //  (it meets only the world)
+        qboolean shadowTraceValid;
+        vec3_t   shadowTraceOrigin;
+        int      shadowTraceNoCurves;
+        trace_t  shadowTrace;
     } centity_t;
 
     //======================================================================
@@ -514,6 +522,11 @@ extern "C" {
     //
     extern cvar_t *cg_fov;
     extern cvar_t *cg_cheats;
+
+    //
+    // Added in the Metal port
+    //
+    extern cvar_t *cg_cmNoCurves;
 
     //
     // cg_main.c

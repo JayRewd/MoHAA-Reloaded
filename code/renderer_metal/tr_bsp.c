@@ -2356,6 +2356,10 @@ void RE_LoadWorldMap( const char *name ) {
 
     Com_Memset( &s_worldData, 0, sizeof( s_worldData ) );
     Q_strncpyz( s_worldData.name, name, sizeof( s_worldData.name ) );
+    // Added in the Metal port
+    //  The mark fragments and the light grid's cells kept for the previous world
+    R_ClearMarkFragmentCache();
+    R_ClearLightGridCache();
 
     Q_strncpyz( s_worldData.baseName, COM_SkipPath( s_worldData.name ), sizeof( s_worldData.name ) );
     COM_StripExtension( s_worldData.baseName, s_worldData.baseName, sizeof(s_worldData.baseName));

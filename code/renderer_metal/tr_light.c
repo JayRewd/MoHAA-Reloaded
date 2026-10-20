@@ -743,78 +743,95 @@ static byte *R_GetLightGridPalettedColor(int iColor)
 
 /*
 ===============
-R_GetLightingGridValue
+The light grid's decoded cells
+
+Added in the Metal port.
+R_GetLightingGridValue reads a cell's eight samples from four run-length coded columns, each walked from its
+start to the cell's row. What it reads depends only on the cell's grid position: per column, either one palette
+color for both rows (one run covers them) or one for each row. The decoded cells are kept, direct-mapped by
+their grid position, and cleared when the world loads; the weights and the sums are computed as before, in the
+same order.
 ===============
 */
-void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight)
+#define LIGHTGRIDCACHE_ENTRIES 256 // a power of two
+
+typedef struct {
+    int      gridPos[3];
+    qboolean valid;
+    byte     bothRows[4]; // the column's two rows are in one run: color[i][0] for both
+    byte     color[4][2]; // palette indexes (0 = no sample), the cell's row and the one above
+} lightGridCell_t;
+
+static lightGridCell_t lightGridCache[LIGHTGRIDCACHE_ENTRIES];
+
+// Added in the Metal port
+//  The grid's value at a resting puff of smoke or piece of debris, asked for every frame: kept by the origin's
+//  exact bits and the grid's variant (R_GetLightingForSmoke still adds the dynamic lights every call)
+#define SMOKELIGHTCACHE_ENTRIES 256 // a power of two
+
+typedef struct {
+    vec3_t   origin;
+    int      smooth;
+    qboolean valid;
+    vec3_t   light;
+} smokeLight_t;
+
+static smokeLight_t smokeLightCache[SMOKELIGHTCACHE_ENTRIES];
+
+/*
+===============
+R_ClearLightGridCache
+===============
+*/
+void R_ClearLightGridCache(void)
 {
-    byte  *pColor;
-    int    iBaseOffset;
-    int    i;
-    int    iOffset;
-    int    iRowPos;
-    int    iData;
-    int    iLen;
-    int    iGridPos[3];
-    int    iArrayXStep;
-    float  fV;
-    float  fFrac[3];
-    float  fOMFrac[3];
-    float  fWeight, fWeight2;
-    float  fTotalFactor;
-    int    iCurData;
-    vec3_t vLightOrigin;
-    byte  *pCurData;
+    int i;
 
-    if (!tr.world || !tr.world->lightGridData || !tr.world->lightGridOffsets) {
-        vLight[0] = vLight[1] = vLight[2] = tr.identityLightByte;
-        return;
+    for (i = 0; i < LIGHTGRIDCACHE_ENTRIES; i++) {
+        lightGridCache[i].valid = qfalse;
     }
-
-    VectorSubtract(vPos, tr.world->lightGridMins, vLightOrigin);
-
-    for (i = 0; i < 3; i++) {
-        fV          = vLightOrigin[i] * tr.world->lightGridOOSize[i];
-        iGridPos[i] = floor(fV);
-        fFrac[i]    = fV - iGridPos[i];
-        fOMFrac[i]  = 1.0 - fFrac[i];
-
-        if (iGridPos[i] < 0) {
-            iGridPos[i] = 0;
-        } else if (iGridPos[i] > tr.world->lightGridBounds[i] - 2) {
-            iGridPos[i] = tr.world->lightGridBounds[i] - 2;
-        }
+    for (i = 0; i < SMOKELIGHTCACHE_ENTRIES; i++) {
+        smokeLightCache[i].valid = qfalse;
     }
+}
 
-    fTotalFactor = 0;
-    iArrayXStep  = tr.world->lightGridBounds[1];
-    iBaseOffset  = tr.world->lightGridBounds[0] + iGridPos[1] + iArrayXStep * iGridPos[0];
-    VectorClear(vLight);
+/*
+===============
+R_DecodeLightGridCell
+===============
+*/
+static void R_DecodeLightGridCell(const int iGridPos[3], lightGridCell_t *pCell)
+{
+    int   iBaseOffset;
+    int   i;
+    int   iOffset;
+    int   iRowPos;
+    int   iData;
+    int   iLen;
+    int   iArrayXStep;
+    int   iCurData;
+    byte *pCurData;
+
+    iArrayXStep = tr.world->lightGridBounds[1];
+    iBaseOffset = tr.world->lightGridBounds[0] + iGridPos[1] + iArrayXStep * iGridPos[0];
 
     for (i = 0; i < 4; i++) {
         qboolean bContinue = qfalse;
 
         switch (i) {
         case 0:
-            fWeight  = fOMFrac[0] * fOMFrac[1] * fOMFrac[2];
-            fWeight2 = fOMFrac[0] * fOMFrac[1] * fFrac[2];
-            iOffset  = tr.world->lightGridOffsets[iBaseOffset] + (tr.world->lightGridOffsets[iGridPos[0]] << 8);
+            iOffset = tr.world->lightGridOffsets[iBaseOffset] + (tr.world->lightGridOffsets[iGridPos[0]] << 8);
             break;
         case 1:
-            fWeight  = fOMFrac[0] * fFrac[1] * fOMFrac[2];
-            fWeight2 = fOMFrac[0] * fFrac[1] * fFrac[2];
-            iOffset  = tr.world->lightGridOffsets[iBaseOffset + 1] + (tr.world->lightGridOffsets[iGridPos[0]] << 8);
+            iOffset = tr.world->lightGridOffsets[iBaseOffset + 1] + (tr.world->lightGridOffsets[iGridPos[0]] << 8);
             break;
         case 2:
-            fWeight  = fFrac[0] * fOMFrac[1] * fOMFrac[2];
-            fWeight2 = fFrac[0] * fOMFrac[1] * fFrac[2];
-            iOffset  = tr.world->lightGridOffsets[iBaseOffset + iArrayXStep]
+            iOffset = tr.world->lightGridOffsets[iBaseOffset + iArrayXStep]
                     + (tr.world->lightGridOffsets[iGridPos[0] + 1] << 8);
             break;
         case 3:
-            fWeight  = fFrac[0] * fFrac[1] * fOMFrac[2];
-            fWeight2 = fFrac[0] * fFrac[1] * fFrac[2];
-            iOffset  = tr.world->lightGridOffsets[iBaseOffset + iArrayXStep + 1]
+        default:
+            iOffset = tr.world->lightGridOffsets[iBaseOffset + iArrayXStep + 1]
                     + (tr.world->lightGridOffsets[iGridPos[0] + 1] << 8);
             break;
         }
@@ -835,22 +852,15 @@ void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight)
                 if (iLen > iRowPos) {
                     iData += iRowPos;
 
-                    if (pCurData[iData]) {
-                        pColor = R_GetLightGridPalettedColor(pCurData[iData]);
-                        VectorMA(vLight, fWeight, pColor, vLight);
-                        fTotalFactor += fWeight;
-                    }
+                    pCell->bothRows[i] = qfalse;
+                    pCell->color[i][0] = pCurData[iData];
 
                     iData++;
                     if (iLen - 1 == iRowPos) {
                         iData++;
                     }
 
-                    if (pCurData[iData]) {
-                        pColor = R_GetLightGridPalettedColor(pCurData[iData]);
-                        VectorMA(vLight, fWeight2, pColor, vLight);
-                        fTotalFactor += fWeight2;
-                    }
+                    pCell->color[i][1] = pCurData[iData];
 
                     bContinue = qtrue;
                     break;
@@ -878,23 +888,107 @@ void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight)
         }
 
         if (iLen - 1 > iRowPos) {
-            if (!pCurData[iData]) {
+            pCell->bothRows[i] = qtrue;
+            pCell->color[i][0] = pCurData[iData];
+            pCell->color[i][1] = 0;
+        } else {
+            pCell->bothRows[i] = qfalse;
+            pCell->color[i][0] = pCurData[iData];
+            pCell->color[i][1] = pCurData[iData + 2];
+        }
+    }
+
+    VectorCopy(iGridPos, pCell->gridPos);
+    pCell->valid = qtrue;
+}
+
+/*
+===============
+R_GetLightingGridValue
+===============
+*/
+void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight)
+{
+    byte            *pColor;
+    int              i;
+    int              iGridPos[3];
+    float            fV;
+    float            fFrac[3];
+    float            fOMFrac[3];
+    float            fWeight, fWeight2;
+    float            fTotalFactor;
+    vec3_t           vLightOrigin;
+    lightGridCell_t *pCell;
+
+    if (!tr.world || !tr.world->lightGridData || !tr.world->lightGridOffsets) {
+        vLight[0] = vLight[1] = vLight[2] = tr.identityLightByte;
+        return;
+    }
+
+    VectorSubtract(vPos, tr.world->lightGridMins, vLightOrigin);
+
+    for (i = 0; i < 3; i++) {
+        fV          = vLightOrigin[i] * tr.world->lightGridOOSize[i];
+        iGridPos[i] = floor(fV);
+        fFrac[i]    = fV - iGridPos[i];
+        fOMFrac[i]  = 1.0 - fFrac[i];
+
+        if (iGridPos[i] < 0) {
+            iGridPos[i] = 0;
+        } else if (iGridPos[i] > tr.world->lightGridBounds[i] - 2) {
+            iGridPos[i] = tr.world->lightGridBounds[i] - 2;
+        }
+    }
+
+    pCell = &lightGridCache
+                 [((unsigned)iGridPos[0] * 73856093u ^ (unsigned)iGridPos[1] * 19349663u ^ (unsigned)iGridPos[2] * 83492791u)
+                  & (LIGHTGRIDCACHE_ENTRIES - 1)];
+    if (!pCell->valid || pCell->gridPos[0] != iGridPos[0] || pCell->gridPos[1] != iGridPos[1]
+        || pCell->gridPos[2] != iGridPos[2]) {
+        R_DecodeLightGridCell(iGridPos, pCell);
+    }
+
+    fTotalFactor = 0;
+    VectorClear(vLight);
+
+    for (i = 0; i < 4; i++) {
+        switch (i) {
+        case 0:
+            fWeight  = fOMFrac[0] * fOMFrac[1] * fOMFrac[2];
+            fWeight2 = fOMFrac[0] * fOMFrac[1] * fFrac[2];
+            break;
+        case 1:
+            fWeight  = fOMFrac[0] * fFrac[1] * fOMFrac[2];
+            fWeight2 = fOMFrac[0] * fFrac[1] * fFrac[2];
+            break;
+        case 2:
+            fWeight  = fFrac[0] * fOMFrac[1] * fOMFrac[2];
+            fWeight2 = fFrac[0] * fOMFrac[1] * fFrac[2];
+            break;
+        case 3:
+        default:
+            fWeight  = fFrac[0] * fFrac[1] * fOMFrac[2];
+            fWeight2 = fFrac[0] * fFrac[1] * fFrac[2];
+            break;
+        }
+
+        if (pCell->bothRows[i]) {
+            if (!pCell->color[i][0]) {
                 continue;
             }
 
-            pColor = R_GetLightGridPalettedColor(pCurData[iData]);
+            pColor = R_GetLightGridPalettedColor(pCell->color[i][0]);
             VectorMA(vLight, fWeight + fWeight2, pColor, vLight);
             fTotalFactor += fWeight + fWeight2;
         } else {
-            if (pCurData[iData]) {
-                pColor = R_GetLightGridPalettedColor(pCurData[iData]);
+            if (pCell->color[i][0]) {
+                pColor = R_GetLightGridPalettedColor(pCell->color[i][0]);
                 VectorMA(vLight, fWeight, pColor, vLight);
                 fTotalFactor += fWeight;
             }
 
-            iData += 2;
-            if (pCurData[iData]) {
-                pColor = R_GetLightGridPalettedColor(pCurData[iData]);
+            if (pCell->color[i][1]) {
+                pColor = R_GetLightGridPalettedColor(pCell->color[i][1]);
                 VectorMA(vLight, fWeight2, pColor, vLight);
                 fTotalFactor += fWeight2;
             }
@@ -1114,16 +1208,32 @@ R_GetLightingForSmoke
 */
 void R_GetLightingForSmoke(vec3_t vLight, const vec3_t vOrigin)
 {
-    int       i;
-    dlight_t *dl;
-    float     power;
-    vec3_t    dir;
-    float     d;
+    int           i;
+    dlight_t     *dl;
+    float         power;
+    vec3_t        dir;
+    float         d;
+    unsigned int  bits[3];
+    smokeLight_t *pCache;
 
-    if (r_smoothsmokelight->integer) {
-        R_GetLightingGridValue(vOrigin, vLight);
+    memcpy(bits, vOrigin, sizeof(bits));
+    pCache = &smokeLightCache
+                 [((bits[0] * 2654435761u) ^ (bits[1] * 40503u) ^ (bits[2] * 2246822519u)) >> 24
+                  & (SMOKELIGHTCACHE_ENTRIES - 1)];
+    if (pCache->valid && !memcmp(pCache->origin, vOrigin, sizeof(vec3_t))
+        && pCache->smooth == r_smoothsmokelight->integer) {
+        VectorCopy(pCache->light, vLight);
     } else {
-        R_GetLightingGridValueFast(vOrigin, vLight);
+        if (r_smoothsmokelight->integer) {
+            R_GetLightingGridValue(vOrigin, vLight);
+        } else {
+            R_GetLightingGridValueFast(vOrigin, vLight);
+        }
+
+        VectorCopy(vOrigin, pCache->origin);
+        pCache->smooth = r_smoothsmokelight->integer;
+        pCache->valid  = qtrue;
+        VectorCopy(vLight, pCache->light);
     }
 
     for (i = 0; i < backEnd.refdef.num_dlights; i++) {

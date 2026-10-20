@@ -593,7 +593,20 @@ qboolean CG_EntityShadow(centity_t *cent, refEntity_t *model)
     VectorCopy(model->origin, end);
     end[2] -= SHADOW_DISTANCE;
 
-    cgi.CM_BoxTrace(&trace, model->origin, end, vec3_origin, vec3_origin, 0, MASK_PLAYERSOLID, qfalse);
+    // Added in the Metal port
+    //  The trace meets only the world, which never moves: the last one is kept while it starts from the
+    //  same origin, to the bit (and cm_noCurves is the same)
+    if (cent->shadowTraceValid && !memcmp(cent->shadowTraceOrigin, model->origin, sizeof(vec3_t))
+        && cent->shadowTraceNoCurves == cg_cmNoCurves->integer) {
+        trace = cent->shadowTrace;
+    } else {
+        cgi.CM_BoxTrace(&trace, model->origin, end, vec3_origin, vec3_origin, 0, MASK_PLAYERSOLID, qfalse);
+
+        cent->shadowTraceValid = qtrue;
+        VectorCopy(model->origin, cent->shadowTraceOrigin);
+        cent->shadowTraceNoCurves = cg_cmNoCurves->integer;
+        cent->shadowTrace         = trace;
+    }
 
     // no shadow if too high
     if (trace.fraction == 1.0) {
