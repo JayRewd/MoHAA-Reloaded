@@ -5,7 +5,9 @@
 
 if(NOT EXISTS "${METAL_BIN}/metal" OR NOT EXISTS "${METAL_BIN}/metallib")
     message(FATAL_ERROR "Metal shader compiler not found in '${METAL_BIN}'.\n"
-        "Mount the Metal Toolchain first:  source port/env.sh && omm_mount_metal")
+        "Install Xcode's Metal Toolchain component (Xcode > Settings > Components), or configure with "
+        "-DMETAL_TOOLCHAIN_BIN=<the folder holding metal and metallib>.\n"
+        "On the developer's machine, mount the Metal Toolchain first:  source port/env.sh && omm_mount_metal")
 endif()
 
 file(MAKE_DIRECTORY ${WORK_DIR})

@@ -60,12 +60,21 @@ set(RENDERER_METAL_SHADERS
     ${RENDERER_METAL_DIR}/shaders/tr_mtl_stage.metal
 )
 
-# Offline shader compilation with the Metal Toolchain (mounted read-only by port/env.sh's omm_mount_metal),
-# embedded in the binary as a C array.
+# Offline shader compilation with the Metal Toolchain, embedded in the binary as a C array. Its folder, unless
+# -DMETAL_TOOLCHAIN_BIN gives one: $OMM_METAL_BIN (port/env.sh: the toolchain mounted read-only by omm_mount_metal),
+# else that mount point if it holds the tools, else the folder of `xcrun -f metallib` (Xcode's Metal Toolchain
+# component; not `xcrun -f metal`, which finds a stub folder without metallib).
 if(DEFINED ENV{OMM_METAL_BIN})
     set(METAL_TOOLCHAIN_BIN_DEFAULT $ENV{OMM_METAL_BIN})
 else()
     set(METAL_TOOLCHAIN_BIN_DEFAULT /Volumes/MetalToolchainCryptex/Metal.xctoolchain/usr/bin)
+    if(NOT EXISTS ${METAL_TOOLCHAIN_BIN_DEFAULT}/metal OR NOT EXISTS ${METAL_TOOLCHAIN_BIN_DEFAULT}/metallib)
+        execute_process(COMMAND xcrun -f metallib
+            OUTPUT_VARIABLE METAL_TOOLCHAIN_METALLIB OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(EXISTS "${METAL_TOOLCHAIN_METALLIB}")
+            get_filename_component(METAL_TOOLCHAIN_BIN_DEFAULT ${METAL_TOOLCHAIN_METALLIB} DIRECTORY)
+        endif()
+    endif()
 endif()
 set(METAL_TOOLCHAIN_BIN ${METAL_TOOLCHAIN_BIN_DEFAULT} CACHE PATH "Folder holding the metal and metallib tools")
 

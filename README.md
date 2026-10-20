@@ -27,17 +27,13 @@ You need:
   brew install cmake ninja bison
   ```
 
-Find the folder that holds the Metal compiler (`metal` and `metallib` must both be in it):
+Then configure, build and install. CMake finds the Metal compiler by itself, in the folder of `xcrun -f metallib`. `CMAKE_DISABLE_FIND_PACKAGE_OpenAL` keeps CMake from picking Apple's OpenAL framework, which lacks headers the game needs (it uses the bundled openal-soft). If CMake doesn't find Homebrew's Bison by itself, add `-DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"`.
 
 ```bash
-xcrun -f metallib
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON
 ```
 
-Then configure, build and install. `METAL_TOOLCHAIN_BIN` is that folder, without the file name: this repository's default points at its developer's own setup. `CMAKE_DISABLE_FIND_PACKAGE_OpenAL` keeps CMake from picking Apple's OpenAL framework, which lacks headers the game needs (it uses the bundled openal-soft). If CMake doesn't find Homebrew's Bison by itself, add `-DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"`. (The developer's machine mounts the same toolchain from a disk image, so this route through Xcode's component wasn't tried there.)
-
-```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON -DMETAL_TOOLCHAIN_BIN="$(dirname "$(xcrun -f metallib)")"
-```
+Only if the build stops with "Metal shader compiler not found" (for example because the Metal Toolchain component was installed after the first configure), pass the folder that holds `metal` and `metallib` yourself: add `-DMETAL_TOOLCHAIN_BIN="$(dirname "$(xcrun -f metallib)")"` to the configure command. (The developer's machine mounts the same toolchain from a disk image, so this route through Xcode's component wasn't tried there.)
 
 ```bash
 cmake --build build
