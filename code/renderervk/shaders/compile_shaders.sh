@@ -16,7 +16,9 @@ SHADERS="generic_vert:generic.vert:
 generic_clip_vert:generic.vert:-DCLIP_DISTANCE
 generic_frag:generic.frag:
 skinned_vert:skinned.vert:
-skinned_clip_vert:skinned.vert:-DCLIP_DISTANCE"
+skinned_clip_vert:skinned.vert:-DCLIP_DISTANCE
+effects_vert:effects.vert:
+effects_clip_vert:effects.vert:-DCLIP_DISTANCE"
 OUT=../vk_shaders.c
 TMP=$OUT.tmp
 

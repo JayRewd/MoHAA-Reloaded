@@ -2081,6 +2081,8 @@ typedef struct shaderCommands_s
 	int			staticStageColor;	// staticColor_t
 	color4ub_t	staticStageConstant;
 	int			staticStageSt[NUM_TEXTURE_BUNDLES];	// staticSt_t
+	int			staticStageFx;		// what the effects shader does to its colors (RB_StaticStageColorFx)
+	const shaderStage_t	*staticFxStage;	// the stage whose bundles STATIC_ST_EFFECTS stands for
 
 	// a batch of skeletal model surfaces skinned on the GPU (tr_skin.c,
 	// STATIC_BATCH_SKINNED; it doesn't fill the vertex arrays either): its
@@ -2116,6 +2118,7 @@ typedef enum {
 } staticColor_t;
 
 extern cvar_t *r_staticGeometry;
+extern cvar_t *r_staticEffects;
 
 void R_BuildStaticGeometry( void );
 void R_FreeStaticGeometry( void );
@@ -2133,8 +2136,30 @@ int RB_StaticTikiIndex( const staticSurface_t *staticSurf );
 void RB_StaticDraw( drawGeometry_t *geometry );
 staticColor_t RB_StaticStageColor( const shaderStage_t *pStage );
 staticSt_t RB_StaticStageSt( const textureBundle_t *bundle );
+int RB_StaticStageColorFx( const shaderStage_t *pStage );
 void RB_StaticStage( shaderStage_t *pStage );
 void RB_CheckOverflow( int verts, int indexes );
+
+// tr_shade_calc.c: the records of the effects shader (shaders/effects.vert)
+#define STATIC_FX_ALPHA_SHIFT	8			// 1 distFade, 2 oneMinusDistFade, 2 bits
+#define STATIC_FX_LIGHTING		( 1 << 10 )	// useSpecialLighting
+// the most frame data words a draw's record takes, with its light list
+#define STATIC_FX_MAX_WORDS		( 128 + 8 + 8 * MAX_DLIGHTS )
+
+// what a unit of an effects draw reads
+typedef enum {
+	STATIC_FX_UNIT_OFF,
+	STATIC_FX_UNIT_TEXTURE,		// the texture coordinates
+	STATIC_FX_UNIT_LIGHTMAP,	// the lightmap coordinates
+	STATIC_FX_UNIT_BUNDLE0,		// what ComputeTexCoords gives bundle 0 of the stage
+	STATIC_FX_UNIT_BUNDLE1
+} staticFxUnit_t;
+
+qboolean RB_StaticFxOn( void );
+qboolean RB_StaticFxDeforms( const shader_t *shader );
+qboolean RB_StaticFxBundle( const textureBundle_t *bundle, qboolean entity );
+int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxUnit_t units[NUM_TEXTURE_BUNDLES], const float *constantColor );
+void R_ClearFxTables( void );
 
 // tr_skin.c
 extern cvar_t *r_gpuSkinning;

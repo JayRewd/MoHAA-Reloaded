@@ -74,8 +74,12 @@ measured from its first frame after loading for `frames` frames (default
 --frames; each frame is 16 ms of the demo).
 
 Each measurement loads the map in a new game (devmap, or spdevmap) with
-`fixedtime 16`, puts the camera at the position like a view list `shot`,
-waits 2 s of game time, then lets N frames run with the frame rate uncapped
+`fixedtime 16` at 250 frames a second (the loading waits count frames;
+after it the cfg sets com_maxfps to --caps' value, else the extra
+arguments', else 0, also for a binary that sets its own: use --caps for
+caps), puts the camera at the
+position like a view list `shot`, waits 2 s of game time, then lets N
+frames run with the frame rate uncapped
 (`com_maxfps 0`, `r_swapInterval 0`, no validation) and measures the wall
 clock time they take. `wait` counts game milliseconds and every frame
 advances the game by 16 ms, so `wait 16*N` is exactly N frames. The console
@@ -195,7 +199,19 @@ def cfg_name(view):
     return "perf_" + re.sub(r"[^A-Za-z0-9_]", "_", view.name) + ".cfg"
 
 
-def write_cfg(view, frames, commands=(), speeds=True, framelog=False):
+def measured_cap(view, extra):
+    """the com_maxfps the frames are measured at: --caps, else the last one
+    of the extra arguments, else 0"""
+    if view.cap is not None:
+        return view.cap
+    cap = "0"
+    for i, a in enumerate(extra[:-2]):
+        if a == "+set" and extra[i + 1] == "com_maxfps":
+            cap = extra[i + 2]
+    return cap
+
+
+def write_cfg(view, frames, commands=(), speeds=True, framelog=False, extra=()):
     frames = view.frames or frames
     start = (["com_speeds 1"] if speeds else []) + ["vkinfo", "echo perf_start", "set rt_record 1"] \
         + (["vkframelog clear"] if framelog else [])
@@ -214,10 +230,14 @@ def write_cfg(view, frames, commands=(), speeds=True, framelog=False):
         cfg = ["set fixedtime 16", f"demo {demo_link(view)}", *commands, "vkinfo", "echo perf_ready",
                *start, f"wait {16 * frames}", *end]
     else:
-        cfg = ["set thereisnomonkey 1", "set fixedtime 16",
+        # loading at 250 frames a second: the waits count frames (fixedtime),
+        # which an uncapped loading screen runs through before the client of
+        # a large map (m6l1a) has connected; then the measured cap
+        cfg = ["set thereisnomonkey 1", "set fixedtime 16", "set com_maxfps 250",
                f"{'spdevmap' if view.sp else 'devmap'} {view.map}", "wait 3000", "finishloadingscreen", "wait 1000",
                "god", "notarget", "noclip", "ui_hud 0", "cg_drawviewmodel 0", *view.setup,
                "tele %s %s %s" % view.pos, "face %s %s %s" % view.angles, *commands,
+               f"set com_maxfps {measured_cap(view, extra)}",
                "vkinfo", "echo perf_ready", "wait 2000", *start, f"wait {16 * frames}", *end]
     os.makedirs(os.path.join(HOMEPATH, "main"), exist_ok=True)
     with open(os.path.join(HOMEPATH, "main", cfg_name(view)), "w") as f:
@@ -580,7 +600,7 @@ def main():
     if args.framelog:
         os.makedirs(args.framelog, exist_ok=True)
     for v in views:
-        write_cfg(v, args.frames, [c.strip() for c in args.exec.split(';') if c.strip()], speeds, bool(args.framelog))
+        write_cfg(v, args.frames, [c.strip() for c in args.exec.split(';') if c.strip()], speeds, bool(args.framelog), extra)
 
     # SIGTERM runs the finally blocks too, so paused processes are continued
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(1))
@@ -614,7 +634,7 @@ def main():
                           + (f" (cpu{res['core'][0]} {100 * res['core'][1]:.0f} %)" if res["core"] else "")
                           + f"  CPU {res['game_cpu']:4.2f} (main {res['main_cpu']:4.2f})"
                           + (f"  gpu frame {gpu_ms(vk, 'gpuFrameUs'):5.3f} (copy {gpu_ms(vk, 'gpuPresentUs'):5.3f})"
-                             f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static, {per_frame(vk, 'skinDraws'):4.0f} skinned) {per_frame(vk, 'renderPasses'):4.2f} passes"
+                             f" {per_frame(vk, 'draws'):5.0f} draws ({per_frame(vk, 'staticDraws'):4.0f} static, {per_frame(vk, 'effectsDraws'):4.0f} of them effects, {per_frame(vk, 'skinDraws'):4.0f} skinned) {per_frame(vk, 'renderPasses'):4.2f} passes"
                              f" {per_frame(vk, 'vertexBytes', 1 / 1024):5.0f} KB" if vk and vk["gpuFrames"] else "")
                           + (f"  map load {res['initcgame']:.3f} s" if res.get("initcgame") is not None else "")
                           + (f"  load: {vl['pipelines']} pipelines {vl['pipelineUs'] / 1000:.0f} ms"

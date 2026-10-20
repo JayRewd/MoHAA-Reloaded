@@ -146,6 +146,8 @@ void R_ClearSkinData( void ) {
 	skinTable = NULL;
 	skinTableSize = skinTableUsed = 0;
 	vk_clear_skin_data();
+	// the effects shader's wave tables
+	R_ClearFxTables();
 }
 
 /*

@@ -137,8 +137,8 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	VkSpecializationMapEntry specEntries[11];
 	VkSpecializationInfo specInfo;
 	VkPipelineShaderStageCreateInfo stages[2];
-	VkVertexInputBindingDescription bindings[4];
-	VkVertexInputAttributeDescription attributes[4];
+	VkVertexInputBindingDescription bindings[5];
+	VkVertexInputAttributeDescription attributes[5];
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly;
 	VkPipelineViewportStateCreateInfo viewportState;
@@ -190,6 +190,8 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
 	if ( bits & VK_PIPE_SKINNED ) {
 		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.skinVertexShaderClip ) ? vk.skinVertexShaderClip : vk.skinVertexShader;
+	} else if ( bits & VK_PIPE_EFFECTS ) {
+		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.effectsVertexShaderClip ) ? vk.effectsVertexShaderClip : vk.effectsVertexShader;
 	} else {
 		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.vertexShaderClip ) ? vk.vertexShaderClip : vk.vertexShader;
 	}
@@ -202,8 +204,11 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 
 	// vertex streams, each in its own binding (see VK_UploadGeometry);
 	// constant colors and missing texture coordinates use a stride of 0
-	// (but see vk.strideZero)
-	for ( i = 0; i < 4; i++ ) {
+	// (but see vk.strideZero). Effects draws read the colors per vertex
+	// (or the constant in their record), both texture coordinate streams of
+	// the static geometry and its normals (VK_BindStaticGeometry): no
+	// stride of 0
+	for ( i = 0; i < 5; i++ ) {
 		bindings[i].binding = i;
 		bindings[i].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 		attributes[i].location = i;
@@ -212,28 +217,29 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	}
 	bindings[0].stride = sizeof( float ) * 3;
 	attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	if ( bits & VK_PIPE_COLOR_ARRAY ) {
+	if ( bits & ( VK_PIPE_COLOR_ARRAY | VK_PIPE_EFFECTS ) ) {
 		bindings[1].stride = 4;
 		attributes[1].format = VK_FORMAT_R8G8B8A8_UNORM;
 	} else {
 		bindings[1].stride = 0;
 		attributes[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
 	}
-	bindings[2].stride = specData.texEnv0 ? sizeof( float ) * 2 : 0;
+	bindings[2].stride = specData.texEnv0 || ( bits & VK_PIPE_EFFECTS ) ? sizeof( float ) * 2 : 0;
 	attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
-	bindings[3].stride = specData.texEnv1 ? sizeof( float ) * 2 : 0;
+	bindings[3].stride = specData.texEnv1 || ( bits & VK_PIPE_EFFECTS ) ? sizeof( float ) * 2 : 0;
 	attributes[3].format = VK_FORMAT_R32G32_SFLOAT;
+	bindings[4].stride = sizeof( float ) * 3;
+	attributes[4].format = VK_FORMAT_R32G32B32_SFLOAT;
 	if ( !vk.strideZero ) {
 		// the portability subset allows no stride of 0 (nor an attribute
 		// beyond the stride without vertexAttributeAccessBeyondStride): those
 		// bindings are read per instance with the size of their attribute as
-		// the stride. Every draw has one instance, the first, so they read
-		// the same bytes
-		bindings[1].stride = bindings[1].stride ? bindings[1].stride : sizeof( float ) * 4;
-		bindings[1].inputRate = ( bits & VK_PIPE_COLOR_ARRAY ) ? VK_VERTEX_INPUT_RATE_VERTEX : VK_VERTEX_INPUT_RATE_INSTANCE;
-		for ( i = 2; i < 4; i++ ) {
+		// the stride. Every draw that has such a binding has one instance,
+		// the first, so they read the same bytes (effects draws, whose
+		// firstInstance is their record, have none)
+		for ( i = 1; i < 4; i++ ) {
 			if ( !bindings[i].stride ) {
-				bindings[i].stride = sizeof( float ) * 2;
+				bindings[i].stride = i == 1 ? sizeof( float ) * 4 : sizeof( float ) * 2;
 				bindings[i].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 			}
 		}
@@ -242,10 +248,11 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	Com_Memset( &vertexInput, 0, sizeof( vertexInput ) );
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	if ( !( bits & VK_PIPE_SKINNED ) ) {
-		// skinned draws read their vertexes from storage buffers
-		vertexInput.vertexBindingDescriptionCount = ARRAY_LEN( bindings );
+		// skinned draws read their vertexes from storage buffers; only
+		// effects draws have normals
+		vertexInput.vertexBindingDescriptionCount = ( bits & VK_PIPE_EFFECTS ) ? 5 : 4;
 		vertexInput.pVertexBindingDescriptions = bindings;
-		vertexInput.vertexAttributeDescriptionCount = ARRAY_LEN( attributes );
+		vertexInput.vertexAttributeDescriptionCount = vertexInput.vertexBindingDescriptionCount;
 		vertexInput.pVertexAttributeDescriptions = attributes;
 	}
 
@@ -890,6 +897,10 @@ void VK_InitPipelines( void ) {
 	if ( vk.enabledFeatures.shaderClipDistance ) {
 		vk.skinVertexShaderClip = VK_CreateShaderModule( vk_spirv_skinned_clip_vert, vk_spirv_skinned_clip_vert_size );
 	}
+	vk.effectsVertexShader = VK_CreateShaderModule( vk_spirv_effects_vert, vk_spirv_effects_vert_size );
+	if ( vk.enabledFeatures.shaderClipDistance ) {
+		vk.effectsVertexShaderClip = VK_CreateShaderModule( vk_spirv_effects_clip_vert, vk_spirv_effects_clip_vert_size );
+	}
 
 	cacheData = VK_ReadPipelineCache( &cacheSize );
 	Com_Memset( &cacheInfo, 0, sizeof( cacheInfo ) );
@@ -951,6 +962,12 @@ void VK_ShutdownPipelines( void ) {
 	if ( vk.skinVertexShaderClip ) {
 		qvkDestroyShaderModule( vk.device, vk.skinVertexShaderClip, NULL );
 	}
+	if ( vk.effectsVertexShader ) {
+		qvkDestroyShaderModule( vk.device, vk.effectsVertexShader, NULL );
+	}
+	if ( vk.effectsVertexShaderClip ) {
+		qvkDestroyShaderModule( vk.device, vk.effectsVertexShaderClip, NULL );
+	}
 	if ( vk.pipelineLayout ) {
 		qvkDestroyPipelineLayout( vk.device, vk.pipelineLayout, NULL );
 	}
@@ -966,6 +983,7 @@ void VK_ShutdownPipelines( void ) {
 	vk.pipelineCache = VK_NULL_HANDLE;
 	vk.vertexShader = vk.vertexShaderClip = vk.fragmentShader = VK_NULL_HANDLE;
 	vk.skinVertexShader = vk.skinVertexShaderClip = VK_NULL_HANDLE;
+	vk.effectsVertexShader = vk.effectsVertexShaderClip = VK_NULL_HANDLE;
 	vk.pipelineLayout = VK_NULL_HANDLE;
 	vk.textureSetLayout = VK_NULL_HANDLE;
 	vk.dlightSetLayout = VK_NULL_HANDLE;

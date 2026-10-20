@@ -280,7 +280,8 @@ typedef enum {
 typedef enum {
 	STATIC_ST_NONE,			// the unit is off
 	STATIC_ST_TEXTURE,
-	STATIC_ST_LIGHTMAP
+	STATIC_ST_LIGHTMAP,
+	STATIC_ST_EFFECTS		// computed by the effects shader (staticFx)
 } staticSt_t;
 
 typedef struct {
@@ -305,12 +306,17 @@ typedef struct {
 	// staticColor is -1); staticSt selects the stream of each unit. With
 	// staticFirstIndex >= 0 the indexes are numIndexes of the static index
 	// stream from there, otherwise those given to vk_draw (reused like the
-	// positions with version)
+	// positions with version). With staticFx >= 0 the effects shader draws
+	// it (shaders/effects.vert) with the record at word staticFx * 8 of the
+	// frame data (vk_alloc_skin_frame), which says what each unit's texture
+	// coordinates are (staticSt is only whether the unit is used) and has
+	// the constant color when staticColor is -1
 	qboolean		isStatic;
 	int				staticVertex;
 	int				staticColor;
 	staticSt_t		staticSt[NUM_TEXTURE_BUNDLES];
 	int				staticFirstIndex;
+	int				staticFx;
 	// a skinned draw (see SKINNED DRAWS below) instead of xyz, colors and
 	// st: vertex i of the indexes is vertex record skinVertex + i of the
 	// skin data, the colors and the texture coordinates of unit 0 (when
@@ -346,6 +352,7 @@ typedef struct {
 	qboolean		dlightBacks;
 	qboolean		colorArray;			// geometry colors per vertex (not the constant color)
 	qboolean		skinned;
+	qboolean		effects;			// from the static geometry with the effects shader (colorArray unused)
 } vkDrawState_t;
 
 qboolean	vk_prebuild_pipeline( const vkDrawState_t *state );
@@ -365,6 +372,7 @@ typedef struct {
 	int				numVertexes;
 	const float		*xyz;				// 3 floats per vertex
 	const float		*st[2];				// 2 floats per vertex: STATIC_ST_TEXTURE, STATIC_ST_LIGHTMAP
+	const float		*normals;			// 3 floats per vertex, for the effects shader
 	int				numColors;
 	const byte		*colors;			// RGBA8
 	int				numIndexes;
@@ -425,6 +433,9 @@ typedef struct {
 
 // whether the device draws skinned draws
 qboolean	vk_skin_available( void );
+// whether the device draws static geometry with the effects shader
+// (drawGeometry_t::staticFx)
+qboolean	vk_effects_available( void );
 // adds words to the skin data; returns the first one, a multiple of 8, or
 // -1 when there is no room left. Draws recorded later in the frame can use them
 int			vk_add_skin_data( const uint32_t *words, int numWords );
@@ -435,6 +446,9 @@ void		vk_clear_skin_data( void );
 // the first word, a multiple of 8, and where to write them, or -1 when the
 // frame has no room left
 int			vk_alloc_skin_frame( int numWords, uint32_t **data );
+// whether numWords more words fit in the current frame's frame data (each
+// allocation starts at a multiple of 8: count its size rounded up to 8)
+qboolean	vk_skin_frame_room( int numWords );
 // a number that changes with every frame (the frame data starts empty);
 // starts the frame
 unsigned int vk_frame_serial( void );

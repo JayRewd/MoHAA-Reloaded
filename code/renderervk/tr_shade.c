@@ -1245,11 +1245,14 @@ tr_staticgeom.c): the same color for every vertex (also for static models'
 vertex alpha, always 255), the vertex colors as they are, or with alpha 255
 (when the batch's vertex alphas are 255), white with the vertex alpha, or
 something only the CPU path gives (per-vertex computations, colors left
-from an earlier batch)
+from an earlier batch). The vertex colors and the constant also stand for
+what the effects shader computes from them (RB_StaticStageColorFx: the
+lighting of a static model from its vertex colors, the alpha of distFade)
 ===============
 */
 staticColor_t RB_StaticStageColor( const shaderStage_t *pStage ) {
 	staticColor_t rgb, alpha;
+	int fx = RB_StaticStageColorFx( pStage );
 
 	// what rgbGen writes, all four channels
 	switch ( pStage->rgbGen ) {
@@ -1274,6 +1277,10 @@ staticColor_t RB_StaticStageColor( const shaderStage_t *pStage ) {
 		break;
 	case CGEN_LIGHTING_SPHERICAL:
 	case CGEN_STATIC:
+		if ( fx & STATIC_FX_LIGHTING ) {
+			rgb = STATIC_COLOR_VERTEX;
+			break;
+		}
 		if ( !r_drawspherelights->integer || !backEnd.currentStaticModel || backEnd.currentStaticModel->useSpecialLighting
 			|| tr.identityLight != 1.0 ) {
 			return STATIC_COLOR_CPU;
@@ -1322,6 +1329,14 @@ staticColor_t RB_StaticStageColor( const shaderStage_t *pStage ) {
 		}
 		alpha = STATIC_COLOR_CONSTANT;
 		break;
+	case AGEN_DIST_FADE:
+	case AGEN_ONE_MINUS_DIST_FADE:
+		// the effects shader replaces the alpha of rgbGen's colors
+		if ( !( fx & ( 3 << STATIC_FX_ALPHA_SHIFT ) ) ) {
+			return STATIC_COLOR_CPU;
+		}
+		alpha = rgb;
+		break;
 	case AGEN_ONE_MINUS_VERTEX:
 	case AGEN_LIGHTING_SPECULAR:
 	case AGEN_PORTAL:
@@ -1329,8 +1344,6 @@ staticColor_t RB_StaticStageColor( const shaderStage_t *pStage ) {
 	case AGEN_ONE_MINUS_DOT:
 	case AGEN_SCOORD:
 	case AGEN_TCOORD:
-	case AGEN_DIST_FADE:
-	case AGEN_ONE_MINUS_DIST_FADE:
 	case AGEN_DOT_VIEW:
 	case AGEN_ONE_MINUS_DOT_VIEW:
 	case AGEN_HEIGHT_FADE:
@@ -1363,15 +1376,46 @@ staticColor_t RB_StaticStageColor( const shaderStage_t *pStage ) {
 
 /*
 ===============
+RB_StaticStageColorFx
+
+What the effects shader computes of ComputeColors for the stage in the
+current static batch (STATIC_FX_*): the useSpecialLighting loop of a static
+model (its vertex colors and the dynamic lights near it), the alpha of
+distFade and oneMinusDistFade
+===============
+*/
+int RB_StaticStageColorFx( const shaderStage_t *pStage ) {
+	int fx = 0;
+
+	if ( !RB_StaticFxOn() ) {
+		return 0;
+	}
+	if ( ( pStage->rgbGen == CGEN_LIGHTING_SPHERICAL || pStage->rgbGen == CGEN_STATIC ) && r_drawspherelights->integer
+		&& backEnd.currentStaticModel && backEnd.currentStaticModel->useSpecialLighting ) {
+		fx |= STATIC_FX_LIGHTING;
+	}
+	// without either the alpha is the same for every vertex, left to the CPU
+	if ( backEnd.currentStaticModel || backEnd.currentEntity ) {
+		if ( pStage->alphaGen == AGEN_DIST_FADE ) {
+			fx |= 1 << STATIC_FX_ALPHA_SHIFT;
+		} else if ( pStage->alphaGen == AGEN_ONE_MINUS_DIST_FADE ) {
+			fx |= 2 << STATIC_FX_ALPHA_SHIFT;
+		}
+	}
+	return fx;
+}
+
+/*
+===============
 RB_StaticStageSt
 
-The static stream ComputeTexCoords gives a bundle, STATIC_ST_NONE when it
-computes them
+The static stream ComputeTexCoords gives a bundle, STATIC_ST_EFFECTS when
+the effects shader computes them, STATIC_ST_NONE when only the CPU does
 ===============
 */
 staticSt_t RB_StaticStageSt( const textureBundle_t *bundle ) {
 	if ( bundle->numTexMods && bundle->texMods[0].type != TMOD_NONE ) {
-		return STATIC_ST_NONE;
+		return RB_StaticFxOn() && RB_StaticFxBundle( bundle, backEnd.currentEntity != NULL ) ? STATIC_ST_EFFECTS : STATIC_ST_NONE;
 	}
 	if ( bundle->tcGen == TCGEN_TEXTURE ) {
 		return STATIC_ST_TEXTURE;
@@ -1379,7 +1423,7 @@ staticSt_t RB_StaticStageSt( const textureBundle_t *bundle ) {
 	if ( bundle->tcGen == TCGEN_LIGHTMAP ) {
 		return STATIC_ST_LIGHTMAP;
 	}
-	return STATIC_ST_NONE;
+	return RB_StaticFxOn() && RB_StaticFxBundle( bundle, backEnd.currentEntity != NULL ) ? STATIC_ST_EFFECTS : STATIC_ST_NONE;
 }
 
 /*
@@ -1399,6 +1443,8 @@ void RB_StaticStage( shaderStage_t *pStage ) {
 	}
 
 	tess.staticStageColor = RB_StaticStageColor( pStage );
+	tess.staticStageFx = RB_StaticStageColorFx( pStage );
+	tess.staticFxStage = pStage;
 	if ( tess.staticStageColor == STATIC_COLOR_CONSTANT ) {
 		int numVertexes = tess.numVertexes;
 
@@ -1511,7 +1557,10 @@ void RB_StageIteratorGeneric( void )
 		input->shaderTime = backEnd.refdef.floatTime - backEnd.shaderStartTime;
 	}
 
-	RB_DeformTessGeometry();
+	// the effects shader deforms static batches (RB_StaticFxRecord)
+	if ( tess.staticBatch != STATIC_BATCH_ON ) {
+		RB_DeformTessGeometry();
+	}
 
 	//
 	// set face culling appropriately

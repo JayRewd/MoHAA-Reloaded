@@ -37,8 +37,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //  - where the shader is drawn: in 2D (RB_StretchPic: depth test off unless
 //    the stage has a second texture; the cull Set2DWindow leaves, none, or
 //    the shader's), in a 3D view on the CPU (colors per vertex), from the
-//    static geometry (colors per vertex or a constant), skinned (the
-//    vertex-lit iterator, tr_skin.c);
+//    static geometry (colors per vertex or a constant), from it with the
+//    effects shader (deforms, tcGen and tcMod, distFade, static models'
+//    dynamic lights: tr_staticgeom.c), skinned (the vertex-lit iterator,
+//    tr_skin.c);
 //  - fog: off, or the stage's GLS_FOG_ENABLED (GL_State keeps the fog of
 //    the previous state when the bit doesn't change, and Set2DWindow turns
 //    it off behind its back, so a fogged stage can draw without it); the
@@ -196,11 +198,46 @@ static qboolean R_StageMayBeConstant( const shaderStage_t *pStage ) {
 	}
 }
 
+/*
+===============
+R_StageMayBeEffects
+
+Whether a stage can be drawn from the static geometry with the effects
+shader in some batch (RB_StaticBatchAllowed, RB_StaticDraw): the shader's
+deforms, the texture coordinates of a bundle, distFade, or the lighting of
+a static model with dynamic lights near it
+===============
+*/
+static qboolean R_StageMayBeEffects( const shader_t *shader, const shaderStage_t *pStage, qboolean vertexLit ) {
+	int b;
+
+	if ( shader->numDeforms ) {
+		return !vertexLit && RB_StaticFxDeforms( shader );
+	}
+	if ( pStage->rgbGen == CGEN_LIGHTING_SPHERICAL || pStage->rgbGen == CGEN_STATIC
+		|| pStage->alphaGen == AGEN_DIST_FADE || pStage->alphaGen == AGEN_ONE_MINUS_DIST_FADE ) {
+		return qtrue;
+	}
+	if ( vertexLit ) {
+		return qfalse;
+	}
+	for ( b = 0; b < NUM_TEXTURE_BUNDLES && pStage->bundle[b].image[0]; b++ ) {
+		const textureBundle_t *bundle = &pStage->bundle[b];
+
+		if ( ( ( bundle->numTexMods && bundle->texMods[0].type != TMOD_NONE )
+			|| ( bundle->tcGen != TCGEN_TEXTURE && bundle->tcGen != TCGEN_LIGHTMAP ) ) && RB_StaticFxBundle( bundle, qtrue ) ) {
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
 // where a shader is drawn
 #define PB_2D			1	// by the 2D calls
 #define PB_CPU			2	// in a 3D view, through tess on the CPU: colors per vertex
 #define PB_STATIC		4	// from the static geometry: colors per vertex or a constant
 #define PB_SKINNED		8	// skinned on the GPU (tr_skin.c)
+#define PB_EFFECTS		16	// from the static geometry with the effects shader
 
 /*
 ===============
@@ -216,7 +253,7 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 	vkDrawState_t ds;
 	int place, n = 0;
 
-	for ( place = PB_2D; place <= PB_SKINNED; place <<= 1 ) {
+	for ( place = PB_2D; place <= PB_EFFECTS; place <<= 1 ) {
 		int dlightTmu = -1, cull, numCulls, lights;
 
 		if ( !( where & place ) ) {
@@ -227,6 +264,9 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 		if ( place == PB_STATIC && !R_StageMayBeConstant( pStage ) ) {
 			continue;
 		}
+		if ( place == PB_EFFECTS && !R_StageMayBeEffects( shader, pStage, vertexLit ) ) {
+			continue;
+		}
 
 		Com_Memset( &ds, 0, sizeof( ds ) );
 		ds.prim = PRIM_TRIANGLES;
@@ -234,7 +274,8 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 		ds.texEnv[0] = R_StateTexEnv( pStage->stateBits );
 		ds.texEnv[1] = TEXENV_MODULATE;
 		ds.skinned = place == PB_SKINNED;
-		ds.colorArray = place != PB_STATIC;
+		ds.effects = place == PB_EFFECTS;
+		ds.colorArray = place != PB_STATIC && place != PB_EFFECTS;
 		// the generic iterator sets the shader's (the vertex-lit one is
 		// only chosen without it)
 		ds.polygonOffset = shader->polygonOffset && !vertexLit;
@@ -414,9 +455,14 @@ static int R_PrebuildShader( const shader_t *shader ) {
 	} else {
 		where = PB_CPU;
 		// the static geometry: world surfaces and static models (registered
-		// with the map), without deforms or the sky
-		if ( !shader->numDeforms && !shader->isSky && !r_prebuilt ) {
-			where |= PB_STATIC;
+		// with the map), not the sky; deforms only with the effects shader
+		if ( !shader->isSky && !r_prebuilt ) {
+			if ( !shader->numDeforms ) {
+				where |= PB_STATIC;
+			}
+			if ( r_staticEffects->integer && vk_effects_available() ) {
+				where |= PB_EFFECTS;
+			}
 		}
 	}
 

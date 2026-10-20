@@ -1906,3 +1906,632 @@ void RB_CalcDiffuseColor( unsigned char *colors )
 	}
 }
 
+
+/*
+====================================================================
+
+STATIC GEOMETRY EFFECTS
+
+The deforms, texture coordinates and colors above, for batches drawn from
+the static geometry (tr_staticgeom.c): what doesn't depend on the vertex
+is computed here, the same way, into a record of the frame data that
+shaders/effects.vert reads, which does the rest per vertex (from JayRewd's
+b26d8a67).
+
+Record, 128 words: flags (number of deforms, STATIC_FX_ALPHA_SHIFT,
+STATIC_FX_LIGHTING, FX_CONSTANT_COLOR, FX_OVERBRIGHT), the first word of
+the wave tables in the skin data, the first word of the light list in the
+frame data, at word 4 the view origin in the model's space,
+tr.overbrightMult, the eye position and the distances of distFade; at word
+16, 3 deforms of 8 words; at word 40, 2 units of 40 words: source, number
+of modifiers, the vectors of tcGen vector, then 4 modifiers of 8 words; at
+word 120 the draw's constant color (FX_CONSTANT_COLOR: the draw has no
+colors per vertex). Light list: the number of lights, then from word 8 one
+light per 8 words: origin in the model's space, 7500 * radius as a
+float-float, color.
+
+====================================================================
+*/
+
+#define FX_WORDS			128
+#define FX_COLOR			120
+#define FX_CONSTANT_COLOR	( 1 << 11 )
+#define FX_OVERBRIGHT		( 1 << 17 )
+
+enum {
+	FX_DEFORM_WAVE_CONST = 1,
+	FX_DEFORM_WAVE,
+	FX_DEFORM_FLAP_S,
+	FX_DEFORM_FLAP_T,
+	FX_DEFORM_BULGE,
+	FX_DEFORM_MOVE
+};
+
+enum {
+	FX_TC_TEXTURE = 1,
+	FX_TC_LIGHTMAP,
+	FX_TC_IDENTITY,
+	FX_TC_ENVIRONMENT,
+	FX_TC_ENVIRONMENT2,
+	FX_TC_VECTOR
+};
+
+enum {
+	FX_TMOD_ADD = 1,
+	FX_TMOD_SCALE,
+	FX_TMOD_TRANSFORM,
+	FX_TMOD_TURB
+};
+
+// word of the wave tables in the skin data, -1 until added
+static int fxTables = -1;
+
+// the last record (RB_StaticFxRecord): a draw that would write the same
+// words in the same frame uses it again
+static struct {
+	unsigned	serial;
+	int			offset;		// -1: none
+	int			lightWords;
+	uint32_t	words[FX_WORDS];
+	uint32_t	lights[8 + 8 * MAX_DLIGHTS];
+} fxCache = { 0, -1 };
+
+/*
+===============
+R_ClearFxTables
+
+The skin data was cleared (a new map, or vid_restart, which starts the
+frame serials again)
+===============
+*/
+void R_ClearFxTables( void ) {
+	fxTables = -1;
+	fxCache.offset = -1;
+}
+
+// the order of the tables in the skin data, -1 for a function TableForFunc
+// doesn't know
+static int RB_FxTable( genFunc_t func ) {
+	switch ( func ) {
+	case GF_SIN:
+		return 0;
+	case GF_TRIANGLE:
+		return 1;
+	case GF_SQUARE:
+		return 2;
+	case GF_SAWTOOTH:
+		return 3;
+	case GF_INVERSE_SAWTOOTH:
+		return 4;
+	default:
+		return -1;
+	}
+}
+
+/*
+===============
+RB_StaticFxOn
+
+Whether static batches can use the effects shader: the device has it, and
+the wave tables are in the skin data
+===============
+*/
+qboolean RB_StaticFxOn( void ) {
+	if ( !r_staticEffects->integer || !vk_effects_available() ) {
+		return qfalse;
+	}
+	if ( fxTables < 0 ) {
+		uint32_t words[5 * FUNCTABLE_SIZE];
+
+		Com_Memcpy( words, tr.sinTable, sizeof( tr.sinTable ) );
+		Com_Memcpy( words + FUNCTABLE_SIZE, tr.triangleTable, sizeof( tr.triangleTable ) );
+		Com_Memcpy( words + 2 * FUNCTABLE_SIZE, tr.squareTable, sizeof( tr.squareTable ) );
+		Com_Memcpy( words + 3 * FUNCTABLE_SIZE, tr.sawToothTable, sizeof( tr.sawToothTable ) );
+		Com_Memcpy( words + 4 * FUNCTABLE_SIZE, tr.inverseSawToothTable, sizeof( tr.inverseSawToothTable ) );
+		fxTables = vk_add_skin_data( words, ARRAY_LEN( words ) );
+	}
+	return fxTables >= 0;
+}
+
+/*
+===============
+RB_StaticFxDeforms
+
+Whether the effects shader does all the deforms of a shader
+===============
+*/
+qboolean RB_StaticFxDeforms( const shader_t *shader ) {
+	int i;
+
+	for ( i = 0; i < shader->numDeforms; i++ ) {
+		const deformStage_t *ds = &shader->deforms[i];
+
+		switch ( ds->deformation ) {
+		case DEFORM_NONE:
+		case DEFORM_BULGE:
+			break;
+		case DEFORM_WAVE:
+		case DEFORM_MOVE:
+		case DEFORM_FLAP_S:
+		case DEFORM_FLAP_T:
+			if ( RB_FxTable( ds->deformationWave.func ) < 0 ) {
+				return qfalse;
+			}
+			break;
+		default:
+			// normals (noise), autosprites, light glows: the CPU
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+
+/*
+===============
+RB_StaticFxBundle
+
+Whether the effects shader computes what ComputeTexCoords gives a bundle
+(entity: drawn with backEnd.currentEntity set)
+===============
+*/
+qboolean RB_StaticFxBundle( const textureBundle_t *bundle, qboolean entity ) {
+	int tm;
+
+	switch ( bundle->tcGen ) {
+	case TCGEN_TEXTURE:
+	case TCGEN_LIGHTMAP:
+	case TCGEN_IDENTITY:
+	case TCGEN_ENVIRONMENT_MAPPED:
+	case TCGEN_ENVIRONMENT_MAPPED2:
+	case TCGEN_VECTOR:
+		break;
+	default:
+		return qfalse;
+	}
+
+	for ( tm = 0; tm < bundle->numTexMods; tm++ ) {
+		const texModInfo_t *tmi = &bundle->texMods[tm];
+
+		switch ( tmi->type ) {
+		case TMOD_NONE:
+			return qtrue;
+		case TMOD_TURBULENT:
+		case TMOD_SCROLL:
+		case TMOD_SCALE:
+		case TMOD_TRANSFORM:
+		case TMOD_ROTATE:
+		case TMOD_OFFSET:
+		case TMOD_PARALLAX:
+		case TMOD_BULGETRANS:
+			break;
+		case TMOD_ENTITY_TRANSLATE:
+			if ( !entity ) {
+				return qfalse;
+			}
+			break;
+		case TMOD_STRETCH:
+		case TMOD_WAVETRANS:
+		case TMOD_WAVETRANT:
+			if ( RB_FxTable( tmi->wave.func ) < 0 ) {
+				return qfalse;
+			}
+			break;
+		default:
+			// noise and macro: the CPU (a warning, the image size)
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+
+// the wave parameters as RB_CalcDeformVertexes and RB_CalcFlapVertexes
+// choose them (frequencyData: the cvar a frequency of 1234567 takes)
+static void RB_FxWaveParams( const waveForm_t *wf, const cvar_t *frequencyData, float *base, float *amplitude, float *phase, float *frequency ) {
+	if ( wf->base != 1234567.0f ) {
+		*base = wf->base;
+	} else if ( backEnd.currentEntity ) {
+		*base = (float)backEnd.currentEntity->e.surfaces[0] / 16.0 - 8.0;
+	} else {
+		*base = r_static_shaderdata0->value;
+	}
+
+	if ( wf->amplitude != 1234567.0f ) {
+		*amplitude = wf->amplitude;
+	} else if ( backEnd.currentEntity ) {
+		*amplitude = (float)backEnd.currentEntity->e.surfaces[1] / 16.0;
+	} else {
+		*amplitude = r_static_shaderdata1->value;
+	}
+
+	if ( wf->phase != 1234567.0f ) {
+		*phase = wf->phase;
+	} else if ( backEnd.currentEntity ) {
+		*phase = (float)backEnd.currentEntity->e.surfaces[2] / 16.0 - 8.0;
+	} else {
+		*phase = r_static_shaderdata2->value;
+	}
+
+	if ( wf->frequency != 1234567.0f ) {
+		*frequency = wf->frequency;
+	} else if ( backEnd.currentEntity ) {
+		*frequency = (float)backEnd.currentEntity->e.surfaces[3] / 16.0;
+	} else {
+		*frequency = frequencyData->value;
+	}
+
+	if ( !backEnd.currentEntity ) {
+		*base = *base * r_static_shadermultiplier0->value;
+		*amplitude = *amplitude * r_static_shadermultiplier1->value;
+		*phase = *phase * r_static_shadermultiplier2->value;
+		*frequency = *frequency * r_static_shadermultiplier3->value;
+	}
+}
+
+static void RB_FxDeform( uint32_t *w, const deformStage_t *ds ) {
+	float *f = (float *)w;
+	float base, amplitude, phase, frequency;
+
+	switch ( ds->deformation ) {
+	case DEFORM_WAVE:
+		RB_FxWaveParams( &ds->deformationWave, r_static_shaderdata1, &base, &amplitude, &phase, &frequency );
+		if ( frequency == 0 ) {
+			w[0] = FX_DEFORM_WAVE_CONST;
+			f[1] = EvalWaveForm( &ds->deformationWave );
+		} else {
+			w[0] = FX_DEFORM_WAVE;
+			w[1] = RB_FxTable( ds->deformationWave.func );
+			f[2] = base;
+			f[3] = amplitude;
+			f[4] = phase;
+			f[5] = tess.shaderTime * frequency;
+			f[6] = ds->deformationSpread;
+		}
+		break;
+	case DEFORM_FLAP_S:
+	case DEFORM_FLAP_T:
+		RB_FxWaveParams( &ds->deformationWave, r_static_shaderdata3, &base, &amplitude, &phase, &frequency );
+		w[0] = ds->deformation == DEFORM_FLAP_S ? FX_DEFORM_FLAP_S : FX_DEFORM_FLAP_T;
+		if ( frequency ) {
+			float *table = TableForFunc( ds->deformationWave.func );
+
+			f[1] = WAVEVALUE( table, base, amplitude, phase, frequency );
+		} else {
+			f[1] = EvalWaveForm( &ds->deformationWave );
+		}
+		f[2] = ds->bulgeWidth;
+		f[3] = ds->bulgeHeight;
+		break;
+	case DEFORM_BULGE:
+		w[0] = FX_DEFORM_BULGE;
+		f[1] = backEnd.refdef.time * ds->bulgeSpeed * 0.001f;
+		f[2] = ds->bulgeWidth;
+		f[3] = ds->bulgeHeight;
+		break;
+	case DEFORM_MOVE: {
+		float *table = TableForFunc( ds->deformationWave.func );
+		float scale = WAVEVALUE( table, ds->deformationWave.base, ds->deformationWave.amplitude,
+			ds->deformationWave.phase, ds->deformationWave.frequency );
+
+		w[0] = FX_DEFORM_MOVE;
+		VectorScale( ds->moveVector, scale, &f[1] );
+		break;
+	}
+	default:
+		w[0] = 0;
+		break;
+	}
+}
+
+static void RB_FxTransform( uint32_t *w, const texModInfo_t *tmi ) {
+	float *f = (float *)w;
+
+	w[0] = FX_TMOD_TRANSFORM;
+	f[1] = tmi->matrix[0][0];
+	f[2] = tmi->matrix[1][0];
+	f[3] = tmi->translate[0];
+	f[4] = tmi->matrix[0][1];
+	f[5] = tmi->matrix[1][1];
+	f[6] = tmi->translate[1];
+}
+
+static void RB_FxAdd( uint32_t *w, float s, float t ) {
+	float *f = (float *)w;
+
+	w[0] = FX_TMOD_ADD;
+	f[1] = s;
+	f[2] = t;
+}
+
+// RB_CalcScrollTexCoords' offsets
+static void RB_FxScroll( uint32_t *w, const float scrollSpeed[2] ) {
+	float timeScale = tess.shaderTime;
+	float adjustedScrollS, adjustedScrollT;
+
+	adjustedScrollS = scrollSpeed[0] * timeScale;
+	adjustedScrollT = scrollSpeed[1] * timeScale;
+	adjustedScrollS = adjustedScrollS - floor( adjustedScrollS );
+	adjustedScrollT = adjustedScrollT - floor( adjustedScrollT );
+	RB_FxAdd( w, adjustedScrollS, adjustedScrollT );
+}
+
+// the unit's source and modifiers
+static void RB_FxUnit( uint32_t *w, const textureBundle_t *bundle ) {
+	float *f = (float *)w;
+	int tm, n;
+
+	switch ( bundle->tcGen ) {
+	case TCGEN_TEXTURE:
+		w[0] = FX_TC_TEXTURE;
+		break;
+	case TCGEN_LIGHTMAP:
+		w[0] = FX_TC_LIGHTMAP;
+		break;
+	case TCGEN_ENVIRONMENT_MAPPED:
+		w[0] = FX_TC_ENVIRONMENT;
+		break;
+	case TCGEN_ENVIRONMENT_MAPPED2:
+		w[0] = FX_TC_ENVIRONMENT2;
+		break;
+	case TCGEN_VECTOR:
+		w[0] = FX_TC_VECTOR;
+		VectorCopy( bundle->tcGenVectors[0], &f[2] );
+		VectorCopy( bundle->tcGenVectors[1], &f[5] );
+		break;
+	default:
+		w[0] = FX_TC_IDENTITY;
+		break;
+	}
+
+	for ( tm = n = 0; tm < bundle->numTexMods && n < TR_MAX_TEXMODS; tm++ ) {
+		const texModInfo_t *tmi = &bundle->texMods[tm];
+		uint32_t *m = &w[8 + n * 8];
+		float *mf = (float *)m;
+		texModInfo_t t;
+
+		switch ( tmi->type ) {
+		case TMOD_NONE:
+			tm = bundle->numTexMods;
+			continue;
+		case TMOD_TURBULENT:
+			m[0] = FX_TMOD_TURB;
+			mf[1] = tmi->wave.phase + tess.shaderTime * tmi->wave.frequency;
+			mf[2] = tmi->wave.amplitude;
+			break;
+		case TMOD_ENTITY_TRANSLATE:
+			RB_FxScroll( m, backEnd.currentEntity->e.shaderTexCoord );
+			break;
+		case TMOD_SCROLL:
+			RB_FxScroll( m, tmi->scroll );
+			break;
+		case TMOD_SCALE:
+			m[0] = FX_TMOD_SCALE;
+			mf[1] = tmi->scale[0];
+			mf[2] = tmi->scale[1];
+			break;
+		case TMOD_STRETCH: {
+			// RB_CalcStretchTexCoords
+			float p = 1.0f / EvalWaveForm( &tmi->wave );
+
+			t.matrix[0][0] = p;
+			t.matrix[1][0] = 0;
+			t.translate[0] = 0.5f - 0.5f * p;
+			t.matrix[0][1] = 0;
+			t.matrix[1][1] = p;
+			t.translate[1] = 0.5f - 0.5f * p;
+			RB_FxTransform( m, &t );
+			break;
+		}
+		case TMOD_TRANSFORM:
+			RB_FxTransform( m, tmi );
+			break;
+		case TMOD_ROTATE: {
+			// RB_CalcRotateTexCoords
+			float degs;
+			int index;
+			float sinValue, cosValue;
+
+			if ( tmi->rotateSpeed != 1234567 ) {
+				degs = -tmi->rotateSpeed * tmi->rotateCoef * tess.shaderTime - tmi->rotateStart;
+			} else if ( backEnd.currentEntity ) {
+				degs = -backEnd.currentEntity->e.shader_data[0] * tmi->rotateCoef * tess.shaderTime - tmi->rotateStart;
+			} else {
+				degs = r_static_shaderdata0->value;
+			}
+			if ( !backEnd.currentEntity ) {
+				degs *= r_static_shadermultiplier0->value;
+			}
+			index = degs * ( FUNCTABLE_SIZE / 360.0f );
+			sinValue = tr.sinTable[index & FUNCTABLE_MASK];
+			cosValue = tr.sinTable[( index + FUNCTABLE_SIZE / 4 ) & FUNCTABLE_MASK];
+			t.matrix[0][0] = cosValue;
+			t.matrix[1][0] = -sinValue;
+			t.translate[0] = 0.5 - 0.5 * cosValue + 0.5 * sinValue;
+			t.matrix[0][1] = sinValue;
+			t.matrix[1][1] = cosValue;
+			t.translate[1] = 0.5 - 0.5 * sinValue - 0.5 * cosValue;
+			RB_FxTransform( m, &t );
+			break;
+		}
+		case TMOD_OFFSET: {
+			// RB_CalcOffsetTexCoords
+			const float *offset = tmi->scroll;
+			float offsetS, offsetT;
+
+			if ( offset[0] != 1234567 ) {
+				offsetS = offset[0];
+			} else if ( backEnd.currentEntity ) {
+				offsetS = backEnd.currentEntity->e.shader_data[0];
+			} else {
+				offsetS = r_static_shaderdata0->value;
+			}
+			if ( offset[0] != 1234567 ) {
+				offsetT = offset[1];
+			} else if ( backEnd.currentEntity ) {
+				offsetT = backEnd.currentEntity->e.shader_data[1];
+			} else {
+				offsetT = r_static_shaderdata1->value;
+			}
+			if ( !backEnd.currentEntity ) {
+				offsetS = offsetS * r_static_shadermultiplier0->value;
+				offsetT = offsetT * r_static_shadermultiplier1->value;
+			}
+			RB_FxAdd( m, offsetS, offsetT );
+			break;
+		}
+		case TMOD_PARALLAX:
+			RB_FxAdd( m, tr.refdef.vieworg[0] * tmi->rate[0], tr.refdef.vieworg[1] * tmi->rate[1] );
+			break;
+		case TMOD_WAVETRANS:
+			RB_FxAdd( m, EvalWaveForm( &tmi->wave ), 0 );
+			break;
+		case TMOD_WAVETRANT:
+			RB_FxAdd( m, 0, EvalWaveForm( &tmi->wave ) );
+			break;
+		default:
+			// TMOD_BULGETRANS changes nothing
+			continue;
+		}
+		n++;
+	}
+	w[1] = n;
+}
+
+/*
+===============
+RB_StaticFxRecord
+
+The record of a draw of the current static batch with the stage's effects
+(colorFx: RB_StaticStageColorFx) and its constant color (NULL: the colors
+per vertex): returns it (word / 8 in the frame data), -1 when the frame data
+is full (RB_StaticBatchAllowed made sure it isn't)
+===============
+*/
+int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxUnit_t units[NUM_TEXTURE_BUNDLES], const float *constantColor ) {
+	uint32_t local[FX_WORDS];
+	uint32_t lightLocal[8 + 8 * MAX_DLIGHTS];
+	uint32_t *w;
+	float *f;
+	int first, i, lightWords;
+
+	w = local;
+	f = (float *)w;
+	Com_Memset( w, 0, FX_WORDS * sizeof( *w ) );
+	lightWords = 0;
+
+	w[0] = colorFx;
+	w[1] = fxTables;
+	VectorCopy( backEnd.ori.viewOrigin, &f[4] );
+	f[7] = tr.overbrightMult;
+	if ( tr.overbrightShift ) {
+		w[0] |= FX_OVERBRIGHT;
+	}
+	if ( constantColor ) {
+		w[0] |= FX_CONSTANT_COLOR;
+		Vector4Copy( constantColor, &f[FX_COLOR] );
+	}
+
+	// the deforms of the generic stage iterator (RB_StaticBatchAllowed
+	// takes no others with deforms)
+	if ( tess.currentStageIteratorFunc == RB_StageIteratorGeneric ) {
+		for ( i = 0; i < tess.shader->numDeforms; i++ ) {
+			RB_FxDeform( &w[16 + i * 8], &tess.shader->deforms[i] );
+		}
+		w[0] |= tess.shader->numDeforms;
+	}
+
+	if ( colorFx & ( 3 << STATIC_FX_ALPHA_SHIFT ) ) {
+		// ComputeColors' eye position in the model's space
+		vec3_t v;
+
+		if ( backEnd.currentStaticModel ) {
+			VectorSubtract( backEnd.viewParms.ori.origin, backEnd.currentStaticModel->origin, v );
+			f[8] = DotProduct( v, backEnd.currentStaticModel->axis[0] );
+			f[9] = DotProduct( v, backEnd.currentStaticModel->axis[1] );
+			f[10] = DotProduct( v, backEnd.currentStaticModel->axis[2] );
+		} else {
+			VectorSubtract( backEnd.viewParms.ori.origin, backEnd.currentEntity->e.origin, v );
+			f[8] = DotProduct( v, backEnd.currentEntity->e.axis[0] );
+			f[9] = DotProduct( v, backEnd.currentEntity->e.axis[1] );
+			f[10] = DotProduct( v, backEnd.currentEntity->e.axis[2] );
+		}
+		f[11] = tess.shader->fDistNear;
+		f[12] = tess.shader->fDistRange;
+	}
+
+	if ( colorFx & STATIC_FX_LIGHTING ) {
+		const cStaticModelUnpacked_t *sm = backEnd.currentStaticModel;
+		uint32_t *l = lightLocal;
+		float *lf = (float *)l;
+		int j;
+
+		lightWords = 8 + 8 * sm->numdlights;
+		if ( lightWords > (int)ARRAY_LEN( lightLocal ) ) {
+			return -1;
+		}
+		Com_Memset( l, 0, 8 * sizeof( *l ) );
+		l[0] = sm->numdlights;
+		for ( j = 0; j < sm->numdlights; j++ ) {
+			const dlight_t *dl = &backEnd.refdef.dlights[sm->dlights[j].index];
+			double a = 7500.0 * dl->radius;
+			float *light = &lf[8 + j * 8];
+
+			VectorCopy( sm->dlights[j].transformed, light );
+			light[3] = (float)a;
+			light[4] = (float)( a - light[3] );
+			VectorCopy( dl->color, &light[5] );
+		}
+	}
+
+	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
+		uint32_t *u = &w[40 + i * 40];
+
+		switch ( units[i] ) {
+		case STATIC_FX_UNIT_TEXTURE:
+			u[0] = FX_TC_TEXTURE;
+			break;
+		case STATIC_FX_UNIT_LIGHTMAP:
+			u[0] = FX_TC_LIGHTMAP;
+			break;
+		case STATIC_FX_UNIT_BUNDLE0:
+		case STATIC_FX_UNIT_BUNDLE1:
+			RB_FxUnit( u, &pStage->bundle[units[i] - STATIC_FX_UNIT_BUNDLE0] );
+			break;
+		default:
+			break;
+		}
+	}
+
+	// word 2 is the light list's word, set when the record is stored
+	if ( fxCache.offset >= 0 && fxCache.serial == vk_frame_serial()
+		&& fxCache.words[0] == local[0] && fxCache.words[1] == local[1]
+		&& !memcmp( fxCache.words + 3, local + 3, ( FX_WORDS - 3 ) * sizeof( *local ) )
+		&& fxCache.lightWords == lightWords
+		&& ( !lightWords || !memcmp( fxCache.lights, lightLocal, (size_t)lightWords * sizeof( *lightLocal ) ) ) ) {
+		return fxCache.offset;
+	}
+
+	first = vk_alloc_skin_frame( FX_WORDS, &w );
+	if ( first < 0 ) {
+		return -1;
+	}
+	Com_Memcpy( w, local, sizeof( local ) );
+	if ( lightWords ) {
+		uint32_t *l;
+		int list = vk_alloc_skin_frame( lightWords, &l );
+
+		if ( list < 0 ) {
+			return -1;
+		}
+		Com_Memcpy( l, lightLocal, (size_t)lightWords * sizeof( *l ) );
+		w[2] = list;
+		local[2] = list;
+	}
+	fxCache.serial = vk_frame_serial();
+	fxCache.offset = first / 8;
+	fxCache.lightWords = lightWords;
+	Com_Memcpy( fxCache.words, local, sizeof( local ) );
+	if ( lightWords ) {
+		Com_Memcpy( fxCache.lights, lightLocal, (size_t)lightWords * sizeof( *lightLocal ) );
+	}
+	return fxCache.offset;
+}

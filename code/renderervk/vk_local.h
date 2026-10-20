@@ -311,6 +311,7 @@ typedef struct {
 	uint64_t	flushes;			// mid-frame submissions that waited for the GPU
 	uint64_t	draws;
 	uint64_t	staticDraws;		// draws from the static geometry (vk_set_static_geometry)
+	uint64_t	effectsDraws;		// of those, with the effects shader (drawGeometry_t::staticFx)
 	uint64_t	skinDraws;			// skinned draws (drawGeometry_t::isSkinned)
 	uint64_t	pipelineBinds;
 	uint64_t	descriptorBinds;	// descriptor sets bound
@@ -502,6 +503,8 @@ typedef struct {
 	VkShaderModule		vertexShaderClip;	// writes gl_ClipDistance (shaderClipDistance only)
 	VkShaderModule		skinVertexShader;	// skinned draws (shaders/skinned.vert)
 	VkShaderModule		skinVertexShaderClip;
+	VkShaderModule		effectsVertexShader;	// static geometry with effects (shaders/effects.vert)
+	VkShaderModule		effectsVertexShaderClip;
 	VkShaderModule		fragmentShader;
 	VkPipelineCache		pipelineCache;
 
@@ -659,6 +662,7 @@ void		VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed );
 #define VK_PIPE_DLIGHT_SHIFT		42		// unit + 1 whose texture gets the dynamic lights, 0 for none, 2 bits
 #define VK_PIPE_DLIGHT_BACKS		( 1ull << 44 )	// no dynamic light from behind the triangle
 #define VK_PIPE_SKINNED				( 1ull << 45 )	// skinned draw: shaders/skinned.vert, no vertex input
+#define VK_PIPE_EFFECTS				( 1ull << 46 )	// static geometry with effects: shaders/effects.vert, normals in binding 4
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
@@ -705,6 +709,10 @@ extern const uint32_t	vk_spirv_skinned_vert[];
 extern const size_t		vk_spirv_skinned_vert_size;
 extern const uint32_t	vk_spirv_skinned_clip_vert[];
 extern const size_t		vk_spirv_skinned_clip_vert_size;
+extern const uint32_t	vk_spirv_effects_vert[];
+extern const size_t		vk_spirv_effects_vert_size;
+extern const uint32_t	vk_spirv_effects_clip_vert[];
+extern const size_t		vk_spirv_effects_clip_vert_size;
 
 // cvars
 extern cvar_t	*r_vkValidation;

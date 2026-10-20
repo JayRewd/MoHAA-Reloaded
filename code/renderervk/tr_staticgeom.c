@@ -29,18 +29,23 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // instead of copying every vertex into tess and from tess into the vertex
 // buffer of the frame, when each stage of its shader takes its colors and
 // texture coordinates from the vertexes as they are or as constants
-// (RB_StaticBatch, RB_StaticStageColor in tr_shade.c). Everything else
-// (deforms, tcGen and tcMod, per-vertex rgbGen and alphaGen, the dynamic
-// light pass of r_fastdlights 1, the sky, debug drawing, the other surface
-// types) still goes through tess; the dynamic lights of r_fastdlights 0 are
-// added per pixel (RB_LightmapDlights), static batch or not. The batches
-// and their order stay the same: a static batch
+// (RB_StaticBatch, RB_StaticStageColor in tr_shade.c), or the effects shader
+// (shaders/effects.vert, r_staticEffects) computes them: the deforms, tcGen
+// and tcMod, distFade and the dynamic lights of static models that RB_StaticFx*
+// in tr_shade_calc.c accept. Everything else (the other deforms and
+// per-vertex rgbGen and alphaGen, the dynamic light pass of r_fastdlights 1,
+// the sky, debug drawing, the other surface types) still goes through tess;
+// the dynamic lights of r_fastdlights 0 are added per pixel
+// (RB_LightmapDlights), static batch or not. The batches and their order
+// stay the same: a static batch
 // counts the vertexes and indexes it would have put in tess, so it is split
 // at the same surfaces, and one that meets a surface it can't draw is
 // filled again from its surfaces the usual way (RB_StaticBatchToCPU).
 //
-// Streams: positions, texture and lightmap coordinates of the world's
-// surfaces from vertex 0, then of each TIKI that static models use, its
+// Streams: positions, texture and lightmap coordinates and normals (those
+// tess.normal gets: a face's plane normal, the vertexes', a static model's
+// pStaticNormal) of the world's surfaces from vertex 0, then of each TIKI
+// that static models use, its
 // surfaces in the order of R_AddStaticModelSurfaces, so that vertex v of a
 // model has color v of its instance's vertex colors (the texture
 // coordinates are both streams there). Colors: the world's vertex colors,
@@ -69,6 +74,7 @@ typedef struct staticTiki_s {
 } staticTiki_t;
 
 cvar_t *r_staticGeometry;
+cvar_t *r_staticEffects;
 
 /*
 ====================================================================
@@ -86,7 +92,7 @@ typedef struct {
 
 typedef struct {
 	staticGeometry_t	g;
-	float				*xyz, *st[2];
+	float				*xyz, *st[2], *normals;
 	byte				*colors;
 	glIndex_t			*indexes;
 } staticBuild_t;
@@ -125,10 +131,11 @@ static int R_CompareStaticOrder( const void *a, const void *b ) {
 	return oa->rank - ob->rank;
 }
 
-static void R_AddStaticVertex( staticBuild_t *b, const float *xyz, const float *st, const float *lightmap, const byte *color ) {
+static void R_AddStaticVertex( staticBuild_t *b, const float *xyz, const float *st, const float *lightmap, const float *normal, const byte *color ) {
 	int n = b->g.numVertexes++;
 
 	VectorCopy( xyz, &b->xyz[n * 3] );
+	VectorCopy( normal, &b->normals[n * 3] );
 	b->st[0][n * 2 + 0] = st[0];
 	b->st[0][n * 2 + 1] = st[1];
 	b->st[1][n * 2 + 0] = lightmap[0];
@@ -160,7 +167,8 @@ static int R_AddStaticWorldSurface( staticBuild_t *b, surfaceType_t *data, qbool
 		for ( i = 0; i < face->numPoints; i++ ) {
 			const float *v = face->points[i];
 
-			R_AddStaticVertex( b, v, v + 3, v + 5, (const byte *)&v[7] );
+			// RB_SurfaceFace: the plane's normal
+			R_AddStaticVertex( b, v, v + 3, v + 5, face->plane.normal, (const byte *)&v[7] );
 			if ( ( (const byte *)&v[7] )[3] != 255 ) {
 				*opaque = qfalse;
 			}
@@ -174,7 +182,7 @@ static int R_AddStaticWorldSurface( staticBuild_t *b, surfaceType_t *data, qbool
 		for ( i = 0; i < tri->numVerts; i++ ) {
 			const drawVert_t *dv = &tri->verts[i];
 
-			R_AddStaticVertex( b, dv->xyz, dv->st, dv->lightmap, dv->color );
+			R_AddStaticVertex( b, dv->xyz, dv->st, dv->lightmap, dv->normal, dv->color );
 			if ( dv->color[3] != 255 ) {
 				*opaque = qfalse;
 			}
@@ -249,9 +257,10 @@ static void R_AddStaticTikiSurface( void *arg, skelSurfaceGame_t *surface, int o
 		static const float zero[3];
 
 		if ( surface->pStaticXyz ) {
-			R_AddStaticVertex( b, surface->pStaticXyz[i], surface->pStaticTexCoords[i][0], surface->pStaticTexCoords[i][1], NULL );
+			R_AddStaticVertex( b, surface->pStaticXyz[i], surface->pStaticTexCoords[i][0], surface->pStaticTexCoords[i][1],
+				surface->pStaticNormal[i], NULL );
 		} else {
-			R_AddStaticVertex( b, zero, zero, zero, NULL );
+			R_AddStaticVertex( b, zero, zero, zero, zero, NULL );
 		}
 	}
 
@@ -357,6 +366,7 @@ void R_BuildStaticGeometry( void ) {
 	b.xyz = ri.Malloc( numVertexes * sizeof( float ) * 3 );
 	b.st[0] = ri.Malloc( numVertexes * sizeof( float ) * 2 );
 	b.st[1] = ri.Malloc( numVertexes * sizeof( float ) * 2 );
+	b.normals = ri.Malloc( numVertexes * sizeof( float ) * 3 );
 	b.colors = ri.Malloc( Q_max( numColors, 1 ) * 4 );
 	// kept: batches that are not one range copy their indexes from here
 	indexes = ri.Hunk_Alloc( numIndexes * sizeof( glIndex_t ), h_dontcare );
@@ -399,7 +409,7 @@ void R_BuildStaticGeometry( void ) {
 			for ( j = 0; j < grid->width * grid->height; j++ ) {
 				const drawVert_t *dv = &grid->verts[j];
 
-				R_AddStaticVertex( &b, dv->xyz, dv->st, dv->lightmap, dv->color );
+				R_AddStaticVertex( &b, dv->xyz, dv->st, dv->lightmap, dv->normal, dv->color );
 				if ( dv->color[3] != 255 ) {
 					grid->staticOpaque = qfalse;
 				}
@@ -434,6 +444,7 @@ void R_BuildStaticGeometry( void ) {
 	b.g.xyz = b.xyz;
 	b.g.st[0] = b.st[0];
 	b.g.st[1] = b.st[1];
+	b.g.normals = b.normals;
 	b.g.numColors = numColors;
 	b.g.colors = b.colors;
 	b.g.indexes = b.indexes;
@@ -442,6 +453,7 @@ void R_BuildStaticGeometry( void ) {
 	ri.Free( b.xyz );
 	ri.Free( b.st[0] );
 	ri.Free( b.st[1] );
+	ri.Free( b.normals );
 	ri.Free( b.colors );
 
 	tr.staticIndexes = indexes;
@@ -466,25 +478,29 @@ BATCHES
 RB_StaticStageAllowed
 
 Whether ComputeColors gives the stage something the static geometry can
-draw; notes what that needs
+draw; notes what that needs (fx: the effects shader computes its colors)
 ===============
 */
-static qboolean RB_StaticStageAllowed( const shaderStage_t *pStage ) {
+static qboolean RB_StaticStageAllowed( const shaderStage_t *pStage, qboolean *fx ) {
 	switch ( RB_StaticStageColor( pStage ) ) {
 	case STATIC_COLOR_CPU:
 		return qfalse;
 	case STATIC_COLOR_VERTEX_OPAQUE:
 		tess.staticNeedsOpaque = qtrue;
-		return qtrue;
+		break;
 	case STATIC_COLOR_CONSTANT:
 		// a constant that depends on the model
 		if ( pStage->alphaGen == AGEN_TIKI_DIST_FADE || pStage->alphaGen == AGEN_ONE_MINUS_TIKI_DIST_FADE ) {
 			tess.staticMergeable = qfalse;
 		}
-		return qtrue;
+		break;
 	default:
-		return qtrue;
+		break;
 	}
+	if ( RB_StaticStageColorFx( pStage ) ) {
+		*fx = qtrue;
+	}
+	return qtrue;
 }
 
 /*
@@ -523,11 +539,19 @@ entity and cvars decide (dynamic lights are checked per surface)
 */
 static qboolean RB_StaticBatchAllowed( void ) {
 	shader_t *shader = tess.shader;
-	int stage, b;
+	qboolean fx = shader->numDeforms != 0;
+	int stage, b, numDraws = 1;
+
 	if ( !tr.staticIndexes || !r_staticGeometry->integer || tess.numVertexes || tess.numIndexes ) {
 		return qfalse;
 	}
-	if ( shader->isSky || shader->numDeforms || RB_StaticDlights( tess.dlightBits ) ) {
+	if ( shader->isSky || RB_StaticDlights( tess.dlightBits ) ) {
+		return qfalse;
+	}
+	// the effects shader does the deforms, which only the generic stage
+	// iterator makes
+	if ( shader->numDeforms && ( tess.currentStageIteratorFunc != RB_StageIteratorGeneric || !RB_StaticFxOn()
+		|| !RB_StaticFxDeforms( shader ) ) ) {
 		return qfalse;
 	}
 	// debug drawing reads the vertexes
@@ -551,24 +575,40 @@ static qboolean RB_StaticBatchAllowed( void ) {
 	} else if ( tess.currentStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
 		// the colors of ComputeColors only for static models
 		if ( ( backEnd.currentSphere->TessFunction && r_drawspherelights->integer ) || !backEnd.currentStaticModel
-			|| !RB_StaticStageAllowed( tess.xstages[0] ) ) {
+			|| !RB_StaticStageAllowed( tess.xstages[0], &fx ) ) {
 			return qfalse;
 		}
 	} else if ( tess.currentStageIteratorFunc == RB_StageIteratorGeneric ) {
 		for ( stage = 0; stage < MAX_SHADER_STAGES && tess.xstages[stage]; stage++ ) {
 			shaderStage_t *pStage = tess.xstages[stage];
 
-			if ( !RB_StaticStageAllowed( pStage ) ) {
+			if ( !RB_StaticStageAllowed( pStage, &fx ) ) {
 				return qfalse;
 			}
 			for ( b = 0; b < NUM_TEXTURE_BUNDLES && pStage->bundle[b].image[0]; b++ ) {
-				if ( RB_StaticStageSt( &pStage->bundle[b] ) == STATIC_ST_NONE ) {
+				switch ( RB_StaticStageSt( &pStage->bundle[b] ) ) {
+				case STATIC_ST_NONE:
 					return qfalse;
+				case STATIC_ST_EFFECTS:
+					fx = qtrue;
+					break;
+				default:
+					break;
 				}
 			}
 		}
+		numDraws = stage;
 	} else {
 		return qfalse;
+	}
+
+	if ( fx ) {
+		// a record per draw (RB_StaticDraw), which the frame data must have
+		// room for: the batch is drawn whatever happens
+		tess.staticMergeable = qfalse;
+		if ( !vk_skin_frame_room( numDraws * STATIC_FX_MAX_WORDS ) ) {
+			return qfalse;
+		}
 	}
 
 	tess.numStaticSurfs = 0;
@@ -776,16 +816,20 @@ RB_StaticDraw
 
 A draw of the stage iterators in a static batch: the arrays they set are
 those of tess, which stand for the streams of the batch and the stage
-(RB_StaticStage); one draw per instance
+(RB_StaticStage); one draw per instance. With deforms, or stage colors or
+texture coordinates the effects shader computes, the draw has its record
+(and the batch one instance, see RB_StaticBatchAllowed)
 ===============
 */
 void RB_StaticDraw( drawGeometry_t *geometry ) {
 	const clientArrays_t *arrays = &glState.arrays;
+	staticFxUnit_t units[NUM_TEXTURE_BUNDLES];
 	const float *modelview;
-	qboolean stageColors;
-	int i;
+	qboolean stageColors, fx;
+	int colorFx, i;
 
 	geometry->isStatic = qtrue;
+	geometry->staticFx = -1;
 
 	stageColors = arrays->colorsEnabled && arrays->colors == tess.svars.colors[0];
 	if ( arrays->colorsEnabled && ( !stageColors || tess.staticStageColor == STATIC_COLOR_CONSTANT ) ) {
@@ -796,6 +840,10 @@ void RB_StaticDraw( drawGeometry_t *geometry ) {
 			geometry->color[i] = c[i] / 255.0f;
 		}
 	}
+
+	// what the effects shader does to the stage's colors, the constant too
+	colorFx = stageColors ? tess.staticStageFx : 0;
+	fx = tess.shader->numDeforms || colorFx;
 
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		const float *st = geometry->st[i];
@@ -808,6 +856,35 @@ void RB_StaticDraw( drawGeometry_t *geometry ) {
 			geometry->staticSt[i] = STATIC_ST_LIGHTMAP;
 		} else {
 			geometry->staticSt[i] = tess.staticStageSt[st == tess.svars.texcoords[0][0] ? 0 : 1];
+		}
+
+		switch ( geometry->staticSt[i] ) {
+		case STATIC_ST_TEXTURE:
+			units[i] = STATIC_FX_UNIT_TEXTURE;
+			break;
+		case STATIC_ST_LIGHTMAP:
+			units[i] = STATIC_FX_UNIT_LIGHTMAP;
+			break;
+		case STATIC_ST_EFFECTS:
+			units[i] = st == tess.svars.texcoords[0][0] ? STATIC_FX_UNIT_BUNDLE0 : STATIC_FX_UNIT_BUNDLE1;
+			fx = qtrue;
+			break;
+		default:
+			units[i] = STATIC_FX_UNIT_OFF;
+			break;
+		}
+	}
+
+	if ( fx ) {
+		// the colors per vertex of the instance (below), or the constant
+		qboolean constant = !stageColors || tess.staticStageColor == STATIC_COLOR_CONSTANT;
+
+		assert( tess.numStaticInstances == 1 );
+		geometry->staticFx = RB_StaticFxRecord( tess.staticFxStage, colorFx, units, constant ? geometry->color : NULL );
+		if ( geometry->staticFx < 0 ) {
+			// RB_StaticBatchAllowed made sure there is room
+			assert( 0 );
+			return;
 		}
 	}
 

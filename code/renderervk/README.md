@@ -277,6 +277,18 @@ below are done.
   a cluster of the same number, nothing of the world was drawn until the
   view left it (GL1 too); the view cluster is reset at load now (see
   Performance, Redundant state and empty flushes)
+- effects shader (2026-10-20, step 2 of the redesign, from JayRewd's
+  b26d8a67): the static batches whose shaders deform vertexes (the swaying
+  trees, curtains and flags), compute texture coordinates (environment
+  mapped windows and walls, scrolling and turbulent water) or the distance
+  fade of the trees per vertex, and the static models lit by dynamic lights
+  near them, are drawn from the static geometry by a vertex shader that
+  computes what the CPU did, with the same float operations, instead of
+  being tessellated and copied every frame. The renderer's time per frame
+  11 % lower in the `m6l1a` forest at 640x480, 4.5 % in the `m3l3` path and
+  the `dm/mohdm3` overview, 2 to 3 % in two matches, their slow frames and
+  input to present a little lower, no GPU time measurable at 3840x2160; the
+  same frames to the bit (see Performance, Effects shader)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -302,6 +314,7 @@ below are done.
 | `tr_pipelines.c` | the pipelines of a registration's shaders, worked out from their stages as the stage iterators draw them and created at its end (see Implementation notes, Pipelines) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
 | `shaders/skinned.vert` | the vertex shader of skinned draws (skinning and `rgbGen lightingSpherical`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
+| `shaders/effects.vert` | the vertex shader of the static geometry's draws with effects (deforms, `tcGen` and `tcMod`, `distFade`, static models' dynamic lights; see Implementation notes, Effects shader), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | GL1/Vulkan screenshot comparison and performance scripts, view lists (see Testing) |
@@ -376,12 +389,14 @@ Cvars of the backend:
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
 | `r_skelCull` (default 1) | 0 prepares and draws skeletal models outside the view too, as GL1 does (see Implementation notes, Skeletal culling) |
+| `r_staticEffects` (default 1) | 0 leaves the static batches whose shaders deform vertexes or compute texture coordinates or colors per vertex to the CPU (tess) instead of the effects shader (see Implementation notes, Effects shader) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
-call: frames, render passes, submissions, mid-frame flushes, draws,
+call: frames, render passes, submissions, mid-frame flushes, draws (those
+from the static geometry, of them with the effects shader, skinned ones),
 pipeline and descriptor set binds, bytes copied into vertex and staging
 buffers, uploads ordered with draws, textures, pipelines and device memory
 allocations created (with the microseconds spent creating them; of the
@@ -740,6 +755,14 @@ Test content:
   passes with 0; the two give the same ground within ±2) and a wall shader
   with `nextBundle add`. The pair to collapse must not contain the
   lightmap: see GL1 quirks.
+- The effects shader (see Implementation notes): `fx_mohdm1` replaces three
+  world shaders of `dm/mohdm1` (`fx_mohdm1.shader`, installed like
+  `mohdm1_texenv`'s) with stages that use every deform, `tcGen` and `tcMod`
+  it takes, a lightmap stage with a `tcMod`, `alphaGen distFade` on a
+  constant color and `oneMinusDistFade` on the vertex colors, in
+  deterministic views; the game's own shaders of that kind are in the
+  forests, the water and windows of the other lists (counted with a
+  temporary build, see Effects shader in the results below).
 - Debug drawing: `mohdm1_debug`. `r_showtris` and `r_shownormals` only draw
   with `developer 1` (`r_developer`), which is why they seemed to show
   nothing. The game's debug lines (`sv_showbboxes`, camera paths shown with
@@ -1270,6 +1293,45 @@ connects to a local dedicated server 7 times (each new world loaded without
 a registration, see Performance). `renderer_vulkan.so` imports no GL or
 Vulkan symbol and exports only `GetRefAPI`.
 
+The effects shader (2026-10-20, see Performance, Effects shader), against
+the build before (`run.sh`, `tgadiff.py`, 640x480, `r_vkValidation 1`): on
+the 41 view lists (177 views) 144 give the same frames to the bit, among
+them every view of the `dm`, `obj` and multiplayer lists but the snow of
+`mohdm5_fog` and the near-camera ±1 of `d7_alley` and `d7_arch`, of the
+menus, the dynamic light (static models lit by the lights near them in
+`mohdm1_dlight2`), decal, fog, sun flare, texture env and debug drawing
+lists, `m2l3`, `m3l2`, `m3l3`, `m6l2a` and `m6l3a`; the other 33 are in the
+lists with random content or run-to-run noise named above (`m1l1`,
+`m1l2a`, `m1l3a`, `m2l1_skyportal` with the 15 and 21 pixels of `s2_a` and
+`s2_b`, `m3l1a`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m5l3`, `m6l1a`). The
+dynamic light lists with `r_fastdlights 1` and `mohdm1_texenv` with
+`r_ext_texture_env_add 1` give the same frames. What these views draw with
+the effects shader, counted with a temporary build (whose frames are the
+final build's): 2.8 million draws in the 41 lists, with the deforms `wave`
+and `flap t` (the trees of every forest, curtains, flags), `tcGen
+environment` and `environmentmodel` (windows, wet walls), `tcMod`s of the
+add and scale kinds (water), `distFade` on vertex colors (the trees) and
+on constants, brush models, and static models lit by the lights near them
+(3334 draws in `mohdm1_dlight2`, `mp_mohdm7` and `m1l1`). The rest (`move`,
+`bulge`, `flap s`, a `wave` without frequency, `tcGen vector`, `rotate`,
+`stretch`, `transform`, `turb`, `oneMinusDistFade`) only `fx_mohdm1` has
+(see Test content); its 5 views give the same frames with the effects
+shader, with `r_staticEffects 0` and with the build before, and the same as
+the build before with `r_vkFallbacks` 1, 2 and 3 (no view swizzle, no
+binding of stride 0; the view swizzle fallback itself changes one pixel of
+`fx_b` by 1 in both builds), and `mohdm1`, `obj_team2`, `mp_mohdm1` and
+`mohdm1_dlight2` the same with `r_vkFallbacks 3`. On llvmpipe
+(`VK_DRIVER_FILES=.../lvp_icd.json`), whose float operations don't follow
+`precise` the way RADV's do, the effects shader's `distFade` alpha differs
+by 1 in one pixel of `fx_b` and of `fx_c` from llvmpipe's CPU path (`mohdm1`
+the same), as GPU skinning does in two pixels of `pm1_front` and
+`pm1_flash` there (`r_gpuSkinning` 0 against 1; the same to the bit on
+RADV). No validation message in these runs, nor with synchronization
+validation (`r_vkValidation 2`) on `fx_mohdm1`, `mohdm1_dlight2` and
+`dm/mohdm3`. (Demos aren't a frame check: screenshots taken during a demo
+played with `fixedtime 16` differ between two runs of the same build by up
+to 62 % of their pixels.)
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -1336,7 +1398,8 @@ code/renderervk/tools/perf.py m6l1a 6152 -6528 5500 0 135 0 --runs 1 --stacks ou
 code/renderervk/tools/stacks.py out_m6l1a_640x480_vulkan_1.txt --tree RB_RenderDrawSurfList --callers CM_BoxTrace
 ```
 
-Each measurement starts a game, loads the map with `fixedtime 16`, puts the
+Each measurement starts a game, loads the map with `fixedtime 16` at 250
+frames a second (the loading's waits count frames, see Plan 21), puts the
 camera at the view, waits 2 s of game time and times 1000 frames with the
 frame rate uncapped (`com_maxfps 0`, `r_swapInterval 0`, no validation).
 A list line `views <view list> [shot ...]` takes shots of a view list,
@@ -3849,6 +3912,65 @@ temporary build that printed the cluster at each load: no
 `RE_LoadWorldMap` resetting the cluster, as JayRewd's b26d8a67 does, every
 first view lists its leaves.
 
+Effects shader (2026-10-20, Plan 21; see Implementation notes, Effects
+shader). The static batches whose shaders deform vertexes or compute
+texture coordinates or colors per vertex went through `tess`, the CPU path
+(`RB_DeformTessGeometry`, `ComputeTexCoords`, `ComputeColors`, the copy of
+every vertex into the frame's vertex buffer); JayRewd's b26d8a67 moved
+them to a vertex shader of their own. Draws per frame that take the
+effects shader now (`vkinfo`'s `effectsDraws`, 640x480; of the draws from
+the static geometry, with how many those were before): 130 of 225 in the
+`m6l1a` forest (95 before), 63 of 85 in the `m3l3` path (22), 110 of 329 in
+the `dm/mohdm3` overview (214), 54 of 138 in the `obj_team2` yard (84); the
+vertex bytes copied per frame go from 328 to 137 KB in the forest, 134 to
+98 KB in the path, 244 to 175 KB in the overview, 204 to 162 KB in the
+yard. The draws are the same; the CPU work per batch is a record of 128
+words instead of the vertex loops.
+
+Results (idle machine: other processes 0.7 CPUs at most, no Plex
+transcoding; the build before (`base`, 52b00a45) and this one interleaved,
+medians of 5 runs with their range, 640x480 uncapped; the fixed views 5000
+frames, the demos 15000; ms):
+
+| view | renderer base | new | 2D and back end base / new | frame time base / new (fps) | p99 base / new | p99.9 base / new |
+| --- | --- | --- | --- | --- | --- | --- |
+| `m6l1a` forest | 0.483 (0.471 to 0.491) | 0.430 (0.424 to 0.435), -11 % | 0.277 / 0.223 | 0.632 / 0.581 (1581 / 1722) | 0.904 / 0.828 | 1.173 / 1.086 |
+| `m3l3` path | 0.312 (0.308 to 0.316) | 0.298 (0.296 to 0.301), -4.5 % | 0.177 / 0.168 | 0.504 / 0.482 (1986 / 2076) | 0.799 / 0.762 | 0.975 / 1.035 |
+| `dm/mohdm3` overview | 0.436 (0.429 to 0.438) | 0.416 (0.412 to 0.420), -4.6 % | 0.256 / 0.240 | 0.500 / 0.481 (2000 / 2078) | 0.591 / 0.554 | 1.001 / 0.972 |
+| `obj_team2` yard | 0.349 (0.345 to 0.354) | 0.343 (0.335 to 0.353), -1.7 % | 0.181 / 0.171 | 0.429 / 0.422 (2330 / 2370) | 0.525 / 0.514 | 0.908 / 0.903 |
+| `o2match` | 0.313 (0.310 to 0.318) | 0.303 (0.302 to 0.312), -3.2 % | 0.183 / 0.176 | 0.441 / 0.431 (2270 / 2322) | 0.876 / 0.874 | 1.211 / 1.289 |
+| `o4match` | 0.648 (0.644 to 0.658) | 0.634 (0.630 to 0.639), -2.2 % | 0.380 / 0.364 | 0.815 / 0.801 (1226 / 1248) | 1.260 / 1.269 | 1.628 / 1.615 |
+
+(Each frame's median over the 5 runs, the demos' "content" of Frame spikes:
+`o2match` p99 and p99.9 0.853 and 1.137 against 0.839 and 1.120 ms, the
+raw 99.9th percentile above being one run's; `o4match` 1.231 and 1.537
+against 1.221 and 1.551. JayRewd measured -2 to -17 µs in the matches,
+-27 µs in the overview and -65 µs in the forest with his renderer under
+this engine.) The front end doesn't change; the saved time is in the back
+end (the 2D calls, where the 3D view's batches are drawn).
+
+At 1920x1080 in a window, uncapped and at the user's cap of 250 (`perf.py
+--caps 0,250 --seconds 10 --preload libinlat.so --framelog`, 5 runs; ms;
+input read to present from `libinlat.so`, the medians of the runs'
+percentiles):
+
+| demo | `com_maxfps` | renderer base / new | frames a second | input to present, median: base / new | p99, p99.9: base / new |
+| --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 0.417 / 0.408 | 1703 / 1739 | 0.489 / 0.473 | 1.078, 1.470 / 1.056, 1.414 |
+| | 250 | 0.434 / 0.417 | 250 | 0.521 / 0.505 | 0.954, 1.345 / 0.897, 1.249 |
+| `o4match` | 0 | 0.762 / 0.748 | 1044 / 1049 | 0.890 / 0.889 | 1.523, 2.045 / 1.522, 2.037 |
+| | 250 | 0.716 / 0.695 | 250 | 0.853 / 0.841 | 1.451, 1.905 / 1.400, 2.021 |
+
+The work taken off lies between the frame's input read and its present, so
+input to present goes down by about as much; nothing else of the frame
+changes (no wait, no frame more in flight, the acquire where it was).
+
+The GPU: the vertexes the effects shader computes cost nothing measurable
+where the GPU limits (3840x2160, 3 runs, GPU time of the main command
+buffer from timestamps, ms): the `m6l1a` forest 3.982 / 3.977, the
+`obj_team2` yard 1.678 / 1.677, the `dm/mohdm3` overview 2.447 / 2.447; the
+frames 4.025 / 4.019, 1.694 / 1.694, 2.473 / 2.474 ms.
+
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -4416,11 +4538,12 @@ selects the sample count (see Implementation notes).
 - **Static geometry** (`tr_staticgeom.c`, `vk_set_static_geometry`). At the
   end of a map load, `R_BuildStaticGeometry` puts into one device-local
   buffer (through the staging buffer and the upload command buffer, with a
-  barrier to vertex input): positions, texture and lightmap coordinates of
+  barrier to vertex input): positions, texture and lightmap coordinates
+  and normals (for the effects shader, below) of
   the world's faces, triangle surfaces and grids (every vertex of a grid's
   subdivision), then of each TIKI that static models use (its surfaces in
-  the order of `R_AddStaticModelSurfaces`, from `pStaticXyz` and
-  `pStaticTexCoords` like `RB_StaticMesh`); vertex colors (the world's, the
+  the order of `R_AddStaticModelSurfaces`, from `pStaticXyz`,
+  `pStaticTexCoords` and `pStaticNormal` like `RB_StaticMesh`); vertex colors (the world's, the
   same with white RGB, the static models' `staticModelData`, so vertex v of
   a model has color `staticColor + v`); and indexes: those of the faces and
   triangle surfaces, grouped by shader in the order a traversal of the BSP
@@ -4428,11 +4551,13 @@ selects the sample count (see Implementation notes).
   subsequence), then those of the TIKI surfaces. The back end decides at
   the first surface of a batch whether it draws it from there
   (`RB_StaticBatch`): faces, triangle surfaces, grids and static models
-  whose shader has no deform, isn't the sky, with no dynamic light pass of
+  whose shader has no deform but those the effects shader makes, isn't the
+  sky, with no dynamic light pass of
   `r_fastdlights 1` (`ProjectDlightTexture`) and no debug drawing, every stage's texture coordinates from `tcGen texture` or
-  `lightmap` without `tcMod`, and colors that `ComputeColors` would make a
+  `lightmap` without `tcMod` or computed by the effects shader, and colors that `ComputeColors` would make a
   constant (evaluated on the CPU for one vertex, `RB_StaticStage`), the
-  vertex colors as they are, with alpha 255, or white with the vertex alpha
+  vertex colors as they are, with alpha 255, or white with the vertex alpha,
+  or what the effects shader makes of them
   (`RB_StaticStageColor` follows `ComputeColors` case by case, including
   where it leaves colors of an earlier batch, which stays on the CPU). The
   stage iterators run as before; their arrays (`tess.xyz`,
@@ -4450,6 +4575,57 @@ selects the sample count (see Implementation notes).
   (`RB_StaticMerge`): one draw per model with its modelview, colors and
   indexes, one stage setup for all, the same triangles in the same order.
   `r_staticGeometry 0` draws everything through `tess` again.
+- **Effects shader** (`shaders/effects.vert`, `tr_shade_calc.c`: STATIC
+  GEOMETRY EFFECTS, `r_staticEffects`; from JayRewd's b26d8a67, see
+  Performance, Effects shader). The static batches whose shader computes
+  something per vertex went through `tess`: in the forests most static
+  models (`alphaGen distFade` on the trees, `deformVertexes` on leaves,
+  flags and curtains), the environment mapped windows and wet walls, the
+  scrolling and turbulent water, the static models near a dynamic light
+  (`useSpecialLighting`). They are drawn from the static geometry now, and
+  `effects.vert` does what `RB_DeformTessGeometry`, `ComputeTexCoords` and
+  `ComputeColors` did, with the same floating point operations in the same
+  order (`precise`; what the C code computes in double precision exactly or
+  as float-float sums and products, divisions and square roots with one
+  correction step, like `skinned.vert`): the deforms `wave` (with a
+  frequency or without), `move`, `bulge`, `flap s` and `flap t` (not
+  `normal`, `autosprite`, `autosprite2`, `lightglow`, which stay on the
+  CPU), `tcGen texture`, `lightmap`, `environment`, `environmentmodel` and
+  `vector` (not `sunreflection`), the tcMods `turb`, `scroll`,
+  `entityTranslate`, `scale`, `stretch`, `transform`, `rotate`, `offset`,
+  `parallax`, `wavetrans`, `wavetrant` and `bulge` (which changes nothing;
+  not `macro`, which reads the image size), and of the colors `distFade` and
+  `oneMinusDistFade` (the alpha of the vertex colors or of the stage's
+  constant) and the lighting of a static model by the dynamic lights near
+  it (its vertex colors plus N·L with GL1's falloff). What doesn't depend on
+  the vertex is computed on the CPU into a record of 128 words in the frame
+  data of the skinned draws (`vk_alloc_skin_frame`; `RB_StaticFxRecord`):
+  the deforms' parameters (`EvalWaveForm` where the wave is the same for
+  every vertex, `shaderTime * frequency` where it isn't), each unit's source
+  and up to 4 tcMods turned into adds, scales, 2x3 transforms and
+  turbulence (as `RB_CalcScrollTexCoords`, `RB_CalcRotateTexCoords`, ...
+  compute their parameters), the view origin and distFade's eye in the
+  model's space, the light list (origin in the model's space, `7500 *
+  radius` as a float-float, color) and the draw's constant color; the wave
+  tables are in the skin data (20 KB, once per map). The draw's
+  `firstInstance` is its record, and a draw that would write the same words
+  as the last one in the frame takes it again. The pipelines
+  (`VK_PIPE_EFFECTS`) read the positions, the texture and the lightmap
+  coordinates, the normals (binding 4) and the vertex colors, all per vertex
+  (no binding of stride 0, which a portability subset device would read per
+  instance, from `firstInstance`: a draw with a constant color has it in its
+  record). A batch with effects is one instance (no merging: the record is
+  the model's), and is only drawn from the static geometry when the frame
+  data has room for the records of all its draws, else on the CPU, so
+  nothing is ever left out. Differences from JayRewd's version:
+  a stage with a constant color and `distFade` (the pulsing objective
+  highlights, `rgbGen wave` with `alphaGen distFade`) got the alpha of
+  whatever vertex `tess` held from an earlier batch there, it gets the
+  alpha per vertex here; his draws whose record didn't fit in the frame
+  data were left out; the bindings of stride 0; the pipelines of the
+  effects draws are created at load (see Pipelines at load); not taken from
+  that commit: the indirect draws of instances and their `INSTANCED` vertex
+  shader, the terrain buffer.
 - **World culling** (`tr_world.c`). GL1's marking of the PVS and walk of
   the world's BSP tree (`R_MarkLeaves`, `R_RecursiveWorldNode`) are
   replaced by a list of the potentially visible leaves that gives the same
@@ -4716,7 +4892,10 @@ selects the sample count (see Implementation notes).
   and the cull is the shader's or the none `Set2DWindow` sets behind
   `GL_Cull`'s back, which a draw keeps until `GL_Cull` changes it; a 3D
   view on the CPU, with colors per vertex; the static geometry, with a
-  constant color when `RB_StaticStageColor` can give one; skinned), the
+  constant color when `RB_StaticStageColor` can give one; the static
+  geometry with the effects shader, for a stage it can draw: the shader's
+  deforms, a bundle's `tcGen` or `tcMod`, `distFade`, a lit static model's
+  `rgbGen`; skinned), the
   fog (off, or the stage's `GLS_FOG_ENABLED`, since `GL_State` keeps the
   previous fog when that bit doesn't change and `Set2DWindow` turns it
   off: both, the map's fog isn't known before its first frame), dynamic
@@ -4749,7 +4928,8 @@ selects the sample count (see Implementation notes).
   `vkinfo` prints how many exist, were created before their draw and of
   those were used.
 - **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
-  the static geometry). Every `vkAllocateMemory` goes
+  the static geometry, `effectsDraws` those of them with the effects
+  shader). Every `vkAllocateMemory` goes
   through `VK_AllocateMemory`, which counts it; GPU times come from
   timestamps at the start and end of the main command buffer and around the
   copy to the swapchain image (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`), read without
@@ -5241,6 +5421,25 @@ Done:
     otherwise kept the old map's, so a first view in a cluster of that
     number drew no world (seen with a dedicated server).
 
+21. Step 2 of the redesign: the effects shader (2026-10-20, see
+    Implementation notes, Effects shader, and Performance, Effects shader),
+    from JayRewd's b26d8a67: static batches with the deforms, `tcGen`s,
+    `tcMod`s, `distFade` and static model lighting it takes are drawn from
+    the static geometry (now with normals) by `shaders/effects.vert`, with
+    what doesn't depend on the vertex in a record of the frame data per
+    draw. Not as his: a stage with a constant color and `distFade` gets the
+    alpha per vertex (his got the stale alpha of an earlier batch), a batch
+    goes to the CPU when the frame data has no room for its records
+    (his draws were left out), no binding of stride 0, the pipelines built
+    at load; his indirect draws and terrain buffer not taken. `fx_mohdm1`
+    (a test shader file) covers what the game data's views don't. The
+    renderer's time 2 to 11 % lower at 640x480 (-53 µs in the `m6l1a`
+    forest, -20 µs in the `dm/mohdm3` overview, -10 and -14 µs in the
+    matches), input to present a little lower, the GPU time the same, the
+    frames the same to the bit on RADV. `perf.py` loads the map at 250
+    frames a second (its waits count frames: uncapped, the client of a
+    large map like `m6l1a` hadn't connected yet when the view was set up).
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -5414,22 +5613,17 @@ Remaining:
   of that off (a shorter step now and then); proposed, not done. Uncapped beyond what the GPU can draw (1500 frames
   a second at 1920x1080 on this machine) shows the input later than a cap
   just below it.
-- Step 2 of the redesign: the per-vertex shader effects on the GPU. In the
-  forests most batches still go through the CPU because of them: in
-  `m6l1a`, `m3l3`, `dm/mohdm3` and `obj/obj_team2` a surface of the tree
-  models uses `rgbGen vertex` with `alphaGen distFade` (a per-vertex
-  distance fade) and the others deform (wind sway, autosprites); 69 to
-  144 static model batches per frame in the measured views, against 8 to
-  118 static models that the static path draws. Then `tcMod` (scroll, rotate, ...), `tcGen environment` (the
-  windows of `dm/mohdm3`) and the other `rgbGen`/`alphaGen` cases of
-  `RB_StaticStageColor` that need the CPU, and the dynamic light pass
-  (`ProjectDlightTexture`). Once the forests' static models are on the
-  GPU path, drawing a merged batch's models with one instanced or indirect
-  draw (per-model matrix and color offset in a buffer, colors read with
-  the vertex index) would take most of the remaining per-model cost of the
-  backend (`vk_draw` per model: pipeline key, push constants, binds); with
-  step 1's eligible models (8 to 118 per frame) it isn't worth a second
-  vertex shader yet.
+- Step 2 of the redesign, the per-vertex shader effects on the GPU: done
+  for what the effects shader takes (Plan 21: the deforms but `normal`,
+  the autosprites and `lightglow`, the `tcGen`s but `sunreflection`, the
+  `tcMod`s but `macro`, `distFade`, static models near dynamic lights).
+  Still on the CPU: the other `rgbGen`/`alphaGen` cases of
+  `RB_StaticStageColor` (`lightingGrid`, `dot`, `oneMinusVertex`,
+  `portal`, `heightFade`, ...: the sea of `obj_team3` has `alphaGen dot`),
+  and the dynamic light pass (`ProjectDlightTexture`). JayRewd's commit
+  also drew a merged batch's static models with one indirect draw (an
+  `INSTANCED` variant of `generic.vert`); measured in its evaluation it was
+  slower (`o4match` +13 µs), not taken.
 - Dynamic lights, what is left on the CPU (see Performance, Dynamic
   lights): the per-vertex lighting of static models within twice a light's
   radius (`useSpecialLighting` in `ComputeColors`, which also takes them

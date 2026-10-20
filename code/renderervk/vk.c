@@ -107,6 +107,8 @@ static struct {
 	VkDescriptorSet	sets[NUM_TEXTURE_BUNDLES];
 	VkBuffer		vertexBuffers[4];
 	VkDeviceSize	vertexOffsets[4];
+	VkBuffer		normalBuffer;	// binding 4, effects draws only
+	VkDeviceSize	normalOffset;
 	VkBuffer		indexBuffer;
 	VkDeviceSize	indexOffset;
 	qboolean		dlightSet;		// set 2, the frame's dlight buffer
@@ -116,7 +118,7 @@ static struct {
 // with the streams one after the other
 static struct {
 	vkBuffer_t		buffer;
-	VkDeviceSize	xyzOffset, stOffset[2], colorOffset, indexOffset;
+	VkDeviceSize	xyzOffset, stOffset[2], normalOffset, colorOffset, indexOffset;
 } vk_static;
 
 // the skin data of the skinned draws (vk_add_skin_data): one device local
@@ -1981,7 +1983,7 @@ static void VK_Info_f( void ) {
 	VK_DrainSubmitThread();
 
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
-	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu skinDraws=%llu pipelineBinds=%llu"
+	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu effectsDraws=%llu skinDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
 		" swapchains=%llu vertexGrowth=%llu prebuiltPipelines=%llu skinUploads=%llu skinBytes=%llu"
 		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu prebuiltUs=%llu allocationUs=%llu textureUs=%llu"
@@ -1989,7 +1991,7 @@ static void VK_Info_f( void ) {
 		" threadWaitUs=%llu threadFrames=%llu threadStartUs=%llu threadSubmits=%llu threadSubmitUs=%llu threadAcquireUs=%llu"
 		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
-		VK_DELTA( staticDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
+		VK_DELTA( staticDraws ), VK_DELTA( effectsDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
 		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( swapchains ), VK_DELTA( vertexGrowth ),
 		VK_DELTA( prebuiltPipelines ), VK_DELTA( skinUploads ), VK_DELTA( skinBytes ),
 		VK_DELTA( waitUs ), VK_DELTA( flushUs ), VK_DELTA( submitUs ),
@@ -2685,6 +2687,9 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primT
 
 	if ( geometry->isSkinned ) {
 		bits |= VK_PIPE_SKINNED;
+	} else if ( geometry->isStatic && geometry->staticFx >= 0 ) {
+		// the colors per vertex, or the constant in the record
+		bits |= VK_PIPE_EFFECTS;
 	} else if ( geometry->isStatic ? geometry->staticColor >= 0 : geometry->colors != NULL ) {
 		bits |= VK_PIPE_COLOR_ARRAY;
 	}
@@ -2939,12 +2944,22 @@ static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t
 	if ( geometry->staticColor >= 0 ) {
 		buffers[1] = buffer;
 		offsets[1] = vk_static.colorOffset + 4 * geometry->staticColor;
+	} else if ( geometry->staticFx >= 0 ) {
+		// effects.vert reads 4 bytes per vertex and ignores them, the
+		// record has the constant
+		buffers[1] = buffers[0];
+		offsets[1] = offsets[0];
 	} else {
 		VK_ConstantColor( geometry->color, &buffers[1], &offsets[1] );
 	}
 
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
-		if ( geometry->staticSt[i] == STATIC_ST_NONE ) {
+		if ( geometry->staticFx >= 0 ) {
+			// effects.vert: the texture coordinates in unit 0, the
+			// lightmap coordinates in unit 1
+			buffers[2 + i] = buffer;
+			offsets[2 + i] = vk_static.stOffset[i] + sizeof( float ) * 2 * geometry->staticVertex;
+		} else if ( geometry->staticSt[i] == STATIC_ST_NONE ) {
 			// the pipeline reads it with a stride of 0 and ignores it
 			buffers[2 + i] = buffers[0];
 			offsets[2 + i] = offsets[0];
@@ -2956,6 +2971,16 @@ static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t
 	}
 
 	VK_BindVertexBuffers( cmd, buffers, offsets );
+
+	if ( geometry->staticFx >= 0 ) {
+		VkDeviceSize offset = vk_static.normalOffset + sizeof( float ) * 3 * geometry->staticVertex;
+
+		if ( vkb.normalBuffer != buffer || vkb.normalOffset != offset ) {
+			qvkCmdBindVertexBuffers( cmd, 4, 1, &buffer, &offset );
+			vkb.normalBuffer = buffer;
+			vkb.normalOffset = offset;
+		}
+	}
 
 	if ( geometry->staticFirstIndex >= 0 ) {
 		VK_BindIndexBuffer( cmd, buffer, vk_static.indexOffset );
@@ -3058,8 +3083,13 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, firstIndex, geometry->skinVertex, geometry->skinDraw );
 		vk.stats.skinDraws++;
 	} else if ( geometry->isStatic ) {
-		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes ), 0, 0 );
+		// effects draws: firstInstance is the record
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes ), 0,
+			geometry->staticFx >= 0 ? geometry->staticFx : 0 );
 		vk.stats.staticDraws++;
+		if ( geometry->staticFx >= 0 ) {
+			vk.stats.effectsDraws++;
+		}
 	} else {
 		VK_UploadGeometry( cmd, geometry, numIndexes, indexes );
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
@@ -3072,8 +3102,9 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 vk_prebuild_pipeline
 
 The pipeline of a draw with that state and geometry: the state vk_draw
-reads from vks, and from the geometry only whether it is skinned, has
-colors per vertex and has texture coordinates for a unit, so the key is
+reads from vks, and from the geometry only whether it is skinned or an
+effects draw, has colors per vertex and has texture coordinates for a unit,
+so the key is
 the one vk_draw builds (VK_BuildPipelineKey) and the pipeline the one it
 would create (VK_CreatePipeline knows nothing but the key and the device).
 No stipple, stencil test or color mask: what the shader stages never set
@@ -3104,6 +3135,11 @@ qboolean vk_prebuild_pipeline( const vkDrawState_t *state ) {
 	geometry.isSkinned = state->skinned;
 	// only compared with NULL
 	geometry.colors = state->colorArray ? (const byte *)&geometry : NULL;
+	if ( state->effects ) {
+		geometry.isStatic = qtrue;
+		geometry.staticFx = 0;
+		geometry.staticColor = -1;
+	}
 
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		s.texEnv[i] = state->texEnv[i];
@@ -3160,7 +3196,8 @@ void vk_set_static_geometry( const staticGeometry_t *geometry ) {
 	vk_static.xyzOffset = 0;
 	vk_static.stOffset[0] = xyzSize;
 	vk_static.stOffset[1] = vk_static.stOffset[0] + stSize;
-	vk_static.colorOffset = vk_static.stOffset[1] + stSize;
+	vk_static.normalOffset = vk_static.stOffset[1] + stSize;
+	vk_static.colorOffset = vk_static.normalOffset + xyzSize;
 	vk_static.indexOffset = vk_static.colorOffset + colorSize;
 	size = vk_static.indexOffset + sizeof( glIndex_t ) * geometry->numIndexes;
 
@@ -3174,6 +3211,7 @@ void vk_set_static_geometry( const staticGeometry_t *geometry ) {
 	for ( i = 0; i < 2; i++ ) {
 		Com_Memcpy( data + vk_static.stOffset[i], geometry->st[i], sizeof( float ) * 2 * geometry->numVertexes );
 	}
+	Com_Memcpy( data + vk_static.normalOffset, geometry->normals, sizeof( float ) * 3 * geometry->numVertexes );
 	if ( geometry->numColors > 0 ) {
 		Com_Memcpy( data + vk_static.colorOffset, geometry->colors, 4 * geometry->numColors );
 	}
@@ -3208,6 +3246,18 @@ vk_skin_available
 */
 qboolean vk_skin_available( void ) {
 	return vk.device && vk_skin.buffer.buffer && vk.skinVertexShader;
+}
+
+/*
+===============
+vk_effects_available
+
+The effects draws read their records from the frame data of the skinned
+draws, the wave tables from the skin data
+===============
+*/
+qboolean vk_effects_available( void ) {
+	return vk_skin_available() && vk.effectsVertexShader && vk_static.buffer.buffer;
 }
 
 /*
@@ -3293,6 +3343,14 @@ int vk_alloc_skin_frame( int numWords, uint32_t **data ) {
 	vk.frame->skinWords = first + numWords;
 	*data = (uint32_t *)vk.frame->skinBuffer.mapped + first;
 	return first;
+}
+
+qboolean vk_skin_frame_room( int numWords ) {
+	if ( !vk_skin_available() ) {
+		return qfalse;
+	}
+	VK_BeginFrameIfNeeded();
+	return PAD( vk.frame->skinWords, 8 ) + numWords <= VK_SKIN_FRAME_WORDS;
 }
 
 unsigned int vk_frame_serial( void ) {
