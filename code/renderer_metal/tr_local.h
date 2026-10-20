@@ -843,6 +843,8 @@ typedef struct {
     vec3_t		lmOrigin;
     vec3_t		lmVecs[2];
     vec3_t		lmInverseVecs[2];
+    vec3_t		dlightBounds[2];	// of the positions its dlight texels are computed at, with a margin
+									// (R_SetFaceDlightBounds; empty without a lightmap)
 
 	int			staticVertex;	// its first vertex in the world's static vertex data (R_UploadStaticFaces), -1: none
 
@@ -1032,6 +1034,8 @@ typedef struct mnode_s {
 	int			contents;		// -1 for nodes, to differentiate from leafs
 	int			visframe;		// node needs to be traversed if current
 	vec3_t		mins, maxs;		// for bounding box culling
+	vec3_t		dlightMins, dlightMaxs;	// the dlight bounds of the lightmapped faces and patches in its
+										// leafs (R_SetDlightBounds), for R_RecursiveWorldNode's dlight culling
 	struct mnode_s	*parent;
 
 	// node specific

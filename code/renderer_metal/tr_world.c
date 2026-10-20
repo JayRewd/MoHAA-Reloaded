@@ -377,17 +377,29 @@ int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 /*
 ======================
 R_CheckDlightSurface
+
+Metal: sceneBits are the scene's lights, dlightBits the ones left after R_RecursiveWorldNode's culling
+(for a brush model both are its lights). A surface none of them reaches gets no dlight map, as MOHAA's
+tests of all the scene's lights would find.
 ======================
 */
-static int R_CheckDlightSurface(msurface_t* surf, int dlightBits)
+static int R_CheckDlightSurface(msurface_t* surf, int sceneBits, int dlightBits)
 {
-    if (dlightBits && surf->frameCount != tr.frameCount)
+    if (sceneBits && surf->frameCount != tr.frameCount)
     {
         surf->frameCount = tr.frameCount;
+        if (!dlightBits) {
+            if (*surf->data == SF_FACE) {
+                ((srfSurfaceFace_t*)surf->data)->dlightMap[tr.smpFrame] = 0;
+            } else if (*surf->data == SF_GRID) {
+                ((srfGridMesh_t*)surf->data)->dlightMap[tr.smpFrame] = 0;
+            }
+            return 0;
+        }
         return R_DlightSurface(surf, dlightBits);
     }
 
-	if (dlightBits)
+	if (sceneBits)
 	{
 		//
 		// Added in 2.0
@@ -444,7 +456,7 @@ int R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 R_AddWorldSurface
 ======================
 */
-static void R_AddWorldSurface( msurface_t *surf, int dlightBits ) {
+static void R_AddWorldSurface( msurface_t *surf, int sceneBits, int dlightBits ) {
 	//if ( surf->viewCount == tr.viewCount ) {
 	//	return;		// already in this view
 	//}
@@ -458,7 +470,7 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits ) {
 	}
 
 	// check for dlighting
-	dlightBits = R_CheckDlightSurface(surf, dlightBits);
+	dlightBits = R_CheckDlightSurface(surf, sceneBits, dlightBits);
 	if (surf->shader && surf->shader->isPortalSky) {
 		// Sky portal
 		R_Sky_AddSurf(surf);
@@ -499,7 +511,7 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 	R_DlightBmodel( bmodel );
 
 	for ( i = 0 ; i < bmodel->numSurfaces ; i++ ) {
-		R_AddWorldSurface( bmodel->firstSurface + i, tr.currentEntity->needDlights );
+		R_AddWorldSurface( bmodel->firstSurface + i, tr.currentEntity->needDlights, tr.currentEntity->needDlights );
 	}
 }
 
@@ -521,6 +533,39 @@ void R_GetInlineModelBounds(int iIndex, vec3_t vMins, vec3_t vMaxs)
 	VectorCopy(bmodel->bounds[1], vMaxs);
 }
 
+
+/*
+================
+R_DlightNode
+
+Metal: the lights of dlightBits whose radius reaches the node's dlight bounds (R_SetDlightBounds). The
+others light no dlight texel of a surface below it, so R_RealDlightFace and R_RealDlightPatch need not
+test them; a surface in several leafs gets the same lights from each.
+================
+*/
+static int R_DlightNode( const mnode_t *node, int dlightBits ) {
+	unsigned int	bits;
+	int				i;
+	dlight_t		*dl;
+
+	for ( bits = dlightBits; bits; bits &= bits - 1 ) {
+		i = __builtin_ctz( bits );
+		dl = &tr.refdef.dlights[i];
+		if ( dl->transformed[0] - dl->radius > node->dlightMaxs[0]
+			|| dl->transformed[0] + dl->radius < node->dlightMins[0]
+			|| dl->transformed[1] - dl->radius > node->dlightMaxs[1]
+			|| dl->transformed[1] + dl->radius < node->dlightMins[1]
+			|| dl->transformed[2] - dl->radius > node->dlightMaxs[2]
+			|| dl->transformed[2] + dl->radius < node->dlightMins[2] ) {
+			dlightBits &= ~( 1u << i );
+		}
+	}
+
+	return dlightBits;
+}
+
+static int r_sceneDlightBits;	// the scene's lights, for R_CheckDlightSurface
+static qboolean r_cullDlights;	// MOHAA's dlight maps (not r_fastdlights): R_DlightNode culls
 
 /*
 ================
@@ -595,6 +640,10 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 
 		}
 
+		if ( dlightBits && r_cullDlights ) {
+			dlightBits = R_DlightNode( node, dlightBits );
+		}
+
 		if ( node->contents != -1 ) {
 			break;
 		}
@@ -645,7 +694,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 				// spans multiple leafs
 				surf = *mark;
 				if (surf->viewCount != tr.viewCount) {
-					R_AddWorldSurface(surf, dlightBits);
+					R_AddWorldSurface(surf, r_sceneDlightBits, dlightBits);
 				}
 				mark++;
 			}
@@ -898,7 +947,10 @@ void R_AddWorldSurfaces (void) {
 		tr.refdef.num_dlights = 32;
 	}
 	R_TransformDlights(tr.refdef.num_dlights, tr.refdef.dlights, &tr.viewParms.world);
-	R_RecursiveWorldNode(tr.world->nodes, tr.viewParms.fog.extrafrustums ? 31 : 15, (1 << tr.refdef.num_dlights) - 1);
+	// Metal: with 32 lights, all 32 (1 << 32 is 1 << 0 on arm64: none)
+	r_sceneDlightBits = (int)((1ull << tr.refdef.num_dlights) - 1);
+	r_cullDlights = !r_fastdlights->integer;
+	R_RecursiveWorldNode(tr.world->nodes, tr.viewParms.fog.extrafrustums ? 31 : 15, r_sceneDlightBits);
 
 	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky) {
 		R_AddTerrainSurfaces();

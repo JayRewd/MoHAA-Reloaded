@@ -602,6 +602,44 @@ void R_LoadTerrainIndexes(gamelump_t* lump) {
 
 /*
 ===============
+R_SetFaceDlightBounds
+
+Metal: the bounds of the positions R_RealDlightFace computes the face's dlight texels at (the same steps
+added up the same way), one unit larger on every side, so a light whose radius stays outside them can't
+light a texel, its rounding included. Empty without a lightmap.
+===============
+*/
+#define DLIGHT_BOUNDS_MARGIN 1.f
+
+static void R_SetFaceDlightBounds( srfSurfaceFace_t *cv ) {
+    int			i, j;
+    vec3_t		vec, vecStepS, vecStepT;
+
+    ClearBounds( cv->dlightBounds[0], cv->dlightBounds[1] );
+    if ( !cv->lmWidth || !cv->lmHeight ) {
+        return;
+    }
+
+    VectorCopy( cv->lmVecs[0], vecStepS );
+    VectorMA( cv->lmVecs[1], -cv->lmWidth, cv->lmVecs[0], vecStepT );
+    VectorCopy( cv->lmOrigin, vec );
+
+    for ( i = 0; i < cv->lmHeight; i++ ) {
+        for ( j = 0; j < cv->lmWidth; j++ ) {
+            AddPointToBounds( vec, cv->dlightBounds[0], cv->dlightBounds[1] );
+            VectorAdd( vec, vecStepS, vec );
+        }
+        VectorAdd( vec, vecStepT, vec );
+    }
+
+    for ( i = 0; i < 3; i++ ) {
+        cv->dlightBounds[0][i] -= DLIGHT_BOUNDS_MARGIN;
+        cv->dlightBounds[1][i] += DLIGHT_BOUNDS_MARGIN;
+    }
+}
+
+/*
+===============
 ParseFace
 ===============
 */
@@ -709,6 +747,7 @@ static void ParseFace( dsurface_t *ds, drawVert_t *verts, msurface_t *surf, int 
     {
         cv->lmData = NULL;
     }
+    R_SetFaceDlightBounds( cv );
     surf->data = (surfaceType_t *)cv;
 }
 
@@ -1724,6 +1763,60 @@ static	void R_SetParent (mnode_t *node, mnode_t *parent)
 
 /*
 =================
+R_SetDlightBounds
+
+Metal: a node's dlight bounds hold those of every lightmapped face (R_SetFaceDlightBounds) and patch
+(its mesh bounds, with the margin) in its leafs: a light outside them reaches no dlight texel of a
+surface below it (R_RecursiveWorldNode's culling), whichever of the surface's leafs are visible.
+=================
+*/
+static	void R_SetDlightBounds (mnode_t *node)
+{
+    int			i, j;
+    msurface_t	*surf;
+    vec3_t		mins, maxs;
+
+    ClearBounds (node->dlightMins, node->dlightMaxs);
+
+    if (node->contents != -1) {
+        for (i = 0; i < node->nummarksurfaces; i++) {
+            surf = node->firstmarksurface[i];
+            if (*surf->data == SF_FACE) {
+                srfSurfaceFace_t *face = (srfSurfaceFace_t *)surf->data;
+                if (!face->lmWidth || !face->lmHeight) {
+                    continue;
+                }
+                VectorCopy (face->dlightBounds[0], mins);
+                VectorCopy (face->dlightBounds[1], maxs);
+            } else if (*surf->data == SF_GRID) {
+                srfGridMesh_t *grid = (srfGridMesh_t *)surf->data;
+                if (!grid->lmWidth || !grid->lmHeight) {
+                    continue;
+                }
+                for (j = 0; j < 3; j++) {
+                    mins[j] = grid->meshBounds[0][j] - DLIGHT_BOUNDS_MARGIN;
+                    maxs[j] = grid->meshBounds[1][j] + DLIGHT_BOUNDS_MARGIN;
+                }
+            } else {
+                continue;
+            }
+            AddPointToBounds (mins, node->dlightMins, node->dlightMaxs);
+            AddPointToBounds (maxs, node->dlightMins, node->dlightMaxs);
+        }
+        return;
+    }
+
+    for (i = 0; i < 2; i++) {
+        R_SetDlightBounds (node->children[i]);
+        if (node->children[i]->dlightMins[0] <= node->children[i]->dlightMaxs[0]) {
+            AddPointToBounds (node->children[i]->dlightMins, node->dlightMins, node->dlightMaxs);
+            AddPointToBounds (node->children[i]->dlightMaxs, node->dlightMins, node->dlightMaxs);
+        }
+    }
+}
+
+/*
+=================
 R_LoadNodesAndLeafs
 =================
 */
@@ -2414,7 +2507,7 @@ void RE_LoadWorldMap( const char *name ) {
     _R(71);
     numleafs = R_LoadLump(h, Q_GetLumpByVersion(&header, LUMP_LEAFS), &lump2, sizeof(dleaf_t));
     _R(72);
-    numnodes = R_LoadLump(h, Q_GetLumpByVersion(&header, LUMP_NODES), &lump, sizeof(mnode_t));
+    numnodes = R_LoadLump(h, Q_GetLumpByVersion(&header, LUMP_NODES), &lump, sizeof(dnode_t));
     _R(73);
     if (header.version > BSP_BETA_VERSION) {
         R_LoadNodesAndLeafs(&lump, &lump2);
@@ -2422,6 +2515,7 @@ void RE_LoadWorldMap( const char *name ) {
     else {
         R_LoadNodesAndLeafsOld(&lump, &lump2);
     }
+    R_SetDlightBounds(s_worldData.nodes);
     _R(74);
     R_FreeLump(&lump);
     _R(75);

@@ -1423,7 +1423,7 @@ void R_AddTerrainSurfaces()
             if (ter_lock->integer == 2 || patch->visCountDraw == g_terVisCount) {
                 assert(patch->shader);
 
-                dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
+                dlight = R_CheckDlightTerrain(patch, (int)((1ull << tr.refdef.num_dlights) - 1));
                 R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, dlight);
             }
 
@@ -1447,7 +1447,7 @@ void R_AddTerrainSurfaces()
         for (patch = tr.world->activeTerraPatches; patch; patch = patch->pNextActive) {
             assert(patch->shader);
 
-            dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
+            dlight = R_CheckDlightTerrain(patch, (int)((1ull << tr.refdef.num_dlights) - 1));
             R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, dlight);
         }
     }

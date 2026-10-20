@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_light.c
 
 #include "tr_local.h"
+#include <arm_neon.h>
 
 #define DLIGHT_AT_RADIUS 16
 // at the edge of a dlight's influence, this amount of light will be added
@@ -34,11 +35,13 @@ typedef struct {
     dlight_t *dl;
     float     power;
     vec3_t    origin;
+    float     reach2;	// Metal: no texel farther than its square root gets light (R_SetIncidentLight)
+    vec3_t    color;	// Metal: dl->color
 } incidentLight_t;
 
 typedef struct {
     int             dlightMap;
-    int             allocated[LIGHTMAP_SIZE];
+    byte            allocated[LIGHTMAP_SIZE];	// Metal: bytes (heights up to LIGHTMAP_SIZE), for R_FindLMBlock
     byte            lightmap_buffer[LIGHTMAP_SIZE * LIGHTMAP_SIZE * 4];
     byte           *srcBase;
     byte           *dstBase;
@@ -55,8 +58,211 @@ typedef struct {
 dlightInfo_t dli;
 
 void     R_SetupEntityLightingGrid(trRefEntity_t *ent);
-qboolean R_DlightSample(byte *src, const vec3_t vec, byte *dst);
 qboolean R_AllocLMBlock(int w, int h, int *x, int *y);
+
+#define DLIGHT_NORMALIZE_MAX 1024
+static float dlightNormalize[DLIGHT_NORMALIZE_MAX + 1];	// Metal: R_DlightSample's 255.0 / m for m > 255,
+														// 1 below (R_DlightSample4)
+
+/*
+===============
+R_SetIncidentLight
+
+Metal: a light's squared reach and its color, for R_DlightSample. The reach is its radius with a margin
+far above the rounding of R_DlightSample's distance: a texel past it can't be within the radius.
+===============
+*/
+static ID_INLINE void R_SetIncidentLight(incidentLight_t *light)
+{
+    float reach;
+
+    reach         = light->dl->radius * 1.0001f + 1.f;
+    light->reach2 = reach * reach;
+    VectorCopy(light->dl->color, light->color);
+}
+
+/*
+===============
+R_DlightSample
+
+Metal: MOHAA's texel, the same bytes faster: a light farther than its reach is skipped before the square
+root, its color read from the copy, and the normalization's factor taken from a table up to 1024.
+===============
+*/
+static ID_INLINE qboolean R_DlightSample(const byte *src, const vec3_t vec, byte *dst)
+{
+    int      r, g, b;
+    int      k;
+    qboolean added;
+    vec3_t   dir;
+    float    add;
+
+    added = qfalse;
+    r     = src[0];
+    g     = src[1];
+    b     = src[2];
+
+    for (k = 0; k < dli.numLights; k++) {
+        incidentLight_t *light = &dli.lights[k];
+
+        VectorSubtract(vec, light->origin, dir);
+        if (DotProduct(dir, dir) > light->reach2) {
+            continue;
+        }
+        add = VectorLength(dir) * light->power;
+        if (add <= 1.f) {
+            float t = (1.0 - add) * (1.0 - add) * 375.0;
+
+            r = (int)(t * light->color[0] + (float)r);
+            g = (int)(t * light->color[1] + (float)g);
+            b = (int)(t * light->color[2] + (float)b);
+            // light was added
+            added = qtrue;
+        }
+    }
+
+    if (tr.overbrightShift) {
+        r <<= tr.overbrightShift & 0xFF;
+        g <<= tr.overbrightShift & 0xFF;
+        b <<= tr.overbrightShift & 0xFF;
+    }
+
+    if (r > 0xFF || g > 0xFF || b > 0xFF) {
+        float t;
+        int   m;
+        // normalize color values
+        m = Q_max(r, Q_max(g, b));
+        t = m <= DLIGHT_NORMALIZE_MAX ? dlightNormalize[m] : 255.0 / (float)m;
+
+        r = (int)((float)r * t);
+        g = (int)((float)g * t);
+        b = (int)((float)b * t);
+    }
+
+    dst[0] = (byte)r;
+    dst[1] = (byte)g;
+    dst[2] = (byte)b;
+    dst[3] = -1;
+
+    return added;
+}
+
+/*
+===============
+R_DlightSample4
+
+Metal: four texels of a face's row at once, the same bytes as R_DlightSample's: their positions summed
+up one by one as before (vec moves on by four steps), then each light's terms lane by lane in the same
+order and rounding (the squared distance as fma(z, z, fma(x, x, y * y)), the float square root, the
+double (1 - add)^2 * 375, fma(t, color, (float)r) truncated) and the normalization's factor from the
+table, or the double division for a sum past it. For an overbrightShift of 0 to 31 (as a shift by it).
+===============
+*/
+static ID_INLINE qboolean R_DlightSample4(const byte *src, qboolean load16, vec3_t vec, const vec3_t step, byte *dst)
+{
+    static const uint8x16_t iR = {0, 255, 255, 255, 3, 255, 255, 255, 6, 255, 255, 255, 9, 255, 255, 255};
+    static const uint8x16_t iG = {1, 255, 255, 255, 4, 255, 255, 255, 7, 255, 255, 255, 10, 255, 255, 255};
+    static const uint8x16_t iB = {2, 255, 255, 255, 5, 255, 255, 255, 8, 255, 255, 255, 11, 255, 255, 255};
+    const float64x2_t one = vdupq_n_f64(1.0), c375 = vdupq_n_f64(375.0);
+    float          px[4], py[4], pz[4];
+    float32x4_t    X, Y, Z;
+    int32x4_t      R, G, B, M;
+    uint32x4_t     added, over;
+    int            k;
+
+    for (k = 0; k < 4; k++) {
+        px[k] = vec[0];
+        py[k] = vec[1];
+        pz[k] = vec[2];
+        VectorAdd(vec, step, vec);
+    }
+    X = vld1q_f32(px);
+    Y = vld1q_f32(py);
+    Z = vld1q_f32(pz);
+
+    if (load16) {
+        // the 16 bytes are the row's
+        uint8x16_t raw = vld1q_u8(src);
+        R = vreinterpretq_s32_u8(vqtbl1q_u8(raw, iR));
+        G = vreinterpretq_s32_u8(vqtbl1q_u8(raw, iG));
+        B = vreinterpretq_s32_u8(vqtbl1q_u8(raw, iB));
+    } else {
+        R = (int32x4_t){src[0], src[3], src[6], src[9]};
+        G = (int32x4_t){src[1], src[4], src[7], src[10]};
+        B = (int32x4_t){src[2], src[5], src[8], src[11]};
+    }
+
+    added = vdupq_n_u32(0);
+    for (k = 0; k < dli.numLights; k++) {
+        const incidentLight_t *light = &dli.lights[k];
+        float32x4_t            dx, dy, dz, d2, add, t;
+        float64x2_t            a0, a1;
+        uint32x4_t             in;
+
+        dx = vsubq_f32(X, vdupq_n_f32(light->origin[0]));
+        dy = vsubq_f32(Y, vdupq_n_f32(light->origin[1]));
+        dz = vsubq_f32(Z, vdupq_n_f32(light->origin[2]));
+        d2 = vfmaq_f32(vfmaq_f32(vmulq_f32(dy, dy), dx, dx), dz, dz);
+        if (!vmaxvq_u32(vcleq_f32(d2, vdupq_n_f32(light->reach2)))) {
+            continue;
+        }
+        add = vmulq_f32(vsqrtq_f32(d2), vdupq_n_f32(light->power));
+        in  = vcleq_f32(add, vdupq_n_f32(1.f));
+        if (!vmaxvq_u32(in)) {
+            continue;
+        }
+
+        a0 = vsubq_f64(one, vcvt_f64_f32(vget_low_f32(add)));
+        a1 = vsubq_f64(one, vcvt_high_f64_f32(add));
+        a0 = vmulq_f64(vmulq_f64(a0, a0), c375);
+        a1 = vmulq_f64(vmulq_f64(a1, a1), c375);
+        t  = vcvt_high_f32_f64(vcvt_f32_f64(a0), a1);
+
+        R     = vbslq_s32(in, vcvtq_s32_f32(vfmaq_f32(vcvtq_f32_s32(R), t, vdupq_n_f32(light->color[0]))), R);
+        G     = vbslq_s32(in, vcvtq_s32_f32(vfmaq_f32(vcvtq_f32_s32(G), t, vdupq_n_f32(light->color[1]))), G);
+        B     = vbslq_s32(in, vcvtq_s32_f32(vfmaq_f32(vcvtq_f32_s32(B), t, vdupq_n_f32(light->color[2]))), B);
+        added = vorrq_u32(added, in);
+    }
+
+    R = vshlq_s32(R, vdupq_n_s32(tr.overbrightShift));
+    G = vshlq_s32(G, vdupq_n_s32(tr.overbrightShift));
+    B = vshlq_s32(B, vdupq_n_s32(tr.overbrightShift));
+
+    M = vmaxq_s32(R, vmaxq_s32(G, B));
+    if (vmaxvq_u32(vreinterpretq_u32_s32(M)) <= DLIGHT_NORMALIZE_MAX && vminvq_s32(vminq_s32(R, vminq_s32(G, B))) >= 0) {
+        // 1 up to 255: the same values
+        float32x4_t t = {
+            dlightNormalize[vgetq_lane_s32(M, 0)], dlightNormalize[vgetq_lane_s32(M, 1)],
+            dlightNormalize[vgetq_lane_s32(M, 2)], dlightNormalize[vgetq_lane_s32(M, 3)]};
+
+        R = vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(R), t));
+        G = vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(G), t));
+        B = vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(B), t));
+    } else {
+        over = vcgtq_s32(M, vdupq_n_s32(0xFF));
+        if (vmaxvq_u32(over)) {
+            const float64x2_t c255 = vdupq_n_f64(255.0);
+            float32x4_t       m    = vcvtq_f32_s32(M), t;
+
+            t = vcvt_high_f32_f64(
+                vcvt_f32_f64(vdivq_f64(c255, vcvt_f64_f32(vget_low_f32(m)))), vdivq_f64(c255, vcvt_high_f64_f32(m))
+            );
+            R = vbslq_s32(over, vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(R), t)), R);
+            G = vbslq_s32(over, vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(G), t)), G);
+            B = vbslq_s32(over, vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(B), t)), B);
+        }
+    }
+
+    vst1q_u32(
+        (uint32_t *)dst,
+        vorrq_u32(
+            vorrq_u32(vandq_u32(vreinterpretq_u32_s32(R), vdupq_n_u32(0xFF)), vshlq_n_u32(vandq_u32(vreinterpretq_u32_s32(G), vdupq_n_u32(0xFF)), 8)),
+            vorrq_u32(vshlq_n_u32(vandq_u32(vreinterpretq_u32_s32(B), vdupq_n_u32(0xFF)), 16), vdupq_n_u32(0xFF000000u))
+        )
+    );
+
+    return vmaxvq_u32(added) != 0;
+}
 
 /*
 ===============
@@ -162,6 +368,7 @@ int R_RealDlightPatch(srfGridMesh_t *srf, int dlightBits)
         VectorCopy(dl->transformed, dli.lights[dli.numLights].origin);
         dli.lights[dli.numLights].dl    = dl;
         dli.lights[dli.numLights].power = 1.f / dl->radius;
+        R_SetIncidentLight(&dli.lights[dli.numLights]);
         dli.numLights++;
     }
 
@@ -320,13 +527,21 @@ int R_RealDlightFace(srfSurfaceFace_t *srf, int dlightBits)
 
         d = DotProduct(dl->transformed, srf->plane.normal) - srf->plane.dist;
 
-        if ((d < 0.f && !r_dlightBacks->integer) || (d > dl->radius || d < -dl->radius)) {
+        if ((d < 0.f && !r_dlightBacks->integer) || (d > dl->radius || d < -dl->radius)
+            // Metal: or its texels' bounds (R_SetFaceDlightBounds): it would light none of them
+            || dl->transformed[0] - dl->radius > srf->dlightBounds[1][0]
+            || dl->transformed[0] + dl->radius < srf->dlightBounds[0][0]
+            || dl->transformed[1] - dl->radius > srf->dlightBounds[1][1]
+            || dl->transformed[1] + dl->radius < srf->dlightBounds[0][1]
+            || dl->transformed[2] - dl->radius > srf->dlightBounds[1][2]
+            || dl->transformed[2] + dl->radius < srf->dlightBounds[0][2]) {
             // dlight doesn't reach the plane
             dlightBits &= ~(1 << i);
         } else {
             VectorCopy(dl->transformed, dli.lights[dli.numLights].origin);
             dli.lights[dli.numLights].dl    = dl;
             dli.lights[dli.numLights].power = 1.0 / dl->radius;
+            R_SetIncidentLight(&dli.lights[dli.numLights]);
             dli.numLights++;
         }
     }
@@ -357,7 +572,16 @@ int R_RealDlightFace(srfSurfaceFace_t *srf, int dlightBits)
     VectorCopy(srf->lmOrigin, vec);
 
     for (i = 0; i < srf->lmHeight; i++) {
-        for (j = 0; j < srf->lmWidth; j++) {
+        j = 0;
+        if (tr.overbrightShift >= 0 && tr.overbrightShift < 32) {
+            // Metal: four at a time
+            for (; j + 4 <= srf->lmWidth; j += 4) {
+                added |= R_DlightSample4(src, j + 6 <= srf->lmWidth, vec, vecStepS, dst);
+                src += 12;
+                dst += 16;
+            }
+        }
+        for (; j < srf->lmWidth; j++) {
             added |= R_DlightSample(src, vec, dst);
             VectorAdd(vec, vecStepS, vec);
             src += 3;
@@ -455,6 +679,7 @@ int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
         VectorCopy(dl->origin, dli.lights[dli.numLights].origin);
         dli.lights[dli.numLights].dl    = dl;
         dli.lights[dli.numLights].power = 1.f / dl->radius;
+        R_SetIncidentLight(&dli.lights[dli.numLights]);
         dli.numLights++;
     }
 
@@ -1579,8 +1804,16 @@ R_ClearRealDlights
 */
 void R_ClearRealDlights()
 {
+    int m;
+
     memset(dli.allocated, 0, sizeof(dli.allocated));
     dli.dlightMap = 0;
+
+    if (!dlightNormalize[DLIGHT_NORMALIZE_MAX]) {
+        for (m = 0; m <= DLIGHT_NORMALIZE_MAX; m++) {
+            dlightNormalize[m] = m > 0xFF ? 255.0 / (float)m : 1.f;
+        }
+    }
 }
 
 /*
@@ -1618,31 +1851,69 @@ void R_UploadDlights()
 
 /*
 ===============
+R_FindLMBlock
+
+Metal: R_AllocLMBlock's search, the same answer faster: the first column x below LIGHTMAP_SIZE - w whose
+w columns' highest allocation is the lowest, and that height (y, returned). The windows' maxima by
+doubling, m_s[i] = max(m_s/2[i], m_s/2[i + s/2]), then max(m_s[i], m_s[i + w - s]) for the largest
+s <= w. For 0 < w < LIGHTMAP_SIZE.
+===============
+*/
+static int R_FindLMBlock(int w, int *x, int *y)
+{
+    byte       m[LIGHTMAP_SIZE * 2], t[LIGHTMAP_SIZE];
+    int        s, k, n, best;
+    uint8x16_t low;
+
+    n = LIGHTMAP_SIZE - w;
+    Com_Memcpy(m, dli.allocated, LIGHTMAP_SIZE);
+    Com_Memset(m + LIGHTMAP_SIZE, 0, LIGHTMAP_SIZE);
+
+    for (s = 1; s * 2 <= w; s *= 2) {
+        for (k = 0; k < LIGHTMAP_SIZE; k += 16) {
+            vst1q_u8(t + k, vmaxq_u8(vld1q_u8(m + k), vld1q_u8(m + k + s)));
+        }
+        Com_Memcpy(m, t, LIGHTMAP_SIZE);
+    }
+    if (s != w) {
+        for (k = 0; k < LIGHTMAP_SIZE; k += 16) {
+            vst1q_u8(t + k, vmaxq_u8(vld1q_u8(m + k), vld1q_u8(m + k + w - s)));
+        }
+        Com_Memcpy(m, t, LIGHTMAP_SIZE);
+    }
+
+    // the columns from n on start no block (the search ended before them)
+    Com_Memset(m + n, 0xFF, LIGHTMAP_SIZE - n);
+    low = vdupq_n_u8(0xFF);
+    for (k = 0; k < LIGHTMAP_SIZE; k += 16) {
+        low = vminq_u8(low, vld1q_u8(m + k));
+    }
+    best = vminvq_u8(low);
+
+    for (k = 0; m[k] != best; k++) {
+    }
+    *x = k;
+    *y = best;
+    return best;
+}
+
+/*
+===============
 R_AllocLMBlock
 ===============
 */
 qboolean R_AllocLMBlock(int w, int h, int *x, int *y)
 {
-    int i, j;
-    int best, best2;
+    int best;
+
+    if (w >= LIGHTMAP_SIZE || h > LIGHTMAP_SIZE) {
+        // Metal: it fits no page (the search ends at LIGHTMAP_SIZE - w), so don't upload and step
+        // through every page to find that out (a 129-texel terrain block near a light did each frame)
+        return qfalse;
+    }
 
     for (;;) {
-        best = LIGHTMAP_SIZE;
-        for (i = 0; i < LIGHTMAP_SIZE - w; i++) {
-            best2 = 0;
-
-            for (j = 0; j < w && dli.allocated[i + j] < best; j++) {
-                if (best2 < dli.allocated[i + j]) {
-                    best2 = dli.allocated[i + j];
-                }
-            }
-
-            if (j == w) {
-                *x   = i;
-                *y   = best2;
-                best = best2;
-            }
-        }
+        best = R_FindLMBlock(w, x, y);
 
         if (h + best <= LIGHTMAP_SIZE) {
             break;
@@ -1657,64 +1928,6 @@ qboolean R_AllocLMBlock(int w, int h, int *x, int *y)
     }
 
     return qtrue;
-}
-
-/*
-===============
-R_DlightSample
-===============
-*/
-qboolean R_DlightSample(byte *src, const vec3_t vec, byte *dst)
-{
-    int      r, g, b;
-    int      k;
-    qboolean added;
-    vec3_t   dir;
-    float    add;
-
-    added = qfalse;
-    r     = src[0];
-    g     = src[1];
-    b     = src[2];
-
-    for (k = 0; k < dli.numLights; k++) {
-        incidentLight_t *light = &dli.lights[k];
-
-        VectorSubtract(vec, light->origin, dir);
-        add = VectorLength(dir) * light->power;
-        if (add <= 1.f) {
-            float t = (1.0 - add) * (1.0 - add) * 375.0;
-
-            r = (int)(t * light->dl->color[0] + (float)r);
-            g = (int)(t * light->dl->color[1] + (float)g);
-            b = (int)(t * light->dl->color[2] + (float)b);
-            // light was added
-            added = qtrue;
-        }
-    }
-
-    if (tr.overbrightShift) {
-        r <<= tr.overbrightShift & 0xFF;
-        g <<= tr.overbrightShift & 0xFF;
-        b <<= tr.overbrightShift & 0xFF;
-    }
-
-    if (r > 0xFF || g > 0xFF || b > 0xFF) {
-        float t;
-        // normalize color values
-        t = 255.0 / (float)Q_max(r, Q_max(g, b));
-
-        r = (int)((float)r * t);
-        g = (int)((float)g * t);
-        b = (int)((float)b * t);
-    }
-
-    dst[0] = (byte)r;
-    dst[1] = (byte)g;
-    dst[2] = (byte)b;
-    dst[3] = -1;
-
-    return added;
 }
 
 int R_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir) {
