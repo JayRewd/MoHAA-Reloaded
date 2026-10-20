@@ -1,0 +1,92 @@
+##########################
+#
+# The Metal port: macOS 26 on Apple Silicon
+#
+# Builds with README.md's commands as written (Xcode's Metal Toolchain component, Homebrew's CMake, Ninja and Bison),
+# checks the install, and uploads the ad-hoc-signed release zip (port/release.sh) as a workflow artifact. No release,
+# no tag, no secrets.
+##########################
+name: "macOS Metal build"
+
+on:
+  push:
+    branches: [metal]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "Build, check and package (macOS 26, arm64)"
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Xcode and SDK
+      run: |
+        xcodebuild -version
+        xcrun --sdk macosx --show-sdk-version
+        uname -m
+        sw_vers
+
+    # README.md "Building": the Metal shader compiler is a separate Xcode component since Xcode 26
+    - name: Install Xcode's Metal Toolchain component
+      run: |
+        xcodebuild -downloadComponent MetalToolchain
+        xcrun -f metallib
+        xcrun metal --version
+
+    - name: Install CMake, Ninja and Bison
+      env:
+        HOMEBREW_NO_INSTALL_CLEANUP: 1
+      run: brew install cmake ninja bison
+
+    # README.md's three commands, as written (no -DMETAL_TOOLCHAIN_BIN: CMake finds the compiler by itself)
+    - name: Configure
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Install
+      run: cmake --install build
+
+    - name: Check the install
+      run: |
+        set -euo pipefail
+        D=install/lib/openmohaa
+        # The prefix holds exactly the game folder's four files
+        diff <(cd install && find . -mindepth 1 -not -path './lib/openmohaa/openmohaa.app/*' | sort) \
+             <(printf '%s\n' ./lib ./lib/openmohaa ./lib/openmohaa/cgame.dylib ./lib/openmohaa/game.dylib \
+                             ./lib/openmohaa/omohaaded ./lib/openmohaa/openmohaa.app)
+        codesign --verify --deep --strict --verbose=2 "$D/openmohaa.app"
+        codesign -dv "$D/openmohaa.app" 2>&1 | grep -E '^(Identifier|Format|Signature)='
+        /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' -c 'Print CFBundleShortVersionString' "$D/openmohaa.app/Contents/Info.plist"
+        # arm64 only, and nothing loaded from outside the system or the app (no Homebrew paths)
+        for f in "$D/openmohaa.app/Contents/MacOS/openmohaa" "$D/openmohaa.app/Contents/Frameworks/libopenal.1.dylib" \
+                 "$D/game.dylib" "$D/cgame.dylib" "$D/omohaaded"; do
+          lipo -archs "$f" | grep -qx arm64
+          if otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/)'; then
+            echo "$f loads a library from outside the system or the app" >&2; exit 1
+          fi
+        done
+
+    - name: Package
+      run: port/release.sh "$PWD/install/lib/openmohaa" "$PWD/dist"
+
+    - name: Upload the release zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: openmohaa-metal-macos-arm64
+        path: |
+          dist/*.zip
+          dist/*.zip.sha256
+        if-no-files-found: error
+        retention-days: 30

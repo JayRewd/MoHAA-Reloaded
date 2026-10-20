@@ -31,9 +31,9 @@ function(finish_macos_app)
     set(MACOS_APP_EXECUTABLE_NAME ${CLIENT_BINARY})
     set(MACOS_APP_GUI_IDENTIFIER ${MACOS_BUNDLE_ID})
     set(MACOS_APP_ICON_FILE ${MACOS_ICON_FILE})
-    # PRODUCT_VERSION is never set in CMake (it is a C macro, q_version.h): the project's version
-    set(MACOS_APP_SHORT_VERSION_STRING ${PROJECT_VERSION})
-    set(MACOS_APP_BUNDLE_VERSION ${PROJECT_VERSION})
+    # The port's release version (identity.cmake); the game's own version stays PROJECT_VERSION (q_version.h)
+    set(MACOS_APP_SHORT_VERSION_STRING ${PORT_RELEASE_VERSION})
+    set(MACOS_APP_BUNDLE_VERSION ${PORT_RELEASE_VERSION})
     set(MACOS_APP_DEPLOYMENT_TARGET ${CMAKE_OSX_DEPLOYMENT_TARGET})
     set(MACOS_APP_COPYRIGHT ${COPYRIGHT})
 

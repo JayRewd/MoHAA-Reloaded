@@ -1,0 +1,50 @@
+OpenMoHAA for Apple Silicon (native Metal port), version @VERSION@
+==================================================================
+
+A native Metal port of OpenMoHAA for Apple Silicon Macs (M1 or later) with macOS 26 or later. It plays
+Medal of Honor: Allied Assault, Spearhead and Breakthrough on existing MOHAA and OpenMoHAA servers.
+The game data is not included: you need your own retail copy.
+
+https://github.com/pstngh/openmohaa-metal
+
+
+Install
+-------
+
+1. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
+   Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:
+   https://github.com/pstngh/openmohaa-metal/blob/metal/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
+
+2. Copy openmohaa.app, game.dylib and cgame.dylib from this folder into the game folder, next to main/.
+   The game reads its data from the folder that holds the app. omohaaded (a dedicated server) is optional.
+
+3. This build is not notarized by Apple (it is signed ad hoc), so macOS blocks it the first time.
+   Before the first start, remove the download's quarantine in Terminal (cd to the game folder first):
+
+     xattr -dr com.apple.quarantine openmohaa.app game.dylib cgame.dylib omohaaded
+
+   (Provisional: being verified.)
+
+4. Start openmohaa.app. Allied Assault starts by default. For Spearhead or Breakthrough, open Terminal in
+   the game folder and run one of:
+
+     open openmohaa.app --args +set com_target_game 1
+     open openmohaa.app --args +set com_target_game 2
+
+Configs, logs and screenshots go to ~/Library/Application Support/openmohaa/ (main/omconfig.cfg for
+Allied Assault). The settings that matter for this port (cl_cmdRate, com_maxfps, the display modes,
+in_mouseRaw) are described in the README:
+https://github.com/pstngh/openmohaa-metal#settings-that-matter-here
+
+
+Licenses and source
+-------------------
+
+OpenMoHAA is free software under the GNU General Public License, version 2 (COPYING.txt). The libraries
+built into it keep their own licenses, in licenses/ (libmad, the IJG JPEG library, libogg, libvorbis,
+opus, opusfile, zlib, Recast & Detour); openal-soft's are inside the app, in
+openmohaa.app/Contents/Resources/openal-soft/. This software is based in part on the work of the
+Independent JPEG Group.
+
+Built from commit @COMMIT@ of
+https://github.com/pstngh/openmohaa-metal (the full source code of this build).

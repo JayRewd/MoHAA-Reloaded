@@ -11,7 +11,10 @@ set(GAME_MODULE game)
 set(UI_MODULE ui)
 
 set(MACOS_ICON_PATH ${CMAKE_SOURCE_DIR}/misc/macos/openmohaa.icns)
-set(MACOS_BUNDLE_ID org.openmohaa.${CLIENT_NAME})
+# The Metal port's own app identity (its first release, 2026-10-20): the bundle ID, and the release version in
+# the Info.plist and the release zip's name. PROJECT_VERSION, the version the game shows and sends, stays upstream's.
+set(MACOS_BUNDLE_ID io.github.pstngh.openmohaa-metal)
+set(PORT_RELEASE_VERSION 1.0.0)
 
 set(COPYRIGHT "OpenMoHAA Copyright © 2025 OpenMoHAA Team, Inc. All rights reserved.")
 
