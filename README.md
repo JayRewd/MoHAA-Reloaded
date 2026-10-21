@@ -107,8 +107,10 @@ seta in_mouseRaw 1
 | `r_borderlessWindow` | `0` | With `r_fullscreen 1` and `r_noborder 1`: `0` is a native fullscreen Space, `1` a borderless window over the screen (no slide animation when you switch apps or `vid_restart`). |
 | `r_swapInterval` | `0` | `0` presents each frame at once (it can tear). `1` is vsync: tear-free, but about two refreshes later (~8 ms at 240 Hz). |
 | `com_busyWait` | `0` | `1` spins the CPU through the whole frame wait: ~0.05–0.1 ms sooner, for a full core. |
-| `cl_maxpackets` | `30` (upstream's) | Packets a second, 30–125. At 125 every command of `cl_cmdRate 100` goes out in its own packet; at 30 they're bundled three or four to a packet. |
+| `cl_maxpackets` | `125` (upstream's is `30`) | Packets a second, 30–125. At 125 every command of `cl_cmdRate 100` goes out in its own packet; at 30 they're bundled three or four to a packet. |
 | `cl_latencyStats` | `0` | `1` prints input → present times while you play (the port's latency probe). |
+| `ui_console` | `1` (upstream's is `0`) | The console key opens the console. The game still starts at the main menu with the console closed (except with `developer 1`). |
+| `r_uselod` | `0` (upstream's is `1`) | `0` draws soldiers and weapons at full detail at any distance. `1` lowers their detail with distance, tuned by `r_lodscale`, `r_lodcap` and `r_lodviewmodelcap`. Not saved in configs: set it at launch or in an `autoexec.cfg`. |
 | `cl_playintro` | `0` (upstream's is `1`) | The intro videos at startup. `1` plays them: at launch (`--args +set cl_playintro 1`) or with `seta cl_playintro 1` in a config. |
 
 The display modes. Every fullscreen mode goes direct to the display, bypassing macOS's compositor:
@@ -158,6 +160,7 @@ On fixed test views across multiplayer, objective and single-player maps, Metal 
 
 - **Alpha-tested surfaces after the opaque ones** (the foliage item above): a few single pixels differ where a leaf and a wall are at exactly the same depth.
 - **32 dynamic lights:** with 32 or more lights in a scene, MOHAA lit no wall at all on arm64; now they all light it. Only cheats get that many lights (`cg_acidtrip`).
+- **Models at full detail** (`r_uselod 0` by default): soldiers and weapons don't lose detail with distance.
 - **Gamma** (`r_gamma`) is applied in the final shader pass, not through the display's gamma table. It never changes the desktop's colors, and other tools can't override it.
 
 Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They save CPU, but on this GPU they cost more when a light covers the screen, which your own muzzle flash does, so your own shots would show ~50 µs later. A depth prepass for foliage gave no steady gain. More drawables or frames in flight add latency.

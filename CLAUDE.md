@@ -49,7 +49,7 @@ port/release.sh                    # the release zip from metal-install (clean t
 port/kbreplay.sh build             # then port/kbreplay.sh run | mouse win|full|hidpi | dialog win|full|full720|space: SDL against native, streams must be identical
 ```
 
-Compare renderers on the **`work` ms/frame** figure: the stock mode pads every frame to at least 1 ms, so fps saturates near 1000. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes. A 5 µs change needs an A/B inside one binary (the plan's §6 tool notes: the old path behind a cvar, blocks of four frames A B B A, a check mode comparing outputs); whole bench runs spread by 20–40 µs within one sitting. New flavors are cases in `port/build.sh`; put every number in the plan.
+`bench.sh` and `shot.sh` pin `r_uselod 1` (the game's default is 0 since session 46), so their numbers stay comparable with earlier runs and GL1. Compare renderers on the **`work` ms/frame** figure: the stock mode pads every frame to at least 1 ms, so fps saturates near 1000. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes. A 5 µs change needs an A/B inside one binary (the plan's §6 tool notes: the old path behind a cvar, blocks of four frames A B B A, a check mode comparing outputs); whole bench runs spread by 20–40 µs within one sitting. New flavors are cases in `port/build.sh`; put every number in the plan.
 
 ## Gotchas
 

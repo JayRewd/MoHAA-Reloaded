@@ -4910,9 +4910,10 @@ CL_TryStartIntro
 */
 void CL_TryStartIntro(void)
 {
-    if (developer->integer || !cl_playintro->integer) {
+    // the console opens at startup only in developer mode (Metal port; upstream opened it whenever no intro played)
+    if (developer->integer) {
         UI_ToggleConsole();
-    } else {
+    } else if (cl_playintro->integer) {
         // FIXME: no intro from now
         Cvar_Set(cl_playintro->name, "0");
         UI_StartIntro_f();
@@ -5249,7 +5250,8 @@ void CL_InitializeUI(void)
     ui_minicon         = Cvar_Get("ui_minicon", "0", 1);
     ui_gmbox           = Cvar_Get("ui_gmbox", "1", 1);
     ui_consoleposition = Cvar_Get("ui_consoleposition", "", 1);
-    ui_console         = Cvar_Get("ui_console", "0", 1);
+    // the console key works by default (the Metal port's default, upstream's is 0)
+    ui_console         = Cvar_Get("ui_console", "1", 1);
     ui_crosshair       = Cvar_Get("ui_crosshair", "1", 1);
     ui_weaponsbar      = Cvar_Get("ui_weaponsbar", "1", 1);
     ui_weaponsbartime  = Cvar_Get("ui_weaponsbartime", "2500", 1);

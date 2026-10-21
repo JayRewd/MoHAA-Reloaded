@@ -29,10 +29,11 @@ mkdir -p "$LOGDIR" "$OMM_HOME/main"
 # Same video/sound settings for every run and every flavor. Sound stays initialised but muted
 # (s_initsound 0 crashes on the first footstep upstream). r_primitives 2 (glDrawElements) is the user's setting and
 # GL1's fastest path on macOS (the default 0 falls back to glArrayElement immediate mode: ~3x slower); the Metal
-# renderer ignores it. Pass "+set r_primitives 0" as extra args to measure upstream's default.
+# renderer ignores it. Pass "+set r_primitives 0" as extra args to measure upstream's default. r_uselod 1 (the game's
+# default is 0 since session 46): the models' LOD, as in every earlier number and in the references.
 VIDEO=(+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0
 	+set r_swapInterval 0 +set com_maxfpsUnfocused 0 +set com_maxfpsMinimized 0
-	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2)
+	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 +set r_uselod 1)
 
 # A watchdog so a hung run never blocks a session: kill the game after N seconds.
 watchdog() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }

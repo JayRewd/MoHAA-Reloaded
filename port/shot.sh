@@ -19,7 +19,7 @@
 #                              against the saved Metal baseline (for changes meant to be pixel-identical; ~8 min)
 # Examples:
 #   port/shot.sh metal menu shot_menu.cfg && port/shot.sh opengl1 menu shot_menu.cfg && port/shot.sh diff menu
-#   port/shot.sh metal console shot_console.cfg +set ui_console 1 +set cl_playintro 0
+#   port/shot.sh metal console shot_console.cfg +set ui_console 1 +set cl_playintro 0 +set developer 1
 #   port/shot.sh metal view shot_view.cfg +set g_gametype 0 +set cg_drawviewmodel 0 +set cheats 1 +devmap dm/mohdm6
 #   port/shot.sh pair dm6 shot_dm6.cfg
 # OMM_FLAVOR=<flavor> runs another install than build.noindex/metal-install for Metal (e.g. a scratch build with other
@@ -115,7 +115,7 @@ rm -rf "$OMM_HOME"/main*/screenshots "$OMM_HOME/main/configs" "$OUT/$NAME-$R"-* 
 if [ "$R" = opengl1 ]; then FLAVOR="${OMM_GL_FLAVOR:-gl}"; else FLAVOR="${OMM_FLAVOR:-metal}"; fi
 perl -e 'alarm shift; exec @ARGV' 120 "$OMM_PORT/run.sh" "$FLAVOR" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
-	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 "$@" +exec "$CFG" > "$OUT/$NAME-$R.log" 2>&1
+	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 +set r_uselod 1 "$@" +exec "$CFG" > "$OUT/$NAME-$R.log" 2>&1
 n=0
 for f in "$OMM_HOME"/main*/screenshots/*.tga; do
 	[ -e "$f" ] || continue
