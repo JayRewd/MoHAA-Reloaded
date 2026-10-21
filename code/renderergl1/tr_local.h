@@ -2417,6 +2417,7 @@ typedef struct {
 	int height;
 	char *fileName;
 	qboolean jpeg;
+	qboolean png;
 } screenshotCommand_t;
 
 typedef struct {

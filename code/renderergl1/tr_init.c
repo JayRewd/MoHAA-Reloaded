@@ -586,6 +586,26 @@ void RB_TakeScreenshotJPEG( int x, int y, int width, int height, char *fileName 
 
 /*
 ==================
+RB_TakeScreenshotPNG
+==================
+*/
+void RB_TakeScreenshotPNG( int x, int y, int width, int height, char *fileName ) {
+	byte *buffer;
+	size_t offset = 0, memcount;
+	int padlen;
+
+	buffer = RB_ReadPixels(x, y, width, height, &offset, &padlen);
+	memcount = (width * 3 + padlen) * height;
+
+	if(glConfig.deviceSupportsGamma)
+		R_GammaCorrect(buffer + offset, memcount);
+
+	RE_SavePNGFromRGB(fileName, width, height, buffer + offset, padlen);
+	ri.Hunk_FreeTempMemory(buffer);
+}
+
+/*
+==================
 RB_TakeScreenshotCmd
 ==================
 */
@@ -594,7 +614,9 @@ const void *RB_TakeScreenshotCmd( const void *data ) {
 	
 	cmd = (const screenshotCommand_t *)data;
 	
-	if (cmd->jpeg)
+	if (cmd->png)
+		RB_TakeScreenshotPNG( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
+	else if (cmd->jpeg)
 		RB_TakeScreenshotJPEG( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
 	else
 		RB_TakeScreenshot( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
@@ -607,7 +629,7 @@ const void *RB_TakeScreenshotCmd( const void *data ) {
 R_TakeScreenshot
 ==================
 */
-void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean jpeg ) {
+static void R_QueueScreenshot( int x, int y, int width, int height, char *name, qboolean jpeg, qboolean png ) {
 	static char	fileName[MAX_OSPATH]; // bad things if two screenshots per frame?
 	screenshotCommand_t	*cmd;
 
@@ -624,6 +646,11 @@ void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean
 	Q_strncpyz( fileName, name, sizeof(fileName) );
 	cmd->fileName = fileName;
 	cmd->jpeg = jpeg;
+	cmd->png = png;
+}
+
+void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean jpeg ) {
+	R_QueueScreenshot( x, y, width, height, name, jpeg, qfalse );
 }
 
 /* 
@@ -673,6 +700,31 @@ void R_ScreenshotFilenameJPEG( int lastNumber, char *fileName ) {
 	d = lastNumber;
 
 	Com_sprintf( fileName, MAX_OSPATH, "screenshots/shot%i%i%i%i.jpg"
+		, a, b, c, d );
+}
+
+/*
+==================
+R_ScreenshotFilenamePNG
+==================
+*/
+void R_ScreenshotFilenamePNG( int lastNumber, char *fileName ) {
+	int		a,b,c,d;
+
+	if ( lastNumber < 0 || lastNumber > 9999 ) {
+		Com_sprintf( fileName, MAX_OSPATH, "screenshots/shot9999.png" );
+		return;
+	}
+
+	a = lastNumber / 1000;
+	lastNumber -= a*1000;
+	b = lastNumber / 100;
+	lastNumber -= b*100;
+	c = lastNumber / 10;
+	lastNumber -= c*10;
+	d = lastNumber;
+
+	Com_sprintf( fileName, MAX_OSPATH, "screenshots/shot%i%i%i%i.png"
 		, a, b, c, d );
 }
 
@@ -948,6 +1000,52 @@ void R_ScreenShotJPEG_f (void) {
 		ri.Printf (PRINT_ALL, "Wrote %s\n", checkname);
 	}
 } 
+
+/*
+==================
+R_ScreenShotPNG_f
+==================
+*/
+void R_ScreenShotPNG_f (void) {
+	char		checkname[MAX_OSPATH];
+	static	int	lastNumber = -1;
+	qboolean	silent;
+
+	if ( !strcmp( ri.Cmd_Argv(1), "silent" ) ) {
+		silent = qtrue;
+	} else {
+		silent = qfalse;
+	}
+
+	if ( ri.Cmd_Argc() == 2 && !silent ) {
+		Com_sprintf( checkname, MAX_OSPATH, "screenshots/%s.png", ri.Cmd_Argv( 1 ) );
+	} else {
+		if ( lastNumber == -1 ) {
+			lastNumber = 0;
+		}
+		for ( ; lastNumber <= 9999 ; lastNumber++ ) {
+			R_ScreenshotFilenamePNG( lastNumber, checkname );
+
+			if (!ri.FS_FileExists( checkname ))
+			{
+				break;
+			}
+		}
+
+		if ( lastNumber == 10000 ) {
+			ri.Printf (PRINT_ALL, "ScreenShot: Couldn't create a file\n");
+			return;
+		}
+
+		lastNumber++;
+	}
+
+	R_QueueScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse, qtrue );
+
+	if ( !silent ) {
+		ri.Printf (PRINT_ALL, "Wrote %s\n", checkname);
+	}
+}
 
 //============================================================================
 
@@ -1573,6 +1671,7 @@ void R_Register( void )
 	ri.Cmd_AddCommand( "modelist", R_ModeList_f );
 	ri.Cmd_AddCommand( "screenshot", R_ScreenShot_f );
 	ri.Cmd_AddCommand( "screenshotJPEG", R_ScreenShotJPEG_f );
+	ri.Cmd_AddCommand( "screenshotPNG", R_ScreenShotPNG_f );
 	ri.Cmd_AddCommand( "gfxinfo", GfxInfo_f );
 	ri.Cmd_AddCommand( "farplane_info", FarPlaneInfo_f );
 	ri.Cmd_AddCommand( "r_infostaticmodels", R_InfoStaticModels_f );
@@ -1729,6 +1828,7 @@ void RE_Shutdown( qboolean destroyWindow ) {
 
 	ri.Cmd_RemoveCommand ("modellist");
 	ri.Cmd_RemoveCommand ("screenshotJPEG");
+	ri.Cmd_RemoveCommand ("screenshotPNG");
 	ri.Cmd_RemoveCommand ("screenshot");
 	ri.Cmd_RemoveCommand ("imagelist");
 	ri.Cmd_RemoveCommand ("shaderlist");
