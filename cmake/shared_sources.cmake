@@ -24,7 +24,6 @@ set(COMMON_SOURCES
     ${SOURCE_DIR}/qcommon/ioapi.c
     ${SOURCE_DIR}/qcommon/huffman.cpp
     ${SOURCE_DIR}/qcommon/md4.c
-    ${SOURCE_DIR}/qcommon/md5.c
     ${SOURCE_DIR}/qcommon/memory.c
     ${SOURCE_DIR}/qcommon/msg.cpp
     ${SOURCE_DIR}/qcommon/net_chan.c

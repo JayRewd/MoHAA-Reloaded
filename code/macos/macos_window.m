@@ -1282,14 +1282,6 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 
-	if( ri.Cvar_VariableIntegerValue( "com_abnormalExit" ) )
-	{
-		ri.Cvar_Set( "r_mode", va( "%d", R_MODE_FALLBACK ) );
-		ri.Cvar_Set( "r_fullscreen", "0" );
-		ri.Cvar_Set( "r_centerWindow", "0" );
-		ri.Cvar_Set( "com_abnormalExit", "0" );
-	}
-
 	// Create the window and its Metal layer
 	if(MTLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
 		goto success;

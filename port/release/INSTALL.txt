@@ -44,7 +44,8 @@ Install
      open openmohaa.app --args +set com_target_game 2
 
 Configs, logs and screenshots go to ~/Library/Application Support/openmohaa/ (main/configs/omconfig.cfg
-for Allied Assault). The settings that matter for this port (cl_cmdRate, com_maxfps, the display modes,
+for Allied Assault). The game sends servers no GUID (it keeps no qkey file), as the original game's
+clients don't. The settings that matter for this port (cl_cmdRate, com_maxfps, the display modes,
 in_mouseRaw) are described in the README:
 https://github.com/pstngh/openmohaa-metal#settings-that-matter-here
 

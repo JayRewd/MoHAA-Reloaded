@@ -17,8 +17,7 @@
 #                                      (the layers differ on purpose). <mode>: win (a 1280x720 window), full
 #                                      (exclusive fullscreen at the desktop's 1920x1080), full720 (exclusive at
 #                                      1280x720: the display mode switched and the displays captured), space
-#                                      (borderless fullscreen, a Space), start (no window: the startup's "Abnormal
-#                                      Exit" question, from an empty PID file)
+#                                      (borderless fullscreen, a Space)
 # The runs set ui_console 1: without it MOHAA's console key opens nothing. Each run opens the game for ~15 s and
 # takes the keyboard focus: don't type meanwhile. The mouse runs capture the real cursor (warped to the window's
 # center and hidden; fullscreen takes the screen): don't touch the mouse either. The logs and the diff are in
@@ -133,29 +132,6 @@ mouse() {
 	esac
 }
 
-# dialog_start: the startup's "Abnormal Exit" question (an empty PID file is a stale one), answered No by the
-# OMM_DLGTEST timer; run.sh would remove the PID file, so the app is started the way run.sh starts it (its pak links
-# are there from the other runs)
-dialog_start() {
-	local flavor name log app
-	for flavor in kbsdl kbnat; do
-		name="$flavor-dialog-start"
-		log="$OUT/kbreplay-$name.log"
-		app="$OMM_BUILD/$flavor-install/lib/openmohaa/openmohaa.app/Contents/MacOS/openmohaa"
-		rm -rf "$OMM_HOME/main/configs"
-		printf 'wait 3000\nquit\n' > "$OMM_HOME/main/kb_replay.cfg"
-		: > "$OMM_HOME/main/OpenMoHAA.pid"
-		OMM_DLGTEST="$log" perl -e 'alarm shift; exec @ARGV' 120 "$app" +set fs_homepath "$OMM_HOME" \
-			+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
-			+set s_volume 0 +set s_musicvolume 0 +exec kb_replay.cfg \
-			> "$OUT/$name-game.log" 2>&1 || echo "kbreplay.sh: $flavor exited with $?"
-		rm -f "$OMM_HOME/main/kb_replay.cfg"
-		echo "kbreplay.sh: $name: $(grep -c 'Abnormal\|abnormal' "$OUT/$name-game.log") abnormal-exit line(s)," \
-			"PID file left: $(ls "$OMM_HOME"/main/*.pid 2>/dev/null | wc -l | tr -d ' ')"
-		cat "$log"
-	done
-}
-
 dialog() {
 	local mode=${1:-} flavor args
 	shift || true
@@ -164,8 +140,7 @@ dialog() {
 		full) args=(+set r_customwidth 1920 +set r_customheight 1080 +set r_fullscreen 1) ;;
 		full720) args=(+set r_fullscreen 1) ;;
 		space) args=(+set r_customwidth 1920 +set r_customheight 1080 +set r_fullscreen 1 +set r_noborder 1) ;;
-		start) dialog_start; return ;;
-		*) echo "usage: port/kbreplay.sh dialog win|full|full720|space|start [engine args]" >&2; exit 1 ;;
+		*) echo "usage: port/kbreplay.sh dialog win|full|full720|space [engine args]" >&2; exit 1 ;;
 	esac
 	for flavor in kbsdl kbnat; do
 		game "$flavor" dlgtest "$flavor-dialog-$mode" +set in_mouse 1 +set in_mouseRaw 0 ${args[@]+"${args[@]}"} "$@"
@@ -180,5 +155,5 @@ case "${1:-}" in
 	mouse) shift; mouse "$@" ;;
 	dialog) shift; dialog "$@" ;;
 	*) echo "usage: port/kbreplay.sh build | run [engine args] | mouse win|full|hidpi [engine args] |" \
-		"dialog win|full|full720|space|start [engine args]" >&2; exit 1 ;;
+		"dialog win|full|full720|space [engine args]" >&2; exit 1 ;;
 esac

@@ -46,7 +46,7 @@ port/latency.sh metal win-250 20   # cl_latencyStats with 20 s of synthetic mous
 port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
 port/skinab.sh                     # GPU-skinning A/B flavor, then port/bench.sh run metalab 1; grep SKINAB build.noindex/bench/metalab-1.log | tail -1 (every "differ" 0)
 port/release.sh                    # the release zip from metal-install (clean tree, a build of HEAD) -> build.noindex/release/
-port/kbreplay.sh build             # then port/kbreplay.sh run | mouse win|full|hidpi | dialog win|full|full720|space|start: SDL against native, streams must be identical
+port/kbreplay.sh build             # then port/kbreplay.sh run | mouse win|full|hidpi | dialog win|full|full720|space: SDL against native, streams must be identical
 ```
 
 Compare renderers on the **`work` ms/frame** figure: the stock mode pads every frame to at least 1 ms, so fps saturates near 1000. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes. A 5 µs change needs an A/B inside one binary (the plan's §6 tool notes: the old path behind a cvar, blocks of four frames A B B A, a check mode comparing outputs); whole bench runs spread by 20–40 µs within one sitting. New flavors are cases in `port/build.sh`; put every number in the plan.
@@ -55,7 +55,7 @@ Compare renderers on the **`work` ms/frame** figure: the stock mode pads every f
 
 - The tool shell is zsh, which doesn't split an unquoted `$args`: the engine then gets one quoted `+set a 1 +set b 2` argument and silently ignores it. Build engine arguments as arrays in a bash script. Never `cd` in a Bash call (absolute paths, or `git -C`).
 - In OpenMoHAA, `wait N` counts **milliseconds**, and `wait 1` is exactly one frame.
-- A killed run leaves a PID file, and the next start blocks on a modal "Abnormal Exit" dialog (`run.sh` removes stale PID files).
+- The game keeps no PID file since session 46 (no "Abnormal Exit" dialog after a killed run); builds of older commits (`gl`, `sdlref`, `ci`) still do, and `run.sh` removes their stale PID files.
 - Don't use `s_initsound 0` (upstream crashes on the first footstep); mute with `s_volume 0`.
 - Spearhead/Breakthrough: `+set com_target_game 1`/`2` (the upstream launchers are deleted); run the .app's binary directly or `open openmohaa.app --args …`.
 - Never put files inside the installed `openmohaa.app`: the install signs it and checks the seal (`codesign --verify --deep --strict`), so a file added afterwards breaks it, and a link out of the bundle makes the next install fail. `run.sh`'s Homebrew openal link in fs_basepath serves only the flavors that dlopen it (`gl`).

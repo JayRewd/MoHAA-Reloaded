@@ -20,8 +20,9 @@ for dir in main mainta maintt; do
 done
 [ -e "$BASE/main/Pak0.pk3" ] || { echo "run.sh: no retail paks in $OMM_GAME_DIR/main (set OMM_GAME_DIR)" >&2; exit 1; }
 
-# A PID file left by a killed run makes the game block on a modal "Abnormal Exit" dialog at startup.
-# Remove it when no game is running (pgrep matches the installed app binaries only).
+# Builds of commits before session 46 (gl, sdlref, ci, an older metalref) keep a PID file: one left by a killed run
+# makes them block on a modal "Abnormal Exit" dialog at startup. Remove it when no game is running (pgrep matches the
+# installed app binaries only).
 pgrep -f "build.noindex/.*/openmohaa.app/Contents/MacOS/openmohaa" >/dev/null || rm -f "$OMM_HOME"/main*/*.pid
 
 # Builds since Phase 7c link the app's own openal-soft (Contents/Frameworks) and never load this link. It stays

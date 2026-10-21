@@ -116,8 +116,6 @@ cvar_t	*cl_radar_blink_time;
 
 cvar_t	*cl_lanForcePackets;
 
-cvar_t	*cl_guidServerUniq;
-
 cvar_t	*wombat;
 
 cvar_t	*cl_r_fullscreen;
@@ -934,29 +932,6 @@ void CL_ClearState( void )
 }
 
 /*
-====================
-CL_UpdateGUID
-
-update cl_guid using QKEY_FILE and optional prefix
-====================
-*/
-static void CL_UpdateGUID( const char *prefix, int prefix_len )
-{
-	fileHandle_t f;
-	int len;
-
-	len = FS_BaseDir_FOpenFileRead( QKEY_FILE, &f );
-	FS_FCloseFile( f );
-
-	if( len != QKEY_SIZE )
-		Cvar_Set( "cl_guid", "" );
-	else
-		Cvar_Set( "cl_guid", Com_MD5File( QKEY_FILE, QKEY_SIZE,
-			prefix, prefix_len ) );
-}
-
-
-/*
 =====================
 CL_Disconnect
 
@@ -1031,7 +1006,6 @@ void CL_Disconnect() {
 		SCR_UpdateScreen( );
 		CL_CloseAVI( );
 	}
-	CL_UpdateGUID( NULL, 0 );
 }
 
 /*
@@ -1375,11 +1349,6 @@ void CL_Connect( const char *server, netadrtype_t family ) {
 	serverString = NET_AdrToStringwPort(clc.serverAddress);
 
 	Com_Printf( "%s resolved to %s\n", clc.servername, serverString );
-
-	if (cl_guidServerUniq->integer)
-		CL_UpdateGUID(serverString, strlen(serverString));
-	else
-		CL_UpdateGUID(NULL, 0);
 
 	// if we aren't playing on a lan, we need to authenticate
 	// with the cd key
@@ -3427,47 +3396,6 @@ void CL_StopVideo_f( void )
 }
 
 /*
-===============
-CL_GenerateQKey
-
-test to see if a valid QKEY_FILE exists.  If one does not, try to generate
-it by filling it with 2048 bytes of random data.
-===============
-*/
-static void CL_GenerateQKey(void)
-{
-	int len = 0;
-	unsigned char buff[ QKEY_SIZE ];
-	fileHandle_t f;
-
-	len = FS_BaseDir_FOpenFileRead( QKEY_FILE, &f );
-	FS_FCloseFile( f );
-	if( len == QKEY_SIZE ) {
-		Com_Printf( "QKEY found.\n" );
-		return;
-	}
-	else {
-		if( len > 0 ) {
-			Com_Printf( "QKEY file size != %d, regenerating\n",
-				QKEY_SIZE );
-		}
-
-		Com_Printf( "QKEY building random string\n" );
-		Com_RandomBytes( buff, sizeof(buff) );
-
-		f = FS_BaseDir_FOpenFileWrite_HomeState( QKEY_FILE );
-		if( !f ) {
-			Com_Printf( "QKEY could not open %s for write\n",
-				QKEY_FILE );
-			return;
-		}
-		FS_Write( buff, sizeof(buff), f );
-		FS_FCloseFile( f );
-		Com_Printf( "QKEY generated\n" );
-	}
-}
-
-/*
 ====================
 CL_Init
 ====================
@@ -3611,8 +3539,6 @@ void CL_Init( void ) {
 
 	cl_lanForcePackets = Cvar_Get ("cl_lanForcePackets", "1", CVAR_ARCHIVE);
 
-	cl_guidServerUniq = Cvar_Get ("cl_guidServerUniq", "1", CVAR_ARCHIVE);
-
 	// init autoswitch so the ui will have it correctly even
 	// if the cgame hasn't been started
 	Cvar_Get( "cg_autoswitch", "1", CVAR_ARCHIVE );
@@ -3688,10 +3614,6 @@ void CL_Init( void ) {
 #else
 	S_Init(qtrue);
 #endif
-
-	CL_GenerateQKey();
-	Cvar_Get( "cl_guid", "", CVAR_USERINFO | CVAR_ROM );
-	CL_UpdateGUID( NULL, 0 );
 
 	CL_StartHunkUsers(qfalse);
 

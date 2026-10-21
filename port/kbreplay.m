@@ -18,8 +18,7 @@
 // `dlgtest <name>` checks Sys_Dialog with the game up (Phase 6e): once the game has the mouse it opens an OK/Cancel
 // dialog through Sys_Dialog, logs what the screen shows meanwhile (the dialog's window and every on-screen window in
 // front of it that covers it, the cursor, the display mode and capture), dismisses it from a timer (Cancel), then
-// logs the game's state for a few frames and quits. With OMM_DLGTEST=<log path> in the environment, a timer installed
-// before main does the same for a dialog without a window: the startup's "Abnormal Exit" question (No).
+// logs the game's state for a few frames and quits.
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -861,7 +860,7 @@ event then wakes the loop to see the stop.
 static void DlgAnswer( FILE *log )
 {
 	NSWindow *modal = NSApp.modalWindow;
-	NSButton *button = DlgButton( modal.contentView, @"Cancel" ) ?: DlgButton( modal.contentView, @"No" );
+	NSButton *button = DlgButton( modal.contentView, @"Cancel" );
 
 	fprintf( log, "  answered: %s\n", button ? button.title.UTF8String : "no button found, the loop stopped" );
 	fflush( log );
@@ -964,44 +963,6 @@ static void DlgTest_Frame( void )
 
 	dlg_state = 2;
 	dlg_frames = 0;
-}
-
-/*
-===============
-DlgStartupWatch
-
-OMM_DLGTEST=<log path>: before main, a timer that answers the first dialog (the startup's "Abnormal Exit"
-question, before any window) with its second button, No, after probing it.
-===============
-*/
-__attribute__((constructor)) static void DlgStartupWatch( void )
-{
-	const char *path = getenv( "OMM_DLGTEST" );
-	__block FILE *log;
-	__block int fires = 0;
-	CFRunLoopTimerRef timer;
-
-	if( !path || !( log = fopen( path, "w" ) ) )
-		return;
-
-	timer = CFRunLoopTimerCreateWithHandler( NULL, CFAbsoluteTimeGetCurrent( ) + 1.5, 0.5, 0, 0,
-		^( CFRunLoopTimerRef t )
-	{
-		if( NSApp.modalWindow )
-		{
-			DlgProbe( log, "the startup dialog", nil );
-			DlgAnswer( log );
-			CFRunLoopTimerInvalidate( t );
-		}
-		else if( ++fires == 60 )
-		{
-			fprintf( log, "no dialog in 30 s\n" );
-			fflush( log );
-			CFRunLoopTimerInvalidate( t );
-		}
-	} );
-	CFRunLoopAddTimer( CFRunLoopGetMain( ), timer, kCFRunLoopCommonModes );
-	CFRelease( timer );
 }
 
 /*

@@ -1002,7 +1002,6 @@ void		Com_GameRestart(int checksumFeed, qboolean disconnect);
 int			Com_Milliseconds( void );	// will be journaled properly
 long long	Com_Microseconds( void );	// wall clock, for benchmark measurements only
 unsigned	Com_BlockChecksum( const void *buffer, int length );
-char		*Com_MD5File(const char *filename, int length, const char *prefix, int prefix_len);
 int			Com_HashKey(char *string, int maxlen);
 int			Com_Filter(const char *filter, const char *name, int casesensitive);
 int			Com_FilterPath(const char *filter, const char *name, int casesensitive);
@@ -1492,9 +1491,6 @@ typedef enum
 
 dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *title );
 qboolean Sys_OpenFolderInFileManager( const char *path, qboolean create );
-
-void Sys_RemovePIDFile( const char *gamedir );
-void Sys_InitPIDFile( const char *gamedir );
 
 void Sys_ProcessBackgroundTasks();
 

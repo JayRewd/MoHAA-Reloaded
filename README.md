@@ -74,12 +74,13 @@ Then, from the zip's folder or from your own build:
    open openmohaa.app --args +set com_target_game 2
    ```
 
-Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/configs/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Metal's pipeline cache is in `~/Library/Caches/io.github.pstngh.openmohaa-metal/`. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
+Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/configs/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Metal's pipeline cache is in `~/Library/Caches/io.github.pstngh.openmohaa-metal/`. There is no PID file, so no "Abnormal Exit" prompt after a crash or a force-quit. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
 
 ## Online
 
 - **The server side is upstream's.** The protocol, the game code a server runs and the data formats are unchanged, so this client plays on stock MOHAA and OpenMoHAA servers. The port's author played on public servers with it during development, then about 15 minutes in the stock mode and a short session in the decoupled mode, which became the default after it. A full match in the decoupled mode is still to come.
 - **What the server receives** in the decoupled mode (below) is what a stock client sends at that command rate: the same command lengths and the same packets. That was checked against a local server that logged every packet and command.
+- **No GUID:** unlike upstream's client, this one sends no `cl_guid` (it keeps no `qkey` file), as the original game's clients don't. Servers that track players by GUID (stats, admin rights, GUID bans) see you without one.
 - Client-side changes to cgame only affect what you see: how your own movement is shown between commands, and caches that give the same results faster.
 - This fork's `omohaaded` is built for local tests. For servers, upstream's builds are the tested ones.
 
