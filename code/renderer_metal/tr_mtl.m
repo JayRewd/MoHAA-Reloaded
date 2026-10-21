@@ -876,15 +876,16 @@ PIPELINE CACHE
 =============================================================
 */
 
-// Compiled pipelines are kept in an MTLBinaryArchive in <fs_homepath>/metal/, next to the list of the pipeline keys
-// used. The first mbInit of a run creates the listed pipelines from the archive: nothing is compiled, and no pipeline
-// is first created in the middle of a match (with a warm system shader cache, the first pipeline of a run took 42.6 ms
-// to create). A pipeline the archive lacks is compiled as before. When a run compiled any, both files are written at
-// mbShutdown (vid_restart, quit), never during play, the archive as a new one holding every pipeline the process
-// created: an archive read from a file, with pipelines added, fails to serialize for some sets of pipelines
-// ("expecting 'fragment' stage in pipeline no. N", macOS 26), and after a failure it writes only what was added after
-// it (session 27). The file names carry a hash of the embedded metallib, the GPU, the OS version and the cache
-// version, so a new build, GPU or OS starts a new cache; the other files are deleted.
+// Compiled pipelines are kept in an MTLBinaryArchive in ~/Library/Caches/<bundle ID>/metal/ (<fs_homepath>/metal/ when
+// fs_homepath is given, as the port's tools do), next to the list of the pipeline keys used. The first mbInit of a run
+// creates the listed pipelines from the archive: nothing is compiled, and no pipeline is first created in the middle of
+// a match (with a warm system shader cache, the first pipeline of a run took 42.6 ms to create). A pipeline the archive
+// lacks is compiled as before. When a run compiled any, both files are written at mbShutdown (vid_restart, quit), never
+// during play, the archive as a new one holding every pipeline the process created: an archive read from a file, with
+// pipelines added, fails to serialize for some sets of pipelines ("expecting 'fragment' stage in pipeline no. N",
+// macOS 26), and after a failure it writes only what was added after it (session 27). The file names carry a hash of
+// the embedded metallib, the GPU, the OS version and the cache version, so a new build, GPU or OS starts a new cache;
+// the other files are deleted.
 #define MB_CACHE_MAGIC		0x4350424d		// "MBPC"
 #define MB_CACHE_VERSION	2				// 1 added to the archive it read, which lost most of its pipelines
 
@@ -987,22 +988,35 @@ static void MB_OpenPipelineCache( void )
 {
 	NSFileManager *fm = [NSFileManager defaultManager];
 	MTLBinaryArchiveDescriptor *desc;
-	NSString *dir, *prefix, *name;
+	NSString *dir, *prefix, *name, *bundleId;
 	NSError *error = nil;
 	cvar_t *home;
+	const char *userHome;
 
 	if ( mb_cacheOpened ) {
 		return;
 	}
 	mb_cacheOpened = qtrue;
 
-	home = ri.Cvar_Get( "fs_homepath", "", 0 );
-	if ( !r_metalPipelineCache->integer || !home->string[0] ) {
+	if ( !r_metalPipelineCache->integer ) {
 		return;
 	}
 
 	@autoreleasepool {
-		dir = [[NSString stringWithUTF8String:home->string] stringByAppendingPathComponent:@"metal"];
+		// fs_homepath is empty unless given at launch: a player's run keeps the cache in ~/Library/Caches (regenerated
+		// if macOS clears it, never synced, not in the game folder), from $HOME as the engine's homes are (sys_unix.c)
+		home = ri.Cvar_Get( "fs_homepath", "", 0 );
+		if ( home->string[0] ) {
+			dir = [NSString stringWithUTF8String:home->string];
+		} else {
+			userHome = getenv( "HOME" );
+			bundleId = [NSBundle mainBundle].bundleIdentifier;
+			if ( !userHome || !userHome[0] || !bundleId ) {
+				return;
+			}
+			dir = [[NSString stringWithUTF8String:userHome] stringByAppendingFormat:@"/Library/Caches/%@", bundleId];
+		}
+		dir = [dir stringByAppendingPathComponent:@"metal"];
 		if ( ![fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&error] ) {
 			ri.Printf( PRINT_WARNING, "Metal: no pipeline cache: %s\n", error.localizedDescription.UTF8String );
 			return;

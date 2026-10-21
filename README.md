@@ -74,7 +74,7 @@ Then, from the zip's folder or from your own build:
    open openmohaa.app --args +set com_target_game 2
    ```
 
-Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/configs/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
+Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/configs/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Metal's pipeline cache is in `~/Library/Caches/io.github.pstngh.openmohaa-metal/`. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
 
 ## Online
 
