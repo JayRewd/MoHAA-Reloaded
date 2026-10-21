@@ -74,7 +74,7 @@ Then, from the zip's folder or from your own build:
    open openmohaa.app --args +set com_target_game 2
    ```
 
-Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/` (`main/configs/omconfig.cfg` for the base game), as upstream's [running guide](docs/markdown/02-running/01-running.md) describes. Metal's pipeline cache is in `~/Library/Caches/io.github.pstngh.openmohaa-metal/`. There is no PID file, so no "Abnormal Exit" prompt after a crash or a force-quit. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
+Configs, saves, screenshots, demos, logs and downloaded maps go into the game folder, as in the original game (`main/configs/omconfig.cfg`, `main/screenshots/` for the base game), or to `~/Library/Application Support/openmohaa/` (upstream's place, its [running guide](docs/markdown/02-running/01-running.md)) if the game folder isn't writable. The CD key and a server's bans stay in Application Support in every case. A game folder used for the first time reads the configs and saves OpenMoHAA kept in Application Support and saves them into the game folder from then on, unless it already holds a `main/configs/omconfig.cfg` from another OpenMoHAA build: that one wins, so delete it to keep the settings from Application Support. Metal's pipeline cache is in `~/Library/Caches/io.github.pstngh.openmohaa-metal/`. There is no PID file, so no "Abnormal Exit" prompt after a crash or a force-quit. Settings are changed in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
 
 ## Online
 

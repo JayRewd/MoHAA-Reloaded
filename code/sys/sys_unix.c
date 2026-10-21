@@ -144,8 +144,39 @@ static char *Sys_DefaultHomePath(void)
 	return homePath;
 }
 
-char *Sys_DefaultHomeConfigPath(void) { return Sys_DefaultHomePath(); }
-char *Sys_DefaultHomeDataPath(void)   { return Sys_DefaultHomePath(); }
+/*
+==================
+Sys_DefaultGameFolderPath
+
+The game folder (fs_basepath, the folder that holds the app and main/) when it is writable, as the original game
+does it: configs and data (saves, screenshots, demos, logs, downloads) go next to the game data. Else (a read-only
+folder, a translocated app) the Application Support home. The state files (the CD key, bans, the journal) stay in
+the Application Support home, which stays a search path behind the game folder: the first start in a game folder
+reads the configs and saves earlier builds wrote to Application Support, and writes into the game folder.
+==================
+*/
+static char *Sys_DefaultGameFolderPath(void)
+{
+	static char gamePath[ MAX_OSPATH ] = { 0 };
+	const char *base;
+
+	if( !*gamePath )
+	{
+		base = Cvar_VariableString( "fs_basepath" );
+		if( !*base )
+			base = Sys_DefaultInstallPath();
+
+		if( *base && access( base, W_OK ) == 0 )
+			Q_strncpyz( gamePath, base, sizeof( gamePath ) );
+		else
+			Q_strncpyz( gamePath, Sys_DefaultHomePath(), sizeof( gamePath ) );
+	}
+
+	return gamePath;
+}
+
+char *Sys_DefaultHomeConfigPath(void) { return Sys_DefaultGameFolderPath(); }
+char *Sys_DefaultHomeDataPath(void)   { return Sys_DefaultGameFolderPath(); }
 char *Sys_DefaultHomeStatePath(void)  { return Sys_DefaultHomePath(); }
 
 #else // __APPLE__
