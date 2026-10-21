@@ -1,6 +1,6 @@
 # OpenMoHAA for Apple Silicon 1.0.0: a native Metal port
 
-> Published on 2026-10-20 as [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0) (tag `v1.0.0` on 7bb88bbe; the release's text is this file without its title and this note).
+> Published on 2026-10-20 as [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0); the release's text is this file without its title and this note.
 
 The first release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmohaa-metal), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
@@ -17,12 +17,13 @@ The first release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmoha
 3. Copy `openmohaa.app`, `game.dylib` and `cgame.dylib` into your MOHAA folder, next to `main/` (`omohaaded`, a dedicated server, is optional).
 4. Start `openmohaa.app`. If the game folder is on an external drive (or in Documents or Desktop), macOS asks whether it may access files there: allow it (it asks again after each update, as does step 2). Spearhead and Breakthrough: `open openmohaa.app --args +set com_target_game 1` (or `2`) in Terminal, in the game folder.
 
-`INSTALL.txt` in the zip has the same steps. Configs, logs and screenshots go to `~/Library/Application Support/openmohaa/`.
+`INSTALL.txt` in the zip has the same steps. Configs, saves, screenshots, demos and logs go into the game folder (`main/configs/`, `main/screenshots/` …), as in the original game, or to `~/Library/Application Support/openmohaa/` if the game folder isn't writable. Settings an earlier OpenMoHAA kept in Application Support are read on the first start. If your game folder already has a `main/configs/omconfig.cfg` from another OpenMoHAA build, that one is used: delete it to keep the settings from Application Support.
 
 ## What's in it
 
 - **Metal from start to finish.** The renderer is upstream's GL1 renderer with its drawing rewritten for Metal: hand-written Metal shaders compiled into the binary, a pipeline cache with each map's pipelines compiled during its loading screen, world and static-model geometry kept in GPU memory, skeletal models skinned on the GPU, and no GPU wait inside a frame. OpenGL is gone from the source and the binary. No translation layers.
 - **No SDL.** The window, display modes, keyboard and mouse are native AppKit code, with raw mouse input through GCMouse (`in_mouseRaw 1`, the default).
+- **Like the original, where it counts:** files go into the game folder, and the intro videos are off (`+set cl_playintro 1` brings them back). No PID file, so no "Abnormal Exit" prompt after a crash or a force-quit.
 - **Lean.** arm64 and macOS 26 only: one sealed `openmohaa.app` with openal-soft 1.25.2 inside, plus `game.dylib`, `cgame.dylib` and `omohaaded`.
 - **Faster than GL1** on the test Mac (the benchmark demo: a 2-minute 8-bot free-for-all on Stalingrad): the CPU's work per frame 0.89–0.95 → **0.205 ms** (4.5× less), the 99th percentile ~2.3 → **0.48 ms** (4.8× less).
 - **Lower input latency.** From reading the mouse to the display showing the frame, at 250 frames a second: **2.0 ms** median in a window, **1.9** in exclusive fullscreen, **1.8** in the fullscreen Space (the first Metal build: 10 ms in a window). Counted from the mouse's own event, the input on screen is typically 3.55 ms old in the Space with `cl_cmdRate 100` and `com_maxfps 480`, against 4.6 ms in stock mode at 250.
@@ -43,7 +44,7 @@ The README's [Settings that matter here](https://github.com/pstngh/openmohaa-met
 
 ## Online
 
-The network protocol, the server-side game code and the data formats are upstream's, so this client plays on existing MOHAA and OpenMoHAA servers. The game reports upstream's version (0.83.0, with this build's commit). It was played on public servers during development, in both command modes. `omohaaded` is built for local tests; for servers, upstream's builds are the tested ones.
+The network protocol, the server-side game code and the data formats are upstream's, so this client plays on existing MOHAA and OpenMoHAA servers. The game reports upstream's version (0.83.0, with this build's commit). It sends no `cl_guid` (it keeps no `qkey` file), as the original game's clients don't: servers that track players by GUID see you without one. It was played on public servers during development, in both command modes. `omohaaded` is built for local tests; for servers, upstream's builds are the tested ones.
 
 ## Looks
 
