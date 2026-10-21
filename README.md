@@ -109,6 +109,7 @@ seta in_mouseRaw 1
 | `com_busyWait` | `0` | `1` spins the CPU through the whole frame wait: ~0.05–0.1 ms sooner, for a full core. |
 | `cl_maxpackets` | `30` (upstream's) | Packets a second, 30–125. At 125 every command of `cl_cmdRate 100` goes out in its own packet; at 30 they're bundled three or four to a packet. |
 | `cl_latencyStats` | `0` | `1` prints input → present times while you play (the port's latency probe). |
+| `cl_playintro` | `0` (upstream's is `1`) | The intro videos at startup. `1` plays them: at launch (`--args +set cl_playintro 1`) or with `seta cl_playintro 1` in a config. |
 
 The display modes. Every fullscreen mode goes direct to the display, bypassing macOS's compositor:
 
