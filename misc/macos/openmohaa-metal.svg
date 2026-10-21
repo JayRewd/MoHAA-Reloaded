@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Metal port's app icon: pstngh/moh-icons macos/openmohaa-macos.svg without its template layers.
+     port/makeicon.swift puts it into macOS's icon shape (misc/macos/openmohaa-metal.icns). -->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024"/>
+  <polygon fill="#d3af37" points="350.97 557.38 128.95 371.49 416.57 363.34 512 102 607.43 363.34 895.05 371.49 673.03 557.38 744.98 846.69 512 688.36 279.02 846.69 350.97 557.38"/>
+</svg>
