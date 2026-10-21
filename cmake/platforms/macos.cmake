@@ -62,8 +62,8 @@ function(finish_macos_app)
     endif()
 
     # Seal the installed bundle with an ad-hoc signature (the Developer ID path below signs instead), and check
-    # the seal. No hardened runtime: its library validation would refuse the libraries of other signers that the
-    # game loads (game.dylib and cgame.dylib beside the bundle, openal-soft).
+    # the seal (game.dylib and cgame.dylib inside it, basegame.cmake). No hardened runtime: its library validation
+    # refuses ad-hoc-signed libraries (no team ID), which the app's own are.
     if("$ENV{APPLE_CERTIFICATE_ID}" STREQUAL "")
         install(CODE "
             set(APP \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${INSTALL_BINDIR_FULL}/${CLIENT_BINARY}.app\")

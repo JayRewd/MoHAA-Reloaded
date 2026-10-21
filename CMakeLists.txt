@@ -11,7 +11,8 @@ include(identity)
 
 project(${PROJECT_NAME} VERSION ${PROJECT_VERSION} LANGUAGES C CXX)
 
-option(BUILD_SERVER "Build dedicated server" ON)
+# The Metal port ships no dedicated server (omohaaded); -DBUILD_SERVER=ON builds it for local tests
+option(BUILD_SERVER "Build dedicated server" OFF)
 option(BUILD_CLIENT "Build client" ON)
 option(BUILD_GAME_LIBRARIES "Build game module libraries" ON)
 option(BUILD_STANDALONE "Build binaries for standalone games" OFF)

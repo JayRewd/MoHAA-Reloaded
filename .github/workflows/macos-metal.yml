@@ -62,16 +62,15 @@ jobs:
       run: |
         set -euo pipefail
         D=install/lib/openmohaa
-        # The prefix holds exactly the game folder's four files
+        # The prefix holds exactly the app (no dedicated server), with the game modules inside it
         diff <(cd install && find . -mindepth 1 -not -path './lib/openmohaa/openmohaa.app/*' | sort) \
-             <(printf '%s\n' ./lib ./lib/openmohaa ./lib/openmohaa/cgame.dylib ./lib/openmohaa/game.dylib \
-                             ./lib/openmohaa/omohaaded ./lib/openmohaa/openmohaa.app)
+             <(printf '%s\n' ./lib ./lib/openmohaa ./lib/openmohaa/openmohaa.app)
+        diff <(ls "$D/openmohaa.app/Contents/MacOS") <(printf '%s\n' cgame.dylib game.dylib openmohaa)
         codesign --verify --deep --strict --verbose=2 "$D/openmohaa.app"
         codesign -dv "$D/openmohaa.app" 2>&1 | grep -E '^(Identifier|Format|Signature)='
         /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' -c 'Print CFBundleShortVersionString' "$D/openmohaa.app/Contents/Info.plist"
         # arm64 only, and nothing loaded from outside the system or the app (no Homebrew paths)
-        for f in "$D/openmohaa.app/Contents/MacOS/openmohaa" "$D/openmohaa.app/Contents/Frameworks/libopenal.1.dylib" \
-                 "$D/game.dylib" "$D/cgame.dylib" "$D/omohaaded"; do
+        for f in "$D"/openmohaa.app/Contents/MacOS/* "$D/openmohaa.app/Contents/Frameworks/libopenal.1.dylib"; do
           [ "$(lipo -archs "$f")" = arm64 ]
           if otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/)'; then
             echo "$f loads a library from outside the system or the app" >&2; exit 1

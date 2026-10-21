@@ -7,7 +7,7 @@ This fork runs OpenMoHAA (Medal of Honor: Allied Assault, Spearhead and Breakthr
 
 - **Metal only.** The renderer is upstream's GL1 renderer with its drawing rewritten for Metal: hand-written Metal shaders, compiled when you build and embedded in the binary. OpenGL is gone from the source and the binary. No translation layers (no MoltenVK, ANGLE or similar).
 - **No SDL.** The window, keyboard, mouse and display modes are native AppKit code (`code/macos`), with raw mouse input through GCMouse.
-- **arm64, macOS 26 or later only.** Windows, Linux, Intel, the GL renderers, the update checker and curl are removed from this branch. One `openmohaa.app`, ad-hoc signed, with its own [openal-soft](https://github.com/kcat/openal-soft) 1.25.2 inside, plus the game libraries and the dedicated server `omohaaded`.
+- **arm64, macOS 26 or later only.** Windows, Linux, Intel, the GL renderers, the update checker and curl are removed from this branch. One `openmohaa.app`, ad-hoc signed, with its own [openal-soft](https://github.com/kcat/openal-soft) 1.25.2 and the game libraries inside. No dedicated server.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's. It plays on existing MOHAA and OpenMoHAA servers with your retail game data (see [Online](#online)).
 - **Built for low input latency and low overhead.** Frame pacing, the command clock, presenting and input were measured and reworked for the shortest time from your mouse to the screen (see [Speed](#speed)).
 
@@ -43,7 +43,7 @@ cmake --build build
 cmake --install build
 ```
 
-The install step signs the app ad hoc and checks its seal. `install/lib/openmohaa/` then holds `openmohaa.app`, `game.dylib`, `cgame.dylib` and `omohaaded`. Don't add or change files inside `openmohaa.app` afterwards: that breaks its seal.
+The install step signs the app ad hoc and checks its seal. `install/lib/openmohaa/` then holds `openmohaa.app`, with `game.dylib` and `cgame.dylib` inside it (`Contents/MacOS`). Don't add or change files inside `openmohaa.app` afterwards: that breaks its seal. `-DBUILD_SERVER=ON` also builds the dedicated server `omohaaded` (for local tests), with a `game.dylib` beside it.
 
 The scripts in `port/` are the port's development tools (benchmark, screenshot comparison against GL1, the latency probe, input replays). They're written for the developer's machine (`port/env.sh` has its paths and a Metal Toolchain mounted from a disk image), so use the CMake commands above to build.
 
@@ -51,17 +51,17 @@ The scripts in `port/` are the port's development tools (benchmark, screenshot c
 
 You need the retail game data: the folder of an installed MOHAA with `main/` (`Pak0.pk3` to `Pak6`), plus `mainta/` for Spearhead and `maintt/` for Breakthrough. Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer with `innoextract`.
 
-**From the release zip** (`openmohaa-metal-<version>-macos-arm64.zip` on the [Releases](https://github.com/pstngh/openmohaa-metal/releases) page): it holds `openmohaa.app`, `game.dylib`, `cgame.dylib`, `omohaaded`, the licenses and an `INSTALL.txt` with these steps. The app is signed ad hoc and not notarized by Apple, so macOS quarantines the download and refuses to run it. Clear the quarantine once, before the first start: in Terminal, type `xattr -dr com.apple.quarantine ` (with the trailing space), drag the unzipped folder onto the window, and press Return. For example:
+**From the release zip** (`openmohaa-metal-<version>-macos-arm64.zip` on the [Releases](https://github.com/pstngh/openmohaa-metal/releases) page): it holds `openmohaa.app` with the game libraries inside (the 1.0.0 zip has `game.dylib`, `cgame.dylib` and `omohaaded` beside the app instead), the licenses and an `INSTALL.txt` with these steps. The app is signed ad hoc and not notarized by Apple, so macOS quarantines the download and refuses to run it. Clear the quarantine once, before the first start: in Terminal, type `xattr -dr com.apple.quarantine ` (with the trailing space), drag the unzipped folder onto the window, and press Return. For example:
 
 ```bash
 xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
 ```
 
-"Open Anyway" in System Settings → Privacy & Security is not enough for this game (checked on macOS 26.6): macOS then runs the app from a temporary read-only copy (App Translocation), where it can't find `main/` ("Couldn't load default.cfg"), and it still refuses to load the quarantined `game.dylib` and `cgame.dylib` ("library load disallowed by system policy"). A quarantined `omohaaded` is blocked even when started from Terminal.
+"Open Anyway" in System Settings → Privacy & Security is not enough for this game (checked on macOS 26.6): macOS then runs the app from a temporary read-only copy (App Translocation), where it can't find `main/` ("Couldn't load default.cfg").
 
 Then, from the zip's folder or from your own build:
 
-1. Copy `openmohaa.app`, `game.dylib` and `cgame.dylib` (and `omohaaded` if you want a local server) from the zip's folder or `install/lib/openmohaa/` into that game folder, next to `main/`. The game reads its data from the folder that holds the app.
+1. Copy `openmohaa.app` (from the 1.0.0 zip, `game.dylib` and `cgame.dylib` too) from the zip's folder or `install/lib/openmohaa/` into that game folder, next to `main/`. The game reads its data from the folder that holds the app. Later builds load the game libraries from inside the app and ignore a `game.dylib` or `cgame.dylib` beside it: you can delete those.
 2. Start it from Finder, or from a terminal in the game folder. If the game folder is on an external drive (or in a folder macOS protects, such as Documents or Desktop), the first start asks whether `openmohaa` may access files there: allow it (again after each update: with an ad-hoc signature the permission belongs to that exact build). Allied Assault:
    ```bash
    open openmohaa.app
@@ -82,7 +82,7 @@ Configs, saves, screenshots, demos, logs and downloaded maps go into the game fo
 - **What the server receives** in the decoupled mode (below) is what a stock client sends at that command rate: the same command lengths and the same packets. That was checked against a local server that logged every packet and command.
 - **No GUID:** unlike upstream's client, this one sends no `cl_guid` (it keeps no `qkey` file), as the original game's clients don't. Servers that track players by GUID (stats, admin rights, GUID bans) see you without one.
 - Client-side changes to cgame only affect what you see: how your own movement is shown between commands, and caches that give the same results faster.
-- This fork's `omohaaded` is built for local tests. For servers, upstream's builds are the tested ones.
+- This fork ships no dedicated server (`-DBUILD_SERVER=ON` builds `omohaaded` for local tests). For servers, upstream's builds are the tested ones.
 
 ## Settings that matter here
 

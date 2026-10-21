@@ -32,7 +32,7 @@ Standing requirement, added by the user on 2026-10-16: "can we also optimize for
 
 ```bash
 source port/env.sh                 # every shell, first
-port/build.sh metal                # the game (~40 s; mounts the Metal Toolchain) -> build.noindex/metal-install/lib/openmohaa: the sealed, ad-hoc-signed arm64 openmohaa.app (openal-soft inside) + game/cgame dylibs + omohaaded
+port/build.sh metal                # the game (~40 s; mounts the Metal Toolchain) -> build.noindex/metal-install/lib/openmohaa: the sealed, ad-hoc-signed arm64 openmohaa.app (openal-soft and the game/cgame dylibs inside; no omohaaded unless configured with -DBUILD_SERVER=ON)
 port/build.sh metalref             # the game at HEAD (METAL_REF=<ref> for another): the "before" of an A/B bench; rebuild it at HEAD before each one
 port/build.sh gl                   # the GL1 reference (c9dddadd, the last commit with GL1, plus the client's work log)
 port/build.sh sdlref               # the last commit with SDL2 (fd94160b): the input layer's reference

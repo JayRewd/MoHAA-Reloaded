@@ -1,7 +1,7 @@
 #!/bin/bash
 # The release zip, ad-hoc signed (no Developer ID, no notarization): openmohaa-metal-<version>-macos-arm64.zip from
-# an installed build, with the sealed openmohaa.app, game.dylib, cgame.dylib, omohaaded, COPYING.txt, the licenses of
-# the libraries built into them, the install text (port/release/INSTALL.txt) and the source commit. Never game data.
+# an installed build, with the sealed openmohaa.app (game.dylib and cgame.dylib inside it), COPYING.txt, the licenses
+# of the libraries built into it, the install text (port/release/INSTALL.txt) and the source commit. Never game data.
 #   port/release.sh [install dir] [output dir]
 # The install dir is the one that holds openmohaa.app: `cmake --install`'s <prefix>/lib/openmohaa (CI,
 # .github/workflows/macos-metal.yml), default build.noindex/metal-install/lib/openmohaa (port/build.sh metal). The
@@ -14,7 +14,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL="${1:-$ROOT/build.noindex/metal-install/lib/openmohaa}"
 OUT="${2:-$ROOT/build.noindex/release}"
 APP="$INSTALL/openmohaa.app"
-FILES=(openmohaa.app game.dylib cgame.dylib omohaaded)
 # The libraries built into the binaries and their license texts in code/thirdparty (openal-soft's are inside the app,
 # Contents/Resources/openal-soft): <name in the zip>:<file>
 LICENSES=(
@@ -30,7 +29,9 @@ LICENSES=(
 
 die() { echo "release.sh: $*" >&2; exit 1; }
 
-for f in "${FILES[@]}"; do [ -e "$INSTALL/$f" ] || die "$INSTALL/$f is missing"; done
+for f in "$APP" "$APP/Contents/MacOS/game.dylib" "$APP/Contents/MacOS/cgame.dylib"; do
+	[ -e "$f" ] || die "$f is missing"
+done
 codesign --verify --deep --strict "$APP" || die "openmohaa.app's seal doesn't verify"
 
 # The source commit: the tree must be clean, and the binaries must say they were built from it (version.cmake puts
@@ -48,7 +49,7 @@ ZIP="$OUT/$NAME.zip"
 
 rm -rf "$STAGE" "$ZIP" "$ZIP.sha256"
 mkdir -p "$STAGE/licenses"
-for f in "${FILES[@]}"; do ditto "$INSTALL/$f" "$STAGE/$f"; done
+ditto "$APP" "$STAGE/openmohaa.app"
 cp "$ROOT/COPYING.txt" "$STAGE/"
 for l in "${LICENSES[@]}"; do
 	mkdir -p "$STAGE/licenses/${l%%:*}"
@@ -74,7 +75,7 @@ unzip -q "$ZIP" -d "$CHECK/unzip"
 for c in ditto unzip; do
 	codesign --verify --deep --strict "$CHECK/$c/$NAME/openmohaa.app" || die "openmohaa.app unzipped by $c: its seal doesn't verify"
 	diff <(cd "$STAGE" && find . | sort) <(cd "$CHECK/$c/$NAME" && find . | sort) || die "unzipped by $c: the files differ"
-	[ -x "$CHECK/$c/$NAME/omohaaded" ] && [ -x "$CHECK/$c/$NAME/openmohaa.app/Contents/MacOS/openmohaa" ] || die "unzipped by $c: not executable"
+	[ -x "$CHECK/$c/$NAME/openmohaa.app/Contents/MacOS/openmohaa" ] || die "unzipped by $c: not executable"
 done
 rm -rf "$CHECK" "$STAGE"
 
