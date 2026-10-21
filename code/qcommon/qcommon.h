@@ -1088,6 +1088,9 @@ extern	int		time_backend;		// renderer backend time
 extern	int		com_frameTime;
 extern	int		com_frameMsec;
 
+void		Com_LatchRenderFraction( void );
+float		Com_RenderTimeFraction( void );
+
 extern	qboolean	com_errorEntered;
 extern	qboolean	com_fullyInitialized;
 extern	qboolean	com_gotOriginalConfig;

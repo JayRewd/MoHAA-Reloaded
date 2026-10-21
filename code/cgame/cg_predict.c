@@ -641,6 +641,62 @@ void CG_PredictPlayerState(void)
         cg.predicted_player_state.groundTrace = cg_lastPredicted.groundTrace;
     }
 
+    // The sealed commands were just replayed with stock steps. The open
+    // interval is one more stock step of that same length, with the keys
+    // held now, sampled by how far server time has moved into it. The step
+    // is not sent. commandTime stays the sealed command. The next frame
+    // replays from the snapshot.
+    if (!cg.thisFrameTeleport && !cg.nextFrameTeleport) {
+        int            interval, elapsed, commandTime;
+        float          t, scale;
+        playerState_t  start, end;
+        usercmd_t      cmd;
+        int            i;
+
+        commandTime = cg.predicted_player_state.commandTime;
+        elapsed     = cg.time - commandTime;
+        interval    = 1000 / (int)Com_Clamp(85, 125, cl_cmdfps->integer);
+        if (elapsed > 0 && interval > 0) {
+            if (elapsed > interval) {
+                elapsed = interval;
+            }
+
+            start = cg.predicted_player_state;
+            end   = start;
+
+            cgi.GetLiveUserCmd(&cmd);
+            cmd.serverTime = commandTime + interval;
+            if (end.feetfalling && (cg_pmove.waterlevel < 2)) {
+                cmd.forwardmove = 0;
+                cmd.rightmove   = 0;
+            }
+
+            cg_pmove.ps  = &end;
+            cg_pmove.cmd = cmd;
+            Pmove(&cg_pmove);
+            cg_pmove.ps = &cg.predicted_player_state;
+
+            t = (float)elapsed + cgi.GetRenderTimeFraction();
+            if (t < 0.0f) {
+                t = 0.0f;
+            } else if (t > (float)interval) {
+                t = (float)interval;
+            }
+            scale = t / (float)interval;
+
+            for (i = 0; i < 3; i++) {
+                cg.predicted_player_state.origin[i] =
+                    start.origin[i] + (end.origin[i] - start.origin[i]) * scale;
+                cg.predicted_player_state.velocity[i] =
+                    start.velocity[i] + (end.velocity[i] - start.velocity[i]) * scale;
+            }
+            cg.predicted_player_state.viewheight =
+                start.viewheight + (int)((end.viewheight - start.viewheight) * scale);
+            cg.predicted_player_state.fLeanAngle =
+                start.fLeanAngle + (end.fLeanAngle - start.fLeanAngle) * scale;
+        }
+    }
+
     // the view turns with this frame's look; the commands were predicted with
     // the angles they were sent with
     {

@@ -755,8 +755,8 @@ CL_ApplyLook
 Turns the view with this frame's input: the keyboard, the mouse and the
 joystick, every frame. Usercmds come at cl_cmdfps (CL_CreateNewCommands) and
 carry the angles of the frame that makes them; cgame turns the view of the
-frames between them (CL_GetViewUserCmd). What the mouse adds to the movement
-(strafe, BUTTON_ANY) waits for the next usercmd.
+frames between them (CL_GetViewUserCmd). The picture's step uses the keys
+held now (CL_GetLiveUserCmd). The usercmd still waits for the grid.
 =================
 */
 static void CL_ApplyLook( void ) {
@@ -926,6 +926,132 @@ void CL_GetViewUserCmd( usercmd_t *ucmd ) {
 	int		i;
 
 	*ucmd = cl.cmds[cl.cmdNumber & CMD_MASK];
+	for ( i = 0; i < 3; i++ ) {
+		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
+	}
+}
+
+/*
+=================
+CL_LiveKeyFraction
+
+The share of this cl_cmdfps interval CL_KeyMove will store if the key stays
+as it is until the command is sealed. Does not touch key->msec or downtime
+(CL_KeyState does, and the real command still needs them).
+
+projectHold counts the rest of the interval while the key is down. Turn
+keys are sampled by CL_AdjustAngles earlier in this frame, so the sealed
+command gets about none of them; projecting those would move the picture
+and the replay would take it back.
+=================
+*/
+static float CL_LiveKeyFraction( const kbutton_t *key, int interval, int elapsed, qboolean projectHold ) {
+	int		msec, remain;
+
+	if ( interval < 1 ) {
+		interval = 1;
+	}
+	remain = interval - elapsed;
+	if ( remain < 0 ) {
+		remain = 0;
+	}
+
+	msec = (int)key->msec;
+	if ( key->active ) {
+		if ( !key->downtime ) {
+			msec = interval;
+		} else {
+			msec += (int)( com_frameTime - key->downtime );
+		}
+		if ( msec < 0 ) {
+			msec = 0;
+		}
+		if ( projectHold ) {
+			msec += remain;
+		}
+	}
+
+	if ( msec < 0 ) {
+		msec = 0;
+	}
+	if ( msec > interval ) {
+		msec = interval;
+	}
+
+	return (float)msec / (float)interval;
+}
+
+/*
+=================
+CL_GetLiveUserCmd
+
+The newest usercmd with this frame's view and the moves the next command
+will carry if the keys stay as they are. The open interval is one stock
+Pmove of that command. Nothing is written into cl.cmds.
+=================
+*/
+void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
+	int			i, interval, elapsed, movespeed;
+	int			forward, side, up;
+	unsigned	weapon;
+
+	*ucmd = cl.cmds[cl.cmdNumber & CMD_MASK];
+
+	interval = 1000 / (int)Com_Clamp( 85, 125, cl_cmdfps->integer );
+	elapsed = cl.serverTime - ucmd->serverTime;
+	if ( elapsed < 0 ) {
+		elapsed = 0;
+	}
+	if ( elapsed > interval ) {
+		elapsed = interval;
+	}
+
+	movespeed = 127;
+	forward = 0;
+	side = 0;
+	up = 0;
+	if ( in_strafe.active ) {
+		side += movespeed * CL_LiveKeyFraction( &in_right, interval, elapsed, qfalse );
+		side -= movespeed * CL_LiveKeyFraction( &in_left, interval, elapsed, qfalse );
+	}
+	side += movespeed * CL_LiveKeyFraction( &in_moveright, interval, elapsed, qtrue );
+	side -= movespeed * CL_LiveKeyFraction( &in_moveleft, interval, elapsed, qtrue );
+	up += movespeed * CL_LiveKeyFraction( &in_up, interval, elapsed, qtrue );
+	up -= movespeed * CL_LiveKeyFraction( &in_down, interval, elapsed, qtrue );
+	forward += movespeed * CL_LiveKeyFraction( &in_forward, interval, elapsed, qtrue );
+	forward -= movespeed * CL_LiveKeyFraction( &in_back, interval, elapsed, qtrue );
+
+	ucmd->forwardmove = ClampChar( forward );
+	ucmd->rightmove = ClampChar( side );
+	ucmd->upmove = ClampChar( up );
+
+	ucmd->rightmove = ClampChar( ucmd->rightmove + (int)cl.lookMove[0] );
+	ucmd->forwardmove = ClampChar( ucmd->forwardmove + (int)cl.lookMove[1] );
+
+	weapon = ucmd->buttons & GetWeaponCommandMask( WEAPON_COMMAND_MAX_VER17 );
+	ucmd->buttons = weapon;
+	for ( i = 0; i < 15; i++ ) {
+		if ( in_buttons[i].active || in_buttons[i].wasPressed ) {
+			ucmd->buttons |= 1 << i;
+		}
+	}
+	ucmd->buttons |= weapon;
+
+	if ( UI_MenuActive() || UI_ConsoleIsOpen() ) {
+		ucmd->buttons |= BUTTON_TALK;
+	}
+	if ( in_speed.active ^ cl_run->integer ) {
+		ucmd->buttons |= BUTTON_RUN;
+	}
+	if ( anykeydown && Key_GetCatcher() == 0 ) {
+		ucmd->buttons |= BUTTON_MOUSE;
+	}
+	if ( anykeydown || cl.lookButtons ) {
+		ucmd->buttons |= BUTTON_ANY;
+	}
+
+	CL_JoystickMove( ucmd );
+
 	for ( i = 0; i < 3; i++ ) {
 		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
 	}
