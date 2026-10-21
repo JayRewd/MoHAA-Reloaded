@@ -449,6 +449,12 @@ functions exported to the main executable
         // cl_cmdfps, the view turns every frame
         void (*GetViewUserCmd)(usercmd_t *ucmd);
 
+        // sub-millisecond fraction of the current server millisecond, 0..1
+        float (*GetRenderTimeFraction)(void);
+
+        // the open cl_cmdfps step with the keys held now. Not sent.
+        void (*GetLiveUserCmd)(usercmd_t *ucmd);
+
     } clientGameImport_t;
 
     /*

@@ -228,8 +228,11 @@ below are done.
   movement, at a fixed rate (`cl_cmdfps`, 85 to 125 a second, default 100) instead of
   one per frame, the same steps at every frame rate, and the frame rate is
   no longer held at 1000 a second (`com_maxfps` above 1000 or 0); the view
-  turns with every frame's mouse look, the own position moves once per
-  command. From JayRewd's `cl_cmdfps` (omaha 1620f310) and his limiter
+  turns with every frame's mouse look. The server still receives `cl_cmdfps`
+  steps. The client samples the current stock step with the keys held this
+  frame, at `(milliseconds since the command + a sub-millisecond fraction) / interval`.
+  The fraction is one monotonic read latched to `com_frameTime` (`Com_LatchRenderFraction`);
+  it is not a `Pmove` input. From JayRewd's `cl_cmdfps` (omaha 1620f310) and his limiter
   change (b26d8a67), with commands on a fixed grid of server time (his steps
   depend on the frame rate), the look applied to the view only and no
   smoothing of the own position. Short steps get stuck on small bumps that
@@ -3560,9 +3563,16 @@ What was taken, and how it differs:
   It now takes `walking`, `groundPlane` and `groundTrace` from its last
   pmove of the same command and the rest from the snapshot (JayRewd's keeps
   the whole predicted state, the server's position included).
-- Not taken: JayRewd's display lerp of the own position between the last
-  two commands (it shows the player up to a step behind), extrapolation, a
-  partial step ahead of the last command. The own position moves once per
+- The server still receives those `cl_cmdfps` steps. The client picture
+  samples the current stock step: one `Pmove` of a full interval from the
+  last sealed command, with the keys held this frame, then the origin and
+  velocity at
+  `(milliseconds since the command + the sub-millisecond fraction) / interval`.
+  The fraction is one monotonic read latched to `com_frameTime`
+  (`Com_LatchRenderFraction`). It is not a `Pmove` input. Not taken:
+  JayRewd's display lerp of the own position between the last
+  two commands (it shows the player up to a step behind). The own position
+  used to move once per
   command, every 10 ms at the default (every second or third frame at 250
   frames a second, every tenth at 1000), and lags the world drawn at the
   frame's time by 0 to 10 ms, as at 100 frames a second before; the view
@@ -5575,7 +5585,9 @@ Done:
     server time, every step the same length at every frame rate (his
     depend on it), several per frame below the rate; the view turned every
     frame through a new cgame import (`GetViewUserCmd`), no command
-    rewritten after it is made, no smoothing of the own position; no packet
+    rewritten after it is made; the client samples that stock step, with
+    the keys held this frame, by a sub-millisecond fraction latched to
+    `com_frameTime` (not a `Pmove` input); no packet
     without a new command; cgame keeps what the network doesn't carry when
     the snapshot has run every command; client caps above 1000 and uncapped
     on the microsecond deadline, frames of 0 ms counted as 0 ms, the `fps`
@@ -5829,8 +5841,9 @@ Remaining:
   integer): above 1000 frames a second consecutive frames in the same
   millisecond show the same moment of the world (the view turns); a render
   time in microseconds for interpolation and animation was proposed, not
-  done. The own position moves once per command (no smoothing, by the no
-  added lag rule). A button or movement key waits for the next command (5
+  done. The client samples the current stock `cl_cmdfps` step with a
+  sub-millisecond fraction latched to `com_frameTime`. That fraction is not
+  a `Pmove` input. A button or movement key waits for the next command (5
   ms on average at 100 a second, 2 at 250 frames a second before): an
   early command when a button is pressed between commands would take most
   of that off (a shorter step now and then); proposed, not done. Uncapped beyond what the GPU can draw (1500 frames

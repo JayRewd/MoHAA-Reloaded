@@ -2168,6 +2168,44 @@ void Com_WriteConfig_f( void ) {
 Com_ModifyMsec
 ================
 */
+/*
+=================
+Com_LatchRenderFraction
+
+One monotonic read, latched to com_frameTime. The fraction is how far the
+monotonic clock has moved into the current server millisecond. It is not
+added to serverTime and it is not a Pmove input.
+=================
+*/
+static int		renderLatchMs;
+static int64_t	renderLatchUs;
+static float	renderFraction;
+
+void Com_LatchRenderFraction( void ) {
+	int64_t	nowUs;
+	float	frac;
+
+	nowUs = Sys_Microseconds();
+	if ( com_frameTime != renderLatchMs ) {
+		renderLatchMs = com_frameTime;
+		renderLatchUs = nowUs;
+		renderFraction = 0.0f;
+		return;
+	}
+
+	frac = (float)( nowUs - renderLatchUs ) / 1000.0f;
+	if ( frac < 0.0f ) {
+		frac = 0.0f;
+	} else if ( frac > 0.999f ) {
+		frac = 0.999f;
+	}
+	renderFraction = frac;
+}
+
+float Com_RenderTimeFraction( void ) {
+	return renderFraction;
+}
+
 int Com_ModifyMsec( int msec ) {
 	int		clampTime;
 
@@ -2451,6 +2489,7 @@ void Com_Frame( void ) {
 
     lastTime = com_frameTime;
     com_frameTime = Com_EventLoop();
+    Com_LatchRenderFraction();
 
     msec = com_frameTime - lastTime;
 

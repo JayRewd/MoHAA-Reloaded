@@ -604,6 +604,7 @@ void CL_InitInput (void);
 void CL_ShutdownInput(void);
 void CL_SendCmd (void);
 void CL_GetViewUserCmd( usercmd_t *ucmd );
+void CL_GetLiveUserCmd( usercmd_t *ucmd );
 void CL_ClearState (void);
 void CL_ReadPackets (void);
 

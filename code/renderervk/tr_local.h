@@ -2679,6 +2679,7 @@ typedef struct {
 	int height;
 	char *fileName;
 	qboolean jpeg;
+	qboolean png;
 	const char *message;	// console command run once the file is written, or NULL
 } screenshotCommand_t;
 
