@@ -99,6 +99,9 @@ R_IssueRenderCommands
 void R_IssueRenderCommands( qboolean runPerformanceCounters ) {
 	renderCommandList_t	*cmdList;
 
+	// the 2D draws made before come first
+	R_End2DBatch();
+
 	cmdList = &backEndData->commands;
 	assert(cmdList);
 	// add an end-of-list command
@@ -124,10 +127,14 @@ void R_IssueRenderCommands( qboolean runPerformanceCounters ) {
 R_IssuePendingRenderCommands
 
 Issue any pending commands and wait for them to complete. Nothing to do
-when none is queued: the 2D exports call it before each of their draws
+when none is queued: the 2D exports call it before each of their draws.
+Everything that uses the back end outside the 2D draws calls it, so the
+open 2D batch is drawn first (see tr_draw.c)
 ====================
 */
 void R_IssuePendingRenderCommands( void ) {
+	R_End2DBatch();
+
 	if ( !tr.registered || !backEndData->commands.used ) {
 		return;
 	}
@@ -338,6 +345,9 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	if ( !tr.registered ) {
 		return;
 	}
+	// the UI also draws between frames (when a menu is pushed): drawn before
+	// the frame begins, as each of those draws was
+	R_End2DBatch();
 	glState.finishCalled = qfalse;
 
 	tr.frameCount++;

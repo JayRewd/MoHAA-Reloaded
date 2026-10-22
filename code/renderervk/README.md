@@ -336,6 +336,18 @@ below are done.
   640x480 (`o3_beach` -57 µs), 3 % and 1.7 % in an `obj/obj_team1` and the
   `obj/obj_team4` match, the same in `o2match`; the same GPU time at
   3840x2160, the same frames to the bit (see Performance, Terrain)
+- 2D batches (2026-10-22, from JayRewd's b26d8a67, `r_batch2D`):
+  consecutive 2D pics, strings and triangles of one shader whose colors and
+  texture coordinates come from each vertex alone are drawn as one surface,
+  ended where anything else is about to use the renderer (his version ended
+  it from every state setter of the backend, and joined any shader); and
+  the boxes the UI's widgets draw with alpha 0, which change no pixel, are
+  left out: in a match's frame 7.6 of 37 2D draws join a batch (the
+  compass, the kill feed) and 37 of 40 boxes are left out. The renderer's
+  time per frame 5 and 2.3 % lower in two matches at 640x480 (-16 and -14
+  µs), their slow frames' percentiles too, 13 µs less GPU time a frame, the
+  input to present time the same or lower; the same frames to the bit,
+  merged and separate draws of one frame too (see Performance, 2D batches)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -443,6 +455,7 @@ Cvars of the backend:
 | `r_maxDlights` (latched, archived, default 4) | 0 to 64: the dynamic lights a scene keeps, the nearest the view of those cgame added (GL1: the first 32 added to the frame); see Implementation notes, Dynamic lights |
 | `r_staticEffects` (default 1) | 0 leaves the static batches whose shaders deform vertexes or compute texture coordinates or colors per vertex to the CPU (tess) instead of the effects shader (see Implementation notes, Effects shader) |
 | `r_staticTerrain` (default 1) | 0 copies the LOD terrain's vertexes into tess every frame instead of drawing them from the terrain pool (see Implementation notes, Terrain) |
+| `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
@@ -833,6 +846,17 @@ Test content:
   with their lenses) and takes them again with two dynamic lights next to
   them (the sphere's lights in the vertex shader; the lenses, with an alpha
   of their own, back on the CPU).
+- The HUD (2026-10-22): `hud` takes the in-game HUD, which every other list
+  hides (`ui_hud 0`), in a team match of `dm/mohdm1` (`g_gametype 2` before
+  the map): the compass, health, ammo and weapon bar, score and time left, a
+  chat line and the scoreboard, for the 2D batches and `DrawBox`'s
+  transparent boxes (see Implementation notes, 2D batches). The player's
+  name is set (the default one ends in a random number) and the shots wait
+  for the spawn and the weapon change. The compass turns towards its target
+  with the UI's wall clock (`uid.time`), so it differs between runs:
+  masked. What is drawn as one batch in a match, the compass's triangles and
+  the kill feed's lines, was compared within one run instead (see the 2D
+  batches in Comparing).
 - Debug drawing: `mohdm1_debug`. `r_showtris` and `r_shownormals` only draw
   with `developer 1` (`r_developer`), which is why they seemed to show
   nothing. The game's debug lines (`sv_showbboxes`, camera paths shown with
@@ -1502,6 +1526,51 @@ servers, `obj/obj_team4` and `dm/mohdm1` (each world loaded without a
 registration, a map without terrain between two with it).
 `renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
 `GetRefAPI`.
+
+The 2D batches (2026-10-22, see Performance, 2D batches), against the build
+before (`run.sh`, `tgadiff.py`, 640x480, `r_vkValidation 1`): on the 46 view
+lists (198 views, with the new `hud`) 167 give the same frames to the bit,
+among them every view of the `dm`, `obj` and multiplayer lists but the snow
+of `mohdm5_fog`, the near-camera ±1 of `d7_alley` and `d7_arch` and 3 pixels
+of `pm7_front`, the menus and the HUD (the compass masked, see Test
+content); the other 31 are in the lists with random content or run-to-run
+noise named above (`m1l1`, `m1l3a`, `m2l1_skyportal`, `m3l1a`, `m4l1_fog`,
+`m5l1a`, `m5l2a`, `m5l3`, `m6l1a`). With `r_batch2D` 0, 1 and 2 (each part
+alone, and both off) `menus`, `hud`, `mohdm1`, `obj_team2`, `mp_mohdm1`,
+`mohdm2_fog` and `mohdm1_debug` (37 views each) give the build before's
+frames too. The lists draw few 2D draws that join a batch: they hide the
+HUD, and the compass, whose triangles join in every frame of a match, turns
+with the wall clock. What joins was compared within one run instead, the
+same frame with and without the batches: a single-player view of
+`dm/mohdm1` with the HUD, paused (the compass settles: two shots with the
+same setting are the same), taken with `r_batch2D` 3, 0, 1, 2 and 3 again:
+the same to the bit, compass included; and the `o2match` and `o4match`
+demos frozen (`cl_freezeDemo 1`) at 10 moments each, taken three times two
+frames apart with `r_batch2D` 3, 0 and 3, then 3, 1 and 3 (a `wait 32` is a
+frame: `Cbuf_Execute` takes a frame's 16 ms off a `wait` before it stops):
+16 of the 40 triples are the same to the bit outside the compass, which keeps
+turning in a frozen demo, among them frames with 1 to 6 kill feed lines of
+one color; in the other 24 the two shots with the same setting differ as
+well (lines fading, with the wall clock), and in none does the middle shot
+differ where those two are the same. A temporary build that copied the
+renderer's state when a batch opened (`glState`, the backend's recorded
+state, `vk_dirty` and draw count, `backEnd` but its lighting spheres, the
+shader's stage) and compared it at every draw that joined the batch and
+before drawing it found no difference in 20 matches (667 thousand frames of the matches, 28.6 million checks, 7.6
+joined draws a frame), nor any image replaced or uploaded into while a
+batch was open; its first run on `menus` found one, which made
+`RE_BeginFrame` end the batch: a pic drawn between frames when a menu is
+pushed, its batch still open when the next frame began (`glState.finishCalled`
+changed). On llvmpipe (`VK_DRIVER_FILES=.../lvp_icd.json`) the paused
+frame's shots with `r_batch2D` 3, 0, 1 and 2 are the same to the bit too. No
+validation message in these runs, nor with synchronization validation
+(`r_vkValidation 2`) on `hud`, `menus` and the toggles of `o4match` frozen.
+Against GL1 (`compare.sh`): `menus` gives the numbers of before (0 pixels
+in every menu but the 17 of `mn_video`, the views over `m1_spawn` 5.2 to 7.4
+%), `hud` the same HUD over a 3D view that differs where trees sway (a team
+match can't be paused, and GL1's screenshot reads a frame from two or three
+swaps earlier, see Deterministic 3D views). `renderer_vulkan.so` imports no
+GL or Vulkan symbol and exports only `GetRefAPI`.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -4475,6 +4544,74 @@ waits or is queued for longer: the pool's copy is written by its own frame
 before its first terrain draw, after the wait for its frame slot that was
 there already, and no frame more is in flight.
 
+2D batches (2026-10-22, Plan 26; see Implementation notes, 2D batches).
+JayRewd's b26d8a67 kept consecutive stretch pics and font glyphs in one
+surface while the shader, the 2D color, the shader time and the entity
+stayed the same, and ended it from every state setter of the backend,
+`RB_BeginSurface` and `RB_ImmBegin`; under this engine, in his commit's
+evaluation, that took about 2 µs (0.5 %) off the renderer's time in the
+matches. What a match's HUD draws (a temporary build that logged the
+renderer's exports in 4 frames of each match, and the verification build
+below over 20 matches): every UI widget sets its window (`Set2DWindow`),
+scissor, shader time and color, then draws one to six pics or strings; 35
+to 44 `DrawBox` calls a frame draw the widgets' backgrounds and borders,
+most of them with alpha 0 (every one in the traced frames: they change no
+pixel, but each was a draw blended over its whole rectangle); and of 34 to
+43 pics, strings and triangles a frame, those that can be one surface are
+within a widget: the compass's quads (two `DrawTrianglePic` calls with one
+shader each) and the kill feed's consecutive lines of one color. Over 667 thousand frames of the
+20 matches, 7.6 of the 37.4 2D draws a frame joined a batch (5.4 to 11.8
+per match) and 37.2 of the 40.2 boxes a frame were left out.
+
+Results (idle machine: other processes at most 0.5 CPUs, no Plex
+transcoding; the build before (`base`, c09e3f24) and this one with
+`r_batch2D` 0 (`off`), 1 (`merge`), 2 (`boxes`) and 3 (`new`, the default)
+interleaved, medians of 5 runs, 640x480 uncapped, 15000 frames; the
+renderer's main-thread time per frame and its 2D calls with the back end,
+the GPU time of the main command buffer, and each frame's median over the
+runs ("content", see Frame spikes) for the percentiles; ms):
+
+| demo | renderer base / off / merge / boxes / new | 2D and back end base / off / new | GPU base / new | content renderer mean, p99, p99.9: base / new | content frame time p99, p99.9: base / new |
+| --- | --- | --- | --- | --- | --- |
+| `o2match` | 0.313 / 0.303 / 0.305 / 0.301 / 0.297 | 0.183 / 0.177 / 0.168 | 0.233 / 0.222 | 0.311, 0.597, 0.714 / 0.293, 0.579, 0.697 | 0.832, 1.123 / 0.814, 1.095 |
+| `o4match` | 0.619 / 0.622 / 0.617 / 0.612 / 0.605 | 0.352 / 0.353 / 0.337 | 0.322 / 0.311 | 0.617, 0.956, 1.152 / 0.599, 0.935, 1.132 | 1.183, 1.506 / 1.161, 1.493 |
+
+(The runs' ranges of the renderer's time: `base` 0.307 to 0.316 and 0.613
+to 0.638, `new` 0.289 to 0.301 and 0.594 to 0.607. `off` is this build with
+both parts off, which draws as the build before did (the same frames, see
+Testing); it differs from `base` by -10 and +3 µs, where the linker put the
+code, so the parts are compared with `off`, the same library.) Against
+`off` the boxes take 2 and 10 µs off, the batches 0 and 5 (about what
+JayRewd's batching measured), both together 6 and 17 µs; against the build
+before 16 and 14 µs (5 and 2.3 %), and 18 µs from each frame's median over
+the runs, the slow frames' percentiles 17 to 21 µs lower. The GPU time goes
+down by 0.011 ms: the boxes left out were blended over their rectangles.
+
+At 1920x1080 in a window, uncapped and at the user's cap of 250 (`perf.py
+--caps 0,250 --seconds 10 --preload libinlat.so --framelog`, 5 runs, other
+processes at most 0.8 CPUs; ms; the renderer's time per frame, the GPU
+time, input read to present from `libinlat.so`, the median of the runs'
+medians with their range and of their 99th and 99.9th percentiles):
+
+| demo | `com_maxfps` | renderer base / new | GPU base / new | frames a second | input to present, median (runs): base / new | p99, p99.9: base / new |
+| --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | 0.419 / 0.400 | 0.439 / 0.434 | 1718 / 1777 | 0.480 (0.473 to 0.490) / 0.461 (0.455 to 0.466) | 1.049, 1.390 / 1.019, 1.370 |
+| | 250 | 0.419 / 0.408 | | 250 | 0.502 (0.495 to 0.512) / 0.499 (0.490 to 0.505) | 0.982, 1.538 / 0.903, 1.346 |
+| `o4match` | 0 | 0.727 / 0.718 | 0.648 / 0.642 | 1095 / 1098 | 0.843 (0.839 to 0.853) / 0.844 (0.837 to 0.850) | 1.455, 2.017 / 1.461, 1.930 |
+| | 250 | 0.678 / 0.670 | | 250 | 0.811 (0.806 to 0.842) / 0.810 (0.801 to 0.816) | 1.393, 2.408 / 1.358, 2.130 |
+
+(At 250 the GPU runs at lower clocks and its time spreads from run to run
+by 0.1 ms.) The work taken off lies between the frame's input read and its
+present (the 2D calls), so input to present goes down by about as much or
+stays within the runs' spread; nothing waits or is queued for longer.
+
+Where the GPU limits (3840x2160, 3 runs, ms): `o2match` 1.265 / 1.252 a
+frame (791 / 799 frames a second), its GPU time 1.245 / 1.232; `o4match`
+2.194 / 2.181 (456 / 459), GPU 2.167 / 2.154: the boxes' 13 µs of GPU time a
+frame, in every run (the runs within 0.003 ms of each other). The final build
+differs from the one timed and checked here in `RE_Shutdown` alone, which
+forgets an open batch (`objdump -d` per function, addresses left out).
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -4655,8 +4792,9 @@ in the fog-colored background of `m2l3`).
   operation. In OpenMoHAA the back end mostly runs inside the 2D exports:
   `Set2DWindow`, `DrawStretchPic`, `DrawString`, ... call
   `R_IssuePendingRenderCommands` (which returns at once when no command is
-  queued, as for most of them) and draw at once, and the UI calls
-  `Set2DWindow` before and after the 3D view, so the 3D view's draw
+  queued, as for most of them) and draw at once (or leave their surface
+  open for the next 2D draws, see Implementation notes, 2D batches), and the
+  UI calls `Set2DWindow` before and after the 3D view, so the 3D view's draw
   surfaces are executed there, not in `RE_EndFrame`.
 - The color contents of the frame are undefined until it draws or clears
   them, like a GL back buffer (frames are drawn into the swapchain image,
@@ -5426,6 +5564,54 @@ selects the sample count (see Implementation notes).
   (every frame once the blink timer, a `short`, has wrapped after 33 s), so
   the client's random sequence (seeded from the clock at every start anyway)
   moves differently.
+- **2D batches** (`tr_draw.c`, `r_batch2D`; see Performance, 2D batches).
+  The UI and cgame draw the HUD and the menus one call at a time
+  (`DrawStretchPic`, `DrawString`, `DrawTilePic`, `DrawTrianglePic`, ...),
+  each a surface of its own: a stage iteration and a `vk_draw`. A 2D draw
+  whose shader is batchable (`R_2DShaderBatchable`: one stage with one
+  texture, no deform, the generic stage iterator, texture coordinates from
+  `tcGen texture`, `identity` or `vector` with `tcMod scroll`, `scale`,
+  `stretch`, `transform` or `turb`, colors from the 2D color, constants,
+  waves or, for pics and triangles, their vertex colors: what
+  `ComputeTexCoords` and `ComputeColors` compute for each vertex from that
+  vertex alone or from what stays the same while the batch is open) leaves
+  its surface open in `tess` (`R_Begin2D`, `R_End2D`), and the next 2D draws
+  with the same shader from the same kind of call (pics and triangles, or
+  glyphs, which have no vertex colors) add their vertexes and indexes to it:
+  the triangle strip of `RB_StreamEnd` from the draw's first vertex, each
+  glyph's two triangles. It is drawn as one surface when anything else is
+  about to use the renderer (`R_End2DBatch`). The same triangles in the same
+  order with the same pipeline and state give the same pixels (blending
+  follows the order of the primitives within a draw); single-pass shaders
+  only, so the state of each joined draw is what the first one's stage
+  iteration sets (`GL_State`, `GL_Cull` and `GL_Bind` change nothing the
+  second time). What draws the batch first: every path that runs the back
+  end or records GPU work outside these draws goes through
+  `R_IssuePendingRenderCommands` or `R_IssueRenderCommands` (`Set2DWindow`
+  before every UI widget, the boxes, lines, cinematics and backgrounds, a
+  model or skin loaded, the front end's debug drawing, the queued 3D view,
+  the end of the frame), and the exports that change what the batch reads
+  without them end it themselves: `Draw_SetColor` when the color changes
+  (`rgbGen` and `alphaGen` of the 2D color read it when the batch is drawn),
+  `Set2DInitialShaderTime` and `RE_SetRenderTime` (the shader time),
+  `RE_Scissor`, `RE_RefreshShaderNoMip` (it replaces a shader's image),
+  `RE_UploadCinematic` (an image's contents), the load of a font's shader
+  (it sets its stage's colors) and `RE_BeginFrame` (the UI draws between
+  frames when a menu is pushed). JayRewd's b26d8a67 kept the surface open in
+  the same way but ended it from the backend's state setters (`vk_set_*`),
+  `RB_BeginSurface` and `RB_ImmBegin`, and joined draws of any shader; here
+  nothing in the back end knows about it, and a temporary build checked
+  that nothing else ran in the renderer while a batch was open (see
+  Performance, 2D batches). Within a widget, what joins in a match are the
+  compass's triangles (each quad is two `DrawTrianglePic` calls) and the
+  kill feed's lines of one color; every widget sets its own window
+  (`Set2DWindow`), whose viewport and projection a batch can't span.
+  `DrawBox` leaves out its draw when the 2D color's alpha is 0: blended with
+  the source alpha, such a box leaves every pixel as it is, and the UI's
+  widgets draw their backgrounds and borders that way, transparent ones
+  included (37 of the 40 boxes a frame in matches). Its state changes are
+  kept, so the draws after it see the same state; with `r_measureOverdraw`
+  (its fragments counted in the stencil buffer) the box is drawn.
 - **Push constants** (`vkPushConstants_t`, the guaranteed 128 bytes).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -6103,6 +6289,27 @@ Done:
     the CPU's. The renderer's time 7 to 8 % lower where terrain fills the
     view at 640x480, 1.7 to 3 % in two matches, the GPU time and the frames
     the same.
+
+26. 2D batches (2026-10-22, see Performance, 2D batches, and
+    Implementation notes, 2D batches), from JayRewd's b26d8a67: the 2D draws
+    of a single-pass shader whose colors and texture coordinates
+    `ComputeColors` and `ComputeTexCoords` make from each vertex alone (or
+    the 2D color and time) stay open in `tess`, and the next ones with that
+    shader join them, until something else is about to use the renderer: the
+    paths that run the back end (`R_IssuePendingRenderCommands`,
+    `R_IssueRenderCommands`) and the exports that change what the batch reads
+    (the 2D color, the shader time, the scissor, a shader's image, a
+    cinematic's upload, a font's shader, the frame's start); his version
+    ended it from every state setter of the backend and joined any shader,
+    whose colors could come from an earlier surface. `DrawBox`'s boxes with
+    alpha 0 (the UI widgets' transparent backgrounds and borders: 37 of 40 a
+    frame in matches) are left out. A temporary build that compared the
+    renderer's state at every draw that joined a batch and before drawing it
+    found nothing else running while one was open over 20 matches; a paused
+    frame and frozen demo frames give the same pixels merged and drawn one by
+    one (`r_batch2D` 3 and 0 in one run). The renderer's time 5 and 2.3 %
+    lower in two matches at 640x480, 13 µs less GPU time a frame; the
+    frames the same to the bit (new list `hud`).
 
 Remaining:
 

@@ -25,6 +25,238 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 vec4_t r_colorWhite = { 1.0, 1.0, 1.0, 1.0 };
 
+cvar_t *r_batch2D;
+
+/*
+====================================================================
+
+2D BATCHES
+
+The UI and cgame make each 2D pic, string and triangle a surface of its own:
+a stage iteration and a draw each. A 2D draw whose shader computes the colors
+and texture coordinates of each vertex from that vertex alone
+(R_2DShaderBatchable) stays open in tess instead, and the 2D draws that come
+next with the same shader, from the same kind of call, join it; it is drawn
+once something else is about to run in the renderer (R_End2DBatch). The same
+triangles in the same order with the same state: the same pixels. What ends
+a batch:
+- a draw with another shader, one that isn't batched, a full tess;
+- whatever runs the back end or records GPU work outside these draws: it goes
+  through R_IssuePendingRenderCommands or R_IssueRenderCommands (Set2DWindow,
+  the boxes and lines, registration, the front end's debug drawing, the 3D
+  view and the end of the frame);
+- what changes the batch's input without them: Draw_SetColor (the 2D color),
+  Set2DInitialShaderTime and RE_SetRenderTime (the shader time), RE_Scissor,
+  RE_RefreshShaderNoMip (a shader's image), RE_UploadCinematic (an image's
+  contents), loading a font's shader, and RE_BeginFrame.
+r_batch2D: 1 batches, 2 leaves out DrawBox's boxes that change no pixel
+(alpha 0), 0 draws everything as each call comes.
+
+====================================================================
+*/
+
+static struct {
+	qboolean	batching;	// the surface in tess is a batch
+	qboolean	open;		// ... that the next 2D draw may join
+	r2dSource_t	source;
+} r2d;
+
+/*
+================
+R_2DShaderBatchable
+
+Whether consecutive 2D draws of this shader can be one surface: one stage
+with one texture, no deform, the generic stage iterator, and texture
+coordinates and colors that ComputeTexCoords and ComputeColors compute for
+each vertex from that vertex alone or from what stays the same while a batch
+is open (the 2D color, the shader time): nothing from the entity or the
+view, nothing left in tess.svars by an earlier surface (no vertex colors for
+glyphs, R_DrawString_sgl gives them none), every color channel written
+================
+*/
+static qboolean R_2DShaderBatchable( const shader_t *shader, r2dSource_t source ) {
+	const shaderStage_t		*stage = shader->unfoggedStages[0];
+	const textureBundle_t	*bundle;
+	qboolean				vertexColors = source == R2D_STREAM;
+	qboolean				rgbAlpha;	// the rgbGen writes alpha too
+	int						i;
+
+	if ( shader->numUnfoggedPasses != 1 || !stage || !stage->active || shader->numDeforms || shader->isSky
+		|| shader->optimalStageIteratorFunc != RB_StageIteratorGeneric ) {
+		return qfalse;
+	}
+
+	bundle = &stage->bundle[0];
+	if ( stage->bundle[1].image[0] || bundle->isLightmap || bundle->vertexLightmap ) {
+		return qfalse;
+	}
+	if ( bundle->tcGen != TCGEN_TEXTURE && bundle->tcGen != TCGEN_IDENTITY && bundle->tcGen != TCGEN_VECTOR ) {
+		return qfalse;
+	}
+	for ( i = 0; i < bundle->numTexMods; i++ ) {
+		switch ( bundle->texMods[i].type ) {
+		case TMOD_TURBULENT:
+		case TMOD_SCROLL:
+		case TMOD_SCALE:
+		case TMOD_STRETCH:
+		case TMOD_TRANSFORM:
+			break;
+		default:
+			return qfalse;
+		}
+	}
+
+	switch ( stage->rgbGen ) {
+	case CGEN_IDENTITY_LIGHTING:
+	case CGEN_IDENTITY:
+	case CGEN_CONSTANT:
+	case CGEN_GLOBAL_COLOR:
+	case CGEN_WAVEFORM:
+	case CGEN_MULTIPLY_BY_WAVEFORM:
+		rgbAlpha = qtrue;
+		break;
+	case CGEN_EXACT_VERTEX:
+	case CGEN_VERTEX:
+		if ( !vertexColors ) {
+			return qfalse;
+		}
+		rgbAlpha = qtrue;
+		break;
+	case CGEN_ONE_MINUS_VERTEX:
+		if ( !vertexColors ) {
+			return qfalse;
+		}
+		rgbAlpha = qfalse;
+		break;
+	default:
+		return qfalse;
+	}
+
+	switch ( stage->alphaGen ) {
+	case AGEN_IDENTITY:		// 255, or what the rgbGen wrote (identity, vertex)
+	case AGEN_CONSTANT:
+	case AGEN_GLOBAL_ALPHA:
+	case AGEN_WAVEFORM:
+		return qtrue;
+	case AGEN_VERTEX:
+	case AGEN_ONE_MINUS_VERTEX:
+		return vertexColors;
+	case AGEN_SKIP:
+		return rgbAlpha;
+	default:
+		return qfalse;
+	}
+}
+
+/*
+================
+R_End2DBatch
+
+Draws the open 2D batch
+================
+*/
+void R_End2DBatch( void ) {
+	if ( !r2d.open ) {
+		return;
+	}
+	r2d.open = qfalse;
+	r2d.batching = qfalse;
+	RB_EndSurface();
+}
+
+/*
+================
+R_Forget2DBatch
+
+Drops the open 2D batch without drawing it: at shutdown, after
+R_IssuePendingRenderCommands drew it if the renderer was registered
+================
+*/
+void R_Forget2DBatch( void ) {
+	r2d.open = qfalse;
+	r2d.batching = qfalse;
+}
+
+/*
+================
+R_IssuePending2DCommands
+
+R_IssuePendingRenderCommands for a 2D draw that may join the open batch: the
+queued commands, if any, run after the batch is drawn
+================
+*/
+void R_IssuePending2DCommands( void ) {
+	if ( tr.registered && backEndData->commands.used ) {
+		R_IssuePendingRenderCommands();
+	}
+}
+
+/*
+================
+R_Begin2D
+
+Starts the surface of a 2D draw, or keeps the open batch when the draw can
+join it: the same shader and source, room for its vertexes and indexes
+================
+*/
+void R_Begin2D( shader_t *shader, r2dSource_t source, int numVertexes, int numIndexes ) {
+	if ( r2d.open ) {
+		if ( tess.shader == shader && r2d.source == source && tess.numVertexes + numVertexes < SHADER_MAX_VERTEXES
+			&& tess.numIndexes + numIndexes < SHADER_MAX_INDEXES ) {
+			return;
+		}
+		R_End2DBatch();
+	}
+
+	RB_BeginSurface( shader );
+	r2d.source = source;
+	r2d.batching = ( r_batch2D->integer & 1 ) && R_2DShaderBatchable( shader, source );
+}
+
+/*
+================
+R_End2D
+
+Ends a 2D draw: its surface is drawn, or stays open when it is a batch
+================
+*/
+void R_End2D( void ) {
+	if ( r2d.batching ) {
+		r2d.open = qtrue;
+		return;
+	}
+	RB_EndSurface();
+}
+
+/*
+================
+R_End2DStream
+
+Ends a 2D draw made with RB_Vertex2f and friends: the triangle strip
+RB_StreamEnd makes of its vertexes, from its first one
+================
+*/
+static void R_End2DStream( int firstVertex ) {
+	int numVertexes;
+	int i;
+
+	numVertexes = tess.numVertexes - firstVertex;
+	if ( numVertexes <= 2 ) {
+		tess.numVertexes = firstVertex;
+		R_End2D();
+		return;
+	}
+
+	for ( i = 0; i < numVertexes - 2; i++ ) {
+		tess.indexes[tess.numIndexes + 0] = firstVertex + ( i & 1 ) + i;
+		tess.indexes[tess.numIndexes + 1] = firstVertex + i - ( ( i & 1 ) - 1 );
+		tess.indexes[tess.numIndexes + 2] = firstVertex + i + 2;
+		tess.numIndexes += 3;
+	}
+
+	R_End2D();
+}
+
 /*
 ================
 Draw_SetColor
@@ -32,14 +264,21 @@ Draw_SetColor
 */
 void Draw_SetColor(const vec4_t rgba) {
 #if 1
+	byte color[4];
+
 	if (!rgba) {
 		rgba = r_colorWhite;
 	}
 
-	backEnd.color2D[0] = (byte)(rgba[0] * tr.identityLightByte);
-	backEnd.color2D[1] = (byte)(rgba[1] * tr.identityLightByte);
-	backEnd.color2D[2] = (byte)(rgba[2] * tr.identityLightByte);
-	backEnd.color2D[3] = (byte)(rgba[3] * 255.0);
+	color[0] = (byte)(rgba[0] * tr.identityLightByte);
+	color[1] = (byte)(rgba[1] * tr.identityLightByte);
+	color[2] = (byte)(rgba[2] * tr.identityLightByte);
+	color[3] = (byte)(rgba[3] * 255.0);
+	if (memcmp(color, backEnd.color2D, sizeof(color))) {
+		// the open batch is drawn with the color it was made with
+		R_End2DBatch();
+		Com_Memcpy(backEnd.color2D, color, sizeof(color));
+	}
 	RB_SetColor4ubv(backEnd.color2D);
 #else
 	RE_SetColor(rgba);
@@ -54,8 +293,9 @@ Draw_StretchPic
 void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader) {
 #if 1
 	shader_t* shader;
+	int firstVertex;
 
-	R_IssuePendingRenderCommands();
+	R_IssuePending2DCommands();
 
 	if (hShader) {
 		shader = R_GetShaderByHandle(hShader);
@@ -71,7 +311,8 @@ void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, flo
 
 	// draw the pic
 	RB_Color4f(backEnd.color2D[0], backEnd.color2D[1], backEnd.color2D[2], backEnd.color2D[3]);
-	RB_BeginSurface(shader);
+	R_Begin2D(shader, R2D_STREAM, 4, 6);
+	firstVertex = tess.numVertexes;
 
 	RB_Texcoord2f(s1, t1);
 	RB_Vertex2f(x, y);
@@ -85,7 +326,7 @@ void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, flo
 	RB_Texcoord2f(s2, t2);
 	RB_Vertex2f(x + w, y + h);
 
-	RB_StreamEnd();
+	R_End2DStream(firstVertex);
 #else
 	RE_StretchPic(x, y, w, h, s1, t1, s2, t2, hShader);
 #endif
@@ -101,8 +342,9 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
 	float halfWidth, halfHeight;
 	float scaledWidth1, scaledHeight1;
 	float scaledWidth2, scaledHeight2;
+	int firstVertex;
 
-	R_IssuePendingRenderCommands();
+	R_IssuePending2DCommands();
 
 	if (hShader) {
 		shader = R_GetShaderByHandle(hShader);
@@ -125,7 +367,8 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
 
 	// draw the pic
 	RB_Color4f(backEnd.color2D[0], backEnd.color2D[1], backEnd.color2D[2], backEnd.color2D[3]);
-	RB_BeginSurface(shader);
+	R_Begin2D(shader, R2D_STREAM, 4, 6);
+	firstVertex = tess.numVertexes;
 
 	RB_Texcoord2f(s1, t1);
 	RB_Vertex3f(x + halfWidth - (scaledWidth2 + -scaledHeight2), y + halfWidth - scaledHeight1 - scaledWidth1, 0);
@@ -139,7 +382,7 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
 	RB_Texcoord2f(t2, s2);
 	RB_Vertex3f(scaledWidth2 - scaledHeight2 + x + halfWidth, scaledWidth1 + scaledHeight1 + y + halfWidth, 0);
 
-	RB_StreamEnd();
+	R_End2DStream(firstVertex);
 }
 
 
@@ -151,8 +394,9 @@ Draw_TilePic
 void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
 	shader_t* shader;
 	float		picw, pich;
+	int			firstVertex;
 
-	R_IssuePendingRenderCommands();
+	R_IssuePending2DCommands();
 
 	if (hShader) {
 		shader = R_GetShaderByHandle(hShader);
@@ -172,7 +416,8 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
 	// draw the pic
 	RB_Color4f(backEnd.color2D[0], backEnd.color2D[1], backEnd.color2D[2], backEnd.color2D[3]);
 
-	RB_StreamBegin(shader);
+	R_Begin2D(shader, R2D_STREAM, 4, 6);
+	firstVertex = tess.numVertexes;
 
 	RB_Texcoord2f(x / picw, y / pich);
 	RB_Vertex2f(x, y);
@@ -186,7 +431,7 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
 	RB_Texcoord2f((x + w) / picw, (y + h) / pich);
 	RB_Vertex2f(x + w, y + h);
 
-	RB_StreamEnd();
+	R_End2DStream(firstVertex);
 }
 
 /*
@@ -197,8 +442,9 @@ Draw_TilePicOffset
 void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, int offsetX, int offsetY) {
 	shader_t* shader;
 	float		picw, pich;
+	int			firstVertex;
 
-	R_IssuePendingRenderCommands();
+	R_IssuePending2DCommands();
 
 	if (hShader) {
 		shader = R_GetShaderByHandle(hShader);
@@ -218,7 +464,8 @@ void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, i
 	// draw the pic
 	RB_Color4f(backEnd.color2D[0], backEnd.color2D[1], backEnd.color2D[2], backEnd.color2D[3]);
 
-	RB_StreamBegin(shader);
+	R_Begin2D(shader, R2D_STREAM, 4, 6);
+	firstVertex = tess.numVertexes;
 
 	RB_Texcoord2f(x / picw, y / pich);
 	RB_Vertex2f(x + offsetX, y + offsetY);
@@ -232,7 +479,7 @@ void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, i
 	RB_Texcoord2f((x + w) / picw, (y + h) / pich);
 	RB_Vertex2f(x + offsetX + w, y + offsetY + h);
 
-	RB_StreamEnd();
+	R_End2DStream(firstVertex);
 }
 
 /*
@@ -243,8 +490,9 @@ Draw_TrianglePic
 void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhandle_t hShader) {
 	int			i;
 	shader_t* shader;
+	int			firstVertex;
 
-	R_IssuePendingRenderCommands();
+	R_IssuePending2DCommands();
 
 	if (hShader) {
 		shader = R_GetShaderByHandle(hShader);
@@ -256,14 +504,15 @@ void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhand
 	// draw the pic
 	RB_Color4f(backEnd.color2D[0], backEnd.color2D[1], backEnd.color2D[2], backEnd.color2D[3]);
 
-	RB_BeginSurface(shader);
+	R_Begin2D(shader, R2D_STREAM, 3, 3);
+	firstVertex = tess.numVertexes;
 
 	for (i = 0; i < 3; i++) {
 		RB_Texcoord2f(vTexCoords[i][0], vTexCoords[i][1]);
 		RB_Vertex2f(vPoints[i][0], vPoints[i][1]);
 	}
 
-	RB_StreamEnd();
+	R_End2DStream(firstVertex);
 }
 
 /*
@@ -369,14 +618,19 @@ void DrawBox(float x, float y, float w, float h) {
 	GL_EnableTexture(qfalse);
 	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
 
-	RB_ImmBegin(IMM_QUADS);
+	// with alpha 0 the box blends to what is there (the UI's widgets draw
+	// their backgrounds and borders this way, most of them transparent: 37 of
+	// 40 boxes a frame in matches); r_measureOverdraw counts its fragments
+	if (!(r_batch2D->integer & 2) || backEnd.color2D[3] || r_measureOverdraw->integer) {
+		RB_ImmBegin(IMM_QUADS);
 
-	RB_ImmVertex2f(x, y);
-	RB_ImmVertex2f(x + w, y);
-	RB_ImmVertex2f(x + w, y + h);
-	RB_ImmVertex2f(x, y + h);
+		RB_ImmVertex2f(x, y);
+		RB_ImmVertex2f(x + w, y);
+		RB_ImmVertex2f(x + w, y + h);
+		RB_ImmVertex2f(x, y + h);
 
-	RB_ImmEnd();
+		RB_ImmEnd();
+	}
 
 	GL_EnableTexture(qtrue);
 }
@@ -456,6 +710,7 @@ RE_Scissor
 ================
 */
 void RE_Scissor(int x, int y, int width, int height) {
+	R_End2DBatch();
 	RB_SetScissor(x, y, width, height);
 }
 
@@ -468,6 +723,9 @@ void Set2DInitialShaderTime(float startTime)
 {
 	if (backEnd.in2D)
 	{
+		if (backEnd.shaderStartTime != startTime) {
+			R_End2DBatch();
+		}
 		backEnd.shaderStartTime = startTime;
 	}
 }

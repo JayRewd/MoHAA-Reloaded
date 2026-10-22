@@ -1019,6 +1019,8 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 }
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
+	// the open 2D batch is drawn with the contents it was made with
+	R_End2DBatch();
 
 	GL_Bind( &tr.scratchImage[client] );
 

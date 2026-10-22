@@ -3649,6 +3649,9 @@ qhandle_t RE_RefreshShaderNoMip(const char* name) {
 		return 0;
 	}
 
+	// the open 2D batch keeps the image it was made with
+	R_End2DBatch();
+
     COM_StripExtension(name, strippedName, sizeof(strippedName));
 
 	hash = generateHashValue(strippedName);

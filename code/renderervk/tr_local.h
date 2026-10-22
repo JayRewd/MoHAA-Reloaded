@@ -1906,6 +1906,20 @@ void Set2DInitialShaderTime(float startTime);
 
 void RE_Scissor(int x, int y, int width, int height);
 void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipple_mask);
+
+// 2D batches (tr_draw.c)
+typedef enum {
+	R2D_STREAM,		// RB_Vertex2f and friends: vertex colors from the 2D color
+	R2D_GLYPHS		// R_DrawString_sgl: no vertex colors
+} r2dSource_t;
+
+extern cvar_t *r_batch2D;	// 1: 2D draws of one shader in one surface, 2: transparent boxes left out
+
+void R_IssuePending2DCommands( void );
+void R_Begin2D( shader_t *shader, r2dSource_t source, int numVertexes, int numIndexes );
+void R_End2D( void );
+void R_End2DBatch( void );
+void R_Forget2DBatch( void );
 void RE_StretchRaw(int x, int y, int w, int h, int cols, int rows, int components, const byte* data);
 void	RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty);
 

@@ -1661,6 +1661,9 @@ void R_Register( void )
 	r_gpuSkinning = ri.Cvar_Get("r_gpuSkinning", "1", 0);
 	// 0 prepares and draws skeletal models outside the view too (tr_model.cpp)
 	r_skelCull = ri.Cvar_Get("r_skelCull", "1", 0);
+	// 1: consecutive 2D draws of one shader are one surface, 2: DrawBox leaves
+	// out the boxes that change no pixel; 0 draws each as it comes (tr_draw.c)
+	r_batch2D = ri.Cvar_Get("r_batch2D", "3", 0);
 	r_drawbrushes = ri.Cvar_Get("r_drawbrushes", "1", CVAR_CHEAT);
 	r_drawbrushmodels = ri.Cvar_Get("r_drawbrushmodels", "1", CVAR_CHEAT);	
 	r_drawterrain = ri.Cvar_Get("r_drawterrain", "1", CVAR_CHEAT);
@@ -1936,6 +1939,9 @@ void RE_Shutdown( qboolean destroyWindow ) {
 
 	R_ShutdownTerrain();
 
+	// what tess holds doesn't outlive the renderer
+	R_Forget2DBatch();
+
 	tr.registered = qfalse;
 }
 
@@ -2015,6 +2021,8 @@ RE_SetRenderTime
 =============
 */
 void RE_SetRenderTime(int t) {
+	// the open 2D batch has the shader time it was made with
+	R_End2DBatch();
 	backEnd.refdef.floatTime = (long double)t / 1000.0;
 	R_UpdateGhostTextures();
 }

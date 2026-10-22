@@ -575,18 +575,20 @@ void R_DrawString_sgl(fontheader_sgl_t* font, const char* text, float x, float y
         return;
     }
 
-    R_IssuePendingRenderCommands();
+    R_IssuePending2DCommands();
 
     if (font->trhandle != r_sequencenumber) {
         font->shader = NULL;
     }
 
     if (!font->shader) {
+        // it sets the colors of the shader's stage
+        R_End2DBatch();
         R_LoadFontShader(font);
     }
 
     charHeight = s_fontHeightScale * font->height * s_fontGeneralScale;
-    RB_BeginSurface((shader_t*)font->shader);
+    R_Begin2D((shader_t*)font->shader, R2D_GLYPHS, 0, 0);
 
     for (i = 0; text[i]; i++) {
         unsigned char c;
@@ -690,7 +692,7 @@ void R_DrawString_sgl(fontheader_sgl_t* font, const char* text, float x, float y
         }
     }
 
-    RB_EndSurface();
+    R_End2D();
 }
 
 void R_DrawString(fontheader_t* font, const char* text, float x, float y, int maxlen, const float *pvVirtualScreen) {
