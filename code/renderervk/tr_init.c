@@ -1654,6 +1654,9 @@ void R_Register( void )
 	// vertex (deforms, tcGen, tcMod, distFade, static models' dynamic
 	// lights) to the CPU (shaders/effects.vert)
 	r_staticEffects = ri.Cvar_Get("r_staticEffects", "1", 0);
+	// 0 copies the terrain's vertexes into tess every frame instead of drawing
+	// them from the terrain pool (tr_terrain.c, vk_sync_terrain_pool)
+	r_staticTerrain = ri.Cvar_Get("r_staticTerrain", "1", 0);
 	// 0 skins and lights skeletal models on the CPU (tr_skin.c)
 	r_gpuSkinning = ri.Cvar_Get("r_gpuSkinning", "1", 0);
 	// 0 prepares and draws skeletal models outside the view too (tr_model.cpp)

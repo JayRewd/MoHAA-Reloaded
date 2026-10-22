@@ -459,6 +459,7 @@ void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes 
 
 	geometry.numVertexes = numVertexes;
 	geometry.isSkinned = qfalse;
+	geometry.staticTerrain = qfalse;
 	geometry.xyz = glState.arrays.xyz;
 	geometry.xyzStride = glState.arrays.xyzStride;
 	geometry.version = glState.arrays.xyzVersion;

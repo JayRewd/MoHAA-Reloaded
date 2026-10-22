@@ -76,6 +76,86 @@ terrainVert_t *g_pVert;
 poolInfo_t g_tri;
 poolInfo_t g_vert;
 
+// the slots of g_pVert whose position or texture coordinates changed since
+// the back end last brought the terrain pool up to date (RB_TerrainPool),
+// a bit per slot
+static uint64_t *g_pVertChanged;
+static qboolean  g_bVertChanged;
+
+// the patches R_DoGeomorphs and R_DoTriMerging walk, by index in
+// tr.world->terraPatches, ascending: GL1 walked every patch every frame,
+// but nothing happens to a patch that was reset already (byDirty) and not
+// drawn for ter_cautiousframes + 10 frames, the merging's window. Merges
+// change neighbouring patches, so the order stays GL1's. Every patch at
+// the start (a patch never drawn is reset once), a patch joins when it is
+// drawn (R_MarkTerrainPatch) and leaves once nothing would happen to it
+static int  *g_pLivePatches;
+static int   g_nLivePatches;
+static byte *g_pPatchLive;	// per patch: in g_pLivePatches
+static int   g_iLiveWindow;	// the merging's window when the list was filled
+
+static void R_FreeTerrainLists();
+
+/*
+================
+R_MarkVertChanged
+================
+*/
+static ID_INLINE void R_MarkVertChanged(const terrainVert_t *pVert)
+{
+    size_t iVert = pVert - g_pVert;
+
+    g_pVertChanged[iVert >> 6] |= (uint64_t)1 << (iVert & 63);
+    g_bVertChanged = qtrue;
+}
+
+/*
+================
+R_FillLivePatches
+
+Every patch walks again
+================
+*/
+static void R_FillLivePatches()
+{
+    int i;
+
+    for (i = 0; i < tr.world->numTerraPatches; i++) {
+        g_pLivePatches[i] = i;
+        g_pPatchLive[i]   = qtrue;
+    }
+
+    g_nLivePatches = tr.world->numTerraPatches;
+    g_iLiveWindow  = ter_cautiousframes->integer + 10;
+}
+
+/*
+================
+R_AddLivePatch
+
+In its place by index
+================
+*/
+static void R_AddLivePatch(int iPatch)
+{
+    int lo = 0, hi = g_nLivePatches;
+
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+
+        if (g_pLivePatches[mid] < iPatch) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    memmove(&g_pLivePatches[lo + 1], &g_pLivePatches[lo], (g_nLivePatches - lo) * sizeof(g_pLivePatches[0]));
+    g_pLivePatches[lo] = iPatch;
+    g_nLivePatches++;
+    g_pPatchLive[iPatch] = qtrue;
+}
+
 /*
 ================
 R_ValidateHeightmapForVertex
@@ -115,6 +195,8 @@ static terraInt R_AllocateVert(cTerraPatchUnpacked_t *patch)
 
     g_pVert[iVert].nRef         = 0;
     g_pVert[iVert].uiDistRecalc = 0;
+    // its position and texture coordinates follow
+    R_MarkVertChanged(&g_pVert[iVert]);
 
     return iVert;
 }
@@ -681,6 +763,10 @@ static void R_PreTessellateTerrain()
     size_t numTerrainPatches = tr.world->numTerraPatches;
 
     if (!numTerrainPatches) {
+        // the previous map's lists (a world loaded without a registration
+        // keeps them) and pool
+        R_FreeTerrainLists();
+        vk_set_terrain_pool(0);
         return;
     }
 
@@ -698,6 +784,17 @@ static void R_PreTessellateTerrain()
     g_nVerts = ter_maxtris->integer + 1;
     g_pTris  = ri.Hunk_Alloc(g_nTris * sizeof(terraTri_t), h_dontcare);
     g_pVert  = ri.Hunk_Alloc(g_nVerts * sizeof(terrainVert_t), h_dontcare);
+
+    // replaces the previous map's lists and pool
+    R_FreeTerrainLists();
+    g_pVertChanged = ri.Malloc(((g_nVerts + 63) >> 6) * sizeof(uint64_t));
+    Com_Memset(g_pVertChanged, 0xFF, ((g_nVerts + 63) >> 6) * sizeof(uint64_t));
+    g_bVertChanged = qtrue;
+    vk_set_terrain_pool(g_nVerts);
+
+    g_pLivePatches = ri.Malloc(numTerrainPatches * sizeof(g_pLivePatches[0]));
+    g_pPatchLive   = ri.Malloc(numTerrainPatches);
+    R_FillLivePatches();
 
     // Init triangles & vertices
     R_TerrainHeapInit();
@@ -946,6 +1043,7 @@ R_CalcVertMorphHeight
 static void R_CalcVertMorphHeight(terrainVert_t *pVert)
 {
     float dot;
+    float z = pVert->xyz[2];
 
     pVert->xyz[2]       = pVert->fHgtAvg;
     pVert->uiDistRecalc = g_uiTerDist + 1;
@@ -963,6 +1061,10 @@ static void R_CalcVertMorphHeight(terrainVert_t *pVert)
         pVert->xyz[2] += pVert->fHgtAdd * calc;
     } else {
         pVert->uiDistRecalc = g_uiTerDist - (int)ceil(dot);
+    }
+
+    if (memcmp(&pVert->xyz[2], &z, sizeof(z))) {
+        R_MarkVertChanged(pVert);
     }
 }
 
@@ -1030,12 +1132,23 @@ static void R_DoTriSplitting()
 /*
 ================
 R_DoGeomorphs
+
+Over the patches of g_pLivePatches; drops those nothing happens to any
+more, before the merging walks the list
 ================
 */
 static void R_DoGeomorphs()
 {
-    for (size_t n = 0; n < tr.world->numTerraPatches; n++) {
-        cTerraPatchUnpacked_t *patch = &tr.world->terraPatches[n];
+    int i, n;
+
+    if (g_iLiveWindow != ter_cautiousframes->integer + 10) {
+        // the merging's window changed: patches that left may be in it
+        R_FillLivePatches();
+    }
+
+    for (i = 0, n = 0; i < g_nLivePatches; i++) {
+        int                    iPatch = g_pLivePatches[i];
+        cTerraPatchUnpacked_t *patch  = &tr.world->terraPatches[iPatch];
 
         g_vert.iCur = patch->drawinfo.iVertHead;
 
@@ -1060,12 +1173,25 @@ static void R_DoGeomorphs()
                 patch->byDirty = qtrue;
                 while (g_vert.iCur) {
                     terrainVert_t *pVert = &g_pVert[g_vert.iCur];
-                    pVert->xyz[2]        = pVert->fHgtAvg;
-                    g_vert.iCur          = pVert->iNext;
+                    if (memcmp(&pVert->xyz[2], &pVert->fHgtAvg, sizeof(pVert->fHgtAvg))) {
+                        R_MarkVertChanged(pVert);
+                    }
+                    pVert->xyz[2] = pVert->fHgtAvg;
+                    g_vert.iCur   = pVert->iNext;
                 }
             }
         }
+
+        // R_DoTriMerging leaves a patch alone from g_iLiveWindow frames
+        // after it was drawn on, and this loop once it is reset
+        if (!patch->byDirty || g_terVisCount - patch->visCountDraw < g_iLiveWindow) {
+            g_pLivePatches[n++] = iPatch;
+        } else {
+            g_pPatchLive[iPatch] = qfalse;
+        }
     }
+
+    g_nLivePatches = n;
 }
 
 /*
@@ -1145,8 +1271,9 @@ static void R_DoTriMerging()
 {
     int iCautiousFrame = g_terVisCount - ter_cautiousframes->integer;
 
-    for (size_t n = 0; n < tr.world->numTerraPatches; n++) {
-        const cTerraPatchUnpacked_t *patch = &tr.world->terraPatches[n];
+    // the patches past the window don't merge (R_DoGeomorphs)
+    for (int i = 0; i < g_nLivePatches; i++) {
+        const cTerraPatchUnpacked_t *patch = &tr.world->terraPatches[g_pLivePatches[i]];
 
         g_tri.iCur = patch->drawinfo.iMergeHead;
         if (patch->visCountDraw >= iCautiousFrame) {
@@ -1307,6 +1434,10 @@ void R_MarkTerrainPatch(cTerraPatchUnpacked_t *pPatch)
     pPatch->visCountDraw         = g_terVisCount;
     pPatch->pNextActive          = tr.world->activeTerraPatches;
     tr.world->activeTerraPatches = pPatch;
+
+    if (!g_pPatchLive[pPatch - tr.world->terraPatches]) {
+        R_AddLivePatch(pPatch - tr.world->terraPatches);
+    }
 }
 
 /*
@@ -1673,6 +1804,9 @@ Frees terrain memory
 */
 void R_TerrainFree()
 {
+    R_FreeTerrainLists();
+    vk_set_terrain_pool(0);
+
     if (g_pVert) {
         ri.Free(g_pVert);
         g_pVert = NULL;
@@ -1681,6 +1815,52 @@ void R_TerrainFree()
         ri.Free(g_pTris);
         g_pTris = NULL;
     }
+}
+
+/*
+================
+R_FreeTerrainLists
+================
+*/
+static void R_FreeTerrainLists()
+{
+    if (g_pVertChanged) {
+        ri.Free(g_pVertChanged);
+        g_pVertChanged = NULL;
+    }
+    if (g_pLivePatches) {
+        ri.Free(g_pLivePatches);
+        g_pLivePatches = NULL;
+    }
+    if (g_pPatchLive) {
+        ri.Free(g_pPatchLive);
+        g_pPatchLive = NULL;
+    }
+    g_nLivePatches = 0;
+}
+
+/*
+================
+RB_TerrainPool
+
+Whether the batch of terrain patches that starts can be drawn from the
+terrain pool: the slots that changed go to the backend, which brings the
+frame's copy up to date (vk_sync_terrain_pool)
+================
+*/
+qboolean RB_TerrainPool(void)
+{
+    qboolean ok;
+
+    if (!g_pVert || !r_staticTerrain->integer) {
+        return qfalse;
+    }
+
+    ok = vk_sync_terrain_pool(
+        g_nVerts, g_pVert[0].xyz, g_pVert[0].texCoords[0], sizeof(terrainVert_t), g_pVertChanged, g_bVertChanged
+    );
+    g_bVertChanged = qfalse;
+    return ok;
 }
 
 /*

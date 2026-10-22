@@ -324,6 +324,18 @@ below are done.
   same as before, the frames are the same to the bit where no brush model
   is lit by another light than its first and no scene has more than 4 (see
   Performance, Dynamic lights, 64 of them)
+- terrain (2026-10-22, from JayRewd's b26d8a67): the LOD terrain is drawn
+  from a copy of its vertex pool that each frame slot keeps in host
+  visible memory, into which a frame writes the slots that changed since
+  that copy was last written, instead of copying every terrain vertex twice
+  every frame (no transfer, no barrier, no frame more in flight); and the
+  tessellation's geomorph and merging go over the patches something can
+  still happen to instead of every patch of the map, in the patches' order
+  (JayRewd's order changed the tessellation; this keeps GL1's). The
+  renderer's time per frame 7 to 8 % lower in views with much terrain at
+  640x480 (`o3_beach` -57 µs), 3 % and 1.7 % in an `obj/obj_team1` and the
+  `obj/obj_team4` match, the same in `o2match`; the same GPU time at
+  3840x2160, the same frames to the bit (see Performance, Terrain)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -339,7 +351,7 @@ below are done.
 | `vk.h` | backend interface (the contract below) |
 | `vk_local.h` | definitions shared by the backend files: `qvk*` function pointers, frame, texture and pipeline-key types |
 | `vk_instance.c` | Vulkan loading through SDL, instance, validation messenger, device selection, swapchain, present fences and retired swapchains |
-| `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels` |
+| `vk.c` | frames and command buffers, render targets, presentation, state recording, `vk_draw`, `vk_clear`, `vk_read_pixels`, the static geometry's buffer and the terrain pool's copies |
 | `vk_image.c` | texture handles and storage, the memory blocks textures are placed in, samplers, descriptor sets, staging and ordering of uploads |
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file, the pipelines created before their first draw and the file of keys created after a load (`vkpipelines.keys`) |
 | `vk_framelog.c` | the frame log (`r_vkFrameLog`, `vkframelog`): the per-frame exports timed, the backend's counters and GPU time of every frame, the dump (see Performance, Frame spikes) |
@@ -430,13 +442,16 @@ Cvars of the backend:
 | `r_skelCull` (default 1) | 0 prepares and draws skeletal models outside the view too, as GL1 does (see Implementation notes, Skeletal culling) |
 | `r_maxDlights` (latched, archived, default 4) | 0 to 64: the dynamic lights a scene keeps, the nearest the view of those cgame added (GL1: the first 32 added to the frame); see Implementation notes, Dynamic lights |
 | `r_staticEffects` (default 1) | 0 leaves the static batches whose shaders deform vertexes or compute texture coordinates or colors per vertex to the CPU (tess) instead of the effects shader (see Implementation notes, Effects shader) |
+| `r_staticTerrain` (default 1) | 0 copies the LOD terrain's vertexes into tess every frame instead of drawing them from the terrain pool (see Implementation notes, Terrain) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
 call: frames, render passes, submissions, mid-frame flushes, draws (those
-from the static geometry, of them with the effects shader, skinned ones),
+from the static geometry, of them with the effects shader, from the terrain
+pool, `terrainDraws`, skinned ones), the terrain pool's slots written
+(`terrainSlots`, see Implementation notes, Terrain),
 pipeline and descriptor set binds, bytes copied into vertex and staging
 buffers, uploads ordered with draws, textures, pipelines and device memory
 allocations created (with the microseconds spent creating them; of the
@@ -1458,6 +1473,35 @@ a list from its first light (the window), against the final build on
 faces take the count path by themselves): the same frames to the bit, on
 RADV and (the count path, `mohdm1_dlight2` and `mohdm1_dlight64`) on
 llvmpipe. No validation message in any of these runs.
+
+The terrain pool and walk (2026-10-22, see Performance, Terrain), against
+the build before (`run.sh`, `tgadiff.py`, 640x480, `r_vkValidation 1`): on
+the 45 view lists (195 views) 164 give the same frames to the bit, among
+them every view of the `dm`, `obj` and multiplayer lists and of `m3l3` and
+`m6l2a` but the snow of `mohdm5_fog`, the near-camera ±1 of
+`d7_alley` and `d7_arch` and 2 pixels of `pm7_front`; the other 31 are in
+the lists with random content or run-to-run noise named above (`m1l1`,
+`m1l2a`, `m1l3a`, `m3l1a`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m6l1a`). On the ten
+lists with terrain (`mohdm2_fog`, `dm/mohdm3`, `mohdm3_dlight`,
+`obj_team1`, `obj_team3`, `obj_team4`, `mp_obj_team1`, `mp_obj_team4`,
+`m3l3`, `m6l2a`; 44 views) the new build with `r_staticTerrain 0` and a
+build with the pool but GL1's walk over every patch give the base build's
+frames too (but 2 and 1 pixels of `m33_grass`, its noise), and so do the
+new build against the base build with `ter_cautiousframes 3` and with
+`r_vkFallbacks 3`; `mohdm3_dlight` and the dynamic light lists with
+`r_fastdlights 1` (terrain lit by the projected pass, from `tess`) and
+with `r_maxDlights 64`, and `mohdm1_texenv` with `r_ext_texture_env_add
+1`: the same. On llvmpipe the pool against `r_staticTerrain 0`
+(`obj_team3`, `mohdm3_dlight`, `obj_team4`): the same. No validation
+message in these runs, nor with synchronization validation (`r_vkValidation
+2`) in a session that loads `obj/obj_team4`, runs `ter_restart` (the pool
+made again), turns `r_staticTerrain` off and on, runs `vid_restart`, loads
+`dm/mohdm1` (no terrain) and `obj/obj_team3`, plays the `o4match` demo and
+quits, nor in one that connects 5 times in turn to two local dedicated
+servers, `obj/obj_team4` and `dm/mohdm1` (each world loaded without a
+registration, a map without terrain between two with it).
+`renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
+`GetRefAPI`.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -4306,6 +4350,131 @@ to 2.66 after, the 99th lower in every run). Nothing waits or is queued
 for longer: the lights' work lies between the input read and the present,
 as before.
 
+Terrain (2026-10-22, Plan 25; see Implementation notes, Terrain). From
+JayRewd's b26d8a67 (its terrain buffer: "Terrain draws from a device copy
+of the vertex pool", and its walk: "Walk terrain geomorph and triangle
+merge over patches drawn in the last ter_cautiousframes + 10 frames"). The
+LOD terrain is tessellated again every frame where it is in view, its
+vertexes kept in the slots of a pool. `RB_DrawTerrainTris` copied every
+vertex of a drawn patch into `tess` (position, both texture coordinates, a
+normal and a color) and the stage iterator copied them again into the
+frame's vertex buffer, and the geomorph and merging passes went over every
+patch of the map every frame (100 in `obj/obj_team2`, 177 in
+`obj/obj_team1`, 211 in `obj/obj_team4`, 330 in `obj/obj_team3`), reading
+two cache lines of each patch's 1.2 KB record. What differs from his:
+
+- The pool: a copy per frame slot in host visible memory, written by its
+  own frame (the slots that changed since that copy was last written): no
+  transfer, staging copy or barrier. His single device local copy was
+  brought up to date through the staging buffer and the upload command
+  buffer every frame, with a barrier on each side (a frame's update waited
+  for the vertex fetches of the frame before).
+- The walk: his list put the patch drawn last first. Merging a triangle
+  merges its base neighbour too, which can be in another patch, so the
+  order of the walk decides which merges happen: his changed the
+  tessellation (780 pixels of `o3_beach` in his evaluation). Here the
+  list keeps the patches' order and holds every patch GL1's walk would do
+  something to, so the tessellation is GL1's.
+
+What it covers (`vkinfo` per frame at 640x480; vertex bytes copied into the
+frame's vertex buffer before / after): the `o3_beach` view of the
+`obj_team3` list 29 terrain draws, 404 / 208 KB; `o3_shore` 7 draws, 86 /
+38 KB; the river of `obj_team4` (`o4_river`) 5 draws, 94 / 29 KB; the
+`obj_team2` yard 5 draws, 162 / 105 KB; `o4match` 3.5 draws, 208 / 164 KB;
+an `obj/obj_team1` match (`o1match`, 15000 frames of a match recorded by an
+original client, like the two others) 6.1 draws, 140 / 97 KB; `o2match` 0.8
+draws, 97 / 90 KB; `dm/mohdm3` (the overview and `d3_terrain`) one small
+patch, 1 draw. The slots written into the frames' copies: 6 to 40 a frame
+in these fixed views but `o3_beach` (177: its tessellation splits and
+merges the same triangles every frame) and `o3_shore` (85), 34, 57 and 208
+a frame in `o2match`, `o4match` and `o1match` (28 bytes each). The walk
+visits 2 to 11 % of `obj/obj_team2`'s patches a frame in its matches, 10
+to 13 % of `obj/obj_team4`'s, 19 to 22 % of `obj/obj_team1`'s.
+
+Exactness. The frames are the same to the bit as the build before's (see
+Testing). A temporary verification build checked, in every frame, that
+each patch the walk leaves out is reset already and older than the
+merging's window (then GL1's walk does nothing to it) and that the list is
+in the patches' order, and for every terrain patch drawn from the pool,
+each of its vertexes against the frame's copy (read back from it): over 20
+real matches played frame by frame (`fixedtime 16`, 1920x1080; 5 of
+`obj/obj_team2`, 5 of `obj/obj_team4`, 4 of `obj/obj_team1`, 4 of
+`dm/mohdm6`, one of `dm/mohdm4` and of `obj/obj_team3`), 689 thousand
+terrain views, 78 million patches left out and 641 million vertexes
+checked: no difference, and every terrain patch was drawn from the pool
+(none fell back to `tess`: no batch had a shader the pool doesn't take, no
+slot changed after a draw of its frame). Another match with
+`ter_cautiousframes` changed four times (4, 0, 2, 1) while it played (the
+list filled again each time): the same.
+
+Results (idle machine: other processes 1.3 CPUs at most; the build before
+(`base`, 05928d6f), this one (`new`), this one with `r_staticTerrain 0`
+(`walk`: the walk alone) and one that walks every patch (`pool`: the pool
+alone), interleaved, medians of 5 runs with their range, 640x480 uncapped;
+the fixed views 5000 frames, the matches 15000; the renderer's main-thread
+time per frame, µs, and the median of the runs' 99th percentiles of it):
+
+| view | base | new | walk | pool | p99 base / new |
+| --- | --- | --- | --- | --- | --- |
+| `o3_beach` | 761 (746-763) | 704 (691-721), -7.5 % | 755 | 716 | 818 / 765 |
+| `o3_shore` | 219 (216-225) | 204 (199-211), -7 % | 218 | 207 | 270 / 250 |
+| `o4_river` | 260 (255-264) | 240 (231-251), -7.6 % | 266 | 252 | 301 / 272 |
+| `o4_street` | 234 (218-239) | 224 (217-229) | 229 | 220 | 274 / 259 |
+| `obj_team2` yard | 351 (342-359) | 337 (329-360), -4 % | 356 | 353 | 418 / 407 |
+| `d3_terrain` | 721 (717-737) | 717 (714-741) | 723 | 726 | 809 / 769 |
+| `dm/mohdm3` overview | 419 (407-435) | 421 (412-433) | 429 | 423 | 464 / 484 |
+| `o1match` | 447 (432-448) | 434 (428-436), -3 % | 446 | 434 | 647 / 630 |
+| `o4match` | 630 (620-646) | 619 (611-624), -1.7 % | 637 | 619 | 983 / 971 |
+| `o2match` | 308 (306-320) | 305 (301-312) | 308 | 313 | 607 / 596 |
+
+The pool makes the gain, in the back end (the 2D calls, where the 3D view
+is drawn: `o3_beach` 435 to 380 µs). The walk alone measures nothing beyond
+the noise: in the stack samples of `o4match` (2 runs of each build, 12
+thousand samples a run) the geomorph's walk over the patches went from 0.5
+to 0.7 % of the frame to 0.1 to 0.2 %, while the geomorph's own work
+(`R_UpdateVertMorphHeight`) grew from 1.7 to 1.8 % to 2.2 %: the back end
+no longer reads the vertexes (`RB_DrawTerrainTris`, 5.5 to 5.8 % before,
+3.0 to 3.3 % now, is the triangle lists), so the next frame's geomorph
+finds fewer of them in the caches; the pool's updates take 0.2 to 0.3 %.
+In the same frames of a match, compared frame by frame (each frame's median
+over the runs), the front end (`scene`) takes 3 to 4 µs more on average
+and the back end 6 to 20 µs less.
+
+At 1920x1080 in a window, uncapped and at the user's cap of 250 (`perf.py
+--caps 0,250 --seconds 10 --preload libinlat.so --framelog`, 5 runs; ms;
+the renderer's time per frame, and each frame's median over the runs
+("content", see Frame spikes) for its percentiles; input read to present
+from `libinlat.so`, the median of the runs' medians and of their 99th
+percentiles):
+
+| demo | `com_maxfps` | renderer base / new | content p99, p99.9 base / new | input to present, median: base / new | p99 base / new |
+| --- | --- | --- | --- | --- | --- |
+| `o4match` | 0 | 0.745 / 0.728 | 1.191, 1.578 / 1.190, 1.514 | 0.865 / 0.852 | 1.451 / 1.458 |
+| | 250 | 0.672 / 0.677 | 0.980, 1.056 / 0.985, 1.078 | 0.818 / 0.828 | 1.229 / 1.338 |
+| `o2match` | 0 | 0.413 / 0.412 | 0.763, 0.881 / 0.767, 0.914 | 0.473 / 0.471 | 1.018 / 1.041 |
+| | 250 | 0.426 / 0.417 | 0.672, 0.759 / 0.662, 0.831 | 0.517 / 0.501 | 0.907 / 0.904 |
+
+The 99th percentile of `o4match`'s input to present at 250 (1.229 against
+1.338 ms, the runs 1.21 to 1.29 against 1.27 to 1.36) was measured again,
+10 runs of 20 s each (5000 frames a run) of both demos at 250: input to
+present `o4match` 0.871 / 0.853 ms on the median (the runs 0.860 to 0.887 /
+0.840 to 0.870), p99 1.360 / 1.348 (1.308 to 1.440 / 1.294 to 1.502), p99.9
+1.921 / 1.967 (1.625 to 3.109 / 1.683 to 2.295); `o2match` 0.503 / 0.491,
+p99 0.949 / 0.938, p99.9 1.347 / 1.377 (1.279 to 1.472 / 1.223 to 1.602);
+the renderer's content percentiles `o4match` mean 0.723 / 0.705, p99 1.096
+/ 1.043, p99.9 1.166 / 1.145, `o2match` mean 0.415 / 0.412, p99 0.686 /
+0.681, p99.9 0.803 / 0.843 (its 5 slowest frames of 5000). The same or
+lower but where a single run's slowest frames decide.
+
+The GPU: the vertexes read from host visible memory instead of the frame's
+vertex buffer (the same kind of memory) cost nothing measurable where the
+GPU limits (3840x2160, 3 runs, GPU time of the main command buffer, ms):
+`o3_beach` 1.467 / 1.464, `o4_river` 2.336 / 2.336, `o4match` 2.070 /
+2.070; the frames 1.483 / 1.479, 2.364 / 2.364, 2.099 / 2.098 ms. Nothing
+waits or is queued for longer: the pool's copy is written by its own frame
+before its first terrain draw, after the wait for its frame slot that was
+there already, and no frame more is in flight.
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -4960,6 +5129,52 @@ selects the sample count (see Implementation notes).
   effects draws are created at load (see Pipelines at load); not taken from
   that commit: the indirect draws of instances and their `INSTANCED` vertex
   shader, the terrain buffer.
+- **Terrain** (`tr_terrain.c`, `r_staticTerrain`, `vk_set_terrain_pool`,
+  `vk_sync_terrain_pool`; from JayRewd's b26d8a67, see Performance,
+  Terrain). The LOD terrain is tessellated again every frame where it is in
+  view (GL1's `R_DoTriSplitting`, `R_DoGeomorphs`, `R_DoTriMerging`, which
+  split and merge triangles and move vertexes up and down between their
+  levels), its vertexes kept in the slots of a pool (`g_pVert`); a drawn
+  patch's every vertex went into `tess` and from there into the frame's
+  vertex buffer (`RB_DrawTerrainTris`). Every frame slot of the backend now
+  has a copy of the pool's positions and texture coordinates in host
+  visible memory (and white colors: terrain has no vertex colors, `tess`
+  got 255), and a batch of terrain patches is drawn from it like a batch of
+  the static geometry (`tess.staticTerrain`, `drawGeometry_t::staticTerrain`):
+  its indexes are the slots, the only thing `RB_DrawTerrainTris` writes
+  (counting the vertexes as `tess` would hold them, so the batches split at
+  the same patches). Before a frame's first draw from its copy, the
+  backend writes into it the slots that changed since that copy was last
+  written: the terrain code marks a slot when it is allocated (a split
+  fills it) and when a geomorph changes its height (`R_MarkVertChanged`, a
+  bit per slot), and `vk_sync_terrain_pool` adds those to what each copy
+  hasn't got yet and writes the current one's, in runs of consecutive
+  slots. A copy is only written by its own frame, after that frame slot's
+  fence: no transfer, no barrier, no frame more in flight. A slot that
+  changes after a draw of the frame has read the copy (a second view's
+  tessellation; not in the game's views) can't go there: the batches that
+  would need it are drawn from `tess` until the next frame. Batches the
+  effects shader would draw (deforms, `tcGen` other than `texture` and
+  `lightmap`, `tcMod`: the pool has no normals) and those the static
+  geometry wouldn't take (the dynamic light pass of `r_fastdlights 1`,
+  colors computed per vertex) go through `tess` as before; the dynamic
+  lights of `r_fastdlights 0` are added per pixel either way. JayRewd's
+  version kept one device local copy, brought up to date through the
+  staging buffer, the upload command buffer and two barriers every frame.
+  The walk: GL1's `R_DoGeomorphs` and `R_DoTriMerging` went over every patch
+  of the map every frame, but nothing happens to a patch that was reset
+  already (`byDirty`: its vertexes at their lower level) and not drawn for
+  the merging's window (`ter_cautiousframes` + 10 frames). They now go over
+  a list of the other patches (`g_pLivePatches`) in the patches' order:
+  merging a triangle merges its base neighbour too, which can be in another
+  patch, so the order of the walk decides which merges happen (JayRewd's
+  list, the patches last drawn first, changed the tessellation: 780 pixels
+  of `o3_beach`). Every patch is in it after a load (a patch never drawn is
+  reset once), a patch joins when it is drawn (`R_MarkTerrainPatch`, in its
+  place) and leaves once it is reset and older than the window; when
+  `ter_cautiousframes` changes, every patch is in it again. The same
+  tessellation as GL1's walk, checked with a temporary build (see
+  Performance, Terrain).
 - **World culling** (`tr_world.c`). GL1's marking of the PVS and walk of
   the world's BSP tree (`R_MarkLeaves`, `R_RecursiveWorldNode`) are
   replaced by a list of the potentially visible leaves that gives the same
@@ -5874,6 +6089,21 @@ Done:
     than its first or a scene more than 4 (new list `mohdm1_dlight64`, new
     view `dl2_door3`).
 
+25. Terrain (2026-10-22, see Performance, Terrain, and Implementation
+    notes, Terrain), from JayRewd's b26d8a67: the LOD terrain's batches are
+    drawn from a copy of its vertex pool per frame slot in host visible
+    memory, brought up to date by its own frame with the slots that changed
+    since it was last written (a bit per slot, set when a split fills it
+    and when a geomorph moves it), indexes only per patch; his single device
+    local copy needed the staging buffer and two barriers every frame. The
+    geomorph and merging walk a list of the patches something can happen
+    to, in the patches' order, so the tessellation stays GL1's (his order
+    changed it). A verification build over 20 matches found every patch it
+    left out one GL1's walk does nothing to and every pool vertex equal to
+    the CPU's. The renderer's time 7 to 8 % lower where terrain fills the
+    view at 640x480, 1.7 to 3 % in two matches, the GPU time and the frames
+    the same.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -5925,7 +6155,9 @@ Remaining:
      `o4match`'s slow frames the world traversal (`R_RecursiveWorldNode`,
      `R_AddWorldSurfaces`, 15.7 % of their samples against 11.3 % of all
      frames' samples) led, then the terrain re-split every frame
-     (`RB_DrawTerrainTris`, `R_DoTriSplitting`, 8.6 % against 6.2 %),
+     (`RB_DrawTerrainTris`, `R_DoTriSplitting`, 8.6 % against 6.2 %; since
+     Plan 25 the terrain's vertexes are no longer copied, and
+     `RB_DrawTerrainTris` is 3 % of the samples),
      `vk_draw` (7.5 %) and cgame's entities (`CG_AddPacketEntities`, 7 %);
      `RB_SkelMesh`'s mesh search and the sky clipping are about 1 % each.
      The world culling (Plan 14) took GL1's pass over the nodes off the
@@ -5933,7 +6165,10 @@ Remaining:
      the back end; what is left of the traversal (about 9 % of `o4match`'s
      samples: the leaves' surface lists, the box tests, the first read of
      each drawn face, the culling) has no exact shortcut left that this
-     step found worth it. Next candidates: the terrain re-split; the sky's
+     step found worth it. Next candidates: the terrain's per-frame
+     tessellation (its triangle lists, walked by `RB_DrawTerrainTris` for
+     the indexes, and the geomorph, `R_UpdateVertMorphHeight`, 2 % each of
+     `o4match`); the sky's
      faces outside the view (their clipping, `ClipSkyPolygon` and
      `AddSkyPolygon`, is 1.2 % of `o4match`), if a sky box drawn from fewer
      of them gives the same pixels where no world face covers the frame;
@@ -6079,8 +6314,9 @@ Remaining:
   never culled (0.2 % of the culls). The sun visibility traces of the
   entities that move (5 to 8 % of those views) are the engine's collision
   code. The `m3l3` path, whose sun traces took 23 % of the frame, wasn't
-  measured again after the trace cache fix. The LOD terrain, re-split
-  every frame (`RB_DrawTerrainTris`), still copies its vertexes.
+  measured again after the trace cache fix. The LOD terrain is drawn from
+  its vertex pool since Plan 25; its tessellation still runs on the CPU
+  every frame.
 
 - At 3840x2160, where the GPU limits, the views measured since the GPU
   time work (see Performance, GPU time at 3840x2160) take 1 to 3 % less

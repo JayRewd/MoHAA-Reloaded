@@ -887,8 +887,35 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 
 	RB_CHECKOVERFLOW(p->nVerts, p->nTris * 3);
 
-	tess.dlightBits |= p->dlightBits;
 	tess.lightmapDlights |= p->dlightMap;
+
+	// a batch that starts with a terrain patch draws from the terrain pool
+	// (tr_staticgeom.c), whose slots are the vertexes: only the indexes are
+	// written, and the vertexes counted as tess would hold them
+	if (tess.staticBatch == STATIC_BATCH_UNDECIDED) {
+		tess.staticTerrain = qtrue;
+	}
+	if (RB_StaticBatch()) {
+		if (RB_StaticAddSurface((surfaceType_t *)p, p->dlightBits, qtrue)) {
+			glIndex_t *out = RB_StaticCopyIndexes();
+			int n = 0;
+
+			for (i = p->iTriHead; i; i = g_pTris[i].iNext) {
+				if (g_pTris[i].byConstChecks & 4) {
+					out[n] = g_pTris[i].iPt[0];
+					out[n + 1] = g_pTris[i].iPt[1];
+					out[n + 2] = g_pTris[i].iPt[2];
+					n += 3;
+				}
+			}
+			RB_StaticIndexesAdded(n);
+			tess.numVertexes += p->nVerts;
+			return;
+		}
+		RB_StaticBatchToCPU();
+	}
+
+	tess.dlightBits |= p->dlightBits;
 
 	for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
 		assert(tess.numVertexes < SHADER_MAX_VERTEXES);

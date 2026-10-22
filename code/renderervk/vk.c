@@ -45,6 +45,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "vk_local.h"
 
+#if defined( _MSC_VER )
+#include <intrin.h>	// _BitScanForward64 (VK_LowestBit)
+#endif
+
 #define VK_VERTEX_BUFFER_SIZE	( 4 * 1024 * 1024 )		// per frame, grows when needed
 #define VK_STAGING_BUFFER_SIZE	( 32 * 1024 * 1024 )	// per frame
 
@@ -120,6 +124,24 @@ static struct {
 	vkBuffer_t		buffer;
 	VkDeviceSize	xyzOffset, stOffset[2], normalOffset, colorOffset, indexOffset;
 } vk_static;
+
+// the terrain pool (vk_set_terrain_pool): a copy per frame slot in host
+// visible memory with the streams one after the other, and for each copy
+// the slots it hasn't got yet
+static struct {
+	int				numSlots;
+	int				words;						// of each bitmap
+	VkDeviceSize	xyzOffset, stOffset[2], colorOffset;
+	vkBuffer_t		copies[VK_MAX_FRAMES];
+	uint64_t		*pending[VK_MAX_FRAMES];	// a bit per slot
+	qboolean		anyPending[VK_MAX_FRAMES];
+	uint64_t		drawnSerial;				// the last frame that drew from its copy
+	// vkinfo's counters (here, not in vkStats_t: vk keeps its size, and the
+	// renderer's large globals their places in memory, see README,
+	// Performance): draws from the pool, slots written into the copies
+	uint64_t		draws, slots, reportedDraws, reportedSlots;
+} vk_terrain;
+static void VK_FreeTerrainPool( qboolean deferred );
 
 // the skin data of the skinned draws (vk_add_skin_data): one device local
 // buffer of VK_SKIN_DATA_WORDS words, filled from the start
@@ -1988,7 +2010,7 @@ static void VK_Info_f( void ) {
 	VK_DrainSubmitThread();
 
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
-	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu effectsDraws=%llu skinDraws=%llu pipelineBinds=%llu"
+	ri.Printf( PRINT_ALL, "vkinfo: frames=%llu renderPasses=%llu submits=%llu flushes=%llu draws=%llu staticDraws=%llu effectsDraws=%llu terrainDraws=%llu terrainSlots=%llu skinDraws=%llu pipelineBinds=%llu"
 		" descriptorBinds=%llu vertexBytes=%llu stagingBytes=%llu mainUploads=%llu textures=%llu pipelines=%llu allocations=%llu depthTargets=%llu"
 		" swapchains=%llu vertexGrowth=%llu prebuiltPipelines=%llu skinUploads=%llu skinBytes=%llu"
 		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu prebuiltUs=%llu allocationUs=%llu textureUs=%llu"
@@ -1996,7 +2018,8 @@ static void VK_Info_f( void ) {
 		" threadWaitUs=%llu threadFrames=%llu threadStartUs=%llu threadSubmits=%llu threadSubmitUs=%llu threadAcquireUs=%llu"
 		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
-		VK_DELTA( staticDraws ), VK_DELTA( effectsDraws ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
+		VK_DELTA( staticDraws ), VK_DELTA( effectsDraws ), (unsigned long long)( vk_terrain.draws - vk_terrain.reportedDraws ),
+		(unsigned long long)( vk_terrain.slots - vk_terrain.reportedSlots ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
 		VK_DELTA( textures ), VK_DELTA( pipelines ), VK_DELTA( allocations ), VK_DELTA( depthTargets ), VK_DELTA( swapchains ), VK_DELTA( vertexGrowth ),
 		VK_DELTA( prebuiltPipelines ), VK_DELTA( skinUploads ), VK_DELTA( skinBytes ),
 		VK_DELTA( waitUs ), VK_DELTA( flushUs ), VK_DELTA( submitUs ),
@@ -2015,6 +2038,8 @@ static void VK_Info_f( void ) {
 		vk.numPresentFences, vk.numRetiredSwapchains, VK_MAX_FRAMES, vk.submitThread ? " (submit thread)" : "", vk.swapchainImageCount );
 
 	vk.statsReported = vk.stats;
+	vk_terrain.reportedDraws = vk_terrain.draws;
+	vk_terrain.reportedSlots = vk_terrain.slots;
 }
 
 static void VK_ResetState( void ) {
@@ -2099,6 +2124,7 @@ void vk_shutdown( void ) {
 		VK_ShutdownTextureObjects();
 		VK_DestroyBuffer( &vk_static.buffer );
 		Com_Memset( &vk_static, 0, sizeof( vk_static ) );
+		VK_FreeTerrainPool( qfalse );
 		VK_DestroyBuffer( &vk_skin.buffer );
 		Com_Memset( &vk_skin, 0, sizeof( vk_skin ) );
 		VK_ShutdownPipelines();
@@ -3018,6 +3044,71 @@ static void VK_ConstantColor( const float *color, VkBuffer *buffer, VkDeviceSize
 
 /*
 ===============
+VK_BindCopiedIndexes
+
+The indexes of a draw from the static geometry or the terrain pool that are
+not a range of the static index stream: copied into the vertex buffer of
+the frame, once for the passes of a shader (drawGeometry_t::version)
+===============
+*/
+static void VK_BindCopiedIndexes( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+	if ( !geometry->version || vk_lastStaticIndexes.epoch != vk_vertexEpoch || vk_lastStaticIndexes.version != geometry->version
+		|| vk_lastStaticIndexes.indexes != indexes || vk_lastStaticIndexes.numIndexes != numIndexes ) {
+		VkDeviceSize size = sizeof( glIndex_t ) * numIndexes;
+		byte *data = VK_VertexAlloc( size, &vk_lastStaticIndexes.buffer, &vk_lastStaticIndexes.offset );
+
+		Com_Memcpy( data, indexes, size );
+		vk.stats.vertexBytes += size;
+		vk_lastStaticIndexes.epoch = vk_vertexEpoch;
+		vk_lastStaticIndexes.version = geometry->version;
+		vk_lastStaticIndexes.indexes = indexes;
+		vk_lastStaticIndexes.numIndexes = numIndexes;
+	}
+	VK_BindIndexBuffer( cmd, vk_lastStaticIndexes.buffer, vk_lastStaticIndexes.offset );
+}
+
+/*
+===============
+VK_BindTerrainPool
+
+The streams of a draw from the terrain pool (the frame's copy, slot 0
+first) and its indexes, the slots
+===============
+*/
+static void VK_BindTerrainPool( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+	VkBuffer buffers[4];
+	VkDeviceSize offsets[4];
+	VkBuffer buffer = vk_terrain.copies[vk.frameIndex].buffer;
+	int i;
+
+	buffers[0] = buffer;
+	offsets[0] = vk_terrain.xyzOffset;
+
+	if ( geometry->staticColor >= 0 ) {
+		buffers[1] = buffer;
+		offsets[1] = vk_terrain.colorOffset;
+	} else {
+		VK_ConstantColor( geometry->color, &buffers[1], &offsets[1] );
+	}
+
+	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
+		buffers[2 + i] = buffer;
+		if ( geometry->staticSt[i] == STATIC_ST_NONE ) {
+			// the pipeline reads it with a stride of 0 and ignores it
+			offsets[2 + i] = offsets[0];
+		} else {
+			offsets[2 + i] = vk_terrain.stOffset[geometry->staticSt[i] == STATIC_ST_LIGHTMAP];
+		}
+	}
+
+	VK_BindVertexBuffers( cmd, buffers, offsets );
+	VK_BindCopiedIndexes( cmd, geometry, numIndexes, indexes );
+	// no slot may change from now on in this frame (vk_sync_terrain_pool)
+	vk_terrain.drawnSerial = vk.frameSerial;
+}
+
+/*
+===============
 VK_BindStaticGeometry
 
 Binds the streams of the static geometry for a draw and its indexes: a
@@ -3081,19 +3172,7 @@ static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t
 		return geometry->staticFirstIndex;
 	}
 
-	if ( !geometry->version || vk_lastStaticIndexes.epoch != vk_vertexEpoch || vk_lastStaticIndexes.version != geometry->version
-		|| vk_lastStaticIndexes.indexes != indexes || vk_lastStaticIndexes.numIndexes != numIndexes ) {
-		VkDeviceSize size = sizeof( glIndex_t ) * numIndexes;
-		byte *data = VK_VertexAlloc( size, &vk_lastStaticIndexes.buffer, &vk_lastStaticIndexes.offset );
-
-		Com_Memcpy( data, indexes, size );
-		vk.stats.vertexBytes += size;
-		vk_lastStaticIndexes.epoch = vk_vertexEpoch;
-		vk_lastStaticIndexes.version = geometry->version;
-		vk_lastStaticIndexes.indexes = indexes;
-		vk_lastStaticIndexes.numIndexes = numIndexes;
-	}
-	VK_BindIndexBuffer( cmd, vk_lastStaticIndexes.buffer, vk_lastStaticIndexes.offset );
+	VK_BindCopiedIndexes( cmd, geometry, numIndexes, indexes );
 	return 0;
 }
 
@@ -3105,7 +3184,8 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	int i;
 
 	if ( !vk.device || numIndexes <= 0 || geometry->numVertexes <= 0 || ( geometry->isSkinned ? !vk_skin.buffer.buffer
-		: !( geometry->isStatic ? vk_static.buffer.buffer != VK_NULL_HANDLE : geometry->xyz != NULL ) ) ) {
+		: !( geometry->staticTerrain ? vk_terrain.numSlots > 0 : geometry->isStatic ? vk_static.buffer.buffer != VK_NULL_HANDLE
+		: geometry->xyz != NULL ) ) ) {
 		return;
 	}
 
@@ -3176,6 +3256,11 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		}
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, firstIndex, geometry->skinVertex, geometry->skinDraw );
 		vk.stats.skinDraws++;
+	} else if ( geometry->staticTerrain ) {
+		VK_BindTerrainPool( cmd, geometry, numIndexes, indexes );
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
+		vk.stats.staticDraws++;
+		vk_terrain.draws++;
 	} else if ( geometry->isStatic ) {
 		// effects draws: firstInstance is the record
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes ), 0,
@@ -3331,6 +3416,200 @@ void vk_set_static_geometry( const staticGeometry_t *geometry ) {
 
 	ri.Printf( PRINT_DEVELOPER, "Vulkan: static geometry %d vertexes, %d colors, %d indexes, %d KB\n",
 		geometry->numVertexes, geometry->numColors, geometry->numIndexes, (int)( size / 1024 ) );
+}
+
+/*
+===============
+VK_FreeTerrainPool
+===============
+*/
+static void VK_FreeTerrainPool( qboolean deferred ) {
+	int i;
+
+	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
+		if ( deferred ) {
+			// draws already recorded may use them
+			VK_DeferDestroy( VK_DESTROY_BUFFER, (uint64_t)vk_terrain.copies[i].buffer, 0 );
+			VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)vk_terrain.copies[i].memory, 0 );
+		} else {
+			VK_DestroyBuffer( &vk_terrain.copies[i] );
+		}
+		if ( vk_terrain.pending[i] ) {
+			ri.Free( vk_terrain.pending[i] );
+		}
+		Com_Memset( &vk_terrain.copies[i], 0, sizeof( vk_terrain.copies[i] ) );
+		vk_terrain.pending[i] = NULL;
+		vk_terrain.anyPending[i] = qfalse;
+	}
+	vk_terrain.numSlots = 0;
+	vk_terrain.words = 0;
+}
+
+/*
+===============
+vk_set_terrain_pool
+
+The copies in host visible memory, like the vertex buffers of the frames;
+the colors are written once
+===============
+*/
+void vk_set_terrain_pool( int numSlots ) {
+	VkDeviceSize xyzSize, stSize, colorSize, size;
+	int i;
+
+	if ( !vk.device ) {
+		return;
+	}
+	if ( vk_terrain.numSlots ) {
+		VK_FreeTerrainPool( qtrue );
+	}
+	if ( numSlots <= 0 ) {
+		return;
+	}
+
+	xyzSize = PAD( sizeof( float ) * 3 * numSlots, 64 );
+	stSize = PAD( sizeof( float ) * 2 * numSlots, 64 );
+	colorSize = PAD( 4 * numSlots, 64 );
+	vk_terrain.xyzOffset = 0;
+	vk_terrain.stOffset[0] = xyzSize;
+	vk_terrain.stOffset[1] = vk_terrain.stOffset[0] + stSize;
+	vk_terrain.colorOffset = vk_terrain.stOffset[1] + stSize;
+	size = vk_terrain.colorOffset + colorSize;
+
+	vk_terrain.numSlots = numSlots;
+	vk_terrain.words = ( numSlots + 63 ) >> 6;
+	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
+		VK_CreateBuffer( &vk_terrain.copies[i], size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
+		Com_Memset( (byte *)vk_terrain.copies[i].mapped + vk_terrain.colorOffset, 255, colorSize );
+		// every slot (those past numSlots are never drawn)
+		vk_terrain.pending[i] = ri.Malloc( sizeof( uint64_t ) * vk_terrain.words );
+		Com_Memset( vk_terrain.pending[i], 255, sizeof( uint64_t ) * vk_terrain.words );
+		vk_terrain.anyPending[i] = qtrue;
+	}
+	vk_terrain.drawnSerial = 0;
+
+	ri.Printf( PRINT_DEVELOPER, "Vulkan: terrain pool %d slots, %d KB per frame\n", numSlots, (int)( size / 1024 ) );
+}
+
+/*
+===============
+VK_LowestBit
+
+Index of the lowest set bit of a non-zero value
+===============
+*/
+static ID_INLINE int VK_LowestBit( uint64_t bits ) {
+#if defined( __GNUC__ ) || defined( __clang__ )
+	return __builtin_ctzll( bits );
+#elif defined( _MSC_VER ) && ( defined( _M_X64 ) || defined( _M_ARM64 ) )
+	unsigned long i;
+
+	_BitScanForward64( &i, bits );
+	return (int)i;
+#else
+	int i = 0;
+
+	while ( !( bits & 1 ) ) {
+		bits >>= 1;
+		i++;
+	}
+	return i;
+#endif
+}
+
+/*
+===============
+VK_WriteTerrainSlots
+
+count slots from first into a copy of the terrain pool, each stream in
+order
+===============
+*/
+static void VK_WriteTerrainSlots( byte *data, const float *xyz, const float *st, int stride, int first, int count ) {
+	float *outXyz = (float *)( data + vk_terrain.xyzOffset ) + first * 3;
+	float *outSt0 = (float *)( data + vk_terrain.stOffset[0] ) + first * 2;
+	float *outSt1 = (float *)( data + vk_terrain.stOffset[1] ) + first * 2;
+	const byte *v = (const byte *)xyz + (size_t)first * stride;
+	const byte *t = (const byte *)st + (size_t)first * stride;
+	int i;
+
+	for ( i = 0; i < count; i++, v += stride, outXyz += 3 ) {
+		outXyz[0] = ( (const float *)v )[0];
+		outXyz[1] = ( (const float *)v )[1];
+		outXyz[2] = ( (const float *)v )[2];
+	}
+	for ( i = 0; i < count; i++, t += stride, outSt0 += 2, outSt1 += 2 ) {
+		outSt0[0] = ( (const float *)t )[0];
+		outSt0[1] = ( (const float *)t )[1];
+		outSt1[0] = ( (const float *)t )[2];
+		outSt1[1] = ( (const float *)t )[3];
+	}
+}
+
+/*
+===============
+vk_sync_terrain_pool
+
+What changed goes to every copy's pending slots; the current frame's copy
+then gets its pending slots, a run of consecutive slots at a time, each
+stream written in order (the memory is write-combined)
+===============
+*/
+qboolean vk_sync_terrain_pool( int numSlots, const float *xyz, const float *st, int stride, uint64_t *changed, qboolean anyChanged ) {
+	uint64_t *pending;
+	byte *data;
+	int f, w, written = 0;
+
+	if ( !vk.device || !vk_terrain.numSlots || vk_terrain.numSlots != numSlots ) {
+		return qfalse;
+	}
+	VK_BeginFrameIfNeeded();
+
+	if ( anyChanged ) {
+		for ( f = 0; f < VK_MAX_FRAMES; f++ ) {
+			pending = vk_terrain.pending[f];
+			for ( w = 0; w < vk_terrain.words; w++ ) {
+				pending[w] |= changed[w];
+			}
+			vk_terrain.anyPending[f] = qtrue;
+		}
+		Com_Memset( changed, 0, sizeof( uint64_t ) * vk_terrain.words );
+	}
+
+	f = vk.frameIndex;
+	if ( !vk_terrain.anyPending[f] ) {
+		return qtrue;
+	}
+	if ( vk_terrain.drawnSerial == vk.frameSerial ) {
+		// a draw of this frame reads the copy as it is
+		return qfalse;
+	}
+
+	pending = vk_terrain.pending[f];
+	data = vk_terrain.copies[f].mapped;
+	for ( w = 0; w < vk_terrain.words; w++ ) {
+		uint64_t bits = pending[w];
+
+		while ( bits ) {
+			// the next run of pending slots in this word
+			int first = VK_LowestBit( bits );
+			uint64_t rest = ~( bits >> first );
+			int count = rest ? VK_LowestBit( rest ) : 64;
+			int s = ( w << 6 ) + first;
+
+			bits &= ~( ( count == 64 ? ~(uint64_t)0 : ( (uint64_t)1 << count ) - 1 ) << first );
+			count = Q_min( count, numSlots - s );
+			if ( count > 0 ) {
+				VK_WriteTerrainSlots( data, xyz, st, stride, s, count );
+				written += count;
+			}
+		}
+		pending[w] = 0;
+	}
+	vk_terrain.anyPending[f] = qfalse;
+	vk_terrain.slots += written;
+	return qtrue;
 }
 
 /*

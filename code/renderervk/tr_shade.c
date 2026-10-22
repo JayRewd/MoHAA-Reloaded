@@ -215,6 +215,7 @@ void RB_BeginSurface( shader_t *shader ) {
 	tess.numPasses = shader->numUnfoggedPasses;
 	tess.currentStageIteratorFunc = shader->optimalStageIteratorFunc;
 	tess.staticBatch = STATIC_BATCH_UNDECIDED;
+	tess.staticTerrain = qfalse;
 }
 
 /*

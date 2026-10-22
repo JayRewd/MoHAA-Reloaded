@@ -2086,6 +2086,7 @@ typedef struct shaderCommands_s
 	// same surfaces; indexes only holds the indexes of the instances that
 	// are not one range of the static index stream
 	int			staticBatch;		// staticBatch_t
+	qboolean	staticTerrain;		// terrain patches, drawn from the terrain pool (RB_TerrainPool)
 	qboolean	staticNeedsOpaque;	// a stage takes the vertex colors with alpha 255
 	qboolean	staticMergeable;	// more static models can join the batch (RB_StaticMerge)
 	int			numStaticInstances;
@@ -2140,10 +2141,12 @@ typedef enum {
 
 extern cvar_t *r_staticGeometry;
 extern cvar_t *r_staticEffects;
+extern cvar_t *r_staticTerrain;
 
 void R_BuildStaticGeometry( void );
 void R_FreeStaticGeometry( void );
 qboolean RB_StaticBatch( void );
+qboolean RB_TerrainPool( void );
 qboolean RB_StaticSurface( const surfaceType_t *surface );
 qboolean RB_StaticDlights( dlightMask_t dlightBits );
 qboolean RB_StaticAddSurface( surfaceType_t *surface, dlightMask_t dlightBits, qboolean opaque );

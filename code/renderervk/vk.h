@@ -310,8 +310,12 @@ typedef struct {
 	// it (shaders/effects.vert) with the record at word staticFx * 8 of the
 	// frame data (vk_alloc_skin_frame), which says what each unit's texture
 	// coordinates are (staticSt is only whether the unit is used) and has
-	// the constant color when staticColor is -1
+	// the constant color when staticColor is -1. With staticTerrain the
+	// streams are those of the terrain pool (vk_sync_terrain_pool) instead:
+	// the indexes are its slots, staticColor 0 its white colors; never with
+	// staticFx or staticFirstIndex
 	qboolean		isStatic;
+	qboolean		staticTerrain;
 	int				staticVertex;
 	int				staticColor;
 	staticSt_t		staticSt[NUM_TEXTURE_BUNDLES];
@@ -382,6 +386,30 @@ typedef struct {
 // replace the static geometry; NULL releases it. Draws recorded before
 // keep the old one
 void		vk_set_static_geometry( const staticGeometry_t *geometry );
+
+// Terrain pool: the vertexes of the LOD terrain (tr_terrain.c) live in the
+// slots of a pool, whose positions change from frame to frame (splits and
+// merges fill and free slots, the geomorphs move them up and down), while
+// most slots stay as they are. Every frame slot of the backend has its own
+// copy of the pool's positions and texture coordinates in host visible
+// memory (white colors: terrain has no vertex colors), and a frame brings
+// its copy up to date before its first draw from it, writing the slots
+// that changed since that copy was last written: no copy of every terrain
+// vertex per frame, no transfer or barrier (the copy belongs to the frame).
+//
+// vk_set_terrain_pool: copies for numSlots slots, 0 releases them; every
+// slot is written at each copy's next update. Draws recorded before keep
+// the old copies.
+// vk_sync_terrain_pool: changed has a bit per slot (bit s & 63 of word
+// s >> 6) whose position or texture coordinates changed since the last
+// call, which it clears (anyChanged: whether there is one), xyz and st
+// (texture, then lightmap coordinates) are those of slot 0, stride bytes
+// apart. Brings the current frame's copy up to date and returns qtrue, or
+// qfalse when there is no pool of numSlots slots, or when a draw of this
+// frame reads its copy already and slots changed since (they would change
+// under that draw): such a draw takes its vertexes from tess
+void		vk_set_terrain_pool( int numSlots );
+qboolean	vk_sync_terrain_pool( int numSlots, const float *xyz, const float *st, int stride, uint64_t *changed, qboolean anyChanged );
 
 /*
 ====================================================================

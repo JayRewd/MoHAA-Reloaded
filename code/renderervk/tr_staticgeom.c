@@ -75,6 +75,7 @@ typedef struct staticTiki_s {
 
 cvar_t *r_staticGeometry;
 cvar_t *r_staticEffects;
+cvar_t *r_staticTerrain;
 
 /*
 ====================================================================
@@ -542,7 +543,12 @@ static qboolean RB_StaticBatchAllowed( void ) {
 	qboolean fx = shader->numDeforms != 0;
 	int stage, b, numDraws = 1;
 
-	if ( !tr.staticIndexes || !r_staticGeometry->integer || tess.numVertexes || tess.numIndexes ) {
+	if ( !r_staticGeometry->integer || tess.numVertexes || tess.numIndexes ) {
+		return qfalse;
+	}
+	// terrain patches draw from the terrain pool, the others from the
+	// static geometry
+	if ( tess.staticTerrain ? !r_staticTerrain->integer : !tr.staticIndexes ) {
 		return qfalse;
 	}
 	if ( shader->isSky || RB_StaticDlights( tess.dlightBits ) ) {
@@ -603,12 +609,22 @@ static qboolean RB_StaticBatchAllowed( void ) {
 	}
 
 	if ( fx ) {
+		// the effects shader reads the static geometry's streams (normals
+		// too), which the terrain pool hasn't got
+		if ( tess.staticTerrain ) {
+			return qfalse;
+		}
 		// a record per draw (RB_StaticDraw), which the frame data must have
 		// room for: the batch is drawn whatever happens
 		tess.staticMergeable = qfalse;
 		if ( !vk_skin_frame_room( numDraws * STATIC_FX_MAX_WORDS( backEnd.refdef.num_dlights ) ) ) {
 			return qfalse;
 		}
+	}
+
+	// the slots that changed go to the frame's copy of the pool first
+	if ( tess.staticTerrain && !RB_TerrainPool() ) {
+		return qfalse;
 	}
 
 	tess.numStaticSurfs = 0;
@@ -630,6 +646,8 @@ their overflow check
 qboolean RB_StaticBatch( void ) {
 	if ( tess.staticBatch == STATIC_BATCH_UNDECIDED ) {
 		tess.staticBatch = RB_StaticBatchAllowed() ? STATIC_BATCH_ON : STATIC_BATCH_OFF;
+		// a batch of terrain patches that can't is drawn from tess
+		tess.staticTerrain = tess.staticTerrain && tess.staticBatch == STATIC_BATCH_ON;
 	}
 	return tess.staticBatch == STATIC_BATCH_ON;
 }
@@ -654,10 +672,15 @@ qboolean RB_StaticMerge( int staticModel ) {
 ===============
 RB_StaticSurface
 
-The surface types whose functions handle static batches
+The surface types whose functions handle the current static batch: a batch
+of terrain patches draws from the terrain pool, the others from the static
+geometry
 ===============
 */
 qboolean RB_StaticSurface( const surfaceType_t *surface ) {
+	if ( tess.staticTerrain ) {
+		return *surface == SF_TERRAIN_PATCH;
+	}
 	return *surface == SF_FACE || *surface == SF_GRID || *surface == SF_TRIANGLES || *surface == SF_TIKI_STATIC;
 }
 
@@ -708,6 +731,7 @@ void RB_StaticBatchToCPU( void ) {
 
 	assert( tess.numStaticInstances == 1 );
 	tess.staticBatch = STATIC_BATCH_OFF;
+	tess.staticTerrain = qfalse;
 	tess.numVertexes = 0;
 	tess.numIndexes = 0;
 	tess.dlightBits = 0;
@@ -828,6 +852,7 @@ void RB_StaticDraw( drawGeometry_t *geometry ) {
 	int colorFx, i;
 
 	geometry->isStatic = qtrue;
+	geometry->staticTerrain = tess.staticTerrain;
 	geometry->staticFx = -1;
 
 	stageColors = arrays->colorsEnabled && arrays->colors == tess.svars.colors[0];
@@ -904,7 +929,11 @@ void RB_StaticDraw( drawGeometry_t *geometry ) {
 
 		geometry->staticVertex = inst->vertex;
 		geometry->staticColor = -1;
-		if ( stageColors && tess.staticStageColor == STATIC_COLOR_WHITE_ALPHA ) {
+		if ( stageColors && tess.staticTerrain && tess.staticStageColor != STATIC_COLOR_CONSTANT ) {
+			// the vertex colors of terrain are white with alpha 255 (all
+			// the cases): the pool's colors
+			geometry->staticColor = 0;
+		} else if ( stageColors && tess.staticStageColor == STATIC_COLOR_WHITE_ALPHA ) {
 			geometry->staticColor = tr.staticWhiteColors;
 		} else if ( stageColors && tess.staticStageColor != STATIC_COLOR_CONSTANT ) {
 			geometry->staticColor = inst->color;
