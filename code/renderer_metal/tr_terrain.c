@@ -79,6 +79,19 @@ typedef struct poolInfo_s {
 static unsigned int g_terWindow[TERRAIN_WINDOW_MAX / 32];
 static int          g_terWindowCautious;
 
+// Added in the Metal port
+//  Two more per patch, in the patches' order (past TERRAIN_WINDOW_MAX every walk is done):
+//  - g_terVertRecalc: a lower bound of the uiDistRecalc of the patch's vertexes. A vertex is recalculated only
+//    once g_uiTerDist reaches its uiDistRecalc, so a drawn patch whose bound is above g_uiTerDist has none due and
+//    its geomorph walk is skipped. The walk sets it to the smallest value it leaves; a new vertex
+//    (R_AllocateVert) and the wrap of g_uiTerDist set it to 0.
+//  - g_terMergeQuiet: set after a cautious merge walk of the patch that merged nothing, cleared by anything that walk
+//    reads: a height of one of its vertexes, a split or a merge in the patch, a link of one of its tris set by a
+//    neighbour, nSplit of one of its tris or of their bases (a tri in the merge list and its base split and merge
+//    together, each the other's base). While it is set the walk would merge nothing again and is skipped.
+static unsigned int g_terVertRecalc[TERRAIN_WINDOW_MAX];
+static unsigned int g_terMergeQuiet[TERRAIN_WINDOW_MAX / 32];
+
 static int modeTable[8];
 
 terraTri_t    *g_pTris;
@@ -86,6 +99,75 @@ terrainVert_t *g_pVert;
 
 poolInfo_t g_tri;
 poolInfo_t g_vert;
+
+/*
+================
+R_TerrainPatchNum
+
+Added in the Metal port: the patch's number, or -1 past TERRAIN_WINDOW_MAX (and for no patch)
+================
+*/
+static int R_TerrainPatchNum(const cTerraPatchUnpacked_t *patch)
+{
+    ptrdiff_t n;
+
+    if (!patch) {
+        return -1;
+    }
+    n = patch - tr.world->terraPatches;
+    if (n < 0 || n >= tr.world->numTerraPatches || n >= TERRAIN_WINDOW_MAX) {
+        return -1;
+    }
+    return (int)n;
+}
+
+/*
+================
+R_TerrainMarkPatch
+
+Added in the Metal port: the patch's merge walk reads something that changed
+================
+*/
+static void R_TerrainMarkPatch(const cTerraPatchUnpacked_t *patch)
+{
+    int n = R_TerrainPatchNum(patch);
+
+    if (n >= 0) {
+        g_terMergeQuiet[n >> 5] &= ~(1u << (n & 31));
+    }
+}
+
+/*
+================
+R_TerrainMarkTri
+
+Added in the Metal port: something the merge walk of the tri's patch reads changed
+================
+*/
+static void R_TerrainMarkTri(terraInt iTri)
+{
+    if (iTri) {
+        R_TerrainMarkPatch(g_pTris[iTri].patch);
+    }
+}
+
+/*
+================
+R_TerrainMarkSplitCount
+
+Added in the Metal port: the tri's nSplit changes, read by its own patch's walk and by the walk of the tri that
+has it as base (its base, a neighbour)
+================
+*/
+static void R_TerrainMarkSplitCount(terraInt iTri)
+{
+    if (iTri) {
+        R_TerrainMarkTri(iTri);
+        R_TerrainMarkTri(g_pTris[iTri].iBase);
+        R_TerrainMarkTri(g_pTris[iTri].iLeft);
+        R_TerrainMarkTri(g_pTris[iTri].iRight);
+    }
+}
 
 /*
 ================
@@ -126,6 +208,16 @@ static terraInt R_AllocateVert(cTerraPatchUnpacked_t *patch)
 
     g_pVert[iVert].nRef         = 0;
     g_pVert[iVert].uiDistRecalc = 0;
+
+    // Added in the Metal port
+    //  The patch's walk has a vertex due
+    {
+        int n = R_TerrainPatchNum(patch);
+
+        if (n >= 0) {
+            g_terVertRecalc[n] = 0;
+        }
+    }
 
     return iVert;
 }
@@ -415,6 +507,14 @@ void R_SplitTri(
     int                index    = pSplit->index;
     varnodeUnpacked_t *varnode  = &pSplit->varnode[index];
 
+    // Added in the Metal port
+    //  The merge walks reading what changes here: the split tri's (its children, its place in the merge list),
+    //  its neighbours' (their links), its parent's nSplit
+    R_TerrainMarkTri(iSplit);
+    R_TerrainMarkTri(pSplit->iLeft);
+    R_TerrainMarkTri(pSplit->iRight);
+    R_TerrainMarkSplitCount(pSplit->iParent);
+
     if (pLeft) {
         pLeft->patch   = pSplit->patch;
         pLeft->index   = index * 2;
@@ -584,9 +684,15 @@ static void R_ForceMerge(terraInt iTri)
 
     g_nMerge++;
 
+    // Added in the Metal port
+    //  The merge walks reading what changes here: the merged tri's, its neighbours' (below), its parent's nSplit
+    R_TerrainMarkTri(iTri);
+    R_TerrainMarkSplitCount(pTri->iParent);
+
     if (pTri->iLeftChild) {
         terraInt iLeft = g_pTris[pTri->iLeftChild].iBase;
 
+        R_TerrainMarkTri(iLeft);
         pTri->iLeft = iLeft;
         if (iLeft) {
             if (g_pTris[iLeft].lod == pTri->lod) {
@@ -605,6 +711,7 @@ static void R_ForceMerge(terraInt iTri)
     if (pTri->iRightChild) {
         terraInt iRight = g_pTris[pTri->iRightChild].iBase;
 
+        R_TerrainMarkTri(iRight);
         pTri->iRight = iRight;
         if (iRight) {
             if (g_pTris[iRight].lod == pTri->lod) {
@@ -920,9 +1027,11 @@ static void R_PreTessellateTerrain()
     }
 
     // Added in the Metal port
-    //  Every patch is visited once
+    //  Every patch is visited once, with every walk done
     memset(g_terWindow, 0xff, sizeof(g_terWindow));
     g_terWindowCautious = ter_cautiousframes->integer;
+    memset(g_terVertRecalc, 0, sizeof(g_terVertRecalc));
+    memset(g_terMergeQuiet, 0, sizeof(g_terMergeQuiet));
 }
 
 /*
@@ -1050,6 +1159,12 @@ R_DoGeomorphsPatch
 */
 static void R_DoGeomorphsPatch(cTerraPatchUnpacked_t *patch)
 {
+    // Added in the Metal port
+    //  The smallest uiDistRecalc the walk leaves (g_terVertRecalc), and whether a height changed (g_terMergeQuiet)
+    int          n      = R_TerrainPatchNum(patch);
+    unsigned int uiMin  = ~0u;
+    qboolean     bMoved = qfalse;
+
     g_vert.iCur = patch->drawinfo.iVertHead;
 
     if (patch->visCountDraw == g_terVisCount) {
@@ -1057,26 +1172,51 @@ static void R_DoGeomorphsPatch(cTerraPatchUnpacked_t *patch)
             while (g_vert.iCur) {
                 terrainVert_t *pVert = &g_pVert[g_vert.iCur];
                 R_CalcVertMorphHeight(pVert);
+                if (uiMin > pVert->uiDistRecalc) {
+                    uiMin = pVert->uiDistRecalc;
+                }
                 g_vert.iCur = pVert->iNext;
             }
 
             patch->byDirty = qfalse;
+            bMoved         = qtrue;
+        } else if (n >= 0 && g_terVertRecalc[n] > g_uiTerDist) {
+            // Added in the Metal port
+            //  No vertex due: the walk would change nothing
+            g_vert.iCur = 0;
+            return;
         } else {
             while (g_vert.iCur) {
                 terrainVert_t *pVert = &g_pVert[g_vert.iCur];
+                float          z     = pVert->xyz[2];
                 R_UpdateVertMorphHeight(pVert);
+                if (pVert->xyz[2] != z) {
+                    bMoved = qtrue;
+                }
+                if (uiMin > pVert->uiDistRecalc) {
+                    uiMin = pVert->uiDistRecalc;
+                }
                 g_vert.iCur = pVert->iNext;
             }
+        }
+
+        if (n >= 0) {
+            g_terVertRecalc[n] = uiMin;
         }
     } else {
         if (!patch->byDirty) {
             patch->byDirty = qtrue;
+            bMoved         = qtrue;
             while (g_vert.iCur) {
                 terrainVert_t *pVert = &g_pVert[g_vert.iCur];
                 pVert->xyz[2]        = pVert->fHgtAvg;
                 g_vert.iCur          = pVert->iNext;
             }
         }
+    }
+
+    if (bMoved) {
+        R_TerrainMarkPatch(patch);
     }
 }
 
@@ -1186,10 +1326,24 @@ static void R_DoTriMergingPatch(const cTerraPatchUnpacked_t *patch, int iCautiou
 {
     g_tri.iCur = patch->drawinfo.iMergeHead;
     if (patch->visCountDraw >= iCautiousFrame) {
+        // Added in the Metal port
+        //  Nothing it reads changed since a walk that merged nothing: skip it, else note whether it merges
+        int n      = R_TerrainPatchNum(patch);
+        int nMerge = g_nMerge;
+
+        if (n >= 0 && (g_terMergeQuiet[n >> 5] >> (n & 31) & 1)) {
+            g_tri.iCur = 0;
+            return;
+        }
+
         while (g_tri.iCur) {
             if (!R_MergeInternalCautious()) {
                 g_tri.iCur = g_pTris[g_tri.iCur].iNext;
             }
+        }
+
+        if (n >= 0 && g_nMerge == nMerge) {
+            g_terMergeQuiet[n >> 5] |= 1u << (n & 31);
         }
     } else if (patch->visCountDraw > iCautiousFrame - 10) {
         while (g_tri.iCur) {
@@ -1317,6 +1471,10 @@ void R_TerrainPrepareFrame()
             for (index = 0; index < g_nVerts; index++) {
                 g_pVert[index].uiDistRecalc = 0;
             }
+
+            // Added in the Metal port
+            //  Every vertex is due
+            memset(g_terVertRecalc, 0, sizeof(g_terVertRecalc));
 
             g_uiTerDist = 0;
         }
