@@ -704,7 +704,9 @@ int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
 
     added = qfalse;
 
-    lumelsPerHeight = 64.f / srf->drawinfo.lmapStep;
+    // Metal: the map's lmapScale, from the block's size (64.f / lmapStep was 12 or 16 for some scales
+    // above 10, which wrote rows past the block)
+    lumelsPerHeight = (srf->drawinfo.lmapSize - 1) / 8;
     if (lumelsPerHeight == 1) {
         vec[1] = srf->y0;
 
@@ -808,40 +810,23 @@ int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
         vec[0] += srf->drawinfo.lmapStep;
         vec[1] += srf->drawinfo.lmapStep;
     } else {
+        // Metal: this loop never ended (dj and di never moved on), so terrain with 3 or more texels per
+        // height step hung the game when a light reached it; now each row and column as in the two above,
+        // every height step's texels and the last row's and column's one more
+        heightPerLumelSquared = 2.f / (lumelsPerHeight * lumelsPerHeight);
         vec[1] = srf->y0;
 
         for (j = 0; j < 8; j++) {
-            dj = 0;
-
-            for (;;) {
-                if (j == 7) {
-                    if (dj >= lumelsPerHeight + 1) {
-                        break;
-                    }
-                } else if (dj >= lumelsPerHeight) {
-                    break;
-                }
-
+            for (dj = 0; dj < lumelsPerHeight + (j == 7); dj++) {
                 vec[0] = srf->x0;
 
                 for (i = 0; i < 8; i++) {
-                    for (;;) {
-                        if (i == 7) {
-                            if (di >= lumelsPerHeight + 1) {
-                                break;
-                            }
-                        } else if (dj >= lumelsPerHeight) {
-                            break;
-                        }
+                    z00 = (int)srf->heightmap[9 * j + i];
+                    z01 = (int)srf->heightmap[9 * (j + 1) + i];
+                    z10 = (int)srf->heightmap[9 * j + (i + 1)];
+                    z11 = (int)srf->heightmap[9 * (j + 1) + (i + 1)];
 
-                        di  = 0;
-                        z00 = (int)srf->heightmap[9 * j + i];
-                        z01 = (int)srf->heightmap[9 * (j + 1) + i];
-                        z10 = (int)srf->heightmap[9 * j + (i + 1)];
-                        z11 = (int)srf->heightmap[9 * (j + 1) + (i + 1)];
-
-                        heightPerLumelSquared = 2.f / (lumelsPerHeight * lumelsPerHeight);
-
+                    for (di = 0; di < lumelsPerHeight + (i == 7); di++) {
                         vec[2] =
                             srf->z0
                             + (dj * (di * z11) + (lumelsPerHeight - dj) * (z10 * di) + z01 * (lumelsPerHeight - di) * dj

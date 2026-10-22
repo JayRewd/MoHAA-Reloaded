@@ -476,7 +476,9 @@ void R_UnpackTerraPatch(cTerraPatch_t* pPacked, cTerraPatchUnpacked_t* pUnpacked
         Com_Error(ERR_DROP, "invalid map: terrain has lmapScale <= 0");
     }
 
-    pUnpacked->drawinfo.lmapStep = (float)(64 / pPacked->lmapScale);
+    // Metal: the exact step (the same for MOHAA's 1 and 2; 64 / 3 = 21 put the dynamic lights' texels
+    // off the patch's texels, beyond its block for 5 and up)
+    pUnpacked->drawinfo.lmapStep = 64.f / pPacked->lmapScale;
     pUnpacked->drawinfo.lmapSize = pPacked->lmapScale * 8 + 1;
     pUnpacked->s = ((float)pPacked->s + 0.5) / LIGHTMAP_SIZE;
     pUnpacked->t = ((float)pPacked->t + 0.5) / LIGHTMAP_SIZE;
