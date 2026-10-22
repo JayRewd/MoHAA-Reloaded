@@ -1169,7 +1169,11 @@ void CG_Splash(centity_t *cent)
         vectoangles(diff, start);
         start[0] = -90.0;
 
-        dist /= cg.frametime;
+        // per millisecond of the frame; above 1000 frames a second a frame can
+        // last 0 ms (the client's decoupled mode, Metal port)
+        if (cg.frametime > 1) {
+            dist /= cg.frametime;
+        }
         if (dist < 0) {
             dist = 0;
         } else if (dist > 8192) {

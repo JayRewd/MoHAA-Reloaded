@@ -405,10 +405,11 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
     if (grabAngles) {
         usercmd_t cmd;
         int       cmdNum;
+        float     phase;
 
         cmdNum = cgi.GetCurrentCmdNumber();
-        // the client's decoupled mode (cl_movefps, Metal port): one past the newest, its angles of now
-        if (!cgi.GetUserCmd(cmdNum + 1, &cmd)) {
+        // the client's decoupled mode (cl_movefps, Metal port): the open usercmd, its angles of now
+        if (!cgi.GetLiveUserCmd(&cmd, &phase)) {
             cgi.GetUserCmd(cmdNum, &cmd);
         }
 
@@ -439,10 +440,8 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
 }
 
 // The client's decoupled mode (cl_movefps, Metal port): the position before
-// the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), what
-// only pmove sets after it (the snapshot doesn't carry it), and the time the
-// last frame's live usercmd ran from (cl_cmdDisplay 1, 0 when none ran)
-static int     cg_liveFromTime;
+// the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), and what
+// only pmove sets after it (the snapshot doesn't carry it)
 static int     cg_lerpCmdNum;
 static int     cg_lerpTime;
 static vec3_t  cg_lerpOrigin;
@@ -487,14 +486,10 @@ void CG_PredictPlayerState(void)
     usercmd_t     liveCmd;
     qboolean      live;
     qboolean      ranNewest;
-    float         frac;
+    float         phase;
     int           i;
-    int           oldCommandTime;
 
     cg.hyperspace = qfalse; // will be set if touching a trigger_teleport
-
-    oldCommandTime  = cg_liveFromTime;
-    cg_liveFromTime = 0;
 
     // if this is the first frame we must guarantee
     // predicted_player_state is valid even if there is some
@@ -557,12 +552,6 @@ void CG_PredictPlayerState(void)
 
     // save the state before the pmove so we can detect transitions
     oldPlayerState = cg.predicted_player_state;
-    // (after the decoupled mode's live usercmd, the time it ran from: the
-    // commands below never meet the live usercmd's own, and a teleport
-    // would keep the prediction off the next snapshot)
-    if (!oldCommandTime) {
-        oldCommandTime = oldPlayerState.commandTime;
-    }
 
     current = cgi.GetCurrentCmdNumber();
 
@@ -623,7 +612,7 @@ void CG_PredictPlayerState(void)
         // from the snapshot, but on a wan we will have
         // to predict several commands to get to the point
         // we want to compare
-        if (cg.predicted_player_state.commandTime == oldCommandTime) {
+        if (cg.predicted_player_state.commandTime == oldPlayerState.commandTime) {
             if (cg.thisFrameTeleport) {
                 // a teleport will not cause an error decay
                 VectorClear(cg.predictedError);
@@ -663,14 +652,15 @@ void CG_PredictPlayerState(void)
     }
 
     // The client's decoupled mode (cl_movefps, Metal port) sends usercmds on
-    // their own clock and turns the view every frame. One past the newest
-    // command it gives the next usercmd so far (never sent): its moves up to
-    // now, a time as far into the next window and the angles of now.
-    // cl_cmdDisplay 1 runs it, so the player moves on every frame (predicted
-    // again from the snapshot each frame, it leaves nothing behind); 2 shows
-    // the position between the last two usercmds' (JayRewd's lerp, up to one
-    // usercmd behind); 0 the newest usercmd's. The view takes its angles.
-    live = cgi.GetUserCmd(current + 1, &liveCmd);
+    // their own clock and turns the view every frame. Its open usercmd is the
+    // next one as it goes out if the keys stay as they are (never sent): one
+    // whole step with the angles of now, and the part of its window gone.
+    // cl_cmdDisplay 1 runs that step and shows the part gone (JayRewd's open
+    // step), so the player moves on every frame by steps as long as the
+    // server's; 2 shows the position between the last two usercmds' (his
+    // lerp, up to one usercmd behind); 0 the newest usercmd's. The view takes
+    // its angles.
+    live = cgi.GetLiveUserCmd(&liveCmd, &phase);
     if (live && ranNewest) {
         cg_newestCmdNum      = current;
         cg_newestWalking     = cg.predicted_player_state.walking;
@@ -690,41 +680,34 @@ void CG_PredictPlayerState(void)
     if (live) {
         if (cg_cmdDisplay->integer == 1 && !cg_pmove.pmove_fixed
             && liveCmd.serverTime > cg.predicted_player_state.commandTime) {
-            // the ground under the player stays the newest usercmd's: the
-            // live usercmd's step of a few milliseconds finds it as a client
-            // sending a usercmd every millisecond does, and flickers where a
-            // slope changes or against a wall (landing sounds and footsteps a
-            // stock client at the command rate never plays; the server runs
-            // whole usercmds only)
-            int      groundEntityNum = cg.predicted_player_state.groundEntityNum;
-            qboolean walking         = cg.predicted_player_state.walking;
-            qboolean groundPlane     = cg.predicted_player_state.groundPlane;
-            trace_t  groundTrace     = cg.predicted_player_state.groundTrace;
-            vec3_t   falldir;
+            // the step runs on a copy: the time, the ground and the rest of
+            // the state stay the newest usercmd's (the server runs whole
+            // usercmds only), the position, speed, view height and lean move
+            // by the part of the window gone
+            playerState_t end = cg.predicted_player_state;
 
-            VectorCopy(cg.predicted_player_state.falldir, falldir);
-            cg_liveFromTime = cg.predicted_player_state.commandTime;
+            cg_pmove.ps  = &end;
             cg_pmove.cmd = liveCmd;
-            if (cg_pmove.ps->feetfalling && (cg_pmove.waterlevel < 2)) {
+            if (end.feetfalling && (cg_pmove.waterlevel < 2)) {
                 cg_pmove.cmd.forwardmove = 0;
                 cg_pmove.cmd.rightmove   = 0;
             }
             Pmove(&cg_pmove);
-            moved = qtrue;
-            cg.predicted_player_state.groundEntityNum = groundEntityNum;
-            cg.predicted_player_state.walking         = walking;
-            cg.predicted_player_state.groundPlane     = groundPlane;
-            cg.predicted_player_state.groundTrace     = groundTrace;
-            VectorCopy(falldir, cg.predicted_player_state.falldir);
+            cg_pmove.ps = &cg.predicted_player_state;
+
+            for (i = 0; i < 3; i++) {
+                cg.predicted_player_state.origin[i] += phase * (end.origin[i] - cg.predicted_player_state.origin[i]);
+                cg.predicted_player_state.velocity[i] +=
+                    phase * (end.velocity[i] - cg.predicted_player_state.velocity[i]);
+            }
+            cg.predicted_player_state.viewheight +=
+                (int)(phase * (end.viewheight - cg.predicted_player_state.viewheight));
+            cg.predicted_player_state.fLeanAngle += phase * (end.fLeanAngle - cg.predicted_player_state.fLeanAngle);
         } else if (cg_cmdDisplay->integer == 2 && cg_lerpCmdNum == current
-                   && latestCmd.serverTime > cg_lerpTime && latestCmd.serverTime - cg_lerpTime < 250
-                   && liveCmd.serverTime >= latestCmd.serverTime) {
-            frac = (float)(liveCmd.serverTime - latestCmd.serverTime) / (latestCmd.serverTime - cg_lerpTime);
-            if (frac < 1) {
-                for (i = 0; i < 3; i++) {
-                    cg.predicted_player_state.origin[i] =
-                        cg_lerpOrigin[i] + frac * (cg.predicted_player_state.origin[i] - cg_lerpOrigin[i]);
-                }
+                   && latestCmd.serverTime > cg_lerpTime && latestCmd.serverTime - cg_lerpTime < 250) {
+            for (i = 0; i < 3; i++) {
+                cg.predicted_player_state.origin[i] =
+                    cg_lerpOrigin[i] + phase * (cg.predicted_player_state.origin[i] - cg_lerpOrigin[i]);
             }
         }
         PM_UpdateViewAngles(&cg.predicted_player_state, &liveCmd);

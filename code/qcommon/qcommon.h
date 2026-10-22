@@ -1087,6 +1087,7 @@ extern	int		time_frontend;
 extern	int		time_backend;		// renderer backend time
 
 extern	int		com_frameTime;
+extern	long long	com_frameUs;	// Sys_Microseconds when com_frameTime was read (Metal port)
 extern	int		com_frameMsec;
 extern	qboolean	com_renderFrame;	// qfalse: the frame only makes cl_movefps's usercmd (Metal port)
 extern	long long	com_timedemoWaitUsec;	// time spent in the frame limiter during a timedemo

@@ -445,6 +445,15 @@ functions exported to the main executable
         clientAnim_t *anim;
         stopWatch_t  *stopWatch;
 
+        // the client's decoupled mode (cl_movefps, Metal port): the next
+        // usercmd as it goes out if the keys stay as they are, one whole step
+        // with the angles of now, never sent, and the part of its window gone
+        // (0 to 1); qfalse in the stock mode
+        qboolean (*GetLiveUserCmd)(usercmd_t *ucmd, float *phase);
+        // the part of cg.time's millisecond the frame shows (0 to 1, 0 in the
+        // stock mode), for the interpolation
+        float (*GetRenderTimeFraction)(void);
+
     } clientGameImport_t;
 
     /*

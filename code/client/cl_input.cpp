@@ -38,6 +38,7 @@ static qboolean	cmd_mouseMoved;		// since the last usercmd (BUTTON_ANY)
 static long long	cmd_viewUs;		// Sys_Microseconds at the last view move (the acceleration's rate)
 static int		cmd_stamp;			// the next usercmd's time, taken at the usercmd before it (its window's start)
 static qboolean	cmd_stampSet;		// cmd_stamp holds one
+static long long	cmd_startUs;		// com_frameUs at the last usercmd: its window's start in microseconds
 // click-time aim: the usercmd that carries a click made between usercmds
 // takes the angles of the click's frame, and its packet that frame's eye info
 static int		cmd_aimCmd;			// that usercmd's number; 0: none
@@ -1274,18 +1275,19 @@ int CL_CmdClock( long long *nextCmdUs ) {
 
 /*
 =================
-CL_KeyStateSoFar
+CL_KeyStateNext
 
-CL_KeyState over the window so far, without taking it (Metal port).
+CL_KeyState for the next usercmd without taking it: the share of its window
+the key gets if it stays as it is now (Metal port).
 =================
 */
-static float CL_KeyStateSoFar( kbutton_t *key, int window ) {
+static float CL_KeyStateNext( kbutton_t *key, int gone, int window ) {
 	int		msec;
 	float	val;
 
 	msec = key->msec;
 	if ( key->active ) {
-		msec += key->downtime ? com_frameTime - key->downtime : window;
+		msec += ( key->downtime ? com_frameTime - key->downtime : gone ) + window - gone;
 	}
 
 	val = (float)msec / window;
@@ -1300,20 +1302,47 @@ static float CL_KeyStateSoFar( kbutton_t *key, int window ) {
 
 /*
 =================
-CL_LiveViewCmd
+CL_FrameFraction
 
-The decoupled mode's usercmd for cgame (cl_movefps), never sent: the next
-usercmd as far as its window has come, its moves and buttons so far (nothing
-taken from the next usercmd), the angles of now and a time between the
-newest usercmd's and its own by the part of the window gone (the newest's at
-its start, so a usercmd's frame shows the newest alone). qfalse in the stock
-mode. Metal port.
+How far the frame is into com_frameTime's millisecond, 0 to 1: the decoupled
+mode's frames come at any moment; 0 in the stock mode, whose frames are whole
+milliseconds of game time (Metal port).
 =================
 */
-qboolean CL_LiveViewCmd( usercmd_t *ucmd ) {
+float CL_FrameFraction( void ) {
+	long long	us;
+
+	if ( !cmd_interval ) {
+		return 0;
+	}
+	us = com_frameUs - com_frameTime * 1000LL;
+	if ( us < 0 ) {
+		us = 0;
+	} else if ( us > 999 ) {
+		us = 999;
+	}
+	return us * 0.001f;
+}
+
+/*
+=================
+CL_GetLiveUserCmd
+
+The decoupled mode's open usercmd for cgame (cl_movefps), never sent: the
+next usercmd as it goes out if the keys stay as they are now (its moves for
+the whole window, the buttons of now, nothing taken from it), one whole step
+long (its time is set already), with the angles of now; *phase is the part
+of its window gone, from the last usercmd's moment to the next one's tick,
+in microseconds. cgame runs that step and shows the part gone. qfalse in the
+stock mode. Metal port.
+=================
+*/
+qboolean CL_GetLiveUserCmd( usercmd_t *ucmd, float *phase ) {
 	usercmd_t	*last;
 	int			i, gone, window, movespeed, forward, side, up;
+	long long	spanUs;
 
+	*phase = 0;
 	if ( !cmd_interval || !cl.cmdNumber ) {
 		return qfalse;
 	}
@@ -1326,13 +1355,24 @@ qboolean CL_LiveViewCmd( usercmd_t *ucmd ) {
 
 	gone = com_frameTime - old_com_frameTime;
 	window = cmd_nextTime - old_com_frameTime;
-	if ( !cmd_stampSet || gone <= 0 || window <= 0 ) {
+	if ( !cmd_stampSet || window <= 0 ) {
 		return qtrue;
 	}
-	if ( gone > window ) {
+	if ( gone < 0 ) {
+		gone = 0;
+	} else if ( gone > window ) {
 		gone = window;
 	}
-	ucmd->serverTime = last->serverTime + ( cmd_stamp - last->serverTime ) * gone / window;
+	ucmd->serverTime = cmd_stamp;
+	spanUs = cmd_nextTime * 1000LL - cmd_startUs;
+	if ( spanUs > 0 ) {
+		*phase = (float)( com_frameUs - cmd_startUs ) / spanUs;
+		if ( *phase < 0 ) {
+			*phase = 0;
+		} else if ( *phase > 1 ) {
+			*phase = 1;
+		}
+	}
 
 	// CL_CmdButtons without the latches' and the weapon commands' taking
 	ucmd->buttons = 0;
@@ -1354,19 +1394,19 @@ qboolean CL_LiveViewCmd( usercmd_t *ucmd ) {
 		ucmd->buttons |= BUTTON_ANY;
 	}
 
-	// CL_KeyMove over the window so far, and the mouse's parts so far
+	// CL_KeyMove over the whole window as the keys are now, and the mouse's parts so far
 	movespeed = 127;
 	forward = side = up = 0;
 	if ( in_strafe.active ) {
-		side += movespeed * CL_KeyStateSoFar( &in_right, gone );
-		side -= movespeed * CL_KeyStateSoFar( &in_left, gone );
+		side += movespeed * CL_KeyStateNext( &in_right, gone, window );
+		side -= movespeed * CL_KeyStateNext( &in_left, gone, window );
 	}
-	side += movespeed * CL_KeyStateSoFar( &in_moveright, gone );
-	side -= movespeed * CL_KeyStateSoFar( &in_moveleft, gone );
-	up += movespeed * CL_KeyStateSoFar( &in_up, gone );
-	up -= movespeed * CL_KeyStateSoFar( &in_down, gone );
-	forward += movespeed * CL_KeyStateSoFar( &in_forward, gone );
-	forward -= movespeed * CL_KeyStateSoFar( &in_back, gone );
+	side += movespeed * CL_KeyStateNext( &in_moveright, gone, window );
+	side -= movespeed * CL_KeyStateNext( &in_moveleft, gone, window );
+	up += movespeed * CL_KeyStateNext( &in_up, gone, window );
+	up -= movespeed * CL_KeyStateNext( &in_down, gone, window );
+	forward += movespeed * CL_KeyStateNext( &in_forward, gone, window );
+	forward -= movespeed * CL_KeyStateNext( &in_back, gone, window );
 	ucmd->forwardmove = ClampChar( ClampChar( forward ) - cmd_mouseForward );
 	ucmd->rightmove = ClampChar( ClampChar( side ) + cmd_mouseSide );
 	ucmd->upmove = ClampChar( up );
@@ -1477,6 +1517,7 @@ void CL_SendCmd( void ) {
 		if ( cmd_nextTime <= com_frameTime ) {
 			cmd_nextTime = com_frameTime + cmd_interval;
 		}
+		cmd_startUs = com_frameUs;
 	}
 
 	// we create commands even if a demo is playing,

@@ -142,6 +142,7 @@ int		time_frontend;		// renderer frontend time
 int		time_backend;		// renderer backend time
 
 int			com_frameTime;
+long long	com_frameUs;			// Sys_Microseconds when com_frameTime was read (Metal port)
 int			com_frameNumber;
 int			com_frameMsec;
 qboolean	com_renderFrame = qtrue;	// qfalse: the frame only makes cl_movefps's usercmd (Metal port)
@@ -2453,6 +2454,7 @@ void Com_Frame( void ) {
 
     lastTime = com_frameTime;
     com_frameTime = Com_EventLoop();
+    com_frameUs = Sys_Microseconds();
 
     msec = com_frameTime - lastTime;
 

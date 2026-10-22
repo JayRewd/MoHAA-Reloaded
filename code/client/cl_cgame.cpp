@@ -82,12 +82,6 @@ CL_GetUserCmd
 qboolean CL_GetUserCmd( int cmdNumber, usercmd_t *ucmd ) {
 	// cmds[cmdNumber] is the last properly generated command
 
-	// one past it, the decoupled mode's view (cl_movefps, Metal port): the
-	// newest command with the angles of now, never sent; none in the stock mode
-	if ( cmdNumber == cl.cmdNumber + 1 ) {
-		return CL_LiveViewCmd( ucmd );
-	}
-
 	// can't return anything that we haven't created yet
 	if ( cmdNumber > cl.cmdNumber ) {
 		Com_Error( ERR_DROP, "CL_GetUserCmd: %i >= %i", cmdNumber, cl.cmdNumber );
@@ -108,6 +102,21 @@ int CL_GetCurrentCmdNumber( void ) {
 	return cl.cmdNumber;
 }
 
+
+/*
+====================
+CL_RenderTimeFraction
+
+The part of cl.serverTime's millisecond the frame shows, 0 to 1, for cgame's
+interpolation: the decoupled mode (cl_movefps) draws frames at any moment;
+0 in the stock mode (Metal port).
+====================
+*/
+static float cl_renderFraction, cl_oldRenderFraction;
+
+float CL_RenderTimeFraction( void ) {
+	return cl_renderFraction;
+}
 
 /*
 ====================
@@ -838,6 +847,8 @@ void CL_InitCGameDLL( clientGameImport_t *cgi, clientGameExport_t **cge ) {
 	cgi->HudDrawElements			= cls.HudDrawElements;
 	cgi->anim						= &cls.anim;
 	cgi->stopWatch					= &cls.stopwatch;
+	cgi->GetLiveUserCmd				= CL_GetLiveUserCmd;
+	cgi->GetRenderTimeFraction		= CL_RenderTimeFraction;
 	// FIXME
 	//cgi->pUnknownVar				= NULL;
 
@@ -1009,11 +1020,13 @@ void CL_CGameRendering( stereoFrame_t stereo ) {
 	if( cl.oldServerTime < cl.serverStartTime ) {
 		cl.serverTime = cl.serverStartTime;
 		cl.oldServerTime = cl.serverStartTime;
+		cl_renderFraction = cl_oldRenderFraction = 0;
 	}
 
 	cge->CG_DrawActiveFrame( cl.serverTime, cl.serverTime - cl.oldServerTime, stereo, clc.demoplaying );
 
 	cl.oldServerTime = cl.serverTime;
+	cl_oldRenderFraction = cl_renderFraction;
 	//
 	// Let cgame clean up temp models
 	//
@@ -1078,6 +1091,7 @@ void CL_AdjustTimeDelta( void ) {
 		cl.serverTimeDelta = newDelta;
 		cl.oldServerTime = cl.snap.serverTime;	// FIXME: is this a problem for cgame?
 		cl.serverTime = cl.snap.serverTime;
+		cl_renderFraction = cl_oldRenderFraction = 0;
 		if ( cl_showTimeDelta->integer ) {
 			Com_Printf( "<RESET> " );
 		}
@@ -1265,11 +1279,16 @@ void CL_SetCGameTime( void ) {
 		}
 
 		cl.serverTime = cls.realtime + cl.serverTimeDelta - tn;
+		cl_renderFraction = CL_FrameFraction();
 
 		// guarantee that time will never flow backwards, even if
 		// serverTimeDelta made an adjustment or cl_timeNudge was changed
+		// (Metal port: nor the render time inside the millisecond)
 		if ( cl.serverTime < cl.oldServerTime ) {
 			cl.serverTime = cl.oldServerTime;
+			cl_renderFraction = cl_oldRenderFraction;
+		} else if ( cl.serverTime == cl.oldServerTime && cl_renderFraction < cl_oldRenderFraction ) {
+			cl_renderFraction = cl_oldRenderFraction;
 		}
 
 		// note if we are almost past the latest frame (without timeNudge),

@@ -857,7 +857,8 @@ void CG_DrawActiveFrame(int serverTime, int frameTime, stereoFrame_t stereoView,
         if (delta == 0) {
             cg.frameInterpolation = 0;
         } else {
-            cg.frameInterpolation = (float)(cg.time - cg.snap->serverTime) / delta;
+            // (Metal port: at the frame's moment inside cg.time's millisecond)
+            cg.frameInterpolation = ((float)(cg.time - cg.snap->serverTime) + cgi.GetRenderTimeFraction()) / delta;
         }
     } else {
         cg.frameInterpolation = 0; // actually, it should never be used, because
