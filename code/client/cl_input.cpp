@@ -45,6 +45,16 @@ static vec3_t	cmd_aimAngles;
 static qboolean	cmd_aimEyePending;	// take the eye info after the click's frame
 static qboolean	cmd_aimEyeSet;
 static usereyes_t	cmd_aimEye;
+// the sub-grid (cl_movesubgrid): a fire click or a jump between usercmds
+// brings the next usercmd forward to the grid's half step, and the grid goes
+// on from its own points (the step split in two)
+static cvar_t	*cl_movesubgrid;
+static int		cmd_subStep;		// the step to the next usercmd when it isn't the interval: the half to an early one, the split's rest after it
+static qboolean	cmd_subEarly;		// the next usercmd is an early one
+static qboolean	cmd_subSend;		// the newest usercmd is an early one or the split's rest: its packet goes at once
+static qboolean	cmd_eventSeen;		// a starting event since the last usercmd
+static int		cmd_prevNow;		// the server time of the frame before
+static qboolean	cmd_upHeld;			// the jump key held at the last usercmd
 
 /*
 ===============================================================================
@@ -1010,10 +1020,11 @@ qboolean CL_ReadyToSendPacket( void ) {
 	// cl_movefps (Metal port): the usercmds' own time, the grid's (the time
 	// delta's corrections bring them 7 or 10 ms apart in real time at 125, so
 	// the rate counted in real time would hold some for the next packet);
-	// a grid started again sends at once
+	// a grid started again, and the sub-grid's early usercmd and the split's
+	// rest (cl_movesubgrid), send at once
 	if ( cmd_interval ) {
 		delta = cl.cmds[ cl.cmdNumber & CMD_MASK ].serverTime - cl.outPackets[ oldPacketNum ].p_serverTime;
-		if ( delta < 0 ) {
+		if ( delta < 0 || cmd_subSend ) {
 			return qtrue;
 		}
 	}
@@ -1282,16 +1293,17 @@ CL_CmdGrid
 The decoupled mode's usercmds (cl_movefps) on a fixed grid of server time:
 each takes the time of the one before plus the interval and comes when the
 server time passes it, so every step is the interval at any frame rate and
-through the time delta's corrections (the Vulkan port's b19079eb). Returns
-the usercmds due now (a frame longer than the interval makes up to 100 ms of
-them), the first one's time in *time, and in *wait the ms of server time to
-the next one. One after the time went back or jumped by more than 100 ms (the
-first one, a time delta reset, a hitch) starts the grid again from now; the
-time delta's own steps back (2 ms) wait. Metal port.
+through the time delta's corrections (the Vulkan port's b19079eb); the
+sub-grid's step (CL_CmdSubGrid) splits one in two. Returns the usercmds due
+now (a frame longer than the interval makes up to 100 ms of them), the first
+one's time in *time, and in *wait the ms of server time to the next one. One
+after the time went back or jumped by more than 100 ms (the first one, a time
+delta reset, a hitch) starts the grid again from now; the time delta's own
+steps back (2 ms) wait. Metal port.
 =================
 */
 static int CL_CmdGrid( int interval, int *time, int *wait ) {
-	int		now, last, elapsed;
+	int		now, last, elapsed, step;
 
 	now = CL_CmdServerTime();
 	last = cl.cmds[ cl.cmdNumber & CMD_MASK ].serverTime;
@@ -1302,9 +1314,73 @@ static int CL_CmdGrid( int interval, int *time, int *wait ) {
 		return 1;
 	}
 
-	*time = last + interval;
-	*wait = interval - elapsed;
-	return elapsed < interval ? 0 : elapsed / interval;
+	// the sub-grid's step to the next one, or the interval
+	step = cmd_subStep ? cmd_subStep : interval;
+	*time = last + step;
+	*wait = step - elapsed;
+	return elapsed < step ? 0 : 1 + ( elapsed - step ) / interval;
+}
+
+/*
+=================
+CL_CmdStartEvent
+
+The sub-grid's starting events since the last usercmd (cl_movesubgrid): 1 for
+a fire click (attack primary or secondary, a button the usercmd latches), 2
+for a jump (the jump key pressed with it not held at the last usercmd: a key
+whose share of the usercmd's window counts), 0 none. Use and the movement
+keys wait for the grid. Metal port.
+=================
+*/
+static int CL_CmdStartEvent( void ) {
+	if ( cl_movesubgrid->integer <= 0 ) {
+		return 0;
+	}
+	if ( in_buttons[0].wasPressed || in_buttons[1].wasPressed ) {
+		return 1;
+	}
+	return !cmd_upHeld && ( in_up.active || in_up.msec ) ? 2 : 0;
+}
+
+/*
+=================
+CL_CmdSubGrid
+
+Before the grid's count in a frame between usercmds (cl_movesubgrid): a
+starting event takes the next usercmd to the sub-grid's point, the newest
+usercmd's time + half the interval, made by the first frame at it
+(CL_CmdGrid's step), so a shot or a jump reaches the server up to half a
+step sooner; the grid goes on from its own points after it (the step split
+in two, CL_SendCmd), so later steps don't move. A click first seen by a frame
+whose frame before was already at that point waits for the grid, as one in a
+frame past the grid's point. The jump key's share of the window counts from
+its frame's millisecond, so a jump first seen at the point itself would give
+the early usercmd no move: it is early only when seen before the point. One
+early usercmd a grid step (notuern's idea, session 51's measurements).
+Metal port.
+=================
+*/
+static void CL_CmdSubGrid( void ) {
+	int		now, elapsed, half, event, seen;
+
+	now = CL_CmdServerTime();
+	elapsed = now - cl.cmds[ cl.cmdNumber & CMD_MASK ].serverTime;
+	half = cmd_interval / 2;
+	if ( elapsed < -100 || elapsed > 100 || ( cmd_subEarly && elapsed >= cmd_interval ) ) {
+		// the grid starts again, or the grid's usercmd is due: it takes the event
+		cmd_subStep = 0;
+		cmd_subEarly = qfalse;
+	}
+	if ( !cmd_subStep && !cmd_eventSeen && ( event = CL_CmdStartEvent() ) ) {
+		cmd_eventSeen = qtrue;
+		// a click from the frame before's moment on, a jump from this frame's
+		seen = event == 2 ? elapsed : cmd_prevNow - ( now - elapsed );
+		if ( seen < half && elapsed < cmd_interval ) {
+			cmd_subStep = half;
+			cmd_subEarly = qtrue;
+		}
+	}
+	cmd_prevNow = now;
 }
 
 /*
@@ -1399,7 +1475,7 @@ step and shows the part gone. qfalse in the stock mode. Metal port.
 */
 qboolean CL_GetLiveUserCmd( usercmd_t *ucmd, float *phase ) {
 	usercmd_t	*last;
-	int			i, gone, window, time, wait, movespeed, forward, side, up;
+	int			i, gone, window, time, wait, movespeed, forward, side, up, step;
 
 	*phase = 0;
 	if ( !cmd_interval || !cl.cmdNumber ) {
@@ -1412,8 +1488,9 @@ qboolean CL_GetLiveUserCmd( usercmd_t *ucmd, float *phase ) {
 		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
 	}
 
-	ucmd->serverTime = last->serverTime + cmd_interval;
-	*phase = ( cl.serverTime - last->serverTime + CL_RenderTimeFraction() ) / cmd_interval;
+	step = cmd_subStep ? cmd_subStep : cmd_interval;	// the sub-grid's step, or the interval
+	ucmd->serverTime = last->serverTime + step;
+	*phase = ( cl.serverTime - last->serverTime + CL_RenderTimeFraction() ) / step;
 	if ( *phase < 0 ) {
 		*phase = 0;
 	} else if ( *phase > 1 ) {
@@ -1517,18 +1594,19 @@ Called every frame to builds and sends a command packet to the server.
 */
 void CL_SendCmd( void ) {
 	int		wait;
+	qboolean	upNow = qfalse;
 
 	// don't send any message if not connected
 	if ( clc.state < CA_CONNECTED ) {
-		cmd_interval = cmd_aimCmd = 0;
-		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
+		cmd_interval = cmd_aimCmd = cmd_subStep = 0;
+		cmd_aimEyePending = cmd_aimEyeSet = cmd_subEarly = cmd_subSend = cmd_eventSeen = qfalse;
 		return;
 	}
 
 	// don't send commands if paused
 	if ( com_sv_running->integer && paused->integer  ) {
-		cmd_interval = cmd_aimCmd = 0;
-		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
+		cmd_interval = cmd_aimCmd = cmd_subStep = 0;
+		cmd_aimEyePending = cmd_aimEyeSet = cmd_subEarly = cmd_subSend = cmd_eventSeen = qfalse;
 		return;
 	}
 
@@ -1539,8 +1617,8 @@ void CL_SendCmd( void ) {
 	cmd_interval = CL_CmdInterval();
 	cmd_count = 1;
 	if ( !cmd_interval ) {
-		cmd_aimCmd = 0;
-		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
+		cmd_aimCmd = cmd_subStep = 0;
+		cmd_aimEyePending = cmd_aimEyeSet = cmd_subEarly = cmd_subSend = cmd_eventSeen = qfalse;
 		// a frame inside the last usercmd's millisecond (the one cl_movefps
 		// went off in) makes none: the server would drop it, and its latched
 		// buttons with it
@@ -1550,6 +1628,7 @@ void CL_SendCmd( void ) {
 	} else {
 		CL_ViewMove();
 
+		CL_CmdSubGrid();
 		cmd_count = CL_CmdGrid( cmd_interval, &cmd_time, &wait );
 
 		// Click-time aim: a fire click seen between usercmds gives the next
@@ -1571,10 +1650,24 @@ void CL_SendCmd( void ) {
 		if ( !cmd_count ) {
 			return;
 		}
+
+		// the sub-grid: a jump pressed in this usercmd's own millisecond has
+		// no share of it (CL_KeyState), so it is still a starting event after it
+		upNow = in_up.active && in_up.downtime == com_frameTime;
 	}
 
 	// we create commands even if a demo is playing,
 	CL_CreateNewCommands();
+
+	// the sub-grid (cl_movesubgrid): an early usercmd's packet and the split's
+	// rest's go at once (CL_ReadyToSendPacket); after an early usercmd the
+	// step is the rest of the grid's, back to its point
+	if ( cmd_interval ) {
+		cmd_subSend = cmd_subStep != 0;
+		cmd_subStep = cmd_subEarly && cmd_count == 1 ? cmd_interval - cmd_interval / 2 : 0;
+		cmd_subEarly = cmd_eventSeen = qfalse;
+		cmd_upHeld = in_up.active && !upNow;
+	}
 
 	// don't send a packet if the last packet was sent too recently
 	if ( !CL_ReadyToSendPacket() ) {
@@ -1671,6 +1764,8 @@ void CL_InitInput( void ) {
 
 	cl_nodelta = Cvar_Get ("cl_nodelta", "0", 0);
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
+	// a shot's or a jump's usercmd at the grid's half step (Metal port; on by default, the user's choice); 0: on the grid
+	cl_movesubgrid = Cvar_Get ("cl_movesubgrid", "1", CVAR_ARCHIVE);
 }
 
 /*
