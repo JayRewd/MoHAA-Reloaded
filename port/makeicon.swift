@@ -3,8 +3,8 @@
 //   xcrun swiftc -O -o build.noindex/makeicon port/makeicon.swift
 //   build.noindex/makeicon misc/macos/openmohaa-metal.svg build.noindex/icon.iconset
 //   iconutil -c icns -o misc/macos/openmohaa-metal.icns build.noindex/icon.iconset
-// The artwork is the user's (pstngh/moh-icons, macos/openmohaa-macos.svg) without its template layers (the grey
-// corner preview and the hidden grid, which AppKit's SVG renderer would draw).
+// The artwork is the user's (pstngh/moh-icons, mohaa-transparent.svg, byte for byte: its content credentials
+// sign the file): the gold star with no background, which macOS 26 puts on a plate of its own.
 import AppKit
 
 let args = CommandLine.arguments
