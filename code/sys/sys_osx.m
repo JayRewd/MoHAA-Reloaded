@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "sys_local.h"
 
 #import <Cocoa/Cocoa.h>
+#include <dlfcn.h>
 
 /*
 ==============
@@ -123,3 +124,86 @@ char *Sys_StripAppBundle( char *dir )
 	Q_strncpyz(cwd, Sys_Dirname(cwd), sizeof(cwd));
 	return cwd;
 }
+
+#ifndef DEDICATED
+/*
+=================
+Sys_CheckTranslocation
+
+Metal port: "Open Anyway" in System Settings starts a download that is still quarantined from a temporary
+read-only copy (App Translocation: /AppTranslocation/ in the app's path). The game folder isn't there and macOS
+refuses the quarantined game libraries, so instead of "Couldn't load default.cfg" this says how to clear the
+quarantine (INSTALL.txt's xattr line, with the folder that holds the app when Security finds it) and quits.
+Before the filesystem starts.
+=================
+*/
+void Sys_CheckTranslocation( void )
+{
+	@autoreleasepool
+	{
+		NSString *app = [NSBundle mainBundle].bundlePath;
+		NSString *folder = nil;
+		NSString *line, *how;
+		CFURLRef (*originalPath)( CFURLRef, CFErrorRef * );
+		NSAlert *alert;
+
+		if( ![app containsString:@"/AppTranslocation/"] )
+			return;
+
+		// Security's SPI since macOS 10.12, not in the SDK's headers: looked up by name
+		originalPath = (CFURLRef (*)( CFURLRef, CFErrorRef * ))dlsym( RTLD_DEFAULT, "SecTranslocateCreateOriginalPathForURL" );
+		if( originalPath )
+		{
+			CFURLRef original = originalPath( (CFURLRef)[NSURL fileURLWithPath:app], NULL );
+
+			if( original )
+			{
+				NSString *path = ((NSURL *)original).path;
+
+				if( path.length && ![path containsString:@"/AppTranslocation/"] )
+					folder = path.stringByDeletingLastPathComponent;
+				CFRelease( original );
+			}
+		}
+
+		if( folder )
+		{
+			// in single quotes for the shell, a quote in the path as '\''
+			line = [NSString stringWithFormat:@"xattr -dr com.apple.quarantine '%@'",
+				[folder stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
+			how = @"Clear the quarantine once: open Terminal, run the line below, then start openmohaa.app again.";
+		}
+		else
+		{
+			line = @"xattr -dr com.apple.quarantine ";
+			how = @"Clear the quarantine once: open Terminal, type the line below followed by a space, drag the folder "
+				@"that holds openmohaa.app onto the Terminal window, press Return, then start openmohaa.app again.";
+		}
+
+		fprintf( stderr, "Started from App Translocation's copy (%s): the download is still quarantined.\n%s\n",
+			app.UTF8String, line.UTF8String );
+
+		[NSApplication sharedApplication];
+		[NSApp activateIgnoringOtherApps:YES];
+
+		alert = [[NSAlert alloc] init];
+		alert.alertStyle = NSAlertStyleCritical;
+		alert.messageText = @"The download is still quarantined";
+		alert.informativeText = [NSString stringWithFormat:@"macOS started openmohaa.app from a temporary read-only copy, "
+			@"because the downloaded files are still quarantined (\"Open Anyway\" isn't enough for this game). From there "
+			@"the game can't find your game data, and macOS refuses its game libraries.\n\n%@\n\n%@", how, line];
+		[alert addButtonWithTitle:@"Copy Line and Quit"];
+		[alert addButtonWithTitle:@"Quit"];
+
+		if( [alert runModal] == NSAlertFirstButtonReturn )
+		{
+			[[NSPasteboard generalPasteboard] clearContents];
+			[[NSPasteboard generalPasteboard] setString:line forType:NSPasteboardTypeString];
+		}
+
+		[alert release];
+	}
+
+	exit( 1 );
+}
+#endif

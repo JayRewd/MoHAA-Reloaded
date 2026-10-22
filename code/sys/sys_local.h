@@ -51,6 +51,7 @@ char *Sys_BinaryPathRelative( const char *relative );
 
 #ifdef __APPLE__
 char *Sys_StripAppBundle( char *pwd );
+void Sys_CheckTranslocation( void );	// Metal port: started translocated, says how to clear the quarantine and quits
 #endif
 
 void Sys_GLimpSafeInit( void );

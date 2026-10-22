@@ -23,8 +23,8 @@ Install
    For example: xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-@VERSION@-macos-arm64
 
    "Open Anyway" in System Settings > Privacy & Security is not enough for this game: macOS then runs
-   the app from a temporary read-only copy, where it can't find your game data ("Couldn't load
-   default.cfg").
+   the app from a temporary read-only copy, where it can't find your game data. The game then stops
+   and shows the line to run, with your folder's path.
 
 3. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
    Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:

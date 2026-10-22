@@ -57,7 +57,7 @@ You need the retail game data: the folder of an installed MOHAA with `main/` (`P
 xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
 ```
 
-"Open Anyway" in System Settings → Privacy & Security is not enough for this game (checked on macOS 26.6): macOS then runs the app from a temporary read-only copy (App Translocation), where it can't find `main/` ("Couldn't load default.cfg").
+"Open Anyway" in System Settings → Privacy & Security is not enough for this game (checked on macOS 26.6): macOS then runs the app from a temporary read-only copy (App Translocation), where it can't find `main/`. Since 1.1.0 the game then stops with a message that gives the `xattr` line for the app's folder, with a button that copies it (1.0.0 stops with "Couldn't load default.cfg").
 
 Then, from the zip's folder or from your own build:
 

@@ -20,7 +20,7 @@ The second release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmoh
    ```bash
    xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.1.0-macos-arm64
    ```
-   "Open Anyway" in System Settings → Privacy & Security is not enough for this game: macOS then runs the app from a temporary read-only copy where it can't find your game data ("Couldn't load default.cfg").
+   "Open Anyway" in System Settings → Privacy & Security is not enough for this game: macOS then runs the app from a temporary read-only copy where it can't find your game data. The game then stops and shows the line to run, with your folder's path.
 3. Copy `openmohaa.app` into your MOHAA folder, next to `main/`.
 4. Start `openmohaa.app`. If the game folder is on an external drive (or in Documents or Desktop), macOS asks whether it may access files there: allow it (it asks again after each update, as does step 2). Spearhead and Breakthrough: `open openmohaa.app --args +set com_target_game 1` (or `2`) in Terminal, in the game folder.
 
@@ -34,7 +34,7 @@ The second release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmoh
 - **`cl_movefps`** (was `cl_cmdRate`): the name says what it sets, movement steps a second, apart from the frame rate. Its range is 85–125 now, the most `cl_maxpackets` sends, so each command gets a packet of its own (shorter steps catch on small bumps more often). `0` is still stock: one command per rendered frame.
 - **New defaults:** soldiers and weapons at full detail at any distance (`r_uselod 0`; it isn't saved in configs), the console key works (`ui_console 1`; the game still starts at the main menu with the console closed), and `cl_maxpackets 125` (upstream's is 30), so every command goes out in its own packet.
 - **One app:** the game libraries are inside `openmohaa.app` and sealed with it. No dedicated server in the zip (build it with `-DBUILD_SERVER=ON` for local tests; for servers, upstream's builds are the tested ones).
-- **Fixed:** the Metal pipeline cache now works when your home folder's name has non-ASCII characters.
+- **Fixed:** the Metal pipeline cache now works when your home folder's name has non-ASCII characters. Custom maps whose terrain has a finer lightmap than the retail maps' (3 or more lightmap texels per terrain step) no longer crash the game when a dynamic light (a shot, an explosion) reaches the terrain: the light is drawn there now. After "Open Anyway" the game no longer stops with "Couldn't load default.cfg": it says that the download is still quarantined and shows the `xattr` line for your folder, with a button that copies it.
 
 The settings that gave the shortest input-to-screen time on the test Mac (240 Hz):
 
