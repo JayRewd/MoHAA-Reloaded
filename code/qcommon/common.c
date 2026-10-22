@@ -144,8 +144,8 @@ int		time_backend;		// renderer backend time
 int			com_frameTime;
 int			com_frameNumber;
 int			com_frameMsec;
-qboolean	com_renderFrame = qtrue;	// qfalse: the frame only makes cl_cmdRate's usercmd (Metal port)
-static qboolean	com_cmdClock;		// the client's decoupled mode, cl_cmdRate (Metal port)
+qboolean	com_renderFrame = qtrue;	// qfalse: the frame only makes cl_movefps's usercmd (Metal port)
+static qboolean	com_cmdClock;		// the client's decoupled mode, cl_movefps (Metal port)
 
 // Metal port benchmark: microseconds spent waiting in Com_Frame's 1 ms frame limiter during a timedemo,
 // so the timedemo can report the frame work time even when frames are padded to 1 ms.
@@ -2181,7 +2181,7 @@ int Com_ModifyMsec( int msec ) {
 	}
 
 	// don't let it scale below 1 msec
-	// (Metal port: cl_cmdRate's frames inside a millisecond stay 0 ms at
+	// (Metal port: cl_movefps's frames inside a millisecond stay 0 ms at
 	// timescale 1, or they would run the game clock fast)
 	if ( msec < 1 && com_timescale->value
 		&& !( com_cmdClock && msec == 0 && com_timescale->value == 1.0f ) ) {
@@ -2349,7 +2349,7 @@ void Com_Frame( void ) {
                 maxfps = com_maxfps->integer;
 
 #ifndef DEDICATED
-            // The client's decoupled mode (cl_cmdRate, Metal port): usercmds
+            // The client's decoupled mode (cl_movefps, Metal port): usercmds
             // come on their own clock of whole milliseconds, so the frames
             // need no whole millisecond and render at any rate, any cap
             cmdMsec = CL_CmdClock(&cmdUs);

@@ -82,7 +82,7 @@ CL_GetUserCmd
 qboolean CL_GetUserCmd( int cmdNumber, usercmd_t *ucmd ) {
 	// cmds[cmdNumber] is the last properly generated command
 
-	// one past it, the decoupled mode's view (cl_cmdRate, Metal port): the
+	// one past it, the decoupled mode's view (cl_movefps, Metal port): the
 	// newest command with the angles of now, never sent; none in the stock mode
 	if ( cmdNumber == cl.cmdNumber + 1 ) {
 		return CL_LiveViewCmd( ucmd );

@@ -27,7 +27,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 unsigned	frame_msec;
 int			old_com_frameTime;
 
-// Metal port: the decoupled mode (cl_cmdRate). Usercmds come on their own
+// Metal port: the decoupled mode (cl_movefps). Usercmds come on their own
 // clock of whole milliseconds and the mouse turns the view every frame.
 static int		cmd_interval;		// ms from one usercmd to the next; 0: one per frame (stock)
 static int		cmd_nextTime;		// com_frameTime of the next usercmd; 0: not started
@@ -566,7 +566,7 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 =================
 CL_MouseMove
 
-With no cmd, cl_cmdRate's view move (Metal port): the view turns now, the
+With no cmd, cl_movefps's view move (Metal port): the view turns now, the
 strafe and move parts wait for the next usercmd.
 =================
 */
@@ -664,7 +664,7 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	my *= cgameSensitivity;
 
 	if ( !cmd ) {
-		// cl_cmdRate: the view turns now, the rest waits for the usercmd
+		// cl_movefps: the view turns now, the rest waits for the usercmd
 		cmd_mouseMoved = qtrue;
 		if(in_strafe.active)
 			cmd_mouseSide += m_side->value * mx;
@@ -768,7 +768,7 @@ void CL_FinishMove( usercmd_t *cmd ) {
 	if ( cmd_interval ) {
 		int		tn;
 
-		// cl_cmdRate (Metal port): the usercmd takes the time of the usercmd
+		// cl_movefps (Metal port): the usercmd takes the time of the usercmd
 		// frame before it (its window's start), as a stock client takes the
 		// frame before's cl.serverTime, computed as CL_SetCGameTime does but
 		// without its clamp to the last drawn frame: the frame before is no
@@ -833,7 +833,7 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// get basic movement from mouse
 	if ( cmd_interval ) {
-		// cl_cmdRate: the view took it every frame, the strafe and move parts wait here
+		// cl_movefps: the view took it every frame, the strafe and move parts wait here
 		if ( cmd_mouseMoved ) {
 			cmd.buttons |= BUTTON_ANY;
 		}
@@ -903,7 +903,7 @@ void CL_CreateNewCommands( void ) {
 	}
 	old_com_frameTime = com_frameTime;
 
-	// the keyboard's turning: the frame's game time, or cl_cmdRate's window (Metal port)
+	// the keyboard's turning: the frame's game time, or cl_movefps's window (Metal port)
 	cmd_frametime = cls.frametime;
 	if ( cmd_interval ) {
 		cmd_frametime = cls.realtime - cmd_lastRealtime;
@@ -1168,7 +1168,7 @@ void CL_WritePacket( void ) {
 		MSG_WriteByte( &buf, count );
 
 		CL_EyeInfo( &eyeInfo );
-		// click-time aim (cl_cmdRate, Metal port): the click's frame's eye
+		// click-time aim (cl_movefps, Metal port): the click's frame's eye
 		// info for the packet with the click's usercmd; one sent before that
 		// frame drew keeps the last drawn frame's
 		if ( cmd_aimCmd && cmd_aimCmd <= cl.cmdNumber ) {
@@ -1224,7 +1224,7 @@ void CL_WritePacket( void ) {
 CL_CmdInterval
 
 The decoupled mode's usercmd interval in whole milliseconds, or 0 for one
-usercmd per frame (stock): cl_cmdRate usercmds a second, 85 to 125 (the most
+usercmd per frame (stock): cl_movefps usercmds a second, 85 to 125 (the most
 cl_maxpackets sends, so each usercmd has a packet of its own; shorter steps
 catch on small bumps more often), a rate that doesn't divide 1000 at the next
 longer whole millisecond (120 is 9 ms). Only in play and in real time:
@@ -1236,7 +1236,7 @@ timedemo, at fixedtime or recording AVI frames (Metal port).
 static int CL_CmdInterval( void ) {
 	int		rate;
 
-	rate = cl_cmdRate->integer;
+	rate = cl_movefps->integer;
 	if ( rate <= 0 || clc.state != CA_ACTIVE || ( com_sv_running->integer && paused->integer )
 		|| cl_timedemo->integer || com_fixedtime->integer || ( CL_VideoRecording() && cl_aviFrameRate->integer ) ) {
 		return 0;
@@ -1254,7 +1254,7 @@ static int CL_CmdInterval( void ) {
 =================
 CL_CmdClock
 
-For Com_Frame: in the decoupled mode (cl_cmdRate), whose frames have no whole
+For Com_Frame: in the decoupled mode (cl_movefps), whose frames have no whole
 millisecond and render at any rate, the usercmd interval in ms and the next
 usercmd's time in *nextCmdUs (0: the next frame starts the clock); 0 in the
 stock mode. Metal port.
@@ -1302,7 +1302,7 @@ static float CL_KeyStateSoFar( kbutton_t *key, int window ) {
 =================
 CL_LiveViewCmd
 
-The decoupled mode's usercmd for cgame (cl_cmdRate), never sent: the next
+The decoupled mode's usercmd for cgame (cl_movefps), never sent: the next
 usercmd as far as its window has come, its moves and buttons so far (nothing
 taken from the next usercmd), the angles of now and a time between the
 newest usercmd's and its own by the part of the window gone (the newest's at
@@ -1377,7 +1377,7 @@ qboolean CL_LiveViewCmd( usercmd_t *ucmd ) {
 =================
 CL_ClickEyeInfo
 
-After a frame of the decoupled mode (cl_cmdRate): a fire click's frame keeps
+After a frame of the decoupled mode (cl_movefps): a fire click's frame keeps
 its eye info for the packet with the click's usercmd. Metal port.
 =================
 */
@@ -1433,7 +1433,7 @@ void CL_SendCmd( void ) {
 		return;
 	}
 
-	// The decoupled mode (cl_cmdRate, Metal port): the mouse turns the view
+	// The decoupled mode (cl_movefps, Metal port): the mouse turns the view
 	// every frame; a usercmd comes every cmd_interval ms of com_frameTime and
 	// covers that window, as a frame's does in the stock mode; only usercmds
 	// send packets. A usercmd late by less than an interval is made up by the
@@ -1443,7 +1443,7 @@ void CL_SendCmd( void ) {
 		cmd_nextTime = 0;
 		cmd_aimCmd = 0;
 		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
-		// a frame inside the last usercmd's millisecond (the one cl_cmdRate
+		// a frame inside the last usercmd's millisecond (the one cl_movefps
 		// went off in) makes none: the server would drop it, and its latched
 		// buttons with it
 		if ( clc.state >= CA_PRIMED && com_frameTime == old_com_frameTime ) {

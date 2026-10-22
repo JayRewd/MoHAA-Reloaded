@@ -50,7 +50,7 @@ Support/openmohaa/ if the game folder isn't writable. Settings that OpenMoHAA sa
 read on the first start and then saved into the game folder, unless the game folder already holds a
 main/configs/omconfig.cfg from another OpenMoHAA build: that one wins (delete it to keep the others).
 The game sends servers no GUID (it keeps no qkey file), as the original game's clients don't. The
-settings that matter for this port (cl_cmdRate, com_maxfps, the display modes, in_mouseRaw) are
+settings that matter for this port (cl_movefps, com_maxfps, the display modes, in_mouseRaw) are
 described in the README:
 https://github.com/pstngh/openmohaa-metal#settings-that-matter-here
 

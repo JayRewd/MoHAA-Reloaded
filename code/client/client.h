@@ -415,7 +415,7 @@ extern	cvar_t	*cl_debuggraph;
 extern	cvar_t	*cl_timeout;
 extern	cvar_t	*cl_connect_timeout;
 extern	cvar_t	*cl_maxpackets;
-extern	cvar_t	*cl_cmdRate;
+extern	cvar_t	*cl_movefps;
 extern	cvar_t	*cl_packetdup;
 extern	cvar_t	*cl_shownet;
 extern	cvar_t	*cl_netprofile;

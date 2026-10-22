@@ -89,7 +89,7 @@ Configs, saves, screenshots, demos, logs and downloaded maps go into the game fo
 The shortest input-to-screen time on the test Mac, at 240 Hz:
 
 ```
-seta cl_cmdRate 100
+seta cl_movefps 100
 seta com_maxfps 480
 seta r_fullscreen 1
 seta r_noborder 1
@@ -99,15 +99,15 @@ seta in_mouseRaw 1
 
 | Setting | Default | What it does here |
 |---|---|---|
-| `cl_cmdRate` | `100` | **The decoupled mode.** The commands the server runs (usercmds) come from their own clock, 85–125 a second (125 is the most `cl_maxpackets` sends, so each command gets a packet of its own), and the game renders at whatever rate `com_maxfps` sets. 100 is close to the rate MOHAA's movement physics were designed for (about 85): shorter steps catch on small bumps more often, and above 250 commands a second terrain breaks on the server. **`0` is stock:** one command per rendered frame, as upstream does. A config written by an earlier build of this port with `cl_cmdRate "0"` keeps 0, and one above 125 plays at 125. |
-| `com_maxfps` | `85` (upstream's) | **Set it.** With `cl_cmdRate` on, the render cap only: any value, `0` = uncapped. Caps are exact now: 240 is 240 frames a second (upstream turns it into 250). On the 240 Hz test display, **480** showed the mouse ~1 ms sooner than 250. 960 wasn't any better, because the display shows only about 500 images a second, so half the frames never appear. `0` was ~0.4 ms better still, but keeps a whole CPU core and the GPU busy. With `cl_cmdRate 0` this is also the command rate: stay at 250 or below (125, 200, 250), because 500 and 1000 change movement on the server. |
+| `cl_movefps` | `100` | **The decoupled mode.** The commands the server runs (usercmds) come from their own clock, 85–125 a second (125 is the most `cl_maxpackets` sends, so each command gets a packet of its own), and the game renders at whatever rate `com_maxfps` sets. 100 is close to the rate MOHAA's movement physics were designed for (about 85): shorter steps catch on small bumps more often, and above 250 commands a second terrain breaks on the server. **`0` is stock:** one command per rendered frame, as upstream does. Earlier builds called it `cl_cmdRate` (the Vulkan port `cl_cmdfps`): a config's old value carries over once, so one holding `"0"` keeps 0, and a value above 125 plays at 125. |
+| `com_maxfps` | `85` (upstream's) | **Set it.** With `cl_movefps` on, the render cap only: any value, `0` = uncapped. Caps are exact now: 240 is 240 frames a second (upstream turns it into 250). On the 240 Hz test display, **480** showed the mouse ~1 ms sooner than 250. 960 wasn't any better, because the display shows only about 500 images a second, so half the frames never appear. `0` was ~0.4 ms better still, but keeps a whole CPU core and the GPU busy. With `cl_cmdRate 0` this is also the command rate: stay at 250 or below (125, 200, 250), because 500 and 1000 change movement on the server. |
 | `cl_cmdDisplay` | `1` | How your own movement is shown between two commands. `1` predicts it up to the current frame: a key reaches the screen in ~1.1 ms at 960 frames a second, against 8 ms in stock at 125 and 4 ms at 250. `2` is a smoothed position one command behind. `0` shows the plain command steps. Shots are aimed where your crosshair was at the click, in every setting. |
 | `in_mouseRaw` | `1` | `1` reads the mouse through GCMouse: raw deltas, no macOS pointer acceleration, and the buttons while the game holds the mouse. `0` uses AppKit's mouse events. |
 | `r_fullscreen`, `r_noborder` | `1`, `0` | The display mode (below). |
 | `r_borderlessWindow` | `0` | With `r_fullscreen 1` and `r_noborder 1`: `0` is a native fullscreen Space, `1` a borderless window over the screen (no slide animation when you switch apps or `vid_restart`). |
 | `r_swapInterval` | `0` | `0` presents each frame at once (it can tear). `1` is vsync: tear-free, but about two refreshes later (~8 ms at 240 Hz). |
 | `com_busyWait` | `0` | `1` spins the CPU through the whole frame wait: ~0.05–0.1 ms sooner, for a full core. |
-| `cl_maxpackets` | `125` (upstream's is `30`) | Packets a second, 30–125. At 125 every command of `cl_cmdRate 100` goes out in its own packet; at 30 they're bundled three or four to a packet. |
+| `cl_maxpackets` | `125` (upstream's is `30`) | Packets a second, 30–125. At 125 every command of `cl_movefps 100` goes out in its own packet; at 30 they're bundled three or four to a packet. |
 | `cl_latencyStats` | `0` | `1` prints input → present times while you play (the port's latency probe). |
 | `ui_console` | `1` (upstream's is `0`) | The console key opens the console. The game still starts at the main menu with the console closed (except with `developer 1`). |
 | `r_uselod` | `0` (upstream's is `1`) | `0` draws soldiers and weapons at full detail at any distance. `1` lowers their detail with distance, tuned by `r_lodscale`, `r_lodcap` and `r_lodviewmodelcap`. Not saved in configs: set it at launch or in an `autoexec.cfg`. |
@@ -138,7 +138,7 @@ Input to screen, from the moment the game reads the mouse to the display showing
 | Exclusive fullscreen | not measurable (composited) | **1.9 / 3.9 ms** |
 | Fullscreen Space | – | **1.8 / 2.0 ms** |
 
-Counted from the mouse's own event, the input on screen is typically **4.6 ms** old at stock 250 frames a second in the Space (the median over time), and **3.55 ms** (p95 4.7) with `cl_cmdRate 100` and `com_maxfps 480`.
+Counted from the mouse's own event, the input on screen is typically **4.6 ms** old at stock 250 frames a second in the Space (the median over time), and **3.55 ms** (p95 4.7) with `cl_movefps 100` and `com_maxfps 480`.
 
 Where the time went, in short:
 

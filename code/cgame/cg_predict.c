@@ -407,7 +407,7 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
         int       cmdNum;
 
         cmdNum = cgi.GetCurrentCmdNumber();
-        // the client's decoupled mode (cl_cmdRate, Metal port): one past the newest, its angles of now
+        // the client's decoupled mode (cl_movefps, Metal port): one past the newest, its angles of now
         if (!cgi.GetUserCmd(cmdNum + 1, &cmd)) {
             cgi.GetUserCmd(cmdNum, &cmd);
         }
@@ -438,7 +438,7 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
     out->fLeanAngle = LerpAngle(prev->ps.fLeanAngle, next->ps.fLeanAngle, f);
 }
 
-// The client's decoupled mode (cl_cmdRate, Metal port): the position before
+// The client's decoupled mode (cl_movefps, Metal port): the position before
 // the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), what
 // only pmove sets after it (the snapshot doesn't carry it), and the time the
 // last frame's live usercmd ran from (cl_cmdDisplay 1, 0 when none ran)
@@ -662,7 +662,7 @@ void CG_PredictPlayerState(void)
         // CG_TouchTriggerPrediction();
     }
 
-    // The client's decoupled mode (cl_cmdRate, Metal port) sends usercmds on
+    // The client's decoupled mode (cl_movefps, Metal port) sends usercmds on
     // their own clock and turns the view every frame. One past the newest
     // command it gives the next usercmd so far (never sent): its moves up to
     // now, a time as far into the next window and the angles of now.
