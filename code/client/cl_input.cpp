@@ -1224,9 +1224,10 @@ void CL_WritePacket( void ) {
 CL_CmdInterval
 
 The decoupled mode's usercmd interval in whole milliseconds, or 0 for one
-usercmd per frame (stock): cl_cmdRate usercmds a second, 85 to 250 (more
-bends movement, rule 7 of the port's plan), rates that don't divide 1000 at
-the next lower one that does (240 is 200). Only in play and in real time:
+usercmd per frame (stock): cl_cmdRate usercmds a second, 85 to 125 (the most
+cl_maxpackets sends, so each usercmd has a packet of its own; shorter steps
+catch on small bumps more often), a rate that doesn't divide 1000 at the next
+longer whole millisecond (120 is 9 ms). Only in play and in real time:
 from the first snapshot on (before it the time delta isn't set, and a usercmd
 stamped with it can be far ahead of the server's clock), not paused, not in a
 timedemo, at fixedtime or recording AVI frames (Metal port).
@@ -1243,8 +1244,8 @@ static int CL_CmdInterval( void ) {
 
 	if ( rate < 85 ) {
 		rate = 85;
-	} else if ( rate > 250 ) {
-		rate = 250;
+	} else if ( rate > 125 ) {
+		rate = 125;
 	}
 	return ( 1000 + rate - 1 ) / rate;
 }
