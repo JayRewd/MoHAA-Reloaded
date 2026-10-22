@@ -21,7 +21,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "snd_local.h"
-#include "snd_openal_new.h"
 #include "client.h"
 #include "cl_ui.h"
 
@@ -429,6 +428,7 @@ void S_EndRegistration()
         }
 
         if (sfx->registration_sequence && sfx->registration_sequence != s_registrationSequence) {
+            S_Driver_FreeSfx(sfx);
             if (sfx->data) {
                 Z_Free(sfx->data);
             }
@@ -447,7 +447,7 @@ S_UpdateEntity
 */
 void S_UpdateEntity(int entityNum, const vec3_t origin, const vec3_t vel, qboolean use_listener)
 {
-    if (entityNum > MAX_GENTITIES) {
+    if (entityNum < 0 || entityNum >= MAX_GENTITIES) {
         Com_Error(ERR_DROP, "S_UpdateEntityPosition: bad entitynum %i", entityNum);
     }
 

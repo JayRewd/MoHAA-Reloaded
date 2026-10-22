@@ -3434,6 +3434,8 @@ qboolean FS_ComparePaks( char *neededpaks, int len, qboolean dlstring ) {
 	return qfalse; // We have them all
 }
 
+void ( *fs_shutdownHook )( void ) = NULL;
+
 /*
 ================
 FS_Shutdown
@@ -3444,6 +3446,10 @@ Frees all resources.
 void FS_Shutdown( qboolean closemfp ) {
 	searchpath_t	*p, *next;
 	int	i;
+
+	if ( fs_shutdownHook ) {
+		fs_shutdownHook();
+	}
 
 	for(i = 0; i < MAX_FILE_HANDLES; i++) {
 		if (fsh[i].fileSize) {

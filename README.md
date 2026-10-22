@@ -92,12 +92,17 @@ The following third party tools and libraries are used by the project
 - [Flex](https://github.com/westes/flex)
 - [Bison](https://savannah.gnu.org/projects/bison/)
 - [SDL](http://www.libsdl.org/)
-- [OpenAL](https://www.openal.org/)
 - [LibMAD](http://www.underbit.com/products/mad/)
 - [cURL](https://curl.se/)
 - [Libogg](https://github.com/gcp/libogg)
 - [Libvorbis](https://xiph.org/vorbis/)
 - [Libopus](https://opus-codec.org/)
+- [miniaudio](https://miniaud.io) (Unlicense or MIT No Attribution, David Reid). Device playback for the Omaha mixer. The license text is at the end of `code/thirdparty/miniaudio/miniaudio.h`.
+- [libmysofa](https://github.com/hoene/libmysofa) (BSD-3-Clause, Christian Hoene / Symonics GmbH). SOFA reader for headphone HRTF. The vendor tree also includes the Speex resampler (Jean-Marc Valin, Thorvald Natvig) and kdtree (John Tsiombikas).
+- [PFFFT](https://github.com/marton78/pffft) (BSD-like FFTPACK license: Julien Pommier, Hayati Ayguen, Dario Mambro, and UCAR/NCAR). HRTF convolution.
+- [SADIE II](https://www.york.ac.uk/sadie-project/) KU100 HRTF (Apache License 2.0, University of York). Citation and the license text ship with the data in `assets/main/sound/prom/hrtf/`.
+
+Binary builds install `OMAHA-SOUND-LICENSES.txt` next to the client. That file is the notice libmysofa, Speex, kdtree, and PFFFT require to travel with the program. The SADIE license is installed at `main/sound/prom/hrtf/SADIE_LICENSE.txt`.
 
 ## Resources
 

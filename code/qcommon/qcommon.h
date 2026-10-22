@@ -745,6 +745,8 @@ qboolean FS_Initialized( void );
 
 void	FS_InitFilesystem( void );
 void	FS_Shutdown( qboolean closemfp );
+// Optional callback before FS_Shutdown closes handles (async stream worker).
+extern void ( *fs_shutdownHook )( void );
 
 qboolean	FS_ConditionalRestart( int checksumFeed, qboolean disconnect );
 void	FS_Restart( int checksumFeed );
