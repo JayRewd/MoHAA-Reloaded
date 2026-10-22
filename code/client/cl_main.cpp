@@ -3397,27 +3397,6 @@ void CL_StopVideo_f( void )
 
 /*
 ====================
-CL_RenameCvar
-
-A cvar a config or the command line set under an old name: its value goes to the new name (unless that was set
-too), created as a config's seta creates it, so the Cvar_Get after this keeps the value and takes the code's default
-as the reset value; the old one is unset, so the next config written has the new name only (Metal port).
-====================
-*/
-static void CL_RenameCvar( const char *oldName, const char *newName ) {
-	cvar_t *old = Cvar_FindVar( oldName );
-
-	if ( !old || !( old->flags & CVAR_USER_CREATED ) ) {
-		return;
-	}
-	if ( Cvar_Flags( newName ) == CVAR_NONEXISTENT ) {
-		Cvar_Get( newName, old->string, CVAR_USER_CREATED );
-	}
-	Cvar_Unset( old );
-}
-
-/*
-====================
 CL_Init
 ====================
 */
@@ -3485,10 +3464,7 @@ void CL_Init( void ) {
 
 	// every command of cl_movefps 100 in its own packet (the Metal port's default, upstream's is 30)
 	cl_maxpackets = Cvar_Get ("cl_maxpackets", "125", CVAR_ARCHIVE );
-	// usercmds a second on their own clock, the frames at any rate (Metal port; 100 by default, the user's choice); 0: one per frame.
-	// Named cl_cmdRate until session 47, cl_cmdfps in the Vulkan port: a config's old name carries over once
-	CL_RenameCvar( "cl_cmdRate", "cl_movefps" );
-	CL_RenameCvar( "cl_cmdfps", "cl_movefps" );
+	// usercmds a second on their own clock, the frames at any rate (Metal port; 100 by default, the user's choice); 0: one per frame
 	cl_movefps = Cvar_Get ("cl_movefps", "100", CVAR_ARCHIVE );
 	// its movement between usercmds, cgame's: 1 predicted up to now, 2 JayRewd's lerp, 0 the newest usercmd's (Metal port)
 	Cvar_Get ("cl_cmdDisplay", "1", CVAR_ARCHIVE );
