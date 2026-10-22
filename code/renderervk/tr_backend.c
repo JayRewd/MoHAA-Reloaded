@@ -776,11 +776,6 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			oldbStaticModel = bStaticModel;
 		}
 
-		tess.dlightMap = dlightMap;
-		if (r_fastdlights->integer) {
-			tess.dlightMap = 0;
-		}
-
 		if (bStaticModel)
 		{
 			if (r_drawspherelights->integer) {

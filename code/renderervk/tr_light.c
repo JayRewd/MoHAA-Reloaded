@@ -169,16 +169,17 @@ static qboolean R_DlightReachesFace(const srfSurfaceFace_t *srf, const vec3_t or
 R_RealDlightPatch
 ===============
 */
-int R_RealDlightPatch(srfGridMesh_t *srf, int dlightBits)
+dlightMask_t R_RealDlightPatch(srfGridMesh_t *srf, dlightMask_t dlightBits)
 {
-    dlight_t *dl;
-    int       i, mask;
+    dlight_t    *dl;
+    dlightMask_t mask;
+    int          i;
 
     mask = 0;
 
     if (srf->lmHeight && srf->lmWidth) {
         for (i = 0; i < tr.refdef.num_dlights; i++) {
-            if (!(dlightBits & (1 << i))) {
+            if (!(dlightBits & DLIGHT_BIT(i))) {
                 continue;
             }
 
@@ -196,14 +197,14 @@ int R_RealDlightPatch(srfGridMesh_t *srf, int dlightBits)
                 continue;
             }
 
-            mask |= 1 << i;
+            mask |= DLIGHT_BIT(i);
         }
     }
 
     if (mask) {
         tr.pc.c_dlightSurfaces++;
     }
-    srf->dlightMap[tr.smpFrame] = mask;
+    srf->dlightMap = mask;
     return mask;
 }
 
@@ -212,17 +213,18 @@ int R_RealDlightPatch(srfGridMesh_t *srf, int dlightBits)
 R_RealDlightFace
 ===============
 */
-int R_RealDlightFace(srfSurfaceFace_t *srf, int dlightBits)
+dlightMask_t R_RealDlightFace(srfSurfaceFace_t *srf, dlightMask_t dlightBits)
 {
-    dlight_t *dl;
-    float     d;
-    int       i, mask;
+    dlight_t    *dl;
+    float        d;
+    dlightMask_t mask;
+    int          i;
 
     mask = 0;
 
     if (srf->lmHeight && srf->lmWidth) {
         for (i = 0; i < tr.refdef.num_dlights; i++) {
-            if (!(dlightBits & (1 << i))) {
+            if (!(dlightBits & DLIGHT_BIT(i))) {
                 continue;
             }
 
@@ -243,14 +245,14 @@ int R_RealDlightFace(srfSurfaceFace_t *srf, int dlightBits)
                 continue;
             }
 
-            mask |= 1 << i;
+            mask |= DLIGHT_BIT(i);
         }
     }
 
     if (mask) {
         tr.pc.c_dlightSurfaces++;
     }
-    srf->dlightMap[tr.smpFrame] = mask;
+    srf->dlightMap = mask;
     return mask;
 }
 
@@ -259,12 +261,13 @@ int R_RealDlightFace(srfSurfaceFace_t *srf, int dlightBits)
 R_RealDlightTerrain
 ===============
 */
-int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
+dlightMask_t R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, dlightMask_t dlightBits)
 {
-    dlight_t *dl;
-    vec3_t    mins, maxs;
-    float     delta, dist;
-    int       i, mask;
+    dlight_t    *dl;
+    vec3_t       mins, maxs;
+    float        delta, dist;
+    dlightMask_t mask;
+    int          i;
 
     mask = 0;
 
@@ -322,13 +325,13 @@ int R_RealDlightTerrain(cTerraPatchUnpacked_t *srf, int dlightBits)
             continue;
         }
 
-        mask |= 1 << i;
+        mask |= DLIGHT_BIT(i);
     }
 
     if (mask) {
         tr.pc.c_dlightSurfaces++;
     }
-    srf->drawinfo.dlightMap[tr.smpFrame] = mask;
+    srf->drawinfo.dlightMap = mask;
     return mask;
 }
 
@@ -408,17 +411,17 @@ reaches none of its surfaces' texels, so the surfaces get the same lights.
 GL1 gave every visible surface every light to test
 ===============
 */
-int R_CullDlightsToNode(const mnode_t *node, int dlightBits)
+dlightMask_t R_CullDlightsToNode(const mnode_t *node, dlightMask_t dlightBits)
 {
     int i;
 
     for (i = 0; i < tr.refdef.num_dlights; i++) {
         const dlight_t *dl = &tr.refdef.dlights[i];
 
-        if ((dlightBits & (1 << i))
+        if ((dlightBits & DLIGHT_BIT(i))
             && R_DistanceSquaredToBox(dl->transformed, node->dlightBounds[0], node->dlightBounds[1])
                    > Square(DLIGHT_REACH(dl->radius))) {
-            dlightBits &= ~(1 << i);
+            dlightBits &= ~DLIGHT_BIT(i);
         }
     }
 
@@ -429,22 +432,15 @@ int R_CullDlightsToNode(const mnode_t *node, int dlightBits)
 ===============
 R_DlightSortKey
 
-The dlight bits of a world surface's sort key, from what R_CheckDlightSurface
-or R_CheckDlightTerrain returned. r_fastdlights 1: GL1's, 1 for the surfaces
+The dlight bits of a surface's sort key, from what R_CheckDlightSurface or
+R_CheckDlightTerrain returned. r_fastdlights 1: GL1's, 1 for the surfaces
 ProjectDlightTexture lights. r_fastdlights 0: the lights are per pixel, so
-world surfaces sort as without them; the surfaces of a brush model that get
-them (light 0 only, as in GL1: R_AddBrushModelSurfaces passes needDlights)
-are kept apart from the others, which ProjectDlightTexture lights with all
-the lights R_DlightBmodel gives the model, as GL1's dynamic lightmaps were
+the surfaces sort as without them
 ===============
 */
-int R_DlightSortKey(int dlightMap)
+int R_DlightSortKey(dlightMask_t dlightBits)
 {
-    if (r_fastdlights->integer) {
-        return dlightMap;
-    }
-
-    return (dlightMap && tr.currentEntityNum != ENTITYNUM_WORLD) ? 1 : 0;
+    return (r_fastdlights->integer && dlightBits) ? 1 : 0;
 }
 
 /*
@@ -480,7 +476,7 @@ void RB_LightmapDlights(int tmu)
     }
 
     if (backEnd.dlightList < 0) {
-        vkDlight_t lights[MAX_DLIGHTS];
+        vkDlight_t lights[MAX_SCENE_DLIGHTS];
         int        i;
 
         for (i = 0; i < backEnd.refdef.num_dlights; i++) {
@@ -529,15 +525,18 @@ void R_TransformDlights(int count, dlight_t *dl, orientationr_t *ori)
 =============
 R_DlightBmodel
 
-Determine which dynamic lights may effect this bmodel
+Determine which dynamic lights may effect this bmodel: their mask, which
+R_AddBrushModelSurfaces gives the surfaces to test. ProjectDlightTexture
+(r_fastdlights 1) starts from it for the surfaces it doesn't test, the
+triangle surfaces
 =============
 */
-void R_DlightBmodel(bmodel_t *bmodel)
+dlightMask_t R_DlightBmodel(bmodel_t *bmodel)
 {
-    int         i, j;
-    dlight_t   *dl;
-    int         mask;
-    msurface_t *surf;
+    int          i, j;
+    dlight_t    *dl;
+    dlightMask_t mask, bits;
+    msurface_t  *surf;
 
     // transform all the lights
     R_TransformDlights(tr.refdef.num_dlights, tr.refdef.dlights, &tr.ori);
@@ -560,23 +559,26 @@ void R_DlightBmodel(bmodel_t *bmodel)
         }
 
         // we need to check this light
-        mask |= 1 << i;
+        mask |= DLIGHT_BIT(i);
     }
 
     tr.currentEntity->needDlights = (mask != 0);
 
     // set the dlight bits in all the surfaces
+    bits = r_fastdlights->integer ? mask : 0;
     for (i = 0; i < bmodel->numSurfaces; i++) {
         surf = bmodel->firstSurface + i;
 
         if (*surf->data == SF_FACE) {
-            ((srfSurfaceFace_t *)surf->data)->dlightBits[tr.smpFrame] = mask;
+            ((srfSurfaceFace_t *)surf->data)->dlightBits = bits;
         } else if (*surf->data == SF_GRID) {
-            ((srfGridMesh_t *)surf->data)->dlightBits[tr.smpFrame] = mask;
+            ((srfGridMesh_t *)surf->data)->dlightBits = bits;
         } else if (*surf->data == SF_TRIANGLES) {
-            ((srfTriangles_t *)surf->data)->dlightBits[tr.smpFrame] = mask;
+            ((srfTriangles_t *)surf->data)->dlightBits = bits;
         }
     }
+
+    return mask;
 }
 
 /*

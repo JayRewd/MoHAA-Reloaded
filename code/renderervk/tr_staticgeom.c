@@ -606,7 +606,7 @@ static qboolean RB_StaticBatchAllowed( void ) {
 		// a record per draw (RB_StaticDraw), which the frame data must have
 		// room for: the batch is drawn whatever happens
 		tess.staticMergeable = qfalse;
-		if ( !vk_skin_frame_room( numDraws * STATIC_FX_MAX_WORDS ) ) {
+		if ( !vk_skin_frame_room( numDraws * STATIC_FX_MAX_WORDS( backEnd.refdef.num_dlights ) ) ) {
 			return qfalse;
 		}
 	}
@@ -665,13 +665,12 @@ qboolean RB_StaticSurface( const surfaceType_t *surface ) {
 ===============
 RB_StaticDlights
 
-Whether the dynamic lights of a surface need a pass (ProjectDlightTexture)
-in the current batch: not in a batch of brush model surfaces lit per pixel
-(tess.dlightMap, see R_DlightSortKey)
+Whether the dynamic lights of a surface need a pass (ProjectDlightTexture,
+r_fastdlights 1: no surface has such bits with 0) in the current batch
 ===============
 */
-qboolean RB_StaticDlights( int dlightBits ) {
-	return dlightBits && !tess.dlightMap && backEnd.refdef.num_dlights && tess.shader->sort <= SS_OPAQUE;
+qboolean RB_StaticDlights( dlightMask_t dlightBits ) {
+	return dlightBits && backEnd.refdef.num_dlights && tess.shader->sort <= SS_OPAQUE;
 }
 
 /*
@@ -683,7 +682,7 @@ pass (ProjectDlightTexture runs for the whole batch), or vertex alphas below
 255 where a stage takes the vertex colors with alpha 255
 ===============
 */
-qboolean RB_StaticAddSurface( surfaceType_t *surface, int dlightBits, qboolean opaque ) {
+qboolean RB_StaticAddSurface( surfaceType_t *surface, dlightMask_t dlightBits, qboolean opaque ) {
 	if ( RB_StaticDlights( dlightBits ) || ( !opaque && tess.staticNeedsOpaque ) || tess.numStaticSurfs == ARRAY_LEN( tess.staticSurfs ) ) {
 		return qfalse;
 	}

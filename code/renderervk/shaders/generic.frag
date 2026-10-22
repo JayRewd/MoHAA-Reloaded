@@ -59,10 +59,14 @@ layout(push_constant) uniform PushConstants {
 	// -1 / (end - start), end / (end - start), as Mesa's
 	// gl_MesaFogParamsOptimized
 	vec2	fogParams;
-	// the list of lights in dlights[] and those of it the draw adds
+	// the lights the draw adds: those of a mask over the 32 lights of
+	// dlights[] from dlightBase, or with DLIGHT_COUNT in dlightBase the
+	// first dlightMask lights from its other bits (vk_set_lightmap_dlights)
 	uint	dlightBase;
 	uint	dlightMask;
 } pc;
+
+const uint DLIGHT_COUNT = 0x80000000u;
 
 // vkDlightGPU_t
 struct Dlight {
@@ -98,18 +102,31 @@ layout(location = 0) out vec4 out_color;
 // divided by its largest component when that is above 1, truncated to a
 // byte again. normal: the side of the triangle a light must be on for
 // DLIGHT_BACKS
+vec3 AddDlight( vec3 sum, Dlight dl, vec3 normal ) {
+	vec3 dir = dl.originInvRadius.xyz - v_position;
+	float d = sqrt( dot( dir, dir ) ) * dl.originInvRadius.w;
+
+	if ( d <= 1.0 && ( !DLIGHT_BACKS || dot( dir, normal ) >= 0.0 ) ) {
+		sum += floor( ( 1.0 - d ) * ( 1.0 - d ) * dl.colorScale.rgb ) * dl.colorScale.w;
+	}
+	return sum;
+}
+
 vec3 AddDlights( vec3 lightmap, vec3 normal ) {
 	vec3 sum = lightmap;
-	uint mask = pc.dlightMask;
 
-	while ( mask != 0u ) {
-		Dlight dl = dlights[pc.dlightBase + uint( findLSB( mask ) )];
-		vec3 dir = dl.originInvRadius.xyz - v_position;
-		float d = sqrt( dot( dir, dir ) ) * dl.originInvRadius.w;
+	if ( ( pc.dlightBase & DLIGHT_COUNT ) != 0u ) {
+		uint base = pc.dlightBase & ~DLIGHT_COUNT;
 
-		mask &= mask - 1u;
-		if ( d <= 1.0 && ( !DLIGHT_BACKS || dot( dir, normal ) >= 0.0 ) ) {
-			sum += floor( ( 1.0 - d ) * ( 1.0 - d ) * dl.colorScale.rgb ) * dl.colorScale.w;
+		for ( uint i = 0u; i < pc.dlightMask; i++ ) {
+			sum = AddDlight( sum, dlights[base + i], normal );
+		}
+	} else {
+		uint mask = pc.dlightMask;
+
+		while ( mask != 0u ) {
+			sum = AddDlight( sum, dlights[pc.dlightBase + uint( findLSB( mask ) )], normal );
+			mask &= mask - 1u;
 		}
 	}
 

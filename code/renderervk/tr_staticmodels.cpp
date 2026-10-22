@@ -532,7 +532,7 @@ void RB_Static_BuildDLights()
         return;
     }
 
-    for (i = 0; i < backEnd.refdef.num_dlights && backEnd.currentStaticModel->numdlights != 32; i++) {
+    for (i = 0; i < backEnd.refdef.num_dlights && backEnd.currentStaticModel->numdlights != MAX_SCENE_DLIGHTS; i++) {
         vec3_t lightorigin, delta;
 
         VectorCopy(backEnd.refdef.dlights[i].origin, lightorigin);
@@ -541,10 +541,10 @@ void RB_Static_BuildDLights()
             MatrixTransformVectorRight(
                 backEnd.currentStaticModel->axis,
                 delta,
-                backEnd.currentStaticModel->dlights[backEnd.currentStaticModel->numdlights].transformed
+                backEnd.staticModelDlights[backEnd.currentStaticModel->numdlights].transformed
             );
 
-            backEnd.currentStaticModel->dlights[backEnd.currentStaticModel->numdlights++].index = i;
+            backEnd.staticModelDlights[backEnd.currentStaticModel->numdlights++].index = i;
         }
     }
 

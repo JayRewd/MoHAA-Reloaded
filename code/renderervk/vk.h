@@ -247,11 +247,11 @@ typedef struct {
 int			vk_add_dlights( int count, const vkDlight_t *dlights );
 // the lights of a list (handle from vk_add_dlights) that the following draws
 // add to the texture of unit tmu, a lightmap: mask has a bit for each light
-// of the list; tmu -1 turns it off. backs: no light from behind the plane of
-// the triangle, whose front is the side its vertexes are clockwise from (the
-// side a BSP face's plane normal points to; GL's front faces are the
-// counter-clockwise ones)
-void		vk_set_lightmap_dlights( int tmu, int handle, unsigned int mask, qboolean backs );
+// of the list (up to 64); tmu -1 turns it off. backs: no light from behind
+// the plane of the triangle, whose front is the side its vertexes are
+// clockwise from (the side a BSP face's plane normal points to; GL's front
+// faces are the counter-clockwise ones)
+void		vk_set_lightmap_dlights( int tmu, int handle, uint64_t mask, qboolean backs );
 
 void		vk_set_line_width( float width );
 // factor 0 disables stippling

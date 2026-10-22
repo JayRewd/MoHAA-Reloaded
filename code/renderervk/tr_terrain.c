@@ -1317,7 +1317,7 @@ R_AddTerrainSurfaces
 void R_AddTerrainSurfaces()
 {
     int                    i;
-    int                    dlight;
+    dlightMask_t           dlight;
     cTerraPatchUnpacked_t *patch;
 
     if (tr.world->numTerraPatches < 0) {
@@ -1335,7 +1335,7 @@ void R_AddTerrainSurfaces()
             if (ter_lock->integer == 2 || patch->visCountDraw == g_terVisCount) {
                 assert(patch->shader);
 
-                dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
+                dlight = R_CheckDlightTerrain(patch, DLIGHTS_ALL(tr.refdef.num_dlights));
                 R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, R_DlightSortKey(dlight));
             }
 
@@ -1359,7 +1359,7 @@ void R_AddTerrainSurfaces()
         for (patch = tr.world->activeTerraPatches; patch; patch = patch->pNextActive) {
             assert(patch->shader);
 
-            dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
+            dlight = R_CheckDlightTerrain(patch, DLIGHTS_ALL(tr.refdef.num_dlights));
             R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, R_DlightSortKey(dlight));
         }
     }

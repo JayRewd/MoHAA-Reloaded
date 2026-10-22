@@ -47,6 +47,18 @@ long myftol( float f );
 // parallel on a dual cpu machine
 #define	SMP_FRAMES		2
 
+// dynamic lights: a scene uses at most MAX_SCENE_DLIGHTS of them, the
+// r_maxDlights nearest the view of those cgame added (RE_RenderScene), and
+// the masks over refdef.dlights are 64 bits; the GL renderers keep the 32 of
+// tr_types.h's MAX_DLIGHTS and 32-bit masks. A frame takes at most
+// MAX_ADDED_DLIGHTS added lights for its scenes to choose from
+#define MAX_SCENE_DLIGHTS	64
+#define MAX_ADDED_DLIGHTS	256
+typedef uint64_t dlightMask_t;
+#define DLIGHT_BIT( i )		( (dlightMask_t)1 << ( i ) )
+// lights 0 to n - 1 (GL1's ( 1 << n ) - 1 was undefined for n = 32)
+#define DLIGHTS_ALL( n )	( ( n ) >= MAX_SCENE_DLIGHTS ? ~(dlightMask_t)0 : DLIGHT_BIT( n ) - 1 )
+
 // 12 bits
 // see QSORT_SHADERNUM_SHIFT
 #define	MAX_SHADERS				16384
@@ -797,11 +809,11 @@ typedef struct srfFlare_s {
 typedef struct srfGridMesh_s {
 	surfaceType_t	surfaceType;
 
-	// dynamic lighting information: dlightBits for ProjectDlightTexture,
-	// dlightMap the lights added per pixel to the lightmap (r_fastdlights
-	// 0, R_RealDlightPatch), bits of refdef.dlights
-    int				dlightBits[SMP_FRAMES];
-    int				dlightMap[SMP_FRAMES];
+	// dynamic lighting information: dlightBits for ProjectDlightTexture
+	// (r_fastdlights 1), dlightMap the lights added per pixel to the
+	// lightmap (r_fastdlights 0, R_RealDlightPatch), bits of refdef.dlights
+	dlightMask_t	dlightBits;
+	dlightMask_t	dlightMap;
 
 	// culling information
 	vec3_t			meshBounds[2];
@@ -843,8 +855,8 @@ typedef struct {
 	cplane_t	plane;
 
 	// dynamic lighting information, as in srfGridMesh_t (R_RealDlightFace)
-    int			dlightBits[SMP_FRAMES];
-    int			dlightMap[SMP_FRAMES];
+	dlightMask_t	dlightBits;
+	dlightMask_t	dlightMap;
     int			lmWidth;
     int			lmHeight;
     int			lmX;
@@ -872,8 +884,10 @@ typedef struct {
 typedef struct {
 	surfaceType_t	surfaceType;
 
-	// dynamic lighting information
-	int				dlightBits[SMP_FRAMES];
+	// dynamic lighting information: ProjectDlightTexture's (r_fastdlights 1;
+	// with r_fastdlights 0 triangle surfaces get no dynamic light, as the
+	// world's in GL1)
+	dlightMask_t	dlightBits;
 
 	// culling information (FIXME: use this!)
 	vec3_t			bounds[2];
@@ -952,9 +966,9 @@ typedef struct srfTerrain_s {
     int nVerts;
     int nTris;
     int lmapSize;
-    int dlightBits[2];
     float lmapStep;
-    int dlightMap[2];	// as in srfGridMesh_t (R_RealDlightTerrain)
+    dlightMask_t dlightBits;
+    dlightMask_t dlightMap;	// as in srfGridMesh_t (R_RealDlightTerrain)
 } srfTerrain_t;
 
 typedef struct cTerraPatchUnpacked_s {
@@ -1001,8 +1015,7 @@ typedef struct cStaticModelUnpacked_s {
     int numVertexData;
     int visCount;
     dtiki_t* tiki;
-    sphere_dlight_t dlights[MAX_DLIGHTS];
-    int numdlights;
+    int numdlights;	// in backEnd.staticModelDlights while the model is drawn
     float radius;
     float cull_radius;
     int iGridLighting;
@@ -1349,6 +1362,11 @@ typedef struct {
     sphereor_t spareSphere;
     sphereor_t hudSphere;
     cStaticModelUnpacked_t* currentStaticModel;
+    // the dynamic lights of the current static model (RB_Static_BuildDLights),
+    // read only while it is drawn; in each model 64 of them took 1 KB, which
+    // cost the front end's walk over the models 5 us a frame in a view of
+    // obj/obj_team2
+    sphere_dlight_t staticModelDlights[MAX_SCENE_DLIGHTS];
     int dsStreamVert;
 	qboolean in2D;	// if qtrue, drawstretchpic doesn't need to change modes
 	byte color2D[4];
@@ -1540,6 +1558,7 @@ extern cvar_t	*r_largemap;
 extern cvar_t	*r_inGameVideo;				// controls whether in game video should be draw
 extern cvar_t	*r_fastsky;				// controls whether sky should be cleared or drawn
 extern cvar_t	*r_fastdlights;
+extern cvar_t	*r_maxDlights;			// the dynamic lights a scene keeps, 0 to MAX_SCENE_DLIGHTS
 extern cvar_t	*r_drawSun;				// controls drawing of sun quad
 extern cvar_t	*r_dlightBacks;			// dlight non-facing surfaces for continuity
 
@@ -2033,7 +2052,6 @@ typedef struct shaderCommands_s
 	vec4_t		normal[SHADER_MAX_VERTEXES] Q_ALIGN(16);
 	vec2_t		texCoords[SHADER_MAX_VERTEXES][2] Q_ALIGN(16);
 	color4ub_t	vertexColors[SHADER_MAX_VERTEXES] Q_ALIGN(16);
-	int			vertexDlightBits[SHADER_MAX_VERTEXES] Q_ALIGN(16);
 
 	stageVars_t	svars Q_ALIGN(16);
 
@@ -2043,14 +2061,13 @@ typedef struct shaderCommands_s
 	float		shaderTime;
 	int			fogNum;
 
-	int			dlightBits;	// or together of all vertexDlightBits
-	// from the sort key: r_fastdlights 0, the surfaces of a brush model that
-	// get lights per pixel, not from ProjectDlightTexture (R_DlightSortKey)
-	int			dlightMap;
+	// the lights ProjectDlightTexture adds (r_fastdlights 1): or together of
+	// the surfaces' dlightBits
+	dlightMask_t	dlightBits;
 	// the lights added per pixel to the lightmap (r_fastdlights 0, bits of
 	// refdef.dlights): or together of the surfaces' dlightMap; and whether
 	// a face has some, which r_dlightBacks 0 applies to (RB_LightmapDlights)
-	int			lightmapDlights;
+	dlightMask_t	lightmapDlights;
 	qboolean	lightmapDlightFaces;
 
 	int			numIndexes;
@@ -2128,8 +2145,8 @@ void R_BuildStaticGeometry( void );
 void R_FreeStaticGeometry( void );
 qboolean RB_StaticBatch( void );
 qboolean RB_StaticSurface( const surfaceType_t *surface );
-qboolean RB_StaticDlights( int dlightBits );
-qboolean RB_StaticAddSurface( surfaceType_t *surface, int dlightBits, qboolean opaque );
+qboolean RB_StaticDlights( dlightMask_t dlightBits );
+qboolean RB_StaticAddSurface( surfaceType_t *surface, dlightMask_t dlightBits, qboolean opaque );
 void RB_SurfaceGridRows( srfGridMesh_t *cv, int used, int rows );
 void RB_StaticBatchToCPU( void );
 qboolean RB_StaticMerge( int staticModel );
@@ -2148,8 +2165,9 @@ void RB_CheckOverflow( int verts, int indexes );
 // tr_shade_calc.c: the records of the effects shader (shaders/effects.vert)
 #define STATIC_FX_ALPHA_SHIFT	8			// 1 distFade, 2 oneMinusDistFade, 2 bits
 #define STATIC_FX_LIGHTING		( 1 << 10 )	// useSpecialLighting
-// the most frame data words a draw's record takes, with its light list
-#define STATIC_FX_MAX_WORDS		( 128 + 8 + 8 * MAX_DLIGHTS )
+// the most frame data words a draw's record takes, with its light list of
+// at most numDlights (the scene's)
+#define STATIC_FX_MAX_WORDS( numDlights )	( 128 + 8 + 8 * ( numDlights ) )
 
 // what a unit of an effects draw reads
 typedef enum {
@@ -2208,8 +2226,8 @@ void R_AddBrushModelSurfaces( trRefEntity_t *e );
 void R_GetInlineModelBounds(int iIndex, vec3_t vMins, vec3_t vMaxs);
 int R_SphereInLeafs(const vec3_t p, float r, mnode_t** nodes, int nMaxNodes);
 mnode_t* R_PointInLeaf(const vec3_t p);
-int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits);
-int R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits);
+dlightMask_t R_DlightTerrain(cTerraPatchUnpacked_t* surf, dlightMask_t dlightBits);
+dlightMask_t R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, dlightMask_t dlightBits);
 void R_AddWorldSurfaces( void );
 void R_SetupWorldLeaves( void );
 qboolean R_inPVS( const vec3_t p1, const vec3_t p2 );
@@ -2237,7 +2255,7 @@ LIGHTS
 ============================================================
 */
 
-void R_DlightBmodel( bmodel_t *bmodel );
+dlightMask_t R_DlightBmodel( bmodel_t *bmodel );
 void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingGridValueFast(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingForDecal(vec3_t vLight, const vec3_t vFacing, const vec3_t vOrigin);
@@ -2245,12 +2263,12 @@ void R_GetLightingForSmoke(vec3_t vLight, const vec3_t vOrigin);
 void R_SetupEntityLighting( const trRefdef_t *refdef, trRefEntity_t *ent );
 void RB_SetupEntityGridLighting();
 void RB_SetupStaticModelGridLighting(trRefdef_t* refdef, cStaticModelUnpacked_t* ent, const vec3_t lightOrigin);
-int R_RealDlightPatch(srfGridMesh_t* srf, int dlightBit);
-int R_RealDlightFace(srfSurfaceFace_t* srf, int dlightBits);
-int R_RealDlightTerrain(cTerraPatchUnpacked_t* srf, int dlightBits);
-int R_DlightSortKey(int dlightMap);
+dlightMask_t R_RealDlightPatch(srfGridMesh_t* srf, dlightMask_t dlightBits);
+dlightMask_t R_RealDlightFace(srfSurfaceFace_t* srf, dlightMask_t dlightBits);
+dlightMask_t R_RealDlightTerrain(cTerraPatchUnpacked_t* srf, dlightMask_t dlightBits);
+int R_DlightSortKey(dlightMask_t dlightBits);
 void R_SetupDlightBounds(void);
-int R_CullDlightsToNode(const mnode_t *node, int dlightBits);
+dlightMask_t R_CullDlightsToNode(const mnode_t *node, dlightMask_t dlightBits);
 void RB_TransformDlights(qboolean world);
 void RB_LightmapDlights(int tmu);
 void R_TransformDlights( int count, dlight_t *dl, orientationr_t *ori );
@@ -2733,7 +2751,7 @@ typedef enum {
 typedef struct {
 	drawSurf_t	drawSurfs[MAX_DRAWSURFS];
 	drawSurf_t  spriteSurfs[MAX_SPRITESURFS];
-	dlight_t	dlights[MAX_DLIGHTS];
+	dlight_t	dlights[MAX_ADDED_DLIGHTS];
 	trRefEntity_t	entities[MAX_ENTITIES];
 	srfMarkFragment_t* terMarks;
 	srfPoly_t	*polys;

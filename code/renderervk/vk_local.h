@@ -268,6 +268,14 @@ typedef enum {
 	VK_TARGET_SWAPCHAIN			// the acquired swapchain image
 } vkTarget_t;
 
+// a light of vk_add_dlights in the frame's dlight buffer (shaders/generic.frag)
+typedef struct {
+	float	origin[3];
+	float	invRadius;			// 1 / radius
+	float	color[3];			// vkDlight_t::color / scale
+	float	scale;
+} vkDlightGPU_t;
+
 typedef struct {
 	VkCommandPool	commandPool;
 	VkCommandBuffer	uploadCmd;		// texture uploads that need no ordering with draws, submitted first
@@ -284,6 +292,10 @@ typedef struct {
 	vkBuffer_t		dlightBuffer;	// lights of vk_add_dlights (vkDlightGPU_t), set 2 of the shaders
 	VkDescriptorSet	dlightSet;		// set 2: the dlight buffer, the skin data and this frame's skin data
 	int				numDlights;
+	// the lists of more than 32 lights, at their place in the dlight buffer
+	// (which is write-combined memory): the draws whose lights span more
+	// than 32 of them get lists of their own (VK_DlightSubList)
+	vkDlightGPU_t	*dlightCopy;
 	vkBuffer_t		skinBuffer;		// frame data of the skinned draws (vk_alloc_skin_frame)
 	int				skinWords;
 
@@ -678,19 +690,14 @@ typedef struct {
 	float	clipPlane[4];		// user clip plane in object space, 0 when off
 	float	fogColor[4];
 	float	fogParams[2];		// -1 / (end - start), end / (end - start)
-	uint32_t	dlightBase;		// first light of the list in the frame's dlight buffer
-	uint32_t	dlightMask;		// the lights of the list that the draw adds
+	uint32_t	dlightBase;		// first light of the list in the frame's dlight buffer, and VK_DLIGHT_COUNT
+	uint32_t	dlightMask;		// the lights of the 32 from the base that the draw adds, or their number
 } vkPushConstants_t;
 
-// a light of vk_add_dlights in the frame's dlight buffer (shaders/generic.frag)
-typedef struct {
-	float	origin[3];
-	float	invRadius;			// 1 / radius
-	float	color[3];			// vkDlight_t::color / scale
-	float	scale;
-} vkDlightGPU_t;
-
-#define VK_MAX_FRAME_DLIGHTS	4096	// per frame: 128 lists of 32 lights
+#define VK_MAX_FRAME_DLIGHTS	8192	// per frame: 128 lists of 64 lights
+// vkPushConstants_t::dlightBase: dlightMask is the number of lights of the
+// list from the base (the other bits), not a mask (VK_DlightSubList)
+#define VK_DLIGHT_COUNT			0x80000000u
 
 #define VK_SKIN_DATA_WORDS		( 8 * 1024 * 1024 )	// skin data, 32 MB
 #define VK_SKIN_FRAME_WORDS		( 512 * 1024 )		// frame data of the skinned draws, 2 MB per frame

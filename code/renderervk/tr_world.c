@@ -168,20 +168,20 @@ static qboolean	R_CullSurface( surfaceType_t *surface, shader_t *shader ) {
 R_FastDlightFace
 ======================
 */
-static int R_FastDlightFace( srfSurfaceFace_t *face, int dlightBits ) {
+static dlightMask_t R_FastDlightFace( srfSurfaceFace_t *face, dlightMask_t dlightBits ) {
 	float		d;
 	int			i;
 	dlight_t	*dl;
 
 	for ( i = 0 ; i < tr.refdef.num_dlights ; i++ ) {
-		if ( ! ( dlightBits & ( 1 << i ) ) ) {
+		if ( ! ( dlightBits & DLIGHT_BIT( i ) ) ) {
 			continue;
 		}
 		dl = &tr.refdef.dlights[i];
 		d = DotProduct( dl->transformed, face->plane.normal ) - face->plane.dist;
 		if ( d < -dl->radius || d > dl->radius ) {
 			// dlight doesn't reach the plane
-			dlightBits &= ~( 1 << i );
+			dlightBits &= ~DLIGHT_BIT( i );
 		}
 	}
 
@@ -189,7 +189,7 @@ static int R_FastDlightFace( srfSurfaceFace_t *face, int dlightBits ) {
 		tr.pc.c_dlightSurfacesCulled++;
 	}
 
-	face->dlightBits[ tr.smpFrame ] = dlightBits;
+	face->dlightBits = dlightBits;
 	return dlightBits;
 }
 
@@ -198,12 +198,12 @@ static int R_FastDlightFace( srfSurfaceFace_t *face, int dlightBits ) {
 R_FastDlightGrid
 ======================
 */
-static int R_FastDlightGrid( srfGridMesh_t *grid, int dlightBits ) {
+static dlightMask_t R_FastDlightGrid( srfGridMesh_t *grid, dlightMask_t dlightBits ) {
 	int			i;
 	dlight_t	*dl;
 
 	for ( i = 0 ; i < tr.refdef.num_dlights ; i++ ) {
-		if ( ! ( dlightBits & ( 1 << i ) ) ) {
+		if ( ! ( dlightBits & DLIGHT_BIT( i ) ) ) {
 			continue;
 		}
 		dl = &tr.refdef.dlights[i];
@@ -214,7 +214,7 @@ static int R_FastDlightGrid( srfGridMesh_t *grid, int dlightBits ) {
 			|| dl->origin[2] - dl->radius > grid->meshBounds[1][2]
 			|| dl->origin[2] + dl->radius < grid->meshBounds[0][2] ) {
 			// dlight doesn't reach the bounds
-			dlightBits &= ~( 1 << i );
+			dlightBits &= ~DLIGHT_BIT( i );
 		}
 	}
 
@@ -222,7 +222,7 @@ static int R_FastDlightGrid( srfGridMesh_t *grid, int dlightBits ) {
 		tr.pc.c_dlightSurfacesCulled++;
 	}
 
-	grid->dlightBits[ tr.smpFrame ] = dlightBits;
+	grid->dlightBits = dlightBits;
 	return dlightBits;
 }
 
@@ -231,7 +231,7 @@ static int R_FastDlightGrid( srfGridMesh_t *grid, int dlightBits ) {
 R_FastDlightTerrain
 ======================
 */
-static int R_FastDlightTerrain(cTerraPatchUnpacked_t* srf, int dlightBits) {
+static dlightMask_t R_FastDlightTerrain(cTerraPatchUnpacked_t* srf, dlightMask_t dlightBits) {
     dlight_t* dl;
     float* origin;
     int i;
@@ -248,7 +248,7 @@ static int R_FastDlightTerrain(cTerraPatchUnpacked_t* srf, int dlightBits) {
             || srf->z0 - origin[2] < -srf->zmax - dl->radius
             ) {
             // dlight doesn't reach the bounds
-            dlightBits &= ~(1 << i);
+            dlightBits &= ~DLIGHT_BIT(i);
         }
     }
 
@@ -256,7 +256,7 @@ static int R_FastDlightTerrain(cTerraPatchUnpacked_t* srf, int dlightBits) {
         tr.pc.c_dlightSurfacesCulled++;
     }
 
-    srf->drawinfo.dlightBits[tr.smpFrame] = dlightBits;
+    srf->drawinfo.dlightBits = dlightBits;
     return dlightBits;
 }
 
@@ -265,16 +265,16 @@ static int R_FastDlightTerrain(cTerraPatchUnpacked_t* srf, int dlightBits) {
 R_DlightTrisurf
 ======================
 */
-static int R_DlightTrisurf( srfTriangles_t *surf, int dlightBits ) {
+static dlightMask_t R_DlightTrisurf( srfTriangles_t *surf, dlightMask_t dlightBits ) {
 	// FIXME: more dlight culling to trisurfs...
-	surf->dlightBits[ tr.smpFrame ] = dlightBits;
+	surf->dlightBits = dlightBits;
 	return dlightBits;
 #if 0
 	int			i;
 	dlight_t	*dl;
 
 	for ( i = 0 ; i < tr.refdef.num_dlights ; i++ ) {
-		if ( ! ( dlightBits & ( 1 << i ) ) ) {
+		if ( ! ( dlightBits & DLIGHT_BIT( i ) ) ) {
 			continue;
 		}
 		dl = &tr.refdef.dlights[i];
@@ -285,7 +285,7 @@ static int R_DlightTrisurf( srfTriangles_t *surf, int dlightBits ) {
 			|| dl->origin[2] - dl->radius > grid->meshBounds[1][2]
 			|| dl->origin[2] + dl->radius < grid->meshBounds[0][2] ) {
 			// dlight doesn't reach the bounds
-			dlightBits &= ~( 1 << i );
+			dlightBits &= ~DLIGHT_BIT( i );
 		}
 	}
 
@@ -293,7 +293,7 @@ static int R_DlightTrisurf( srfTriangles_t *surf, int dlightBits ) {
 		tr.pc.c_dlightSurfacesCulled++;
 	}
 
-	grid->dlightBits[ tr.smpFrame ] = dlightBits;
+	grid->dlightBits = dlightBits;
 	return dlightBits;
 #endif
 }
@@ -307,8 +307,8 @@ that is touched by one or more dlights, so try to throw out
 more dlights if possible.
 ====================
 */
-static int R_DlightSurface( msurface_t *surf, int dlightBits ) {
-	int dlightMap;
+static dlightMask_t R_DlightSurface( msurface_t *surf, dlightMask_t dlightBits ) {
+	dlightMask_t dlightMap;
 
 	dlightMap = 0;
 
@@ -317,7 +317,7 @@ static int R_DlightSurface( msurface_t *surf, int dlightBits ) {
 			if (surf->shader->lightmapIndex >= 0) {
 				dlightMap = R_RealDlightFace((srfSurfaceFace_t*)surf->data, dlightBits);
 			} else {
-				((srfSurfaceFace_t*)surf->data)->dlightMap[tr.smpFrame] = 0;
+				((srfSurfaceFace_t*)surf->data)->dlightMap = 0;
 				dlightMap = 0;
 			}
 			return dlightMap;
@@ -329,7 +329,7 @@ static int R_DlightSurface( msurface_t *surf, int dlightBits ) {
 			if (surf->shader->lightmapIndex >= 0) {
 				dlightMap = R_RealDlightPatch((srfGridMesh_t*)surf->data, dlightBits);
 			} else {
-				((srfGridMesh_t*)surf->data)->dlightMap[tr.smpFrame] = 0.f;
+				((srfGridMesh_t*)surf->data)->dlightMap = 0;
 				dlightMap = 0;
             }
             return dlightMap;
@@ -353,9 +353,9 @@ static int R_DlightSurface( msurface_t *surf, int dlightBits ) {
 R_DlightTerrain
 ======================
 */
-int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
+dlightMask_t R_DlightTerrain(cTerraPatchUnpacked_t* surf, dlightMask_t dlightBits)
 {
-	int dlightMap;
+	dlightMask_t dlightMap;
 
     dlightMap = 0;
 
@@ -366,7 +366,7 @@ int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 			dlightMap = 1;
         }
     } else if (surf->shader->lightmapIndex < 0) {
-        surf->drawinfo.dlightMap[tr.smpFrame] = 0;
+        surf->drawinfo.dlightMap = 0;
     } else {
 		dlightMap = R_RealDlightTerrain(surf, dlightBits);
     }
@@ -379,7 +379,7 @@ int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 R_CheckDlightSurface
 ======================
 */
-static int R_CheckDlightSurface(msurface_t* surf, int dlightBits)
+static dlightMask_t R_CheckDlightSurface(msurface_t* surf, dlightMask_t dlightBits)
 {
     if (dlightBits && surf->frameCount != tr.frameCount)
     {
@@ -394,24 +394,24 @@ static int R_CheckDlightSurface(msurface_t* surf, int dlightBits)
 		//  Return the existing dlight map
 		if (*surf->data == SF_FACE)
 		{
-			return ((srfSurfaceFace_t*)surf->data)->dlightMap[tr.smpFrame];
+			return ((srfSurfaceFace_t*)surf->data)->dlightMap;
 		}
 		else if (*surf->data == SF_GRID)
 		{
-			return ((srfGridMesh_t*)surf->data)->dlightMap[tr.smpFrame];
+			return ((srfGridMesh_t*)surf->data)->dlightMap;
 		}
 	}
 	else
 	{
 		if (*surf->data == SF_FACE)
 		{
-			((srfSurfaceFace_t*)surf->data)->dlightMap[tr.smpFrame] = 0;
-			((srfSurfaceFace_t*)surf->data)->dlightBits[tr.smpFrame] = 0;
+			((srfSurfaceFace_t*)surf->data)->dlightMap = 0;
+			((srfSurfaceFace_t*)surf->data)->dlightBits = 0;
 		}
 		else if (*surf->data == SF_GRID)
 		{
-			((srfGridMesh_t*)surf->data)->dlightMap[tr.smpFrame] = 0;
-			((srfGridMesh_t*)surf->data)->dlightBits[tr.smpFrame] = 0;
+			((srfGridMesh_t*)surf->data)->dlightMap = 0;
+			((srfGridMesh_t*)surf->data)->dlightBits = 0;
 		}
 	}
 
@@ -423,10 +423,10 @@ static int R_CheckDlightSurface(msurface_t* surf, int dlightBits)
 R_CheckDlightTerrain
 ======================
 */
-int R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
+dlightMask_t R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, dlightMask_t dlightBits)
 {
 	if (surf->frameCount == tr.frameCount) {
-		return surf->drawinfo.dlightMap[tr.smpFrame];
+		return surf->drawinfo.dlightMap;
 	}
 
 	surf->frameCount = tr.frameCount;
@@ -434,8 +434,8 @@ int R_CheckDlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 		return R_DlightTerrain(surf, dlightBits);
 	}
 
-	surf->drawinfo.dlightMap[tr.smpFrame] = 0;
-	surf->drawinfo.dlightBits[tr.smpFrame] = 0;
+	surf->drawinfo.dlightMap = 0;
+	surf->drawinfo.dlightBits = 0;
 	return 0;
 }
 
@@ -538,7 +538,7 @@ planeBits: the frustum planes the world's leaf isn't wholly in front of, 0
 for brush models
 ======================
 */
-static void R_AddWorldSurface( msurface_t *surf, int dlightBits, int planeBits ) {
+static void R_AddWorldSurface( msurface_t *surf, dlightMask_t dlightBits, int planeBits ) {
 	//if ( surf->viewCount == tr.viewCount ) {
 	//	return;		// already in this view
 	//}
@@ -577,6 +577,13 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits, int planeBits )
 /*
 =================
 R_AddBrushModelSurfaces
+
+The surfaces get the lights that reach the model (R_DlightBmodel) as the
+world's get those of their leaves: per pixel on the lightmap with
+r_fastdlights 0, ProjectDlightTexture with 1. GL1 passed needDlights (1)
+as the lights to test, so only light 0 lit their lightmaps (or was
+projected with r_fastdlights 1), and with r_fastdlights 0 the surfaces it
+didn't reach got ProjectDlightTexture from all the model's lights
 =================
 */
 void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
@@ -584,6 +591,7 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 	int			clip;
 	model_t		*pModel;
 	int			i;
+	dlightMask_t	dlightBits;
 
 	pModel = R_GetModelByHandle( ent->e.hModel );
 
@@ -594,10 +602,10 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 		return;
 	}
 	
-	R_DlightBmodel( bmodel );
+	dlightBits = R_DlightBmodel( bmodel );
 
 	for ( i = 0 ; i < bmodel->numSurfaces ; i++ ) {
-		R_AddWorldSurface( bmodel->firstSurface + i, tr.currentEntity->needDlights, 0 );
+		R_AddWorldSurface( bmodel->firstSurface + i, dlightBits, 0 );
 	}
 }
 
@@ -881,7 +889,7 @@ lights can reach contain its own, so the leaf's test alone leaves the same
 lights as the tests of every node down to it did
 ================
 */
-static void R_AddWorldLeaf( mnode_t *node, int planeBits, int dlightBits, int facePlanes ) {
+static void R_AddWorldLeaf( mnode_t *node, int planeBits, dlightMask_t dlightBits, int facePlanes ) {
 	int			c;
 	msurface_t	*surf, **mark;
 
@@ -972,7 +980,7 @@ The potentially visible leaves that the frustum doesn't cull, in the order
 of GL1's BSP walk (see WORLD LEAVES)
 ================
 */
-static void R_AddWorldLeaves( int planeBits, int dlightBits ) {
+static void R_AddWorldLeaves( int planeBits, dlightMask_t dlightBits ) {
 	const world_t *w = tr.world;
 	int facePlanes = R_FaceViewPlanes();
 	int i, j;
@@ -1198,11 +1206,9 @@ void R_AddWorldSurfaces (void) {
 	ClearBounds(tr.viewParms.visBounds[0], tr.viewParms.visBounds[1]);
 
 	// perform frustum culling and add all the potentially visible surfaces
-	if (tr.refdef.num_dlights > 32) {
-		tr.refdef.num_dlights = 32;
-	}
+	// (RE_RenderScene kept at most r_maxDlights lights)
 	R_TransformDlights(tr.refdef.num_dlights, tr.refdef.dlights, &tr.viewParms.world);
-	R_AddWorldLeaves(tr.viewParms.fog.extrafrustums ? 31 : 15, (1 << tr.refdef.num_dlights) - 1);
+	R_AddWorldLeaves(tr.viewParms.fog.extrafrustums ? 31 : 15, DLIGHTS_ALL(tr.refdef.num_dlights));
 
 	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky) {
 		R_AddTerrainSurfaces();

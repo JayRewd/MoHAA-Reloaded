@@ -312,6 +312,18 @@ below are done.
   time 11 to 14 % lower where these models are drawn, nothing measurable in
   the two matches, the same frames to the bit (see Performance, Skinned
   passes)
+- dynamic lights (2026-10-20, from JayRewd's b26d8a67): a scene keeps
+  up to 64 lights (`r_maxDlights`, latched, default 4: the nearest the
+  view; GL1 kept the first 32 added) with 64-bit masks, a draw lit by
+  lights more than 32 apart in its list gets a list of them alone with
+  their number (all 64 reach it), and brush models (doors, movers) get
+  every light that reaches a lightmapped surface per pixel, as the world
+  does, where GL1 lit them with light 0 only and projected the others
+  (`ProjectDlightTexture`, no longer used with `r_fastdlights 0`). In real
+  matches (never more than 4 lights a frame) the renderer's time is the
+  same as before, the frames are the same to the bit where no brush model
+  is lit by another light than its first and no scene has more than 4 (see
+  Performance, Dynamic lights, 64 of them)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -416,6 +428,7 @@ Cvars of the backend:
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
 | `r_skelCull` (default 1) | 0 prepares and draws skeletal models outside the view too, as GL1 does (see Implementation notes, Skeletal culling) |
+| `r_maxDlights` (latched, archived, default 4) | 0 to 64: the dynamic lights a scene keeps, the nearest the view of those cgame added (GL1: the first 32 added to the frame); see Implementation notes, Dynamic lights |
 | `r_staticEffects` (default 1) | 0 leaves the static batches whose shaders deform vertexes or compute texture coordinates or colors per vertex to the CPU (tess) instead of the effects shader (see Implementation notes, Effects shader) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
@@ -717,11 +730,15 @@ Test content:
   `spmap` (`spdevmap`). Run it again with `+set r_fastdlights 1` (latched)
   for the projected dlight pass. Its views show world faces, static models
   (the bushes, lit per vertex) and a small entity (the lamp);
-  `mohdm1_dlight2` adds a brush model lit per pixel by light 0 and by
-  `ProjectDlightTexture` from another light (the door `*15`: GL1 lights
-  brush models' lightmaps with light 0 only, see Implementation notes,
-  Dynamic lights), curved patches and a soldier (`script_model`), and
-  `mohdm3_dlight` LOD terrain. `cg_acidtrip N` adds N random dlights a
+  `mohdm1_dlight2` adds a brush model lit per pixel (the door `*15`; cgame
+  adds only the lights near the view, so `dl2_door` and `dl2_doorproj`
+  light it with light 0 alone, and `dl2_door3` with three lights, where
+  GL1 lit brush models' lightmaps with light 0 only, see Implementation
+  notes, Dynamic lights), curved patches and a soldier (`script_model`),
+  `mohdm3_dlight` LOD terrain, and `mohdm1_dlight64` 40 lights in front of
+  the door (run it with `+set r_maxDlights 64`; the default keeps the 4
+  nearest the view): faces lit by lights more than 32 apart in the list,
+  which get a list of their own. `cg_acidtrip N` adds N random dlights a
   frame (radius 128 to 639) for a quick look and for timing (`perf.py
   --exec`), not for comparisons.
 - Multiplayer views with players (2026-10-16): `mp_mohdm1`, `mp_mohdm2`,
@@ -1411,6 +1428,36 @@ validation message in these runs, nor with synchronization validation
 3000 frames of the `o2match` demo with `cg_shadows 2`.
 `renderer_vulkan.so` imports no GL or Vulkan symbol and exports only
 `GetRefAPI`.
+
+The 64 dynamic lights (2026-10-20, see Performance, Dynamic lights, 64 of
+them), against the build before (`run.sh`, `tgadiff.py`, 640x480,
+`r_vkValidation 1`): on the 45 view lists (195 views, with the new
+`mohdm1_dlight64` and `dl2_door3`) 156 give the same frames to the bit,
+among them every view of the `dm`, `obj` and multiplayer lists but the snow
+of `mohdm5_fog`, the near-camera ±1 of `d7_alley` and `d7_arch` and 2
+pixels of `pm7_front`, and every view of the dynamic light, skinned pass
+and shadow lists with up to 4 lights (the static models lit by lights, the
+soldiers by the muzzle flashes); the others are `dl2_door3` (the door lit
+by its three lights, where the build before lit its lightmap with light 0
+alone), the four views of `mohdm1_dlight64` (the build before kept the
+first 32 of its 40 lights, and with 32 gave no world surface a light; the
+new one at the default keeps the 4 nearest the view) and the lists with
+random content or run-to-run noise named above (`m1l1`, `m1l2a`, `m1l3a`,
+`m2l1_skyportal`, `m3l1a`, `m3l3`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m5l3`,
+`m6l1a`). With `r_maxDlights 64` (the dynamic light lists, `mp_mohdm1`,
+`skin_passes`) and with `r_fastdlights 1` (the dynamic light lists) the
+same but `dl2_door3` and `mohdm1_dlight64` (with `r_fastdlights 1` the
+door's three lights projected, where the build before projected light 0
+alone); `mohdm1_texenv` with `r_ext_texture_env_add 1` the same. The
+shader's count path checked against its mask path with temporary builds:
+one that gave every draw with lights a list of its lights with their
+number, one that gave every draw whose first light isn't the list's first
+a list from its first light (the window), against the final build on
+`mohdm1_dlight`, `mohdm1_dlight2`, `mohdm3_dlight`, `mp_mohdm1`,
+`skin_passes` and `mohdm1_dlight64` with `r_maxDlights 64` (where the large
+faces take the count path by themselves): the same frames to the bit, on
+RADV and (the count path, `mohdm1_dlight2` and `mohdm1_dlight64`) on
+llvmpipe. No validation message in any of these runs.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -4160,6 +4207,105 @@ same (`sp_front` 3.168 / 3.163 ms, `sp_lit` 3.165 / 3.163, `pm1_front`
 draws of these shaders, about 40 ms of a cold load), the match the same 2
 as before (the head icons).
 
+Dynamic lights, 64 of them (2026-10-20, Plan 24; see Implementation notes,
+Dynamic lights). From JayRewd's b26d8a67 ("Scenes hold 64 dynamic lights
+with 64-bit masks... Brush models light every lightmapped surface per pixel
+with all their lights"), with the user's limit: `r_maxDlights` (latched,
+default 4, 0 to 64), the lights a scene keeps, the nearest the view. In
+real matches no frame has more than 4 lights (counted on 2026-10-19 over 10
+matches, 220 thousand frames), so at the default nothing is left out there;
+of the 45 view lists only `m3l1a`'s scenes have more (6 at most, the beach
+landing; counted with a temporary build).
+What changed, and how it differs from his:
+
+- The masks over the scene's lights are 64 bits (`dlightMask_t`) in the
+  surfaces, `tess` and the front end's tests. A face held two arrays of
+  two 32-bit masks (`[SMP_FRAMES]`, for a second render thread this
+  renderer never had: only element 0 was used); it holds one 64-bit mask
+  each now, in the same 16 bytes at the same place, so the face's layout
+  doesn't change (the spec's concern: a layout that grew the hot face
+  data had cost more than the work it saved before).
+- The shader's mask stays 32 bits (the push constants are full). His
+  version copied the lights of a draw lit from both halves of the list
+  into a list of their own and took the first 32 of them (with a warning);
+  here a draw whose lights lie within 32 of the list's gets the list from
+  the first of them, and one whose lights span more a list of them with
+  their number (`VK_DLIGHT_COUNT`): every light reaches the draw.
+- Brush models: every light that reaches a lightmapped surface, per pixel,
+  as the world's surfaces get them (his the same), and no projected pass
+  with `r_fastdlights 0` for their surfaces without a lightmap (his kept
+  it): the projected pass's pipelines are only built with `r_fastdlights
+  1` now (4 fewer pipelines at a load of `obj/obj_team2` and
+  `dm/mohdm3`). With `r_fastdlights 1` they get all their lights
+  projected (GL1, and his: light 0 only).
+- The lights a scene keeps: the cgame's lights (up to 256 a frame) are
+  sorted by distance to the view at `RE_RenderScene` and the
+  `r_maxDlights` nearest kept in the order they were added (his kept the
+  first 64 added, GL1 the first 32 added to the frame, and with exactly 32
+  GL1's mask of all lights, `( 1 << 32 ) - 1`, was 0 on x86: no world
+  surface got a light; his and this one fix that).
+- Dead code gone: `tess.vertexDlightBits` (written for every vertex of the
+  CPU path, read by nothing; 8 KB of `tess`) and `tess.dlightMap` (the
+  sort key flag of brush model surfaces lit per pixel).
+- The static models' lights (`useSpecialLighting`, up to 64 now): their
+  list moved from each model's `cStaticModelUnpacked_t` (512 bytes for 32
+  lights, 1 KB for 64) to one list in the back end
+  (`backEnd.staticModelDlights`), since only the model being drawn reads
+  it: the struct takes 256 bytes instead of 768. With the list in the model
+  at 64 lights (1280 bytes), the front end of the `obj_team2` yard took 4
+  to 6 µs longer in three batches (its walk over the visible models reads
+  each model's struct); a test build with the list at 32 lights took as
+  long as the build before.
+
+Results (idle machine: other processes 1.9 CPUs at most; the build before
+(`base`, 05f11b36) and this one (`new`) interleaved, medians of 5 runs,
+640x480 uncapped, the fixed views 5000 frames, the demos 15000, the lights
+of `cg_acidtrip N`; the renderer's main-thread time per frame and its front
+end (`scene`), ms; the 16-light rows with `+set r_maxDlights 64`, the
+others at the default):
+
+| view | lights | renderer base / new | scene base / new |
+| --- | --- | --- | --- |
+| `obj_team2` yard | 0 | 0.346 / 0.345 | 0.101 / 0.103 |
+| | 4 | 0.449 / 0.449 | 0.177 / 0.182 |
+| | 16 | 0.640 / 0.634 | 0.336 / 0.344 |
+| `dm/mohdm3` overview | 0 | 0.421 / 0.416 | 0.108 / 0.105 |
+| | 4 | 0.527 / 0.524 | 0.176 / 0.176 |
+| | 16 | 0.676 / 0.679 | 0.294 / 0.298 |
+| `o2match` | the match's | 0.308 / 0.309 | 0.058 / 0.057 |
+| `o4match` | the match's | 0.638 / 0.631 | 0.194 / 0.192 |
+
+(The 16-light rows and a first batch at 1 and 2 lights, 0.378 / 0.381 and
+0.404 / 0.408 ms in the yard, 0.478 / 0.471 and 0.498 / 0.489 in the
+overview, come from the build with the static models' lists in the
+models.) The demos' frame time percentiles: `o2match` p99 0.879 / 0.873,
+p99.9 1.243 / 1.180 ms (each frame's median over the runs: 0.857 / 0.844,
+1.167 / 1.124), `o4match` 1.257 / 1.244 and 1.641 / 1.590 (1.224 / 1.215,
+1.549 / 1.563). Where the linker puts the renderer's large globals moves
+these numbers by a few µs either way: `tess` is 8 KB smaller, which moved
+`tr` and `backEnd` by 3 KB within their 4 KB pages, and a test build padded
+back to the old placement took 0.011 ms longer in the overview (0.427 /
+0.416) and about the same in the yard; the build before's numbers are
+those of its own placement. More lights (the new build, 3 runs): 32
+lights 0.840 and 0.843 ms, 64 lights 1.241 and 1.181 ms in the yard and the
+overview, most of it the front end's tests of each face against each light
+(0.539 and 0.921 ms in the yard). The GPU: with 16 lights at 3840x2160 the
+yard's main pass takes 1.707 / 1.700 ms (3 runs), the shader's choice
+between a mask and a count costs nothing measurable.
+
+Input read to present at 1920x1080 in a window (`perf.py --caps 0,250
+--seconds 10 --preload libinlat.so --framelog`, 5 runs; ms, the medians of
+the runs' median, 99th and 99.9th percentiles, base / new): `o2match`
+uncapped 0.477 / 0.472, 1.064 / 1.073, 1.404 / 1.491; at 250 0.512 /
+0.510, 0.936 / 0.920, 1.417 / 1.286; `o4match` uncapped 0.889 / 0.866,
+1.538 / 1.487, 2.027 / 2.068; at 250 0.842 / 0.837, 1.368 / 1.332, 1.947 /
+2.263. The medians the same or lower; the 99.9th percentiles move both
+ways inside the runs' ranges (`o4match` at 250, where a run's 99.9th
+percentile is its third slowest frame of 2500: 1.83 to 3.09 ms before, 1.86
+to 2.66 after, the 99th lower in every run). Nothing waits or is queued
+for longer: the lights' work lies between the input read and the present,
+as before.
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -4881,13 +5027,26 @@ selects the sample count (see Implementation notes).
   stage iterators call `RB_LightmapDlights`, which stores the lights in the
   space of the current entity once per view for the world, once per run of
   batches for a brush model (`vk_add_dlights`), and sets the unit, the list
-  and the mask for the draw. The backend keeps a 128 KB host-visible
-  storage buffer per frame slot for the lists (4096 lights,
+  and the mask for the draw. The backend keeps a 256 KB host-visible
+  storage buffer per frame slot for the lists (8192 lights,
   `vkDlightGPU_t`: origin, 1 / radius, color in lightmap bytes, scale; set
   2 of the shaders, bound once per command buffer); the list's first light
   and the mask are push constants, the unit and the `r_dlightBacks 0` test
   pipeline key fields (specialization constants `DLIGHT_UNIT`,
-  `DLIGHT_BACKS`). The vertex shader passes the object space position on;
+  `DLIGHT_BACKS`). A scene has up to 64 lights (`MAX_SCENE_DLIGHTS`; GL1's
+  `MAX_DLIGHTS` in `tr_types.h` stays 32 for the GL renderers), the
+  `r_maxDlights` (default 4) nearest the view of those cgame added
+  (`R_KeepNearestDlights` at `RE_RenderScene`, in the order they were
+  added; GL1 kept the first 32 added to the frame), and the masks are 64
+  bits (`dlightMask_t`). The push constants are full (128 bytes), so the
+  shader's mask stays 32 bits: `vk_set_lightmap_dlights` gives a draw whose
+  lights lie within 32 of the list's (always with 32 lights or fewer) the
+  list from the first of them, and one whose lights span more a list of
+  them alone (`VK_DlightSubList`, made once per frame for each list and
+  mask, from a copy of the lists of more than 32 lights kept in host
+  memory, since the buffer is write-combined), with their number instead
+  of a mask (`VK_DLIGHT_COUNT` in the base; the shader adds them in the
+  same order, so a draw lit by all 64 gets them all). The vertex shader passes the object space position on;
   pipelines without lights don't read it (RADV removes the unused varying
   when it links the stages). With `r_dlightBacks 0` the shader takes the
   plane of the triangle from the derivatives of the position (their cross
@@ -4897,19 +5056,30 @@ selects the sample count (see Implementation notes).
   patches and terrain have no such test, and a batch that mixes faces and
   patches tests both). Lit world surfaces keep their batches (their sort
   keys have no dlight bits any more) and their static geometry. Brush
-  models keep GL1's behaviour, odd as it is: `R_AddBrushModelSurfaces`
-  passes `needDlights` (1) as the lights to test, so only light 0 lights
-  their lightmaps, and the surfaces it doesn't reach get
-  `ProjectDlightTexture` from every light that reaches the model
-  (`R_DlightBmodel`); the surfaces lit per pixel still sort apart from the
-  others (`R_DlightSortKey`) so the projected pass leaves them out, and
-  their batches stay on the static geometry (`RB_StaticDlights`). GL1
-  also gave dynamic lightmaps to lightmapped faces with `SURF_NODLIGHT`,
-  which only stops the projected pass; so do the per-pixel lights.
+  models (doors, movers) get their lights as the world's surfaces do:
+  `R_AddBrushModelSurfaces` passes the lights that reach the model
+  (`R_DlightBmodel`) to the faces' and patches' tests, so every light that
+  reaches a lightmapped surface is added per pixel. GL1 passed
+  `needDlights` (1) as the lights to test, so only light 0 lit their
+  lightmaps, the surfaces it didn't reach got `ProjectDlightTexture` from
+  every light that reached the model, and the surfaces lit per pixel had
+  their own sort key so that the projected pass left them out (with
+  `r_fastdlights 1` only light 0 was projected on them). With
+  `r_fastdlights 0` no surface gets the projected pass any more (its
+  pipelines are only built with `r_fastdlights 1`), and the surfaces of
+  brush models without a lightmap get no dynamic light, as the world's
+  never did (85 such surfaces in the 66 maps of the game data, none opaque
+  in a multiplayer map; no map has triangle surfaces). GL1 also gave
+  dynamic lightmaps to lightmapped faces with `SURF_NODLIGHT`, which only
+  stops the projected pass; so do the per-pixel lights.
   `r_fastdlights 1` (`ProjectDlightTexture`, a pass per light with
   per-vertex texture coordinates and colors) is unchanged, and so is the
-  per-vertex lighting of entities (`RB_Light_Real`) and static models
-  (`useSpecialLighting`), see Performance.
+  per-vertex lighting of entities (`RB_Light_Real`, at most
+  `MAX_REAL_LIGHTS`, 32, lights an entity, the map's sphere lights first)
+  and static models (`useSpecialLighting`: every light within twice its
+  radius, up to 64; their list is in `backEnd.staticModelDlights` while
+  the model is drawn, not in each `cStaticModelUnpacked_t`, where 64 would
+  have taken 1 KB of each), see Performance.
 - **Skeletal models** (`tr_skin.c`, `shaders/skinned.vert`, `vk_add_skin_data`,
   `vk_alloc_skin_frame`). `RB_SkelMesh` computed every vertex of a
   skeletal model's surfaces from its bones on the CPU (each weight's offset
@@ -5218,12 +5388,24 @@ the lightmap, so:
 
 Everything else is GL1's: the light model and colors (the 375 scale and
 the truncation to lightmap bytes per light), which surfaces get which
-lights (lightmapped world faces, patches and terrain; brush models with
-light 0 only and `ProjectDlightTexture` for the rest; `r_dlightBacks 0`;
+lights (lightmapped world faces, patches and terrain; `r_dlightBacks 0`;
 `SURF_NODLIGHT`, which doesn't stop them; nothing on the sky), the
 overbright shift and normalization, and additive lights, which GL1's
 dynamic lightmaps treated like the others (only `ProjectDlightTexture`
 adds them with a different blend).
+
+Dynamic lights since 2026-10-20 (no longer GL1's, see Implementation
+notes, Dynamic lights): a scene keeps the `r_maxDlights` (default 4, up to
+64) lights nearest the view, where GL1 kept the first 32 added to the
+frame, and with exactly 32 GL1's mask of all lights, `( 1 << 32 ) - 1`
+(undefined in C, 0 on x86), gave no world surface a light; brush models
+get every light that reaches a lightmapped surface per pixel, where GL1 lit
+their lightmaps with light 0 only and projected the others
+(`ProjectDlightTexture`) on the surfaces light 0 didn't reach (`dl2_door3`:
+the door takes the colors of its three lights, as the wall around it does),
+and their surfaces without a lightmap no light, as the world's; with
+`r_fastdlights 1` all their lights are projected, where GL1 projected
+light 0 only.
 
 Differences from GL1 (all in paths that were dead, broken or debug only):
 
@@ -5675,6 +5857,23 @@ Done:
     `skin_passes`); the renderer's time 11 to 14 % lower in its views,
     unchanged in the matches, where these models are few.
 
+24. Dynamic lights, 64 of them (2026-10-20, see Performance, Dynamic
+    lights, 64 of them, and Implementation notes, Dynamic lights), from
+    JayRewd's b26d8a67: 64-bit masks (`dlightMask_t`; the face keeps its
+    layout: one mask where it had two-element arrays for a render thread
+    that doesn't exist), `r_maxDlights` (latched, default 4, up to 64: the
+    lights nearest the view, where GL1 kept the first 32 added and gave no
+    world surface a light with exactly 32), a draw lit by lights more than
+    32 apart in its list gets a list of them with their count (his took
+    the first 32), brush models lit per pixel by every light that reaches a
+    lightmapped surface (GL1: light 0, and `ProjectDlightTexture` for the
+    others, now unused with `r_fastdlights 0`), the static models' light
+    list out of each model's struct, two dead `tess` fields removed. The
+    renderer's time the same at 0 to 16 lights and in the matches; the
+    frames the same to the bit but where a brush model has other lights
+    than its first or a scene more than 4 (new list `mohdm1_dlight64`, new
+    view `dl2_door3`).
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -5860,20 +6059,15 @@ Remaining:
   also drew a merged batch's static models with one indirect draw (an
   `INSTANCED` variant of `generic.vert`); measured in its evaluation it was
   slower (`o4match` +13 µs), not taken.
-- Dynamic lights, what is left on the CPU (see Performance, Dynamic
-  lights): the per-vertex lighting of static models within twice a light's
-  radius (`useSpecialLighting` in `ComputeColors`, which also takes them
-  off the static geometry: about 0.05 ms with 4 random lights and 0.14 ms
-  with 16 in the `dm/mohdm3` overview, nothing measurable in the
-  `obj_team2` yard) belongs with step 2: it needs normals in the static
-  geometry and the light loop in the vertex stage (GL1 lights per vertex,
-  with N·L and an inverse square falloff). The entities' lighting
-  (`RB_Light_Real`) is done by the vertex shader since step 3.
-  `r_fastdlights 1` (`ProjectDlightTexture`: a pass per
-  light with per-vertex colors and texture coordinates) is GL1's look of
-  that mode and is still needed in `r_fastdlights 0` for the surfaces of
-  brush models that light 0 doesn't reach (and their triangle surfaces),
-  so it stays.
+- Dynamic lights: the per-vertex lighting of static models near a light
+  is done by the effects shader since Plan 21, the entities' lighting
+  (`RB_Light_Real`) by the vertex shader since step 3. `r_fastdlights 1`
+  (`ProjectDlightTexture`: a pass per light with per-vertex colors and
+  texture coordinates) is GL1's look of that mode; since Plan 24
+  `r_fastdlights 0` never uses it (brush models are lit per pixel). An
+  entity takes at most 32 lights (`MAX_REAL_LIGHTS` in `tr_types.h`, the
+  map's sphere lights first, then the dynamic ones), which 64 dynamic
+  lights near one entity can exceed (GL1's limit, unchanged).
 - After step 3, skeletal models: the shaders that neither take the
   vertex-lit iterator nor have only stages that the skinned passes take
   (Plan 23: vertex colors and alphas, `alphaGen distFade`, waves, `tcMod`s,

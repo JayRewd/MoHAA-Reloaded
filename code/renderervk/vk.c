@@ -93,8 +93,8 @@ typedef struct {
 	int				lineStippleFactor;	// 0: no stipple
 	unsigned short	lineStipplePattern;
 	int				dlightTmu;			// -1: no dynamic lights (vk_set_lightmap_dlights)
-	int				dlightBase;			// first light of the list in the frame's dlight buffer
-	unsigned int	dlightMask;
+	uint32_t		dlightBase;			// vkPushConstants_t's
+	uint32_t		dlightMask;
 	qboolean		dlightBacks;
 } vkState_t;
 
@@ -1147,6 +1147,7 @@ static void VK_CreateFrames( void ) {
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
 		VK_CreateBuffer( &frame->dlightBuffer, VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
+		frame->dlightCopy = ri.Malloc( VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ) );
 		VK_CreateBuffer( &frame->skinBuffer, VK_SKIN_FRAME_WORDS * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 	}
@@ -1227,6 +1228,10 @@ static void VK_DestroyFrames( void ) {
 		VK_DestroyBuffer( &frame->stagingBuffer );
 		VK_DestroyBuffer( &frame->depthReadBuffer );
 		VK_DestroyBuffer( &frame->dlightBuffer );
+		if ( frame->dlightCopy ) {
+			ri.Free( frame->dlightCopy );
+			frame->dlightCopy = NULL;
+		}
 		VK_DestroyBuffer( &frame->skinBuffer );
 		if ( frame->queryPool ) {
 			qvkDestroyQueryPool( vk.device, frame->queryPool, NULL );
@@ -2375,29 +2380,118 @@ int vk_add_dlights( int count, const vkDlight_t *dlights ) {
 		return -1;
 	}
 
-	out = (vkDlightGPU_t *)vk.frame->dlightBuffer.mapped + base;
+	// a list of more than 32 lights is also kept where VK_DlightSubList
+	// can read it
+	out = count > 32 ? vk.frame->dlightCopy + base : (vkDlightGPU_t *)vk.frame->dlightBuffer.mapped + base;
 	for ( i = 0; i < count; i++ ) {
 		VectorCopy( dlights[i].origin, out[i].origin );
 		out[i].invRadius = 1.0f / dlights[i].radius;
 		VectorScale( dlights[i].color, 1.0f / dlights[i].scale, out[i].color );
 		out[i].scale = dlights[i].scale;
 	}
+	if ( count > 32 ) {
+		Com_Memcpy( (vkDlightGPU_t *)vk.frame->dlightBuffer.mapped + base, out, count * sizeof( *out ) );
+	}
 	vk.frame->numDlights += count;
 
 	return base;
 }
 
-void vk_set_lightmap_dlights( int tmu, int handle, unsigned int mask, qboolean backs ) {
+/*
+===============
+VK_DlightSubList
+
+The lights of mask of the list at handle (a list of more than 32 lights)
+as a list of their own, in their order; the lists made in the frame are kept
+by handle and mask. Returns its handle and sets count, -1 when the frame has
+no room left
+===============
+*/
+static int VK_DlightSubList( int handle, uint64_t mask, int *count ) {
+	static struct {
+		uint64_t	serial;
+		uint64_t	mask;
+		int			handle, list, count;
+	} made[16];
+	vkDlightGPU_t *out;
+	int slot, base, i, n;
+
+	slot = (int)( ( mask * 0x9E3779B97F4A7C15ull + (uint64_t)handle ) >> 60 );
+	if ( made[slot].serial == vk.frameSerial && made[slot].handle == handle && made[slot].mask == mask ) {
+		*count = made[slot].count;
+		return made[slot].list;
+	}
+
+	for ( i = 0, n = 0; i < 64; i++ ) {
+		n += ( mask >> i ) & 1;
+	}
+	base = vk.frame->numDlights;
+	if ( base + n > VK_MAX_FRAME_DLIGHTS ) {
+		static qboolean warned;
+
+		if ( !warned ) {
+			ri.Printf( PRINT_ALL, "Vulkan: more than %d dynamic lights in a frame, some get no light\n", VK_MAX_FRAME_DLIGHTS );
+			warned = qtrue;
+		}
+		return -1;
+	}
+
+	out = (vkDlightGPU_t *)vk.frame->dlightBuffer.mapped + base;
+	for ( i = 0, n = 0; i < 64; i++ ) {
+		if ( mask & ( 1ull << i ) ) {
+			out[n++] = vk.frame->dlightCopy[handle + i];
+		}
+	}
+	vk.frame->numDlights += n;
+
+	made[slot].serial = vk.frameSerial;
+	made[slot].mask = mask;
+	made[slot].handle = handle;
+	made[slot].list = base;
+	made[slot].count = n;
+	*count = n;
+	return base;
+}
+
+void vk_set_lightmap_dlights( int tmu, int handle, uint64_t mask, qboolean backs ) {
+	uint32_t base, bits;
+	int first, last, count;
+
 	if ( tmu < 0 || tmu >= NUM_TEXTURE_BUNDLES || handle < 0 || !mask ) {
 		vks.dlightTmu = -1;
 		return;
 	}
 
+	// generic.frag adds the lights of a 32-bit mask from a base: from the
+	// list's when they are within 32 of its lights (always with 32 lights or
+	// fewer), else from a list of the draw's lights, with their count
+	if ( !( mask >> 32 ) ) {
+		base = handle;
+		bits = (uint32_t)mask;
+	} else {
+		for ( first = 0; !( mask & ( 1ull << first ) ); first++ ) {
+		}
+		for ( last = 63; !( mask & ( 1ull << last ) ); last-- ) {
+		}
+		if ( last - first < 32 ) {
+			base = handle + first;
+			bits = (uint32_t)( mask >> first );
+		} else {
+			handle = VK_DlightSubList( handle, mask, &count );
+			if ( handle < 0 ) {
+				vks.dlightTmu = -1;
+				return;
+			}
+			base = handle | VK_DLIGHT_COUNT;
+			bits = count;
+		}
+	}
+
 	vks.dlightTmu = tmu;
 	vks.dlightBacks = backs;
-	if ( vks.dlightBase != handle || vks.dlightMask != mask ) {
-		vks.dlightBase = handle;
-		vks.dlightMask = mask;
+	if ( vks.dlightBase != base || vks.dlightMask != bits ) {
+		vks.dlightBase = base;
+		vks.dlightMask = bits;
 		vk_dirty |= VK_DIRTY_DLIGHT;
 	}
 }

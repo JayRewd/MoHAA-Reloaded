@@ -334,7 +334,7 @@ static void ProjectDlightTexture( void ) {
 	for ( l = 0 ; l < backEnd.refdef.num_dlights ; l++ ) {
 		dlight_t	*dl;
 
-		if ( !( tess.dlightBits & ( 1 << l ) ) ) {
+		if ( !( tess.dlightBits & DLIGHT_BIT( l ) ) ) {
 			continue;	// this surface definately doesn't have any of this light
 		}
 		texCoords = texCoordsArray[0];
@@ -671,8 +671,8 @@ static void ComputeColors( shaderStage_t *pStage )
 						vec3_t diff;
 						dlight_t* dl;
 
-						dl = &backEnd.refdef.dlights[backEnd.currentStaticModel->dlights[j].index];
-						VectorSubtract(backEnd.currentStaticModel->dlights[j].transformed, tess.xyz[i], diff);
+						dl = &backEnd.refdef.dlights[backEnd.staticModelDlights[j].index];
+						VectorSubtract(backEnd.staticModelDlights[j].transformed, tess.xyz[i], diff);
 
 						dot = DotProduct(diff, tess.normal[i]);
 						if (dot >= 0)
@@ -1653,7 +1653,7 @@ void RB_StageIteratorGeneric( void )
 	// 
 	// now do any dynamic lighting needed
 	//
-	if (tess.dlightBits && !tess.dlightMap && tess.shader->sort <= SS_OPAQUE) {
+	if (tess.dlightBits && tess.shader->sort <= SS_OPAQUE) {
 		ProjectDlightTexture();
 	}
 
@@ -1735,7 +1735,7 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	// 
 	// now do any dynamic lighting needed
 	//
-	if ( tess.dlightBits && !tess.dlightMap && tess.shader->sort <= SS_OPAQUE ) {
+	if ( tess.dlightBits && tess.shader->sort <= SS_OPAQUE ) {
 		ProjectDlightTexture();
 	}
 }
@@ -1809,7 +1809,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	// 
 	// now do any dynamic lighting needed
 	//
-	if ( tess.dlightBits && !tess.dlightMap && tess.shader->sort <= SS_OPAQUE ) {
+	if ( tess.dlightBits && tess.shader->sort <= SS_OPAQUE ) {
 		ProjectDlightTexture();
 	}
 }

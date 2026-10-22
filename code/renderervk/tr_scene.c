@@ -309,7 +309,7 @@ void RE_AddDynamicLightToScene( const vec3_t org, float intensity, float r, floa
 	if ( !tr.registered ) {
 		return;
 	}
-	if ( r_numdlights >= MAX_DLIGHTS ) {
+	if ( r_numdlights >= MAX_ADDED_DLIGHTS ) {
 		return;
 	}
 	if ( intensity <= 0 ) {
@@ -430,6 +430,53 @@ void RE_AddAdditiveLightToScene( const vec3_t org, float intensity, float r, flo
 }
 
 /*
+=====================
+R_KeepNearestDlights
+
+The scene keeps at most r_maxDlights of the lights added for it, those
+nearest the view, in the order they were added (GL1 kept the first
+MAX_DLIGHTS added to the frame); the next scene of the frame takes the
+room of the others
+=====================
+*/
+static void R_KeepNearestDlights( const vec3_t vieworg ) {
+	dlight_t	*dl = &backEndData->dlights[r_firstSceneDlight];
+	float		dist[MAX_ADDED_DLIGHTS];
+	byte		kept[MAX_ADDED_DLIGHTS];
+	int			count, keep, i, j, best;
+
+	count = r_numdlights - r_firstSceneDlight;
+	keep = r_maxDlights->integer;
+	if ( count <= keep ) {
+		return;
+	}
+
+	for ( i = 0; i < count; i++ ) {
+		dist[i] = DistanceSquared( dl[i].origin, vieworg );
+		kept[i] = 0;
+	}
+	// the nearest first, of equal distances the first added
+	for ( j = 0; j < keep; j++ ) {
+		best = 0;
+		while ( kept[best] ) {
+			best++;
+		}
+		for ( i = best + 1; i < count; i++ ) {
+			if ( !kept[i] && dist[i] < dist[best] ) {
+				best = i;
+			}
+		}
+		kept[best] = 1;
+	}
+	for ( i = 0, j = 0; i < count; i++ ) {
+		if ( kept[i] ) {
+			dl[j++] = dl[i];
+		}
+	}
+	r_numdlights = r_firstSceneDlight + keep;
+}
+
+/*
 @@@@@@@@@@@@@@@@@@@@@
 RE_RenderScene
 
@@ -525,6 +572,7 @@ void RE_RenderScene( const refdef_t *fd ) {
 	tr.refdef.num_sprites = r_numsprites - r_firstSceneSprite;
 	tr.refdef.sprites = &backEndData->sprites[r_firstSceneSprite];
 
+	R_KeepNearestDlights( fd->vieworg );
 	tr.refdef.num_dlights = r_numdlights - r_firstSceneDlight;
 	tr.refdef.dlights = &backEndData->dlights[r_firstSceneDlight];
 

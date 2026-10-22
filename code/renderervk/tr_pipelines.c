@@ -46,8 +46,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    it off behind its back, so a fogged stage can draw without it); the
 //    map's fog isn't known before its first frame, so both;
 //  - dynamic lights on a lightmap unit (r_fastdlights 0, vk_set_lightmap_
-//    dlights), with r_dlightBacks 0's test when it is set, and the projected
-//    pass (ProjectDlightTexture) of opaque world shaders;
+//    dlights), with r_dlightBacks 0's test when it is set, and with
+//    r_fastdlights 1 the projected pass (ProjectDlightTexture) of opaque
+//    world shaders;
 //  - every image an animated bundle binds (RGB textures change the key);
 //  - the sky box and the immediate mode draws that come in every frame
 //    (the color clear drawn as a quad, the UI's boxes), after whatever cull
@@ -488,7 +489,7 @@ static int R_PrebuildShader( const shader_t *shader ) {
 		}
 	}
 
-	if ( world && shader->sort <= SS_OPAQUE && !shader->isSky ) {
+	if ( r_fastdlights->integer && world && shader->sort <= SS_OPAQUE && !shader->isSky ) {
 		n += R_PrebuildDlightPass( shader );
 	}
 	return n;

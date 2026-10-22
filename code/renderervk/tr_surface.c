@@ -129,7 +129,6 @@ void RB_AddQuadStampExt( vec3_t origin, vec3_t left, vec3_t up, byte *color, flo
 
 	tess.numVertexes += 4;
 	tess.numIndexes += 6;
-	tess.dlightMap = 0;
 }
 
 /*
@@ -262,11 +261,11 @@ void RB_SurfaceTriangles( srfTriangles_t *srf ) {
 	drawVert_t	*dv;
 	float		*xyz, *normal, *texCoords;
 	byte		*color;
-	int			dlightBits;
+	dlightMask_t	dlightBits;
 	qboolean	needsNormal;
 	qboolean	added;
 
-	dlightBits = srf->dlightBits[backEnd.smpFrame];
+	dlightBits = srf->dlightBits;
 	if ( tess.staticBatch == STATIC_BATCH_ON && RB_StaticDlights( dlightBits ) ) {
 		// the bits go to the batch before the overflow check
 		RB_StaticBatchToCPU();
@@ -321,10 +320,6 @@ void RB_SurfaceTriangles( srfTriangles_t *srf ) {
 		texCoords[3] = dv->lightmap[1];
 
 		*(int *)color = *(int *)dv->color;
-	}
-
-	for ( i = 0 ; i < srf->numVerts ; i++ ) {
-		tess.vertexDlightBits[ tess.numVertexes + i] = dlightBits;
 	}
 
 	tess.numVertexes += srf->numVerts;
@@ -403,13 +398,13 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	int			ndx;
 	int			Bob;
 	int			numPoints;
-	int			dlightBits;
+	dlightMask_t	dlightBits;
 
 	RB_CHECKOVERFLOW( surf->numPoints, surf->numIndices );
 
-	dlightBits = surf->dlightBits[backEnd.smpFrame];
-	if ( surf->dlightMap[backEnd.smpFrame] ) {
-		tess.lightmapDlights |= surf->dlightMap[backEnd.smpFrame];
+	dlightBits = surf->dlightBits;
+	if ( surf->dlightMap ) {
+		tess.lightmapDlights |= surf->dlightMap;
 		tess.lightmapDlightFaces = qtrue;
 	}
 
@@ -464,7 +459,6 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 		tess.texCoords[ndx][1][0] = v[5];
 		tess.texCoords[ndx][1][1] = v[6];
 		*(unsigned int*)&tess.vertexColors[ndx] = *(unsigned int*)&v[7];
-		tess.vertexDlightBits[ndx] = dlightBits;
 	}
 
 
@@ -549,7 +543,7 @@ RB_GridRows
 Adds rows used to used + rows - 1 of the subdivision to tess
 =============
 */
-static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *heightTable, int lodWidth, int used, int rows, int dlightBits ) {
+static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *heightTable, int lodWidth, int used, int rows ) {
 	int		i, j;
 	float	*xyz;
 	float	*texCoords;
@@ -557,7 +551,6 @@ static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *he
 	unsigned char *color;
 	drawVert_t	*dv;
 	int		numVertexes;
-	int		*vDlightBits;
 	qboolean	needsNormal;
 
 	numVertexes = tess.numVertexes;
@@ -566,7 +559,6 @@ static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *he
 	normal = tess.normal[numVertexes];
 	texCoords = tess.texCoords[numVertexes][0];
 	color = ( unsigned char * ) &tess.vertexColors[numVertexes];
-	vDlightBits = &tess.vertexDlightBits[numVertexes];
 	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights;
 
 	for ( i = 0 ; i < rows ; i++ ) {
@@ -587,7 +579,6 @@ static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *he
 				normal[2] = dv->normal[2];
 			}
 			* ( unsigned int * ) color = * ( unsigned int * ) dv->color;
-			*vDlightBits++ = dlightBits;
 			xyz += 4;
 			normal += 4;
 			texCoords += 4;
@@ -677,7 +668,7 @@ void RB_SurfaceGridRows( srfGridMesh_t *cv, int used, int rows ) {
 	int		lodWidth, lodHeight;
 
 	RB_GridLodTables( cv, widthTable, heightTable, &lodWidth, &lodHeight );
-	RB_GridRows( cv, widthTable, heightTable, lodWidth, used, rows, cv->dlightBits[backEnd.smpFrame] );
+	RB_GridRows( cv, widthTable, heightTable, lodWidth, used, rows );
 }
 
 /*
@@ -693,9 +684,9 @@ void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 	int		widthTable[MAX_GRID_SIZE];
 	int		heightTable[MAX_GRID_SIZE];
 	int		lodWidth, lodHeight;
-	int		dlightBits;
+	dlightMask_t	dlightBits;
 
-	dlightBits = cv->dlightBits[backEnd.smpFrame];
+	dlightBits = cv->dlightBits;
 	if ( tess.staticBatch == STATIC_BATCH_ON && !( tess.shader->surfaceFlags & ( SURF_NODLIGHT | SURF_SKY ) ) && RB_StaticDlights( dlightBits ) ) {
 		// the dynamic lights of the batch it starts in
 		RB_StaticBatchToCPU();
@@ -737,7 +728,7 @@ void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 		}
 
 		// in each batch the grid goes into
-		tess.lightmapDlights |= cv->dlightMap[backEnd.smpFrame];
+		tess.lightmapDlights |= cv->dlightMap;
 
 		// the dynamic lights don't count here: they did where the grid
 		// started (above), not in the batches that the overflow starts
@@ -751,7 +742,7 @@ void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 			RB_StaticBatchToCPU();
 		}
 
-		RB_GridRows( cv, widthTable, heightTable, lodWidth, used, rows, dlightBits );
+		RB_GridRows( cv, widthTable, heightTable, lodWidth, used, rows );
 
 		used += rows - 1;
 	}
@@ -893,13 +884,11 @@ void RB_SurfaceSkip( void *surf ) {
 void RB_DrawTerrainTris(srfTerrain_t* p) {
 	int i;
 	terraInt numv;
-	int dlightBits;
 
 	RB_CHECKOVERFLOW(p->nVerts, p->nTris * 3);
 
-	dlightBits = p->dlightBits[backEnd.smpFrame];
-	tess.dlightBits |= dlightBits;
-	tess.lightmapDlights |= p->dlightMap[backEnd.smpFrame];
+	tess.dlightBits |= p->dlightBits;
+	tess.lightmapDlights |= p->dlightMap;
 
 	for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
 		assert(tess.numVertexes < SHADER_MAX_VERTEXES);
@@ -909,7 +898,6 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 		tess.texCoords[tess.numVertexes][0][1] = g_pVert[i].texCoords[0][1];
 		tess.texCoords[tess.numVertexes][1][0] = g_pVert[i].texCoords[1][0];
 		tess.texCoords[tess.numVertexes][1][1] = g_pVert[i].texCoords[1][1];
-		tess.vertexDlightBits[tess.numVertexes] = dlightBits;
 		tess.normal[tess.numVertexes][0] = 0;
 		tess.normal[tess.numVertexes][1] = 0;
 		tess.normal[tess.numVertexes][2] = 1.0;

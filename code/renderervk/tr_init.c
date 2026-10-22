@@ -53,6 +53,7 @@ cvar_t	*r_measureOverdraw;
 cvar_t	*r_inGameVideo;
 cvar_t	*r_fastsky;
 cvar_t	*r_fastdlights;
+cvar_t	*r_maxDlights;
 cvar_t	*r_drawSun;
 cvar_t	*r_dlightBacks;
 
@@ -1570,6 +1571,9 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_znear, 0.001f, 200, qtrue );
 	r_fastsky = ri.Cvar_Get( "r_fastsky", "0", 0 );
 	r_fastdlights = ri.Cvar_Get("r_fastdlights", "0", CVAR_ARCHIVE | CVAR_LATCH);
+	// the dynamic lights a scene keeps, the nearest the view (R_KeepNearestDlights)
+	r_maxDlights = ri.Cvar_Get( "r_maxDlights", "4", CVAR_ARCHIVE | CVAR_LATCH );
+	ri.Cvar_CheckRange( r_maxDlights, 0, MAX_SCENE_DLIGHTS, qtrue );
 	r_drawSun = ri.Cvar_Get( "r_drawSun", "0", CVAR_ARCHIVE );
 	r_dlightBacks = ri.Cvar_Get( "r_dlightBacks", "1", CVAR_ARCHIVE );
 	r_finish = ri.Cvar_Get ("r_finish", "0", CVAR_ARCHIVE);

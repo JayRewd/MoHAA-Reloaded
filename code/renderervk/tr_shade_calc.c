@@ -1973,7 +1973,7 @@ static struct {
 	int			offset;		// -1: none
 	int			lightWords;
 	uint32_t	words[FX_WORDS];
-	uint32_t	lights[8 + 8 * MAX_DLIGHTS];
+	uint32_t	lights[8 + 8 * MAX_SCENE_DLIGHTS];
 } fxCache = { 0, -1 };
 
 /*
@@ -2408,7 +2408,7 @@ is full (RB_StaticBatchAllowed made sure it isn't)
 */
 int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxUnit_t units[NUM_TEXTURE_BUNDLES], const float *constantColor ) {
 	uint32_t local[FX_WORDS];
-	uint32_t lightLocal[8 + 8 * MAX_DLIGHTS];
+	uint32_t lightLocal[8 + 8 * MAX_SCENE_DLIGHTS];
 	uint32_t *w;
 	float *f;
 	int first, i, lightWords;
@@ -2471,11 +2471,11 @@ int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxU
 		Com_Memset( l, 0, 8 * sizeof( *l ) );
 		l[0] = sm->numdlights;
 		for ( j = 0; j < sm->numdlights; j++ ) {
-			const dlight_t *dl = &backEnd.refdef.dlights[sm->dlights[j].index];
+			const dlight_t *dl = &backEnd.refdef.dlights[backEnd.staticModelDlights[j].index];
 			double a = 7500.0 * dl->radius;
 			float *light = &lf[8 + j * 8];
 
-			VectorCopy( sm->dlights[j].transformed, light );
+			VectorCopy( backEnd.staticModelDlights[j].transformed, light );
 			light[3] = (float)a;
 			light[4] = (float)( a - light[3] );
 			VectorCopy( dl->color, &light[5] );
