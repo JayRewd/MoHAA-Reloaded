@@ -498,6 +498,7 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 	int			clip;
 	model_t		*pModel;
 	int			i;
+	int			dlightBits;
 
 	pModel = R_GetModelByHandle( ent->e.hModel );
 
@@ -508,10 +509,11 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 		return;
 	}
 	
-	R_DlightBmodel( bmodel );
+	// Metal: every light that reaches it, as on the world (needDlights gave the dlight maps the first light only)
+	dlightBits = R_DlightBmodel( bmodel );
 
 	for ( i = 0 ; i < bmodel->numSurfaces ; i++ ) {
-		R_AddWorldSurface( bmodel->firstSurface + i, tr.currentEntity->needDlights, tr.currentEntity->needDlights );
+		R_AddWorldSurface( bmodel->firstSurface + i, dlightBits, dlightBits );
 	}
 }
 

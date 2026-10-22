@@ -357,10 +357,12 @@ int R_RealDlightPatch(srfGridMesh_t *srf, int dlightBits)
         }
 
         dl = &tr.refdef.dlights[i];
-        if (dl->origin[0] + dl->radius < srf->meshBounds[0][0] || dl->origin[0] - dl->radius > srf->meshBounds[1][0]
-            || dl->origin[1] + dl->radius < srf->meshBounds[0][1] || dl->origin[1] - dl->radius > srf->meshBounds[1][1]
-            || dl->origin[2] + dl->radius < srf->meshBounds[0][2]
-            || dl->origin[2] - dl->radius > srf->meshBounds[1][2]) {
+        // Metal: the light where the texels are (a brush model's own space; the world's is the scene's)
+        origin = dl->transformed;
+        if (origin[0] + dl->radius < srf->meshBounds[0][0] || origin[0] - dl->radius > srf->meshBounds[1][0]
+            || origin[1] + dl->radius < srf->meshBounds[0][1] || origin[1] - dl->radius > srf->meshBounds[1][1]
+            || origin[2] + dl->radius < srf->meshBounds[0][2]
+            || origin[2] - dl->radius > srf->meshBounds[1][2]) {
             dlightBits &= ~(1 << i);
             continue;
         }
@@ -892,9 +894,12 @@ void R_TransformDlights(int count, dlight_t *dl, orientationr_t *ori)
 R_DlightBmodel
 
 Determine which dynamic lights may effect this bmodel
+
+Metal: returns them, for its surfaces' dlight maps (R_AddBrushModelSurfaces passed needDlights, 0 or 1, so only
+the scene's first light could give a face a dlight map; the others reached only faces left without one, projected)
 =============
 */
-void R_DlightBmodel(bmodel_t *bmodel)
+int R_DlightBmodel(bmodel_t *bmodel)
 {
     int         i, j;
     dlight_t   *dl;
@@ -939,6 +944,8 @@ void R_DlightBmodel(bmodel_t *bmodel)
             ((srfTriangles_t *)surf->data)->dlightBits[tr.smpFrame] = mask;
         }
     }
+
+    return mask;
 }
 
 /*

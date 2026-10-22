@@ -2019,7 +2019,7 @@ LIGHTS
 ============================================================
 */
 
-void R_DlightBmodel( bmodel_t *bmodel );
+int R_DlightBmodel( bmodel_t *bmodel );
 void R_ClearLightGridCache(void);
 void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingGridValueFast(const vec3_t vPos, vec3_t vLight);
