@@ -590,6 +590,7 @@ void CL_ShutdownInput(void);
 void CL_SendCmd (void);
 qboolean CL_GetLiveUserCmd( usercmd_t *ucmd, float *phase );
 float CL_FrameFraction( void );
+float CL_RenderTimeFraction( void );
 void CL_ClickEyeInfo( void );
 void CL_ClearState (void);
 void CL_ReadPackets (void);

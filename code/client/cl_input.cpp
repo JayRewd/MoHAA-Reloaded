@@ -27,18 +27,16 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 unsigned	frame_msec;
 int			old_com_frameTime;
 
-// Metal port: the decoupled mode (cl_movefps). Usercmds come on their own
-// clock of whole milliseconds and the mouse turns the view every frame.
-static int		cmd_interval;		// ms from one usercmd to the next; 0: one per frame (stock)
-static int		cmd_nextTime;		// com_frameTime of the next usercmd; 0: not started
+// Metal port: the decoupled mode (cl_movefps). Usercmds come on a fixed grid
+// of server time and the mouse turns the view every frame.
+static int		cmd_interval;		// ms of server time from one usercmd to the next; 0: one per frame (stock)
+static int		cmd_count;			// the usercmds this frame makes
+static int		cmd_time;			// the first one's time
 static int		cmd_frametime;		// game time of the usercmd's window, for the keyboard's turning
 static int		cmd_lastRealtime;	// cls.realtime at the last usercmd
 static float	cmd_mouseSide, cmd_mouseForward;	// the mouse's strafe and move since the last usercmd
 static qboolean	cmd_mouseMoved;		// since the last usercmd (BUTTON_ANY)
 static long long	cmd_viewUs;		// Sys_Microseconds at the last view move (the acceleration's rate)
-static int		cmd_stamp;			// the next usercmd's time, taken at the usercmd before it (its window's start)
-static qboolean	cmd_stampSet;		// cmd_stamp holds one
-static long long	cmd_startUs;		// com_frameUs at the last usercmd: its window's start in microseconds
 // click-time aim: the usercmd that carries a click made between usercmds
 // takes the angles of the click's frame, and its packet that frame's eye info
 static int		cmd_aimCmd;			// that usercmd's number; 0: none
@@ -766,36 +764,9 @@ void CL_FinishMove( usercmd_t *cmd ) {
 	// can be determined without allowing cheating
 	cmd->serverTime = cl.serverTime;
 
+	// cl_movefps (Metal port): the grid's time (CL_SendCmd)
 	if ( cmd_interval ) {
-		int		tn;
-
-		// cl_movefps (Metal port): the usercmd takes the time of the usercmd
-		// frame before it (its window's start), as a stock client takes the
-		// frame before's cl.serverTime, computed as CL_SetCGameTime does but
-		// without its clamp to the last drawn frame: the frame before is no
-		// whole interval back, and at thousands of frames a second the clamp
-		// would take the -2 ms steps away. Its step is the interval plus the
-		// time delta's steps, as a stock client's at that frame rate.
-		tn = cl_timeNudge->integer;
-		if ( tn < -30 ) {
-			tn = -30;
-		} else if ( tn > 30 ) {
-			tn = 30;
-		}
-		if ( cmd_stampSet ) {
-			cmd->serverTime = cmd_stamp;
-		}
-		cmd_stamp = cls.realtime + cl.serverTimeDelta - tn;
-		// never back (CL_SetCGameTime's guarantee): a usercmd's time is sent
-		// as an 8-bit step from the one before when that step is below 256,
-		// so a step back reaches the server as a step forward, and the
-		// server then drops every usercmd until real time passes it
-		if ( cmd_stamp < cmd->serverTime ) {
-			cmd_stamp = cmd->serverTime;
-		}
-		cmd_stampSet = qtrue;
-	} else {
-		cmd_stampSet = qfalse;
+		cmd->serverTime = cmd_time;
 	}
 
 	for (i=0 ; i<3 ; i++) {
@@ -883,6 +854,7 @@ Create a new usercmd_t structure for this frame
 void CL_CreateNewCommands( void ) {
 	usercmd_t	*cmd;
 	int			cmdNum;
+	int			i, j;
 
 	// no need to create usercmds until we have a gamestate
 	if ( clc.state < CA_PRIMED ) {
@@ -922,6 +894,25 @@ void CL_CreateNewCommands( void ) {
 	cmdNum = cl.cmdNumber & CMD_MASK;
 	cl.cmds[cmdNum] = CL_CreateCmd ();
 	cmd = &cl.cmds[cmdNum];
+
+	// cl_movefps (Metal port): a frame longer than the interval makes the
+	// grid's usercmds since the last one, each one step, with the same input;
+	// the weapon command goes into a set number of usercmds
+	// (CG_WeaponCommandButtonBits), and the angles are the frame's (a click's
+	// went into the first)
+	for ( i = 1 ; i < cmd_count ; i++ ) {
+		cl.cmdNumber++;
+		cl.cmds[cl.cmdNumber & CMD_MASK] = *cmd;
+		cmd = &cl.cmds[cl.cmdNumber & CMD_MASK];
+		cmd->serverTime += cmd_interval;
+		cmd->buttons &= ~GetWeaponCommandMask( WEAPON_COMMAND_MAX_VER17 );
+		if ( cge ) {
+			cmd->buttons |= cge->CG_WeaponCommandButtonBits();
+		}
+		for ( j = 0 ; j < 3 ; j++ ) {
+			cmd->angles[j] = ANGLE2SHORT( cl.viewangles[j] );
+		}
+	}
 }
 
 /*
@@ -1016,6 +1007,16 @@ qboolean CL_ReadyToSendPacket( void ) {
 	}
 	oldPacketNum = (clc.netchan.outgoingSequence - 1) & PACKET_MASK;
 	delta = cls.realtime -  cl.outPackets[ oldPacketNum ].p_realtime;
+	// cl_movefps (Metal port): the usercmds' own time, the grid's (the time
+	// delta's corrections bring them 7 or 10 ms apart in real time at 125, so
+	// the rate counted in real time would hold some for the next packet);
+	// a grid started again sends at once
+	if ( cmd_interval ) {
+		delta = cl.cmds[ cl.cmdNumber & CMD_MASK ].serverTime - cl.outPackets[ oldPacketNum ].p_serverTime;
+		if ( delta < 0 ) {
+			return qtrue;
+		}
+	}
 	if ( delta < 1000 / cl_maxpackets->integer ) {
 		// the accumulated commands will go out in the next packet
 		return qfalse;
@@ -1224,14 +1225,15 @@ void CL_WritePacket( void ) {
 =================
 CL_CmdInterval
 
-The decoupled mode's usercmd interval in whole milliseconds, or 0 for one
-usercmd per frame (stock): cl_movefps usercmds a second, 85 to 125 (the most
-cl_maxpackets sends, so each usercmd has a packet of its own; shorter steps
-catch on small bumps more often), a rate that doesn't divide 1000 at the next
-longer whole millisecond (120 is 9 ms). Only in play and in real time:
-from the first snapshot on (before it the time delta isn't set, and a usercmd
-stamped with it can be far ahead of the server's clock), not paused, not in a
-timedemo, at fixedtime or recording AVI frames (Metal port).
+The decoupled mode's usercmd interval in whole milliseconds of server time,
+or 0 for one usercmd per frame (stock): cl_movefps usercmds a second, 85 to
+125 (the most cl_maxpackets sends, so each usercmd has a packet of its own;
+shorter steps catch on small bumps more often), a rate that doesn't divide
+1000 at the next longer whole millisecond (120 is 9 ms). Only in play and in
+real time: from the first snapshot on (before it the time delta isn't set,
+and a usercmd stamped with it can be far ahead of the server's clock), not
+paused, at timescale 1, not in a timedemo, at fixedtime or recording AVI
+frames (Metal port).
 =================
 */
 static int CL_CmdInterval( void ) {
@@ -1239,7 +1241,8 @@ static int CL_CmdInterval( void ) {
 
 	rate = cl_movefps->integer;
 	if ( rate <= 0 || clc.state != CA_ACTIVE || ( com_sv_running->integer && paused->integer )
-		|| cl_timedemo->integer || com_fixedtime->integer || ( CL_VideoRecording() && cl_aviFrameRate->integer ) ) {
+		|| com_timescale->value != 1.0f || cl_timedemo->integer || com_fixedtime->integer
+		|| ( CL_VideoRecording() && cl_aviFrameRate->integer ) ) {
 		return 0;
 	}
 
@@ -1253,23 +1256,81 @@ static int CL_CmdInterval( void ) {
 
 /*
 =================
+CL_CmdServerTime
+
+The server time now: the frame's cl.serverTime as CL_SetCGameTime computes
+it, before it holds the time from going back. The decoupled mode's usercmd
+clock (Metal port).
+=================
+*/
+static int CL_CmdServerTime( void ) {
+	int		tn;
+
+	tn = cl_timeNudge->integer;
+	if ( tn < -30 ) {
+		tn = -30;
+	} else if ( tn > 30 ) {
+		tn = 30;
+	}
+	return cls.realtime + cl.serverTimeDelta - tn;
+}
+
+/*
+=================
+CL_CmdGrid
+
+The decoupled mode's usercmds (cl_movefps) on a fixed grid of server time:
+each takes the time of the one before plus the interval and comes when the
+server time passes it, so every step is the interval at any frame rate and
+through the time delta's corrections (the Vulkan port's b19079eb). Returns
+the usercmds due now (a frame longer than the interval makes up to 100 ms of
+them), the first one's time in *time, and in *wait the ms of server time to
+the next one. One after the time went back or jumped by more than 100 ms (the
+first one, a time delta reset, a hitch) starts the grid again from now; the
+time delta's own steps back (2 ms) wait. Metal port.
+=================
+*/
+static int CL_CmdGrid( int interval, int *time, int *wait ) {
+	int		now, last, elapsed;
+
+	now = CL_CmdServerTime();
+	last = cl.cmds[ cl.cmdNumber & CMD_MASK ].serverTime;
+	elapsed = now - last;
+	if ( elapsed < -100 || elapsed > 100 ) {
+		*time = now;
+		*wait = 0;
+		return 1;
+	}
+
+	*time = last + interval;
+	*wait = interval - elapsed;
+	return elapsed < interval ? 0 : elapsed / interval;
+}
+
+/*
+=================
 CL_CmdClock
 
 For Com_Frame: in the decoupled mode (cl_movefps), whose frames have no whole
-millisecond and render at any rate, the usercmd interval in ms and the next
-usercmd's time in *nextCmdUs (0: the next frame starts the clock); 0 in the
-stock mode. Metal port.
+millisecond and render at any rate, the usercmd interval in ms, and in
+*nextCmdUs the moment the server time reaches the grid's next point, in
+Sys_Microseconds (the server time runs with com_frameTime, whose milliseconds
+cls.realtime counts); 0 in the stock mode. Metal port.
 =================
 */
 int CL_CmdClock( long long *nextCmdUs ) {
-	int		interval;
+	int		interval, time, wait;
 
+	*nextCmdUs = 0;
 	if ( !com_cl_running || !com_cl_running->integer ) {
 		return 0;
 	}
 
 	interval = CL_CmdInterval();
-	*nextCmdUs = interval ? cmd_nextTime * 1000LL : 0;
+	if ( interval ) {
+		CL_CmdGrid( interval, &time, &wait );
+		*nextCmdUs = ( com_frameTime + ( wait > 0 ? wait : 0 ) ) * 1000LL;
+	}
 	return interval;
 }
 
@@ -1330,17 +1391,15 @@ CL_GetLiveUserCmd
 
 The decoupled mode's open usercmd for cgame (cl_movefps), never sent: the
 next usercmd as it goes out if the keys stay as they are now (its moves for
-the whole window, the buttons of now, nothing taken from it), one whole step
-long (its time is set already), with the angles of now; *phase is the part
-of its window gone, from the last usercmd's moment to the next one's tick,
-in microseconds. cgame runs that step and shows the part gone. qfalse in the
-stock mode. Metal port.
+the whole window, the buttons of now, nothing taken from it), the grid's next
+step, with the angles of now; *phase is the part of the step gone at the
+frame's moment (cl.serverTime and its fraction: the world's). cgame runs that
+step and shows the part gone. qfalse in the stock mode. Metal port.
 =================
 */
 qboolean CL_GetLiveUserCmd( usercmd_t *ucmd, float *phase ) {
 	usercmd_t	*last;
-	int			i, gone, window, movespeed, forward, side, up;
-	long long	spanUs;
+	int			i, gone, window, time, wait, movespeed, forward, side, up;
 
 	*phase = 0;
 	if ( !cmd_interval || !cl.cmdNumber ) {
@@ -1353,25 +1412,23 @@ qboolean CL_GetLiveUserCmd( usercmd_t *ucmd, float *phase ) {
 		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
 	}
 
-	gone = com_frameTime - old_com_frameTime;
-	window = cmd_nextTime - old_com_frameTime;
-	if ( !cmd_stampSet || window <= 0 ) {
-		return qtrue;
+	ucmd->serverTime = last->serverTime + cmd_interval;
+	*phase = ( cl.serverTime - last->serverTime + CL_RenderTimeFraction() ) / cmd_interval;
+	if ( *phase < 0 ) {
+		*phase = 0;
+	} else if ( *phase > 1 ) {
+		*phase = 1;
 	}
+
+	// the keys' window: from the last usercmd's frame to the next one's
+	CL_CmdGrid( cmd_interval, &time, &wait );
+	gone = com_frameTime - old_com_frameTime;
 	if ( gone < 0 ) {
 		gone = 0;
-	} else if ( gone > window ) {
-		gone = window;
 	}
-	ucmd->serverTime = cmd_stamp;
-	spanUs = cmd_nextTime * 1000LL - cmd_startUs;
-	if ( spanUs > 0 ) {
-		*phase = (float)( com_frameUs - cmd_startUs ) / spanUs;
-		if ( *phase < 0 ) {
-			*phase = 0;
-		} else if ( *phase > 1 ) {
-			*phase = 1;
-		}
+	window = gone + ( wait > 0 ? wait : 0 );
+	if ( window < 1 ) {
+		window = 1;
 	}
 
 	// CL_CmdButtons without the latches' and the weapon commands' taking
@@ -1459,28 +1516,29 @@ Called every frame to builds and sends a command packet to the server.
 =================
 */
 void CL_SendCmd( void ) {
+	int		wait;
+
 	// don't send any message if not connected
 	if ( clc.state < CA_CONNECTED ) {
-		cmd_interval = cmd_nextTime = cmd_aimCmd = 0;
-		cmd_stampSet = cmd_aimEyePending = cmd_aimEyeSet = qfalse;
+		cmd_interval = cmd_aimCmd = 0;
+		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
 		return;
 	}
 
 	// don't send commands if paused
 	if ( com_sv_running->integer && paused->integer  ) {
-		cmd_interval = cmd_nextTime = cmd_aimCmd = 0;
-		cmd_stampSet = cmd_aimEyePending = cmd_aimEyeSet = qfalse;
+		cmd_interval = cmd_aimCmd = 0;
+		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
 		return;
 	}
 
 	// The decoupled mode (cl_movefps, Metal port): the mouse turns the view
-	// every frame; a usercmd comes every cmd_interval ms of com_frameTime and
-	// covers that window, as a frame's does in the stock mode; only usercmds
-	// send packets. A usercmd late by less than an interval is made up by the
-	// next one, after a later one the clock starts again (as Com_Frame's).
+	// every frame; the usercmds come on their grid of server time
+	// (CL_CmdGrid), each with the input since the one before, as a frame's
+	// in the stock mode; only usercmds send packets.
 	cmd_interval = CL_CmdInterval();
+	cmd_count = 1;
 	if ( !cmd_interval ) {
-		cmd_nextTime = 0;
 		cmd_aimCmd = 0;
 		cmd_aimEyePending = cmd_aimEyeSet = qfalse;
 		// a frame inside the last usercmd's millisecond (the one cl_movefps
@@ -1492,6 +1550,8 @@ void CL_SendCmd( void ) {
 	} else {
 		CL_ViewMove();
 
+		cmd_count = CL_CmdGrid( cmd_interval, &cmd_time, &wait );
+
 		// Click-time aim: a fire click seen between usercmds gives the next
 		// usercmd the angles of its frame and the packet with that usercmd
 		// the frame's eye info (the server aims with the packet's), so the
@@ -1502,22 +1562,15 @@ void CL_SendCmd( void ) {
 			cmd_aimAngled = qfalse;
 			cmd_aimEyePending = qtrue;
 			cmd_aimEyeSet = qfalse;
-			if ( cmd_nextTime && com_frameTime < cmd_nextTime ) {
+			if ( !cmd_count ) {
 				cmd_aimAngled = qtrue;
 				VectorCopy( cl.viewangles, cmd_aimAngles );
 			}
 		}
 
-		if ( cmd_nextTime ) {
-			if ( com_frameTime < cmd_nextTime ) {
-				return;
-			}
-			cmd_nextTime += cmd_interval;
+		if ( !cmd_count ) {
+			return;
 		}
-		if ( cmd_nextTime <= com_frameTime ) {
-			cmd_nextTime = com_frameTime + cmd_interval;
-		}
-		cmd_startUs = com_frameUs;
 	}
 
 	// we create commands even if a demo is playing,

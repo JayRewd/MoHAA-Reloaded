@@ -439,12 +439,8 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
     out->fLeanAngle = LerpAngle(prev->ps.fLeanAngle, next->ps.fLeanAngle, f);
 }
 
-// The client's decoupled mode (cl_movefps, Metal port): the position before
-// the newest usercmd, kept while it is the newest (cl_cmdDisplay 2), and what
-// only pmove sets after it (the snapshot doesn't carry it)
-static int     cg_lerpCmdNum;
-static int     cg_lerpTime;
-static vec3_t  cg_lerpOrigin;
+// The client's decoupled mode (cl_movefps, Metal port): what only pmove sets
+// after the newest usercmd (the snapshot doesn't carry it)
 static int     cg_newestCmdNum;
 static qboolean cg_newestWalking;
 static qboolean cg_newestGroundPlane;
@@ -634,12 +630,6 @@ void CG_PredictPlayerState(void)
                 pmove_msec->integer * ((cg_pmove.cmd.serverTime + pmove_msec->integer - 1) / pmove_msec->integer);
         }
 
-        if (cmdNum == current) {
-            cg_lerpCmdNum = current;
-            cg_lerpTime   = cg_pmove.ps->commandTime;
-            VectorCopy(cg_pmove.ps->origin, cg_lerpOrigin);
-        }
-
         Pmove(&cg_pmove);
 
         moved = qtrue;
@@ -652,13 +642,12 @@ void CG_PredictPlayerState(void)
     }
 
     // The client's decoupled mode (cl_movefps, Metal port) sends usercmds on
-    // their own clock and turns the view every frame. Its open usercmd is the
-    // next one as it goes out if the keys stay as they are (never sent): one
-    // whole step with the angles of now, and the part of its window gone.
-    // cl_cmdDisplay 1 runs that step and shows the part gone (JayRewd's open
-    // step), so the player moves on every frame by steps as long as the
-    // server's; 2 shows the position between the last two usercmds' (his
-    // lerp, up to one usercmd behind); 0 the newest usercmd's. The view takes
+    // their own grid of server time and turns the view every frame. Its open
+    // usercmd is the next one as it goes out if the keys stay as they are
+    // (never sent): the grid's next step with the angles of now, and the part
+    // of it gone at the frame's moment. That step runs here and the part gone
+    // is shown (JayRewd's open step), so the player moves on every frame by
+    // steps as long as the server's, at the world's moment. The view takes
     // its angles.
     live = cgi.GetLiveUserCmd(&liveCmd, &phase);
     if (live && ranNewest) {
@@ -678,8 +667,7 @@ void CG_PredictPlayerState(void)
         VectorCopy(cg_newestFalldir, cg.predicted_player_state.falldir);
     }
     if (live) {
-        if (cg_cmdDisplay->integer == 1 && !cg_pmove.pmove_fixed
-            && liveCmd.serverTime > cg.predicted_player_state.commandTime) {
+        if (!cg_pmove.pmove_fixed && liveCmd.serverTime > cg.predicted_player_state.commandTime) {
             // the step runs on a copy: the time, the ground and the rest of
             // the state stay the newest usercmd's (the server runs whole
             // usercmds only), the position, speed, view height and lean move
@@ -703,12 +691,6 @@ void CG_PredictPlayerState(void)
             cg.predicted_player_state.viewheight +=
                 (int)(phase * (end.viewheight - cg.predicted_player_state.viewheight));
             cg.predicted_player_state.fLeanAngle += phase * (end.fLeanAngle - cg.predicted_player_state.fLeanAngle);
-        } else if (cg_cmdDisplay->integer == 2 && cg_lerpCmdNum == current
-                   && latestCmd.serverTime > cg_lerpTime && latestCmd.serverTime - cg_lerpTime < 250) {
-            for (i = 0; i < 3; i++) {
-                cg.predicted_player_state.origin[i] =
-                    cg_lerpOrigin[i] + phase * (cg.predicted_player_state.origin[i] - cg_lerpOrigin[i]);
-            }
         }
         PM_UpdateViewAngles(&cg.predicted_player_state, &liveCmd);
     }

@@ -2274,7 +2274,7 @@ void Com_Frame( void ) {
 	static int	lastTime = 0;
 	static long long	nextFrameUs;	// the frame rate cap's deadline
 	static long long	frameStartUs, frameGuardUs;	// the decoupled mode's frame start, a recent frame's longest work
-	long long	periodUs, deadlineUs, nowUs, pollUs, renderUs, cmdUs, alignUs, us;
+	long long	periodUs, deadlineUs, nowUs, pollUs, renderUs, cmdUs, us;
 	long long	waitStartUsec;
  
 	int		timeBeforeFirstEvents;
@@ -2351,8 +2351,8 @@ void Com_Frame( void ) {
 
 #ifndef DEDICATED
             // The client's decoupled mode (cl_movefps, Metal port): usercmds
-            // come on their own clock of whole milliseconds, so the frames
-            // need no whole millisecond and render at any rate, any cap
+            // come on their own grid of server time, so the frames need no
+            // whole millisecond and render at any rate, any cap
             cmdMsec = CL_CmdClock(&cmdUs);
 #endif
             if (cmdMsec)
@@ -2387,24 +2387,7 @@ void Com_Frame( void ) {
         if (nowUs - nextFrameUs > periodUs)
             nextFrameUs = nowUs;
         if (periodUs % 1000 == 0)
-        {
             nextFrameUs -= nextFrameUs % 1000;
-
-            // The decoupled mode: where the cap's frames and the usercmds are
-            // both whole milliseconds (250 and 125 or 250, 500, 1000), the
-            // cap's frames keep to the usercmds' ticks, one frame for both
-            if (cmdUs)
-            {
-                for (alignUs = periodUs, us = cmdMsec * 1000LL; us; )
-                {
-                    long long r = alignUs % us;
-                    alignUs = us;
-                    us = r;
-                }
-                us = (cmdUs - nextFrameUs) % alignUs;
-                nextFrameUs += us < 0 ? us + alignUs : us;
-            }
-        }
         if (deadlineUs < nextFrameUs)
             deadlineUs = nextFrameUs;
     }
@@ -2413,7 +2396,10 @@ void Com_Frame( void ) {
     // a frame of its own, which doesn't render (the cap's deadline stays);
     // a frame due less than a recent frame's work before it waits for it, so
     // no frame runs across the usercmd's tick and every usercmd's frame
-    // starts on it, as a capped stock client's frames do
+    // starts on it, as a capped stock client's frames do. The usercmds' ticks
+    // move with the time delta's corrections (their grid is server time), so
+    // the cap's frames don't keep to them: a cap that divides 1000 keeps its
+    // even frames, and a usercmd off them gets its own
     renderUs = deadlineUs;
     if (cmdUs)
     {
