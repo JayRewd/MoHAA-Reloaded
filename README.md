@@ -161,6 +161,7 @@ On fixed test views across multiplayer, objective and single-player maps, Metal 
 - **Alpha-tested surfaces after the opaque ones** (the foliage item above): a few single pixels differ where a leaf and a wall are at exactly the same depth.
 - **32 dynamic lights:** with 32 or more lights in a scene, MOHAA lit no wall at all on arm64; now they all light it. Only cheats get that many lights (`cg_acidtrip`).
 - **Models at full detail** (`r_uselod 0` by default): soldiers and weapons don't lose detail with distance.
+- **Doors, lifts and other moving brushwork lit by every dynamic light:** MOHAA let only a scene's first dynamic light into their lighting; the others were dropped where it reached and only faintly projected elsewhere. Now every light that reaches them lights them as it lights the walls around them, at most ~2 µs a frame.
 - **Gamma** (`r_gamma`) is applied in the final shader pass, not through the display's gamma table. It never changes the desktop's colors, and other tools can't override it.
 
 Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They save CPU, but on this GPU they cost more when a light covers the screen, which your own muzzle flash does, so your own shots would show ~50 µs later. A depth prepass for foliage gave no steady gain. More drawables or frames in flight add latency.
@@ -170,7 +171,6 @@ Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They sa
 - **Parked:** a still black window over the other displays in exclusive fullscreen, so that mode would match the Space's latency.
 - **Not done:** low-latency vsync (frame pacing for a tear-free mode without vsync's extra refresh), a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off and of audio latency, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
 - **Removed on purpose:** gamepads and joysticks, the `openmohaa://` link handler, the update checker.
-- **Upstream behavior, kept:** doors, lifts and other moving brushwork are lit only by the scene's first dynamic light. Custom maps with terrain of 3 or more lightmap texels per step hang when a dynamic light reaches it (no retail map has such terrain).
 - **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the terrain's own per-vertex work). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
 
 The full record (every decision, measurement and session) is [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md). This work is on `main` (named `metal` until 2026-10-20); upstream's own history is at [openmoh/openmohaa](https://github.com/openmoh/openmohaa).
