@@ -359,6 +359,28 @@ below are done.
   or more of them, the 99th and 99.9th percentiles of cgame and the
   renderer 2 to 13 µs lower in three matches (0.3 to 1.6 %); the same
   results to the bit (see Performance, Light grid lookups)
+- registration in the match (2026-10-22, a cgame and engine change, for
+  both renderers): in multiplayer cgame registers at the load what a match
+  loaded in the frame that first announced or used it: every player model
+  of the game data with its first person model, the `cache` lines of the
+  map's precache script (the server's own list; with `global/DMprecache.scr`
+  the players' models and the weapons, then the map's items), the models of
+  the map's entities and those its script names (the objectives' explosions
+  and wrecks), the projectiles and turret view models these lead to, the
+  health box a dying player drops, and the HUD's shaders and sprites
+  (`cg_precache`); and the file system answers a lookup that a search
+  directory can't satisfy from a listing of the directory, instead of
+  correcting the path's case and failing an `fopen` (`fs_listDirs`). In 21
+  real matches the 61 frames that loaded something (0.3 to 24 ms of it, up
+  to 7 a match) and the 78 ms of the first frames after the loads are down
+  to 7 frames, one of them a load (9.4 ms: named in a map script that this
+  machine's mod pk3 replaces); in the two
+  measured matches the maximum frame time goes from 21.4 and 27.9 ms to 2.9
+  and 5.4 ms uncapped (4.4 and 5.4 ms at 250 frames a second), the 99.9th
+  percentile the same or lower, the share of registration in the slowest
+  1 % of the frames from 18 to 27 % to 2 %; the map load 0.01 to 0.11 s
+  shorter, 2 to 4 MB more texture memory in the same device memory (see
+  Performance, Registration in the match)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -427,7 +449,11 @@ Performance, Command rate), and cgame's caches (`code/cgame/cg_marks.c`:
 temporary marks kept for the rest of a snapshot; `cg_modelanim.c` and
 `cg_local.h`: shadow traces kept by origin; `cg_tempmodels.cpp` and
 `cg_commands.cpp`/`.h`: the count of active temporary models; see
-Performance, cgame caches).
+Performance, cgame caches), and the registration at load
+(`code/cgame/cg_main.c`: `CG_PrecacheMatch`, `cg_precache`;
+`code/cgame/cg_public.h` and `code/client/cl_cgame.cpp`: the cgame import
+`CM_EntityString`; `code/qcommon/files.cpp`: `FS_DirMayHave`,
+`fs_listDirs`; see Implementation notes, Registration at load).
 
 ## Build and run
 
@@ -876,6 +902,13 @@ Test content:
   about 130 a frame in `sm_front`, more than the smokiest matches average.
   For timing (`perf.py`, see Performance, Light grid lookups); its content
   is random, the debris lands elsewhere in every run.
+- A team match (2026-10-22): `team_obj_team2` takes `obj_team2`'s views in
+  a team match (`g_gametype 2` before the map, like `hud`), where cgame
+  registers at the load what a multiplayer match would load later (see
+  Implementation notes, Registration at load); the other lists are
+  single-player games, where it doesn't. A team match can't be paused, so
+  the yard's swaying tree can land on another phase (`mpo2_yard`, once in
+  ten runs).
 - Debug drawing: `mohdm1_debug`. `r_showtris` and `r_shownormals` only draw
   with `developer 1` (`r_developer`), which is why they seemed to show
   nothing. The game's debug lines (`sv_showbboxes`, camera paths shown with
@@ -1610,6 +1643,30 @@ session that loads `obj/obj_team4`, runs `vid_restart`, loads `dm/mohdm6`
 and `obj/obj_team4` again (the tables made again with each world) and
 plays a `dm/mohdm6` match. `renderer_vulkan.so` imports no GL or Vulkan
 symbol and exports only `GetRefAPI`.
+
+The registration in the match (2026-10-22, see Performance, Registration in
+the match; a cgame and engine change, the renderer's code the same), the
+engine and cgame of the build before against the new ones (`run.sh`
+through wrappers, `tgadiff.py`, 640x480, `r_vkValidation 1`): on the 47
+view lists and 4 of them in a team match (222 views; `team_obj_team2` is
+one of those, kept) 186 give the same frames to the bit, among them every
+view of the team matches, where the registration at load runs (`hud`, the
+views of `obj/obj_team1`, `obj/obj_team2`, `obj/obj_team4` and `dm/mohdm6`),
+but `mpo2_yard` below (the other lists are single-player games, which only
+the directory listings change); the other 36 are in the lists with random content or
+run-to-run noise named above, 2 pixels of `pm7_front`, and `mpo2_yard`,
+whose swaying tree landed on another phase in one of ten runs (the other
+nine of both builds, and GL1's, the same). What a match registers was
+traced over the 21 matches with a temporary engine build (see
+Performance), and an OpenMoHAA dedicated server with 8 bots joining a team
+match was played against (`omohaaded`, `obj/obj_team2`). No validation
+message in these runs, nor with synchronization validation
+(`r_vkValidation 2`) on `hud` and two team match lists and 3000 frames of
+`o2match`. GL1 (`cl_renderer opengl1`) gives the same frames with the new
+engine and cgame as with the old ones in the team match lists (but
+`mpo2_yard`'s tree, which differs between two runs of the old ones too)
+and plays `o2match` without a frame that registers. `renderer_vulkan.so`
+is the same code (`.text`) as the build before.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -4729,6 +4786,146 @@ frame, so its differences are the placement). Nothing waits or is queued
 for longer; the work taken off lies between the input read and the
 present.
 
+Registration in the match (2026-10-22, Plan 28; see Implementation notes,
+Registration at load; cgame and the engine, both renderers). The largest
+frames of a match were those in which something the server announced, or
+cgame drew for the first time, was loaded (Plan, Remaining 1 before this
+step). What and how much, from a temporary engine build that timed every
+registration cgame makes through its imports (models, server models,
+effects, shaders, sounds, fonts: the outermost calls and the nested ones,
+the frame and the frame's length; not kept), over the 21 demos of real
+matches (20 matches of `obj/obj_team1` to `obj/obj_team4`, `dm/mohdm4` and
+`dm/mohdm6` played whole, 1920x1080 uncapped, `fixedtime 16`; 5 load a
+second map, one of which the game data hasn't), the build before (`base`)
+and this one (`new`); calls of 50 µs or more, after the first frame of each
+load and in it; ms:
+
+| registered in the match | `base`: calls, ms, the largest (matches) | `new` |
+| --- | --- | --- |
+| the map's entity models (the objectives' explosions) | 45, 143.8, 17.6 (8) | none |
+| players' models | 6, 44.7, 8.1 (5) | none |
+| their first person models | 1, 3.4 (1) | none |
+| items, turrets, vehicles, projectiles, effect models | 22, 38.6, 7.7 (14) | 4, 9.6, 7.4 (3) |
+| cgame's shaders and sprites (decals, HUD) | 77, 22.1, 1.0 (20) | 8, 0.8, 0.4 (7) |
+| sounds | 8, 1.8, 0.3 (6) | 6, 1.3, 0.3 (5) |
+| effects spawned (cgame's init commands of each new effect, not a load) | 135, 17.2, 0.3 (11) | 135, 15.8, 0.3 (11) |
+| in the first frame after each load | 96, 77.9, 17.3 | none |
+| frames with 0.3 ms or more of it (after the first) | 61, 249 ms in all; 24.1, 18.2, 18.2, 18.1, ... | 7, 14.9 ms in all; 9.4, 2.0, 1.7, 0.7, 0.4, 0.4, 0.4 |
+
+- The objectives' explosions: the exploder script's `exploderfire`
+  entities carry `models/animate/fx_explosion_tank.tik` (`obj/obj_team2`;
+  17.5 ms, its `textures/effects/bang.spr` alone 16.8: an animation of
+  256x256 images) and `explosion_bridge.tik` (`obj/obj_team4`, 17.2 ms),
+  and get the model when they go off: in every match of those maps where
+  the objective blew up. `obj/obj_team4`'s precache script names its
+  explosion, which the server caches but doesn't announce.
+- Players' models: the servers of these demos (original game servers)
+  announce the models of their precache list (`global/DMprecache.scr`) in
+  the gamestate, and so does an OpenMoHAA dedicated server (checked with 8
+  bots joining a team match, every model at the load), so these load with
+  the map; what came in the match were the models the stock list lacks or
+  misnames (`allied_sas`; `german_winter1` for `german_winter_1`): 7.0 to
+  8.1 ms each, the player's own first person model 3.4 to 3.9 ms in the
+  first frame.
+- Items and the like: the explosive (2.1 ms), the health box of a dying
+  player (1.0 ms), the P-47's fly-by (2.6 ms), the MG42's view model when a
+  player mans it (1.7 ms), `obj/obj_team1`'s flak wreck and its explosion
+  (7.7 and 3.4 ms), projectiles and explosions (0.2 to 0.3 ms).
+- cgame's own: the `blastmark` decal of the first explosion (0.58 ms, in
+  20 of the 21 matches), the crosshairs, team icons, radar, head icons
+  and the lag icon (0.1 to 0.35 ms each, in the first frame or later).
+- A model whose configstring comes and goes was freed with it and
+  registered again (`models/emitters/adamspark.tik`: 32 times in 5
+  matches, 0.13 ms each).
+
+What is left with `new`: `obj/obj_team1`'s flak wreck and its explosion
+(7.4 and 1.9 ms, one frame of 9.4 ms) in the match where the flak was
+destroyed: their names are in the stock map script, which a mod pk3 on this
+machine (`z_forteffa.pk3`) replaces for the client (with the stock script
+installed in the home path both load with the map, and that match has no
+frame of 0.3 ms of registration left); the water sounds of the body (0.2 to
+0.3 ms), a projectile the server's weapon file names and the client's
+doesn't (0.15 ms); the frames of 1.7 and 2.0 ms are many crate debris
+effects spawned at once (cgame's init commands, 0.1 ms each).
+
+Results (idle machine: other processes at most 0.9 CPUs, no Plex
+transcoding; `base` (8e48c063: its engine and cgame, the same renderer)
+and `new` (`cg_precache 7`, `fs_listDirs 1`), uncapped also with each
+part alone (`cp0`: `cg_precache 0`, only the directory listings; `ld0`:
+`fs_listDirs 0`, only the registration at load), interleaved, 5 runs of
+15000 frames of `o2match` and `o4match` at 1920x1080 in a window,
+`perf.py --caps 0` and `--caps 250`, `--preload libinlat.so --framelog`;
+the medians of the runs' percentiles, in parentheses the "content" ones
+(each frame's median over the runs, see Frame spikes); ms):
+
+| demo | `com_maxfps` | build | frame time p99.9 | max | p99 | mean | input to present p99.9 | max | p99 | median |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | `base` | 1.449 (1.312) | 21.36 | 1.048 (1.007) | 0.498 | 1.382 (1.348) | 20.25 | 0.978 | 0.418 |
+| | | `new` | 1.327 (1.256) | 2.92 | 1.029 (0.994) | 0.492 | 1.265 (1.215) | 2.67 | 0.967 | 0.414 |
+| | | `cp0` | 1.369 (1.264) | 18.80 | 1.034 (0.993) | 0.492 | 1.355 (1.270) | 17.68 | 0.969 | 0.414 |
+| | | `ld0` | 1.329 (1.274) | 3.01 | 1.039 (1.014) | 0.493 | 1.270 (1.229) | 2.78 | 0.986 | 0.418 |
+| | 250 | `base` | 4.235 (4.228) | 21.02 | 4.045 (4.041) | 4.001 | 1.509 (1.258) | 19.98 | 1.019 | 0.482 |
+| | | `new` | 4.205 (4.196) | 4.45 | 4.045 (4.042) | 4.000 | 1.421 (1.193) | 2.65 | 1.008 | 0.474 |
+| `o4match` | 0 | `base` | 1.930 (1.880) | 27.92 | 1.488 (1.435) | 0.926 | 1.880 (1.843) | 26.89 | 1.428 | 0.865 |
+| | | `new` | 1.969 (1.854) | 5.35 | 1.492 (1.428) | 0.924 | 1.935 (1.756) | 5.21 | 1.428 | 0.863 |
+| | | `cp0` | 1.963 (1.908) | 25.68 | 1.518 (1.460) | 0.940 | 1.886 (1.800) | 24.70 | 1.472 | 0.879 |
+| | | `ld0` | 1.910 (1.780) | 5.53 | 1.479 (1.431) | 0.918 | 1.890 (1.774) | 5.33 | 1.411 | 0.862 |
+| | 250 | `base` | 4.237 (4.195) | 28.12 | 4.041 (4.032) | 4.001 | 2.203 (1.674) | 27.08 | 1.606 | 0.923 |
+| | | `new` | 4.190 (4.198) | 5.39 | 4.039 (4.031) | 4.000 | 2.301 (1.627) | 5.24 | 1.584 | 0.913 |
+
+- The maximum was the registration (the bridge's and the tank's
+  explosions, in `o2match` also two players' models of 7.5 ms): 21.4 and
+  27.9 ms become 2.9 and 5.4 ms uncapped, 4.4 and 5.4 ms at 250 (where a
+  frame lasts 4 ms). What is at the top now is the first frame after the
+  load (0.9 ms of registration in `o4match`'s that doesn't come from
+  cgame: the engine's UI, which draws the HUD) and `o4match`'s
+  round changes (3.7 ms, the soundtrack decoded on the main thread, Remaining 1).
+- The slowest 1 % of the frames: the registration was 26 to 27 % of their
+  excess over the median frame in `o2match` and 18 to 19.5 % in `o4match`
+  (`framelog.py`, each run), 2 % now; their average excess 0.98 to 0.70 ms
+  and 0.99 to 0.78 ms. The 99.9th percentile is lower in `o2match`
+  (1.449 to 1.327 ms uncapped, content 1.312 to 1.256; 4.235 to 4.205 at
+  250) and the same within the runs' spread in `o4match` uncapped (one run
+  of each build at 2.4 and 2.6; content 1.880 to 1.854), lower at 250
+  (4.237 to 4.190); the 99th percentile and the mean the same within the
+  spread (a match has 3 to 7 such frames in 15000).
+- Input read to present: the median and the 99th percentile the same or
+  lower; its maximum follows the frame's; the 99.9th percentile lower in
+  `o2match`, in `o4match` 0.06 and 0.1 ms higher by the runs' medians (the
+  runs 1.81 to 2.28 against 1.85 to 2.38 ms uncapped, 2.07 to 2.23 against
+  2.16 to 2.36 at 250) where the content's goes from 1.843 to 1.756 and from
+  1.674 to 1.627 ms: run to run noise. Nothing more happens between a
+  frame's input read and its present; the load does more.
+- Each part alone: the registration at load takes the maximum (`ld0`); the
+  listings alone take 2.2 to 2.6 ms off it (`cp0`: the lookups of what is
+  still loaded in the match).
+
+The load (`CL_InitCGame`, the median of the runs; device memory, texture
+memory and the game's resident memory from `vkinfo` and the process after
+the load and at the end of the demo, one run each):
+
+| demo | map load `base` / `new` (s) | `cp0`, `ld0` | texture memory used after the load, at the end (MB) | device memory for textures | resident |
+| --- | --- | --- | --- | --- | --- |
+| `o2match` | 1.320 / 1.280 | 1.220, 1.380 | 111.7, 123.7 / 123.8, 126.0 | 128 MB / 128 MB | 209.0 / 209.4 MB |
+| `o4match` | 1.230 / 1.170 | 1.120, 1.280 | 126.3, 128.4 / 130.7, 132.7 | 128 MB, then 192 MB in the match / 192 MB at the load | 207.9 / 208.9 MB |
+
+The registration at load costs 0.05 to 0.06 s of the load (`ld0`), the
+listings take 0.10 to 0.11 s off it (`cp0`), together 0.04 and 0.06 s
+less; over the 26 loads of the 21 demos (one run each, the first load and
+the second of a demo that changes map) 0.01 to 0.11 s less. (`cp0` and
+`ld0` were measured with this cgame before it also registered every
+player model of the data: that added `german_elite_officer`, which no list
+names, and its first person model; `new` is the final one.) The texture
+memory after the load is 4 to 12 MB larger and 2 to 4 MB at the end of the
+match (what the match didn't use: the other players' models, effects and
+items), in the same device memory (in `o4match` the build before allocated
+its third block of texture memory, 64 MB, in a frame of the match); 2 to 4
+more pipelines at the load, the skin data 3.8 to 4.1 MB (of 32), the
+resident memory 0.4 to 1.0 MB more. A load against an OpenMoHAA dedicated
+server (`obj/obj_team2`, 8 bots joining from 20 s on): 1.324 to 1.235 s,
+the same memory, no registration in a frame of the match (the build before:
+one, a head icon).
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -5863,6 +6060,77 @@ selects the sample count (see Implementation notes).
   memory 50 KB larger and its device memory (amdgpu's fdinfo) the same.
   `vkinfo` prints how many exist, were created before their draw and of
   those were used.
+- **Registration at load** (cgame's `CG_PrecacheMatch` in `cg_main.c`,
+  `cg_precache`; the engine's `FS_DirMayHave` in `files.cpp`,
+  `fs_listDirs`; both renderers; see Performance, Registration in the
+  match). A model announced by a configstring during a match
+  (`CG_ProcessConfigString`, `RegisterServerModel`) was loaded in that
+  frame: its TIKI, its shaders' images from the pk3s, its client init
+  commands' caches. In multiplayer (`cgs.gametype` not single player),
+  after the gamestate's configstrings, `CG_PrecacheMatch` registers at the
+  load, with `R_RegisterModel` (a model of cgame's own, which
+  `R_UnregisterServerModel` doesn't free when its configstring changes, so
+  one that comes and goes is looked up again instead of loaded), what the
+  match can announce later (the server announces the models of its own
+  precache list in the gamestate, the original servers of the demos and an
+  OpenMoHAA dedicated server alike, so for those this is a lookup by name;
+  what it loads is what the server's list lacks):
+  - bit 1: every player model of the game data, as the server's
+    `InitModelList` and `IsPlayerModel` find them (`models/player/*.tik`
+    starting with `allied_`, `american_`, `german_`, `IT_` or `SC_`, not
+    the first person ones), each with its first person model (`_fps`: the
+    one cgame registers for the player's own view); then the `cache` lines
+    of the map's precache script (the server's
+    name, `maps/<map>_precache.scr`, `Level::SetMap`) and of the scripts it
+    executes (`exec`, without the `::label`; at most 8 deep), whatever
+    `if` they are under (a superset: Spearhead's models in an `if` of
+    `global/DMprecache.scr` aren't in this game's data and are left out by
+    the existence check), registered as cgame's `cache` command does
+    (`CacheResource`: sprites as shaders, `.wav` and `.mp3` as sounds) but
+    models as above; a map without one gets `global/DMprecache.scr`, the
+    stock list of the players' models, their first person models and the
+    weapons;
+  - bit 2: the `.tik` models of the map's entities (`CM_EntityString`, a
+    new cgame import: the exploder's `exploderfire` entities carry the
+    explosions of `obj/obj_team2` and `obj/obj_team4`, which get their
+    model when they go off) and every `.tik` name in the text of the map's
+    own script (`maps/<map>.scr`: `obj/obj_team1`'s flak wreck and its
+    explosion), read as text rather than tokens;
+  - bit 4: what cgame registers itself the first time it draws it (the
+    `blastmark` decal, the team icons, the radar, the lag icon, the four
+    head icon sprites, the two crosshairs) and the health box
+    `Player::EventDMDeathDrop` drops.
+
+  Each model (`CG_PrecacheModel`) gets the server's name for it
+  (`models/` in front, `FS_CanonicalFilename`), is skipped when the file
+  doesn't exist (the stock list names `german_winter1` and others the data
+  hasn't, which would print an error), and brings, one level deep, the
+  models its server init commands name (a weapon's projectile, a
+  projectile's `explosionmodel`) and, for a `TurretGun`, the view model
+  `TurretGun::CreateViewModel` makes from its name (`_viewmodel.tik`). The
+  renderer then builds the skin data and the pipelines of all of it at
+  `RE_EndRegistration` as for the rest of the load. The images stay
+  registered from load to load (`R_FreeUnusedImages` frees those the next
+  load doesn't register), so the next map loads only the TIKIs again (when
+  no local server keeps them).
+
+  `fs_listDirs` (not on Windows): a lookup in a search directory
+  (`FS_FOpenFileReadDir`, the game's directory in the home path and the
+  base path, before their pk3s) built the path with `FS_CorrectCase`,
+  which, for a file that isn't there, `access()`es every component of the
+  path and lists the deepest directory that exists for a name of another
+  case, then failed in `Sys_FOpen` (a `stat` and an `fopen`): 17 to 23 µs
+  each here, for every file that only a pk3 has, twice for an image (its
+  `.jpg` is looked for before the `.tga`). `FS_DirMayHave` keeps a listing
+  of each search directory's names (lower case, sorted), valid while the
+  directory's device, inode and modification time stay the same (one
+  `stat`, 1.2 to 1.5 µs), and answers "not there" when the path's first
+  name isn't in it under any case: then neither the path nor anything
+  `FS_CorrectCase` would make of it exists, the same answer. A listing of a
+  directory changed less than 2 seconds before isn't kept (a change within
+  the timestamps' granularity could keep the same time), nor one of more
+  than 65536 names; a search directory whose own path doesn't exist as
+  named goes the old way (`FS_CorrectCase` may find it under another case).
 - **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
   the static geometry, `effectsDraws` those of them with the effects
   shader). Every `vkAllocateMemory` goes
@@ -6481,40 +6749,64 @@ Done:
     to 3.8 % off the 99th percentile frame time in a 22-player fight on
     `dm/mohdm6`; new list `smoke`).
 
+28. Registration in the match (2026-10-22, see Performance, Registration
+    in the match, and Implementation notes, Registration at load; cgame and
+    the engine, both renderers): first measured over 21 real matches with a
+    temporary build that timed each registration cgame makes (what loads
+    in the match: the objectives' explosions of the map's entities, 17 to
+    18 ms; players' models the server's precache list lacks, 7 to 8 ms;
+    items, turrets, vehicles, projectiles; cgame's decals and HUD shaders;
+    the player's first person model in the first frame). Then, in
+    multiplayer, cgame registers at the load every player model of the
+    data with its first person model, the `cache` lines of the map's
+    precache script and the scripts it executes, the `.tik` models of the
+    map's entities (a new cgame import, `CM_EntityString`) and of its
+    script, the projectiles, explosions and turret view models these name,
+    the health box a dying player drops and its own first-use shaders and
+    sprites (`cg_precache`, bits 1, 2 and 4); a model so registered is
+    cgame's own and stays when its configstring goes. The file system
+    answers a lookup that a search directory can't satisfy from a listing
+    of the directory, valid while its modification time stays the same,
+    instead of `FS_CorrectCase`'s `access()`es and directory scan and a
+    failed `fopen` (`FS_DirMayHave`, `fs_listDirs`; 17 to 23 µs to 1.2 to
+    1.5 µs per search directory and lookup). Of the 61 frames with 0.3 ms or
+    more of registration in the 21 matches, 7 are left (one a load: a map
+    script that a mod pk3 on this machine replaces); the maximum frame time
+    of `o2match` and `o4match` 21.4 and 27.9 ms to 2.9 and 5.4 ms, the
+    99.9th percentile the same or lower, the map load 0.04 to 0.06 s
+    shorter, the texture memory 2 to 4 MB larger at the end of a match.
+    (b) a faster inflate and (d) the mipmaps on the GPU (Remaining 1 before
+    this step) were not done: what they would speed up now happens at the
+    load.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
   frame times in two matches played back, 1920x1080 unless named):
-  1. Registration in the middle of a match: a model announced by a
-     configstring (`CG_ProcessConfigString`, cgame's `CacheResource`)
-     loads its shaders' images from the pk3s: the largest frames of both
-     renderers (21 to 29 ms in the two matches, GL1 26 to 33 ms) and 13 to
-     28 % of the slow frames' excess; 6 and 3 frames, 39 and 26 ms of
-     registration per match, 26 to 36 textures (8 to 11 MB). Measured
-     (2026-10-18, see Performance, Pipelines and skin data at load): zlib
-     decompressing the images from the pk3s takes 48 % of it, the file
-     system's lookups 17 % and its case correction (`FS_CorrectCase`) 11
-     %, mipmaps and scaling on the CPU 10 %, TIKI files 7.5 %, TGA and JPEG
-     decoding about 1 %; shared with GL1, which spends about the same. Not
-     done, each keeping the frames: (a) the players' models and weapons
-     registered at map load (cgame or the engine: the stock lists are
-     known; more load time and memory) would take nearly all of it out of
-     the match; (b) a faster inflate for the pk3 reads (zlib-ng's or
-     libdeflate's decompression, the same bytes, reported about twice as
-     fast as stock zlib; not measured here) would take up to a quarter of
-     it off, in the load too; (c) the file system's directory scans: `FS_CorrectCase` lists
-     every search directory that lacks a path (`opendir`/`readdir`) on
-     each lookup of a file that only a pk3 has; listing each directory
-     once per file system start, or skipping the correction where a pk3
-     has the file, would remove most of its 11 % and part of the 17 %;
-     (d) the mipmaps on the GPU, with a compute shader doing `R_MipMap`'s
-     integer box filter (the same bytes; `vkCmdBlitImage`'s filtering
-     would not be), 10 %; (e) a cache of decoded images (like the pipeline
-     cache) would remove the decompression and the decoding together, at
-     the cost of disk space. (a) to (c) are engine or cgame changes, (d)
-     the renderer's. The skin data of GPU skinning is no longer built at a
-     model's first draw (0.6 ms more than GL1 in that frame): it is built
-     when the model is registered, in these frames (under 1 % of them).
+  1. Registration in the middle of a match: done (2026-10-22, Plan 28):
+     cgame registers at the load what a multiplayer match announces or
+     draws later, and the file system's lookups in the search directories
+     use listings. Left in 21 real matches: one load of 9.4 ms (`obj/obj_team1`'s
+     flak wreck and its explosion, named in the stock map script, which a
+     mod pk3 on this machine replaces for the client; what a server's own
+     scripts or mods spawn that the client's files don't name stays a
+     load in the match), the water sounds of the body (0.2 to 0.3 ms), and
+     cgame's init commands of each new effect (0.1 ms each, 2 ms in a frame
+     with many crate debris). The first frame after a load still has 0.9
+     ms of registration from the engine's UI (the HUD), and `o4match`'s
+     round changes are now its slowest frames (item 5). Not done, all of
+     them for the load now: (b) a faster inflate for the pk3 reads
+     (zlib-ng's or libdeflate's decompression, the same bytes, reported
+     about twice as fast as stock zlib, 48 % of the registration's time;
+     a new dependency, the user's call), (d) the mipmaps on the GPU (a
+     compute shader doing `R_MipMap`'s integer box filter, 10 %), (e) a
+     cache of decoded images (disk space). The registration's time,
+     measured 2026-10-18 (see Performance, Pipelines and skin data at
+     load): zlib 48 %, the file system's lookups 17 % and `FS_CorrectCase`
+     11 % (the listings take most of these two off), mipmaps and scaling
+     10 %, TIKI files 7.5 %. A list of what each map loaded in the match,
+     kept from play to play and registered at its next load (like
+     `vkpipelines.keys`), would cover what no file names; not done.
   2. Pipelines on first use, with cold caches: done (2026-10-18, Plan 16):
      the map's pipelines are created at load (0.18 to 0.20 s more map load
      with cold caches, the same with warm ones), 2 are left in the match

@@ -525,6 +525,7 @@ extern "C" {
     //
     extern cvar_t *cg_fov;
     extern cvar_t *cg_cheats;
+    extern cvar_t *cg_precache;
 
     //
     // cg_main.c

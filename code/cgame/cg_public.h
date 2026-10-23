@@ -455,6 +455,9 @@ functions exported to the main executable
         // the open cl_cmdfps step with the keys held now. Not sent.
         void (*GetLiveUserCmd)(usercmd_t *ucmd);
 
+        // the entity lump of the map CM_LoadMap loaded
+        char *(*CM_EntityString)(void);
+
     } clientGameImport_t;
 
     /*

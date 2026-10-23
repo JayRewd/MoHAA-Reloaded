@@ -835,6 +835,7 @@ void CL_InitCGameDLL( clientGameImport_t *cgi, clientGameExport_t **cge ) {
 	cgi->GetViewUserCmd				= CL_GetViewUserCmd;
 	cgi->GetRenderTimeFraction		= Com_RenderTimeFraction;
 	cgi->GetLiveUserCmd				= CL_GetLiveUserCmd;
+	cgi->CM_EntityString			= CM_EntityString;
 	// FIXME
 	//cgi->pUnknownVar				= NULL;
 
