@@ -1,6 +1,6 @@
 # OpenMoHAA for Apple Silicon 1.0.0: a native Metal port
 
-> Published on 2026-10-20 as [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0); the release's text is this file without its title and this note.
+> Draft for the GitHub release v1.0.0, published again from a later commit of `main` (session 66): it replaces the first v1.0.0 of 2026-10-20, whose text is this file at 7692472f. The release's text will be this file without its title and this note, with the zip's SHA-256 filled in below.
 
 The first release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmohaa-metal), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
@@ -13,26 +13,40 @@ The first release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmoha
    ```bash
    xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
    ```
-   "Open Anyway" in System Settings → Privacy & Security is not enough for this game: macOS then runs the app from a temporary read-only copy where it can't find your game data, and it still refuses to load `game.dylib` and `cgame.dylib`.
-3. Copy `openmohaa.app`, `game.dylib` and `cgame.dylib` into your MOHAA folder, next to `main/` (`omohaaded`, a dedicated server, is optional).
+   "Open Anyway" in System Settings → Privacy & Security is not enough for this game: macOS then runs the app from a temporary read-only copy where it can't find your game data. The game then stops and shows the line to run, with your folder's path.
+3. Copy `openmohaa.app` into your MOHAA folder, next to `main/`. The game libraries are inside the app.
 4. Start `openmohaa.app`. If the game folder is on an external drive (or in Documents or Desktop), macOS asks whether it may access files there: allow it (it asks again after each update, as does step 2). Spearhead and Breakthrough: `open openmohaa.app --args +set com_target_game 1` (or `2`) in Terminal, in the game folder.
 
 `INSTALL.txt` in the zip has the same steps. Configs, saves, screenshots, demos and logs go into the game folder (`main/configs/`, `main/screenshots/` …), as in the original game, or to `~/Library/Application Support/openmohaa/` if the game folder isn't writable. Settings an earlier OpenMoHAA kept in Application Support are read on the first start. If your game folder already has a `main/configs/omconfig.cfg` from another OpenMoHAA build, that one is used: delete it to keep the settings from Application Support.
+
+## If you installed the first 1.0.0
+
+This 1.0.0 replaces the one published on 2026-10-20 (the same version number, a later build of the port, with the new sound and everything below). If you have that one:
+
+- **Replace the app**, and delete the `game.dylib`, `cgame.dylib` and `omohaaded` it put beside it: the game libraries are inside `openmohaa.app` now, and the zip has no dedicated server.
+- **`cl_cmdRate` is now `cl_movefps`.** A config line `seta cl_cmdRate …` no longer does anything: change it to `seta cl_movefps …` (85–125; the default is 100), or the game plays at 100. `cl_cmdDisplay` is gone too.
+- Clear the new download's quarantine (step 2), and allow the folder access again if macOS asks: each build needs its own permission.
+- Fixed since: the Metal pipeline cache when your home folder's name has non-ASCII characters; a crash on custom maps whose terrain has a finer lightmap than the retail maps' when a dynamic light (a shot, an explosion) reaches the terrain; the stop after "Open Anyway" (it now says what to do); a stray footstep after getting off a ladder or letting go of a mounted gun with `cl_movefps` on.
 
 ## What's in it
 
 - **Metal from start to finish.** The renderer is upstream's GL1 renderer with its drawing rewritten for Metal: hand-written Metal shaders compiled into the binary, a pipeline cache with each map's pipelines compiled during its loading screen, world and static-model geometry kept in GPU memory, skeletal models skinned on the GPU, and no GPU wait inside a frame. OpenGL is gone from the source and the binary. No translation layers.
 - **No SDL.** The window, display modes, keyboard and mouse are native AppKit code, with raw mouse input through GCMouse (`in_mouseRaw 1`, the default).
+- **No OpenAL: the original's sound.** The port's own mixer on Core Audio plays MOHAA's sound as the PC original did on the Miles Sound System: each sound at its own volume (upstream's OpenAL played every positional one-shot at one level), loud ones neither flattened nor clipped, sounds behind you 3 dB quieter and silent beyond their maximum distance. A sound reaches the headphone jack ~5 ms after it starts instead of ~19, and the mixing costs less CPU than OpenAL's. Music, dialogue, movies and saves play through it too: songs crossfade and resume where they stopped. JayRewd's review of where OpenMoHAA's sound differs from the original was the checklist (ideas only, re-implemented).
+- **Sound settings:** `s_speaker_type 1` is headphone 3D through Apple's HRTF (your personalized one when macOS has it): a sound behind, above or below you sounds there. It's off by default (stereo, as the original pans) and switches at once. `s_ambientvolume 0` turns the soundtrack off entirely (no song is opened, decoded or mixed), and the new `cg_tauntsounds 0` mutes other players' taunts (the chat text stays).
 - **Like the original, where it counts:** files go into the game folder, and the intro videos are off (`+set cl_playintro 1` brings them back). No PID file, so no "Abnormal Exit" prompt after a crash or a force-quit.
-- **Lean.** arm64 and macOS 26 only: one sealed `openmohaa.app` with openal-soft 1.25.2 inside, plus `game.dylib`, `cgame.dylib` and `omohaaded`.
+- **Lean.** arm64 and macOS 26 only: one sealed `openmohaa.app` with the game libraries inside, and no OpenGL, SDL or OpenAL in it.
 - **Faster than GL1** on the test Mac (the benchmark demo: a 2-minute 8-bot free-for-all on Stalingrad): the CPU's work per frame 0.89–0.95 → **0.205 ms** (4.5× less), the 99th percentile ~2.3 → **0.48 ms** (4.8× less).
-- **Lower input latency.** From reading the mouse to the display showing the frame, at 250 frames a second: **2.0 ms** median in a window, **1.9** in exclusive fullscreen, **1.8** in the fullscreen Space (the first Metal build: 10 ms in a window). Counted from the mouse's own event, the input on screen is typically 3.55 ms old in the Space with `cl_cmdRate 100` and `com_maxfps 480`, against 4.6 ms in stock mode at 250.
-- **A decoupled command clock** (`cl_cmdRate`, default 100): the commands the server runs come from their own clock, and the game renders at whatever `com_maxfps` sets. What the server receives is what a stock client sends at that command rate. `cl_cmdRate 0` is stock behavior.
+- **Lower input latency.** From reading the mouse to the display showing the frame, at 250 frames a second: **2.0 ms** median in a window, **1.9** in exclusive fullscreen, **1.8** in the fullscreen Space (the first Metal build: 10 ms in a window). Counted from the mouse's own event, the input on screen is typically 3.55 ms old in the Space with `cl_movefps 100` and `com_maxfps 480`, against 4.6 ms in stock mode at 250. macOS Game Mode turns on in fullscreen (the app declares itself a game); measured on against off, it costs nothing in play.
+- **A decoupled command clock** (`cl_movefps`, default 100, 85–125): the commands the server runs come from their own clock, and the game renders at whatever `com_maxfps` sets. Each command is exactly 1000 / `cl_movefps` ms of game time (10 ms at 100, 8 at 125) at any frame rate, even at 60 or through a hitch, as in the author's Vulkan port, and goes out in a packet of its own (at `cl_maxpackets 125`) the moment it's due. `cl_movefps 0` is stock: one command per rendered frame.
+- **Smooth at any frame rate.** Between commands your own movement is shown as the next command's whole step, as it will go out with the keys you hold now, by the part of it that has passed (JayRewd's idea, re-implemented), and other players and moving things are drawn at each frame's own moment, not at the whole millisecond. A movement key moves the picture on the next frame that reaches the screen, about 2 ms after the press uncapped, and shots are aimed where your crosshair was at the click.
+- **Shots and jumps reach the server sooner** (`cl_movesubgrid`, on by default; notuern's idea): with `cl_movefps` on, a fire click or a jump in the first half of a step gets a command of its own at the half step instead of waiting for the next one, and the commands after it stay where they were (that one step split in two). At `cl_movefps 125` a shot reached a local server 1.7 ms after the click on average instead of 3.6, a jump 3.1 instead of 5.7. A run whose two short steps land exactly on a small bump's lip stops there more often; a shot or a jump at a random moment of a run stops it as often as without. `seta cl_movesubgrid 0` puts every command on the grid.
+- **The port's defaults:** soldiers and weapons at full detail at any distance (`r_uselod 0`; it isn't saved in configs), the console key works (`ui_console 1`; the game still starts at the main menu with the console closed), and `cl_maxpackets 125` (upstream's is 30), so every command goes out in its own packet.
 
 The settings that gave the shortest input-to-screen time on the test Mac (240 Hz):
 
 ```
-seta cl_cmdRate 100
+seta cl_movefps 100
 seta com_maxfps 480
 seta r_fullscreen 1
 seta r_noborder 1
@@ -44,27 +58,27 @@ The README's [Settings that matter here](https://github.com/pstngh/openmohaa-met
 
 ## Online
 
-The network protocol, the server-side game code and the data formats are upstream's, so this client plays on existing MOHAA and OpenMoHAA servers. The game reports upstream's version (0.83.0, with this build's commit). It sends no `cl_guid` (it keeps no `qkey` file), as the original game's clients don't: servers that track players by GUID see you without one. It was played on public servers during development, in both command modes. `omohaaded` is built for local tests; for servers, upstream's builds are the tested ones.
+The network protocol, the server-side game code and the data formats are upstream's, so this client plays on existing MOHAA and OpenMoHAA servers. What a server receives with `cl_movefps` on is one command per step, each exactly one step long, the steps a stock client at that rate sends on average, and for a shot or a jump in the first half of a step that step split in two (4 + 4 ms at 125, the steps a stock client at 250 frames a second sends all the time); a local server that logged every command ran every one, at every frame rate, with a simulated ping, jitter and bots. The game reports upstream's version (0.83.0, with this build's commit). It sends no `cl_guid` (it keeps no `qkey` file), as the original game's clients don't: servers that track players by GUID see you without one. It was played on public servers during development, in both command modes and with the new sound. The zip has no dedicated server (`-DBUILD_SERVER=ON` builds one for local tests); for servers, upstream's builds are the tested ones.
 
 ## Looks
 
-On fixed test views across multiplayer, objective and single-player maps, it matches GL1 except for single edge and tie pixels. On purpose: foliage and fences are drawn after the opaque surfaces (a few tie pixels differ), with 32 dynamic lights in a scene the world is lit (MOHAA lit no wall at all on arm64), and `r_gamma` is applied in the final shader pass instead of the display's gamma table.
+On fixed test views across multiplayer, objective and single-player maps, it matches GL1 except for single edge and tie pixels. On purpose: foliage and fences are drawn after the opaque surfaces (a few tie pixels differ); with 32 dynamic lights in a scene the world is lit (MOHAA lit no wall at all on arm64); doors, lifts and other moving brushwork are lit by every dynamic light that reaches them (MOHAA let only a scene's first one in); models keep full detail at any distance (`r_uselod 0`); and `r_gamma` is applied in the final shader pass instead of the display's gamma table.
 
 ## Known issues and limits
 
 - **Tested on one Mac only:** an M4 Mac mini (10-core GPU) on macOS 26.6 with a 240 Hz and a 60 Hz 4K display. Reports from M1/M2/M3 Macs, laptops and ProMotion displays are welcome.
 - **Not notarized:** signed ad hoc, hence the quarantine step.
 - **Exclusive fullscreen with other displays:** when another app animates on another display, about a fifth of the frames at 480 a second are replaced before they're shown. Keep other displays still, or use the fullscreen Space (`r_noborder 1`).
-- **Not done:** low-latency vsync, Game Mode and audio latency measurements.
+- **At low frame caps** (about 60 or less) with `cl_movefps` on, the game keeps a CPU core busy between frames to send each command on time.
+- **Not done:** a frame-cap suggestion from frame-time percentiles; sounds muffled through walls.
 - **Removed on purpose:** gamepads and joysticks, the `openmohaa://` link handler, the update checker. Windows, Linux and Intel Macs aren't supported by this fork.
-- **Upstream behavior kept:** moving brushwork (doors, lifts) is lit only by a scene's first dynamic light.
 
 ## Source and licenses
 
-Built from the `main` branch at the tagged commit, with OpenMoHAA 0.83.0 (upstream `a2f34019`, 2026-04-23, upstream's latest) as its base. The full record of the port (every decision and measurement) is [`docs/METAL_PORT_PLAN.md`](https://github.com/pstngh/openmohaa-metal/blob/main/docs/METAL_PORT_PLAN.md). OpenMoHAA is GPL-2.0 (`COPYING.txt` in the zip); the bundled libraries' licenses are in the zip's `licenses/` and in the app (openal-soft). This software is based in part on the work of the Independent JPEG Group.
+Built from the `main` branch at the tagged commit, with OpenMoHAA 0.83.0 (upstream `a2f34019`, 2026-04-23, still upstream's latest) as its base. The full record of the port (every decision and measurement) is [`docs/METAL_PORT_PLAN.md`](https://github.com/pstngh/openmohaa-metal/blob/main/docs/METAL_PORT_PLAN.md). OpenMoHAA is GPL-2.0 (`COPYING.txt` in the zip); the bundled libraries' licenses are in the zip's `licenses/`. This software is based in part on the work of the Independent JPEG Group.
 
-Thanks to the OpenMoHAA team for the engine this is built on, and to JayRewd, whose ideas were measured and re-implemented here.
+Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose ideas were measured and re-implemented here, and to notuern for the sub-grid.
 
 | File | SHA-256 |
 |---|---|
-| `openmohaa-metal-1.0.0-macos-arm64.zip` | `8624304f5bfc88a02ae9cab583090d3dd9429d151bd0c1734267e716e9130da5` |
+| `openmohaa-metal-1.0.0-macos-arm64.zip` | (filled in when the zip is final) |
