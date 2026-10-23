@@ -1,6 +1,6 @@
 # MoHAA Reloaded 1.0.0: native Metal for Apple Silicon
 
-> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from bdce5ca9 (first from 08f19e40 the same day; the tag moved and the zip replaced for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
+> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from the tagged commit (first from 08f19e40, then bdce5ca9 the same day for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`, then the tag moved and the zip replaced again the same day for `m_filter 0`, `cl_ctrlbindings`, the config after a game-folder change, the HUD's per-frame work and the chat clear of the compass), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
 
 The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstngh/MoHAA-Reloaded) (its `metal` branch), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
@@ -19,6 +19,17 @@ The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstng
 
 `INSTALL.txt` in the zip has the same steps. Configs, saves, screenshots, demos and logs go into the game folder (`main/configs/`, `main/screenshots/` …), as in the original game, or to `~/Library/Application Support/openmohaa/` if the game folder isn't writable. Settings an earlier OpenMoHAA kept in Application Support are read on the first start. If your game folder already has a `main/configs/omconfig.cfg` from another OpenMoHAA build, that one is used: delete it to keep the settings from Application Support.
 
+## Settings from an earlier build
+
+Your config keeps your settings. Two of them work differently here:
+
+- **Set `m_filter 0`.** Configs saved by OpenMoHAA on a Mac, or by an earlier 1.0.0 zip of this port, hold `seta m_filter "1"`, which averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. The default is 0 now, but a saved 1 stays: change the line to `seta m_filter 0`.
+- **Ctrl bindings need `cl_ctrlbindings 1`.** It is a setting of its own now: `cl_altbindings 1` turns on only the Alt and Ins bindings (`altbind`), where upstream's turned on the Ctrl and Del ones (`ctrlbind`) too. If you use Ctrl or Del bindings, add `seta cl_ctrlbindings 1`. `ctrlbindlist` lists them (it listed the Alt ones).
+
+## If you downloaded 1.0.0 earlier on 2026-10-23
+
+The zip was replaced twice that day (its SHA-256 was `9c2f8e97…`, then `fb61b8de…`; this one's is at the bottom). If you have one of those, replace `openmohaa.app` with this zip's, clear the new download's quarantine (step 2), and allow the folder access again if macOS asks. New in this one: `m_filter` 0 and `cl_ctrlbindings` (above), your config kept after a mod server (below), the HUD's per-frame work cut by more than half, and the chat and game messages kept clear of the compass.
+
 ## If you installed the first 1.0.0
 
 This 1.0.0 replaces the one published on 2026-10-20 (the same version number, a later build of the port, with the new sound and everything below). If you have that one:
@@ -26,7 +37,7 @@ This 1.0.0 replaces the one published on 2026-10-20 (the same version number, a 
 - **Replace the app**, and delete the `game.dylib`, `cgame.dylib` and `omohaaded` it put beside it: the game libraries are inside `openmohaa.app` now, and the zip has no dedicated server.
 - **`cl_cmdRate` is now `cl_movefps`.** A config line `seta cl_cmdRate …` no longer does anything: change it to `seta cl_movefps …` (85–125; the default is 100), or the game plays at 100. `cl_cmdDisplay` is gone too.
 - Clear the new download's quarantine (step 2), and allow the folder access again if macOS asks: each build needs its own permission.
-- Fixed since: the Metal pipeline cache when your home folder's name has non-ASCII characters; a crash on custom maps whose terrain has a finer lightmap than the retail maps' when a dynamic light (a shot, an explosion) reaches the terrain; the stop after "Open Anyway" (it now says what to do); a stray footstep after getting off a ladder or letting go of a mounted gun with `cl_movefps` on.
+- Fixed since: the Metal pipeline cache when your home folder's name has non-ASCII characters; a crash on custom maps whose terrain has a finer lightmap than the retail maps' when a dynamic light (a shot, an explosion) reaches the terrain; the stop after "Open Anyway" (it now says what to do); a stray footstep after getting off a ladder or letting go of a mounted gun with `cl_movefps` on; your settings and binds reset to the defaults, and your config overwritten with them, after a mod server or a `game_restart`.
 
 ## What's in it
 
@@ -35,13 +46,14 @@ This 1.0.0 replaces the one published on 2026-10-20 (the same version number, a 
 - **No OpenAL: the original's sound.** The port's own mixer on Core Audio plays MOHAA's sound as the PC original did on the Miles Sound System: each sound at its own volume (upstream's OpenAL played every positional one-shot at one level), loud ones neither flattened nor clipped, sounds behind you 3 dB quieter and silent beyond their maximum distance. A sound reaches the headphone jack ~5 ms after it starts instead of ~19, and the mixing costs less CPU than OpenAL's. Music, dialogue, movies and saves play through it too: songs crossfade and resume where they stopped. JayRewd's review of where OpenMoHAA's sound differs from the original was the checklist (ideas only, re-implemented).
 - **Sound settings:** `s_speaker_type 1` is headphone 3D through Apple's HRTF (your personalized one when macOS has it): a sound behind, above or below you sounds there. It's off by default (stereo, as the original pans) and switches at once. `s_ambientvolume 0` turns the soundtrack off entirely (no song is opened, decoded or mixed), and the new `cg_tauntsounds 0` mutes other players' taunts (the chat text stays).
 - **Like the original, where it counts:** files go into the game folder, and the intro videos are off (`+set cl_playintro 1` brings them back). No PID file, so no "Abnormal Exit" prompt after a crash or a force-quit.
+- **Your config survives a mod server.** Joining a server that runs its own game folder (`fs_game`), or a `game_restart`, keeps your settings and binds: upstream reset them to the defaults there and later saved those over your config. A mod's pk3 can't replace your config either. (If that happened to you before, the file holds the defaults now: set your settings again.)
 - **Lean.** arm64 and macOS 26 only: one sealed `openmohaa.app` with the game libraries inside, and no OpenGL, SDL or OpenAL in it.
-- **Faster than GL1** on the test Mac (the benchmark demo: a 2-minute 8-bot free-for-all on Stalingrad): the CPU's work per frame 0.89–0.95 → **0.205 ms** (4.5× less), the 99th percentile ~2.3 → **0.48 ms** (4.8× less).
+- **Faster than GL1** on the test Mac (the benchmark demo: a 2-minute 8-bot free-for-all on Stalingrad): the CPU's work per frame 0.89–0.95 → **0.205 ms** (4.5× less), the 99th percentile ~2.3 → **0.48 ms** (4.8× less). The HUD's own work each frame is less than half upstream's, for the same picture.
 - **Lower input latency.** From reading the mouse to the display showing the frame, at 250 frames a second: **2.0 ms** median in a window, **1.9** in exclusive fullscreen, **1.8** in the fullscreen Space (the first Metal build: 10 ms in a window). Counted from the mouse's own event, the input on screen is typically 3.55 ms old in the Space with `cl_movefps 100` and `com_maxfps 480`, against 4.6 ms in stock mode at 250. macOS Game Mode turns on in fullscreen (the app declares itself a game); measured on against off, it costs nothing in play.
 - **A decoupled command clock** (`cl_movefps`, default 100, 85–125): the commands the server runs come from their own clock, and the game renders at whatever `com_maxfps` sets. Each command is exactly 1000 / `cl_movefps` ms of game time (10 ms at 100, 8 at 125) at any frame rate, even at 60 or through a hitch, as in the author's Vulkan port, and goes out in a packet of its own (at `cl_maxpackets 125`) the moment it's due. `cl_movefps 0` is stock: one command per rendered frame.
 - **Smooth at any frame rate.** Between commands your own movement is shown as the next command's whole step, as it will go out with the keys you hold now, by the part of it that has passed (JayRewd's idea, re-implemented), and other players and moving things are drawn at each frame's own moment, not at the whole millisecond. A movement key moves the picture on the next frame that reaches the screen, about 2 ms after the press uncapped, and shots are aimed where your crosshair was at the click.
 - **Shots and jumps reach the server sooner** (`cl_movesubgrid`, on by default; notuern's idea): with `cl_movefps` on, a fire click or a jump in the first half of a step gets a command of its own at the half step instead of waiting for the next one, and the commands after it stay where they were (that one step split in two). At `cl_movefps 125` a shot reached a local server 1.7 ms after the click on average instead of 3.6, a jump 3.1 instead of 5.7. A run whose two short steps land exactly on a small bump's lip stops there more often; a shot or a jump at a random moment of a run stops it as often as without. `seta cl_movesubgrid 0` puts every command on the grid.
-- **The port's defaults:** `com_maxfps 125` (upstream's is 85; with `cl_movefps 0` also the command rate, a stock 125 client's), soldiers and weapons at full detail at any distance (`r_uselod 0`; it isn't saved in configs), the console key works (`ui_console 1`; the game still starts at the main menu with the console closed), and `cl_maxpackets 125` (upstream's is 30), so every command goes out in its own packet.
+- **The port's defaults:** `com_maxfps 125` (upstream's is 85; with `cl_movefps 0` also the command rate, a stock 125 client's), `m_filter 0` (upstream's is 1 on a Mac: half of every mouse movement a frame later), soldiers and weapons at full detail at any distance (`r_uselod 0`; it isn't saved in configs), the console key works (`ui_console 1`; the game still starts at the main menu with the console closed), and `cl_maxpackets 125` (upstream's is 30), so every command goes out in its own packet.
 
 The settings that gave the shortest input-to-screen time on the test Mac (240 Hz):
 
@@ -52,6 +64,7 @@ seta r_fullscreen 1
 seta r_noborder 1
 seta r_swapInterval 0
 seta in_mouseRaw 1
+seta m_filter 0
 ```
 
 The README's [Settings that matter here](https://github.com/pstngh/MoHAA-Reloaded#settings-that-matter-here) explains each one and the display modes.
@@ -62,7 +75,7 @@ The network protocol, the server-side game code and the data formats are upstrea
 
 ## Looks
 
-On fixed test views across multiplayer, objective and single-player maps, it matches GL1 except for single edge and tie pixels. On purpose: foliage and fences are drawn after the opaque surfaces (a few tie pixels differ); with 32 dynamic lights in a scene the world is lit (MOHAA lit no wall at all on arm64); doors, lifts and other moving brushwork are lit by every dynamic light that reaches them (MOHAA let only a scene's first one in); models keep full detail at any distance (`r_uselod 0`); and `r_gamma` is applied in the final shader pass instead of the display's gamma table.
+On fixed test views across multiplayer, objective and single-player maps, it matches GL1 except for single edge and tie pixels. On purpose: foliage and fences are drawn after the opaque surfaces (a few tie pixels differ); with 32 dynamic lights in a scene the world is lit (MOHAA lit no wall at all on arm64); doors, lifts and other moving brushwork are lit by every dynamic light that reaches them (MOHAA let only a scene's first one in); models keep full detail at any distance (`r_uselod 0`); the chat and game messages are placed by the compass's real size, clear of it at every resolution (upstream's chat started under the compass below 1280 pixels wide); and `r_gamma` is applied in the final shader pass instead of the display's gamma table.
 
 ## Known issues and limits
 
@@ -81,4 +94,4 @@ Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose 
 
 | File | SHA-256 |
 |---|---|
-| `openmohaa-metal-1.0.0-macos-arm64.zip` | `fb61b8de0760cbd59792460d5fa2079841c619847540ce5b3fef2e22ac26deae` |
+| `openmohaa-metal-1.0.0-macos-arm64.zip` | (CI's zip of the tagged commit: filled in when it is attached) |
