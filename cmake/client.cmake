@@ -56,7 +56,6 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/cl_uistd.cpp
     ${SOURCE_DIR}/client/cl_uiview3d.cpp
     ${SOURCE_DIR}/client/libmumblelink.c
-    ${SOURCE_DIR}/client/qal.c
     ${SOURCE_DIR}/client/snd_codec_mp3.c
     ${SOURCE_DIR}/client/snd_codec_ogg.c
     ${SOURCE_DIR}/client/snd_codec_opus.c
@@ -65,9 +64,7 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/snd_dma_new.cpp
     ${SOURCE_DIR}/client/snd_info.cpp
     ${SOURCE_DIR}/client/snd_mem_new.cpp
-    ${SOURCE_DIR}/client/snd_miles_new.cpp
     ${SOURCE_DIR}/client/snd_native_new.cpp
-    ${SOURCE_DIR}/client/snd_openal_new.cpp
     ${SOURCE_DIR}/client/usignal.cpp
     ${CLIENT_INPUT_SOURCES}
     ${CLIENT_SOUND_SOURCES}

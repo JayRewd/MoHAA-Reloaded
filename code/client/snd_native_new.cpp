@@ -22,23 +22,22 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 // snd_native_new.cpp -- the native sound driver (docs/METAL_PORT_PLAN.md Phase 9): the original game's Miles driver
-// as OpenMoHAA reconstructed it in snd_openal_new.cpp (the channels, their picking and stealing, the looping sounds,
-// the spatialization), on our own mixer (code/macos/macos_snd.c) instead of OpenAL, with the parity checklist's
+// as OpenMoHAA reconstructed it in upstream's snd_openal_new.cpp (the channels, their picking and stealing, the looping
+// sounds, the spatialization), on our own mixer (code/macos/macos_snd.c) instead of OpenAL, with the parity checklist's
 // fixes (the plan's Phase 9 "Session 57 result"; the ids in the comments are its items). The original's math is in
 // snd_native_math.h: the voices' levels without s_volume, which is the master gain's.
 //
-// Until 9g both drivers are in the binary: the latched s_native (1 by default since 9e) picks this one (snd_restart
-// switches), and at 0 every entry point hands its call to OpenAL's (the S_OPENAL_ names, snd_openal_new.h). The sound effects are 9c's; the
-// streamed sounds, the music (moods, crossfades), the triggered music, the movies' audio and playmp3 9d's: a stream
-// is read ahead into a mixer ring a little each frame, a short one decoded whole and looped by the mixer. Headphone
-// 3D (9f, s_speaker_type 1): the 3D voices go to the mixer with a direction, for Apple's HRTF, in place of the pan.
+// The only driver since 9g, which removed OpenAL's with openal-soft (the sndref flavor keeps both). The sound effects
+// are 9c's; the streamed sounds, the music (moods, crossfades), the triggered music, the movies' audio and playmp3
+// 9d's: a stream is read ahead into a mixer ring a little each frame, a short one decoded whole and looped by the
+// mixer. Headphone 3D (9f, s_speaker_type 1): the 3D voices go to the mixer with a direction, for Apple's HRTF, in
+// place of the pan.
 //
 // A channel is a mixer voice, the same number. The policy code below keeps snd_openal_new.cpp's shape (the
 // channel's Miles-named methods), so the two compare line by line: a start sends everything at once (MacSnd_Start),
 // the gains and rates of the playing voices go out after S_Respatialize and in S_Update, only when they changed.
 
 #include "snd_local.h"
-#include "snd_openal_new.h"
 #include "snd_native_new.h"
 #include "snd_native_math.h"
 #include "client.h"
@@ -275,7 +274,6 @@ static int      tm_loopcount;
 #define chan_trig_music native.chan[SOUNDSYSTEM_CHANNEL_TRIGGER_MUSIC_ID]
 #define chan_movie      native.chan[SOUNDSYSTEM_CHANNEL_MOVIE_ID]
 
-static bool  s_bNative          = false; // the driver S_Init picked
 static bool  native_initialized = false;
 static int   s_iNextLoopingWarning = 0;
 static int   s_iReverbType         = 0;
@@ -287,21 +285,18 @@ static float s_fFadeStopTime;
 static char  current_soundtrack[128];
 static mach_timebase_info_data_t s_timebase;
 
-// the front end reads it (snd_local_new.h); OpenAL's driver has its own while it is the one
+// the front end reads it (snd_local_new.h)
 cvar_t        *s_show_sounds;
-static cvar_t *s_native;
 static cvar_t *s_device;
 static cvar_t *s_bufferFrames;
 static cvar_t *s_eventLog;
 static cvar_t *s_capture;
 static cvar_t *s_captureMute;
-// the original's, as OpenAL's driver registers them
-static cvar_t *s_milesdriver;
+// the original's, as upstream's OpenAL driver registers them (without s_milesdriver, s_show_cpu and
+// s_obstruction_cal_time, which nothing read: gone with it in 9g)
 static cvar_t *s_reverb;
-static cvar_t *s_show_cpu;
 static cvar_t *s_show_num_active_sounds;
 static cvar_t *s_speaker_type;
-static cvar_t *s_obstruction_cal_time;
 
 static int  S_NATIVE_SpatializeStereoSound(const vec3_t listener_origin, const vec3_t listener_left, const vec3_t origin);
 static void S_NATIVE_SpatializeChannel(native_channel *pChannel, const vec3_t vListenerOrigin, const vec3_t vTempAxis);
@@ -503,7 +498,7 @@ S_NATIVE_SfxLoaded
 */
 void S_NATIVE_SfxLoaded(sfx_t *pSfx)
 {
-    if (!s_bNative || !native_initialized || pSfx->buffer) {
+    if (!native_initialized || pSfx->buffer) {
         return;
     }
 
@@ -519,7 +514,7 @@ H4: OpenAL's buffers leaked when registration dropped a sound. The mixer keeps t
 */
 void S_NATIVE_FreeSfx(sfx_t *pSfx)
 {
-    if (!s_bNative || !native_initialized || !pSfx->buffer) {
+    if (!native_initialized || !pSfx->buffer) {
         return;
     }
 
@@ -581,27 +576,18 @@ qboolean S_NATIVE_Init()
     macSndConfig_t mixer;
     int            i;
 
-    s_native       = Cvar_Get("s_native", "1", CVAR_SOUND_LATCH);
     s_device       = Cvar_Get("s_device", "", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_bufferFrames = Cvar_Get("s_bufferFrames", "64", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_show_sounds  = Cvar_Get("s_show_sounds", "0", 0);
-
-    s_bNative = s_native->integer != 0;
-    if (!s_bNative) {
-        return S_OPENAL_Init();
-    }
 
     if (native_initialized) {
         Com_DPrintf("S_NATIVE_Init(): Called when sound is already initialized!\n");
         return qtrue;
     }
 
-    s_milesdriver            = Cvar_Get("s_milesdriver", "auto", CVAR_SOUND_LATCH | CVAR_ARCHIVE);
     s_reverb                 = Cvar_Get("s_reverb", "0", CVAR_SOUND_LATCH | CVAR_ARCHIVE);
-    s_show_cpu               = Cvar_Get("s_show_cpu", "0", 0);
     s_show_num_active_sounds = Cvar_Get("s_show_num_active_sounds", "0", 0);
     s_speaker_type           = Cvar_Get("s_speaker_type", "0", CVAR_ARCHIVE);
-    s_obstruction_cal_time   = Cvar_Get("s_obstruction_cal_time", "500", CVAR_ARCHIVE);
     s_eventLog               = Cvar_Get("s_eventLog", "0", 0);
     s_capture                = Cvar_Get("s_capture", "", 0);
     s_captureMute            = Cvar_Get("s_captureMute", "0", 0);
@@ -815,11 +801,6 @@ void S_NATIVE_Shutdown()
 {
     int i;
 
-    if (!s_bNative) {
-        S_OPENAL_Shutdown();
-        return;
-    }
-
     if (!native_initialized) {
         Com_DPrintf("S_NATIVE_Shutdown(): Called when sound is NOT initialized!\n");
         return;
@@ -860,11 +841,6 @@ S_FadeSound
 */
 void S_FadeSound(float fTime)
 {
-    if (!s_bNative) {
-        S_OPENAL_FadeSound(fTime);
-        return;
-    }
-
     Com_Printf("Called FadeSound with: %f\n", fTime);
 
     if (fTime > 0) {
@@ -885,10 +861,6 @@ S_NeedFullRestart
 */
 qboolean S_NeedFullRestart()
 {
-    if (!s_bNative) {
-        return S_OPENAL_NeedFullRestart();
-    }
-
     return Cvar_Get("s_initsound", "1", 0)->integer != s_bLastInitSound;
 }
 
@@ -900,11 +872,6 @@ S_PrintInfo
 void S_PrintInfo()
 {
     macSndStats_t stats;
-
-    if (!s_bNative) {
-        S_OPENAL_PrintInfo();
-        return;
-    }
 
     Com_Printf("----- Sound Info -----\n");
 
@@ -964,11 +931,6 @@ S_DumpInfo
 void S_DumpInfo()
 {
     int i;
-
-    if (!s_bNative) {
-        S_OPENAL_DumpInfo();
-        return;
-    }
 
     if (!native_initialized) {
         return;
@@ -1467,11 +1429,6 @@ void S_NATIVE_StartSound(
     bool            bOnlyUpdate;
     bool            bSupportWaitTillSoundDone;
 
-    if (!s_bNative) {
-        S_OPENAL_StartSound(vOrigin, iEntNum, iEntChannel, sfxHandle, fVolume, fMinDist, fPitch, fMaxDist, bStreamed);
-        return;
-    }
-
     native_timer timer;
 
     bOnlyUpdate = false;
@@ -1656,11 +1613,6 @@ void S_NATIVE_AddLoopingSound(
     sfx_t               *pSfx;
     native_loop_sound_t *pLoopSound;
 
-    if (!s_bNative) {
-        S_OPENAL_AddLoopingSound(vOrigin, vVelocity, sfxHandle, fVolume, fMinDist, fMaxDist, fPitch, iFlags);
-        return;
-    }
-
     native_timer timer;
 
     iFreeLoopSound = -1;
@@ -1787,11 +1739,6 @@ void S_NATIVE_ClearLoopingSounds()
 {
     int i;
 
-    if (!s_bNative) {
-        S_OPENAL_ClearLoopingSounds();
-        return;
-    }
-
     for (i = 0; i < MAX_SOUNDSYSTEM_LOOP_SOUNDS; i++) {
         native.loop_sounds[i].bInUse = false;
     }
@@ -1821,11 +1768,6 @@ void S_NATIVE_StopSound(int iEntNum, int iEntChannel)
 {
     int i;
 
-    if (!s_bNative) {
-        S_OPENAL_StopSound(iEntNum, iEntChannel);
-        return;
-    }
-
     for (i = 0; i < NATIVE_CHANNELS; i++) {
         native_channel *pChannel = native.channel[i];
         if (!S_NATIVE_IsPositionChannel(i)) {
@@ -1847,11 +1789,6 @@ S_NATIVE_StopAllSounds
 void S_NATIVE_StopAllSounds(qboolean bStopMusic)
 {
     int i;
-
-    if (!s_bNative) {
-        S_OPENAL_StopAllSounds(bStopMusic);
-        return;
-    }
 
     if (!s_bSoundStarted || !native_initialized) {
         return;
@@ -2442,11 +2379,6 @@ void S_NATIVE_Respatialize(int iEntNum, const vec3_t vHeadPos, const vec3_t vAxi
     int             i;
     native_channel *pChannel;
 
-    if (!s_bNative) {
-        S_OPENAL_Respatialize(iEntNum, vHeadPos, vAxis);
-        return;
-    }
-
     if (cls.no_menus) {
         return;
     }
@@ -2513,11 +2445,6 @@ K: the original's EAX rooms are parked
 */
 void S_NATIVE_SetReverb(int iType, float fLevel)
 {
-    if (!s_bNative) {
-        S_OPENAL_SetReverb(iType, fLevel);
-        return;
-    }
-
     s_fReverbLevel = fLevel;
     s_iReverbType  = iType;
 }
@@ -2627,11 +2554,6 @@ void S_NATIVE_Update()
     native_channel *pChannel;
     float           fMaster;
 
-    if (!s_bNative) {
-        S_OPENAL_Update();
-        return;
-    }
-
     native_timer timer;
 
     if (cl.snap.ps.stats[STAT_CINEMATIC]) {
@@ -2736,10 +2658,6 @@ The triggered music's (the savegame and snd_restart keep it)
 */
 const char *S_NATIVE_GetMusicFilename()
 {
-    if (!s_bNative) {
-        return S_OPENAL_GetMusicFilename();
-    }
-
     if (!native_initialized || (!chan_trig_music.is_playing() && !chan_trig_music.is_paused())) {
         return "";
     }
@@ -2754,10 +2672,6 @@ S_NATIVE_GetMusicLoopCount
 */
 int S_NATIVE_GetMusicLoopCount()
 {
-    if (!s_bNative) {
-        return S_OPENAL_GetMusicLoopCount();
-    }
-
     return tm_loopcount;
 }
 
@@ -2768,10 +2682,6 @@ S_NATIVE_GetMusicOffset
 */
 unsigned int S_NATIVE_GetMusicOffset()
 {
-    if (!s_bNative) {
-        return S_OPENAL_GetMusicOffset();
-    }
-
     if (!native_initialized) {
         return 0;
     }
@@ -2787,14 +2697,6 @@ S_IsSoundPlaying
 qboolean S_IsSoundPlaying(int channel_number, const char *sfxName)
 {
     native_channel *pChannel;
-
-    if (!s_bNative) {
-        // the overflow pool's numbers aren't OpenAL's
-        if (channel_number < 0 || channel_number >= MAX_SOUNDSYSTEM_CHANNELS) {
-            return false;
-        }
-        return S_OPENAL_IsSoundPlaying(channel_number, sfxName);
-    }
 
     if (!native_initialized || channel_number < 0 || channel_number >= NATIVE_CHANNELS) {
         return false;
@@ -2987,11 +2889,6 @@ void S_SaveData(soundsystemsavegame_t *pSave)
     int  i;
     bool bSoundWasUnpaused;
 
-    if (!s_bNative) {
-        S_OPENAL_SaveData(pSave);
-        return;
-    }
-
     if (!native_initialized) {
         return;
     }
@@ -3019,11 +2916,6 @@ void S_ReLoad(soundsystemsavegame_t *pSave)
 {
     int  i;
     bool bSoundWasUnpaused;
-
-    if (!s_bNative) {
-        S_OPENAL_ReLoad(pSave);
-        return;
-    }
 
     if (!native_initialized) {
         return;
@@ -3071,11 +2963,6 @@ S_LoadData
 void S_LoadData(soundsystemsavegame_t *pSave)
 {
     int i;
-
-    if (!s_bNative) {
-        S_OPENAL_LoadData(pSave);
-        return;
-    }
 
     for (i = 0; i < MAX_SOUNDSYSTEM_POSITION_CHANNELS; i++) {
         S_InitBase(&pSave->Channels[i]);
@@ -3674,6 +3561,38 @@ static float S_NATIVE_SongGain(int song_number, float fade)
 
 /*
 ==============
+S_NATIVE_AmbientOff
+
+Added in the Metal port (9g, the user's): s_ambientvolume 0 plays no song of the soundtrack (the mood music and the
+amb_stereo ambiences): none is opened, decoded or mixed, and those playing, fading or kept where they stopped (G8)
+stop and free their streams. Raised again, Music_Update starts the mood's song (music_currentsong -1: not playing).
+==============
+*/
+static bool S_NATIVE_AmbientOff()
+{
+    int i;
+
+    if (s_ambientVolume->value > 0) {
+        return false;
+    }
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        if (chan_song[i].is_playing() || chan_song[i].is_paused()) {
+            MUSIC_StopChannel(i);
+        }
+    }
+    for (i = 0; i < NATIVE_PARKED; i++) {
+        if (native.parked[i].bParked) {
+            S_NATIVE_CloseStream(&native.parked[i]);
+        }
+    }
+    music_currentsong = -1;
+
+    return true;
+}
+
+/*
+==============
 S_NATIVE_TriggeredGain
 
 Fixed in the Metal port (G10): the triggered music follows s_musicvolume and tmvolume without a soundtrack too
@@ -3715,6 +3634,10 @@ void Music_Update()
     if (!MUSIC_Loaded() && music_active && strlen(current_soundtrack)) {
         MUSIC_LoadSoundtrackFile(current_soundtrack);
         music_loaded = true;
+    }
+
+    if (S_NATIVE_AmbientOff()) {
+        return;
     }
 
     if (music_currentsong >= 0) {
@@ -3776,11 +3699,6 @@ MUSIC_NewSoundtrack
 */
 void MUSIC_NewSoundtrack(const char *name)
 {
-    if (!s_bNative) {
-        S_OPENAL_MUSIC_NewSoundtrack(name);
-        return;
-    }
-
     if (!s_bSoundStarted) {
         return;
     }
@@ -3815,11 +3733,6 @@ void MUSIC_UpdateMood(int current, int fallback)
     static int current_mood       = -1;
     static int fallback_mood      = -1;
     qboolean   was_action;
-
-    if (!s_bNative) {
-        S_OPENAL_MUSIC_UpdateMood(current, fallback);
-        return;
-    }
 
     if (current == current_mood && fallback == fallback_mood) {
         return;
@@ -3863,11 +3776,6 @@ MUSIC_UpdateVolume
 */
 void MUSIC_UpdateVolume(float volume, float fade_time)
 {
-    if (!s_bNative) {
-        S_OPENAL_MUSIC_UpdateVolume(volume, fade_time);
-        return;
-    }
-
     if (new_music_volume == volume && music_volume_fade_time == fade_time) {
         return;
     }
@@ -3963,10 +3871,6 @@ S_CurrentSoundtrack
 */
 const char *S_CurrentSoundtrack()
 {
-    if (!s_bNative) {
-        return S_OPENAL_CurrentSoundtrack();
-    }
-
     return current_soundtrack;
 }
 
@@ -4054,6 +3958,12 @@ qboolean MUSIC_PlaySong(const char *alias)
     }
 
     song = &music_songs[songnum];
+
+    // Added in the Metal port (9g)
+    //  s_ambientvolume 0: no song, and not taken as the current one (S_NATIVE_AmbientOff)
+    if (s_ambientVolume->value <= 0) {
+        return true;
+    }
 
     if (MUSIC_Playing() && songnum == music_currentsong) {
         return true;
@@ -4209,11 +4119,6 @@ void S_TriggeredMusic_SetupHandle(const char *pszName, int iLoopCount, int iOffs
     float            fVolume     = 1.0;
     AliasListNode_t *pSoundAlias = NULL;
 
-    if (!s_bNative) {
-        S_OPENAL_TriggeredMusic_SetupHandle(pszName, iLoopCount, iOffset, autostart);
-        return;
-    }
-
     if (!s_bSoundStarted) {
         return;
     }
@@ -4284,11 +4189,6 @@ S_TriggeredMusic_Stop
 */
 void S_TriggeredMusic_Stop()
 {
-    if (!s_bNative) {
-        S_OPENAL_TriggeredMusic_Stop();
-        return;
-    }
-
     if (!s_bSoundStarted) {
         return;
     }
@@ -4360,11 +4260,6 @@ S_TriggeredMusic_PlayIntroMusic
 */
 void S_TriggeredMusic_PlayIntroMusic()
 {
-    if (!s_bNative) {
-        S_OPENAL_TriggeredMusic_PlayIntroMusic();
-        return;
-    }
-
     S_TriggeredMusic_SetupHandle("sound/music/mus_MainTheme.mp3", 0, 0, true);
 }
 
@@ -4375,11 +4270,6 @@ S_StopMovieAudio
 */
 void S_StopMovieAudio()
 {
-    if (!s_bNative) {
-        S_OPENAL_StopMovieAudio();
-        return;
-    }
-
     chan_movie.stop();
 }
 
@@ -4393,11 +4283,6 @@ G15: the movie's .mp3, else its .wav, at 1.5 (A5); the cinematic's clock follows
 void S_SetupMovieAudio(const char *pszMovieName)
 {
     char filename[MAX_QPATH];
-
-    if (!s_bNative) {
-        S_OPENAL_SetupMovieAudio(pszMovieName);
-        return;
-    }
 
     S_StopMovieAudio();
 
@@ -4427,10 +4312,6 @@ S_CurrentMoviePosition
 */
 int S_CurrentMoviePosition()
 {
-    if (!s_bNative) {
-        return S_OPENAL_CurrentMoviePosition();
-    }
-
     return chan_movie.sample_ms_offset();
 }
 

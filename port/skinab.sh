@@ -25,8 +25,7 @@ omm_mount_metal
 	-DCMAKE_MAKE_PROGRAM="$OMM_NINJA" \
 	-DBISON_EXECUTABLE="$OMM_BISON" \
 	-DCMAKE_BUILD_TYPE=Release \
-	-DCMAKE_INSTALL_PREFIX="$OMM_BUILD/metalab-install" \
-	-DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON >/dev/null
+	-DCMAKE_INSTALL_PREFIX="$OMM_BUILD/metalab-install" >/dev/null
 "$OMM_CMAKE" --build "$OMM_BUILD/metalab" -j"$(sysctl -n hw.ncpu)"
 "$OMM_CMAKE" --install "$OMM_BUILD/metalab" >/dev/null
 echo "skinab.sh: metalab installed in $OMM_BUILD/metalab-install"
