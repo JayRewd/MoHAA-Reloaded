@@ -35,7 +35,6 @@ extern cvar_t *s_loadas8bit;
 extern cvar_t *s_separation;
 extern cvar_t *s_musicVolume;
 extern cvar_t *s_ambientVolume;
-extern cvar_t *s_streamThread;
 extern cvar_t *s_soundtrackCache;
 extern cvar_t *s_loadBuffers;
 

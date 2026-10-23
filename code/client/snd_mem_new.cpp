@@ -536,6 +536,9 @@ qboolean S_LoadSound(const char *fileName, sfx_t *sfx, int streamed, qboolean fo
     case 44:
         realKhz = 44100;
         break;
+    case 48:
+        realKhz = 48000;
+        break;
     }
 
     if (!(sfx->iFlags & SFX_FLAG_STREAMED) && realKhz < sfx->info.rate) {

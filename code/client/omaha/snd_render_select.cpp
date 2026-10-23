@@ -23,7 +23,7 @@ source tree, or write to the Free Software Foundation, Inc.,
 */
 
 // DESCRIPTION:
-// Omaha renderer lifetime and mixed-PCM capture for AVI / MP4 export.
+// Omaha renderer lifetime.
 
 #include "../snd_local.h"
 #include "snd_renderer.h"
@@ -56,93 +56,4 @@ void S_Renderer_Shutdown(void)
 		g_sndRenderer->Shutdown();
 	}
 	g_sndRenderer = NULL;
-}
-
-qboolean S_OMAHA_CaptureBegin(void)
-{
-	int rate;
-
-	if (!g_sndRenderer || !g_sndRenderer->BeginCapture) {
-		return qfalse;
-	}
-	if (g_sndRenderer->CaptureActive && g_sndRenderer->CaptureActive()) {
-		return qtrue;
-	}
-
-	rate = g_sndRenderer->CaptureSampleRate ? g_sndRenderer->CaptureSampleRate() : 44100;
-	return g_sndRenderer->BeginCapture(rate > 0 ? rate : 44100);
-}
-
-void S_OMAHA_CaptureEnd(void)
-{
-	if (g_sndRenderer && g_sndRenderer->EndCapture) {
-		g_sndRenderer->EndCapture();
-	}
-}
-
-qboolean S_OMAHA_CaptureActive(void)
-{
-	if (!g_sndRenderer || !g_sndRenderer->CaptureActive) {
-		return qfalse;
-	}
-	return g_sndRenderer->CaptureActive();
-}
-
-int S_OMAHA_CaptureSampleRate(void)
-{
-	if (!g_sndRenderer || !g_sndRenderer->CaptureSampleRate) {
-		return 44100;
-	}
-	return g_sndRenderer->CaptureSampleRate();
-}
-
-void S_OMAHA_CaptureFrame(int aviFps)
-{
-	static float s_captureScratch[8192 * 2];
-	short        s16[8192 * 2];
-	float        frameDuration;
-	int          samples;
-	int          frames;
-	int          rate;
-	int          i;
-	const int    frameRate = (aviFps > 0) ? aviFps : 25;
-
-	if (!g_sndRenderer || !g_sndRenderer->RenderCapture) {
-		return;
-	}
-	if (!S_OMAHA_CaptureActive() || !CL_VideoRecording()) {
-		return;
-	}
-
-	rate = S_OMAHA_CaptureSampleRate();
-	if (rate <= 0) {
-		rate = 44100;
-	}
-
-	frameDuration              = ((float)rate / (float)frameRate) + clc.aviSoundFrameRemainder;
-	samples                    = (int)frameDuration;
-	clc.aviSoundFrameRemainder = frameDuration - (float)samples;
-	if (samples < 1) {
-		samples = 1;
-	}
-	if (samples > 8192) {
-		samples = 8192;
-	}
-
-	frames = g_sndRenderer->RenderCapture(s_captureScratch, samples);
-	if (frames <= 0) {
-		return;
-	}
-
-	/* The AVI / encoder path expects s16 PCM. */
-	for (i = 0; i < frames * 2; i++) {
-		float s = s_captureScratch[i];
-		if (s > 1.f) {
-			s = 1.f;
-		} else if (s < -1.f) {
-			s = -1.f;
-		}
-		s16[i] = (short)(s * 32767.f);
-	}
-	CL_WriteAVIAudioFrame((byte *)s16, frames * 4);
 }

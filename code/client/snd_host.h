@@ -92,13 +92,6 @@ typedef struct sndHost_s {
     qboolean (*NeedFullRestart)(void);
     void (*PrintInfo)(void);
     void (*DumpInfo)(void);
-
-    // Mixed PCM for AVI / MP4 demo export
-    qboolean (*CaptureBegin)(void);
-    void (*CaptureEnd)(void);
-    void (*CaptureFrame)(int aviFps);
-    qboolean (*CaptureActive)(void);
-    int (*CaptureSampleRate)(void);
 } sndHost_t;
 
 extern const sndHost_t  s_sndHostOmaha;

@@ -80,7 +80,6 @@ void *S_CodecLoad(const char *filename, snd_info_t *info);
 snd_stream_t *S_CodecOpenStream(const char *filename);
 void S_CodecCloseStream(snd_stream_t *stream);
 int S_CodecReadStream(snd_stream_t *stream, int bytes, void *buffer);
-qboolean S_CodecStreamReady(snd_stream_t *stream, int bytes);
 
 // Util functions (used by codecs)
 snd_stream_t *S_CodecUtilOpen(const char *filename, snd_codec_t *codec);
@@ -109,16 +108,14 @@ void* S_MP3_CodecLoad(const char* filename, snd_info_t * info);
 snd_stream_t * S_MP3_CodecOpenStream(const char* filename);
 void S_MP3_CodecCloseStream(snd_stream_t * stream);
 int S_MP3_CodecReadStream(snd_stream_t * stream, int bytes, void* buffer);
-snd_stream_t *S_MP3_OpenMemoryStream(const byte *data, int length);
+snd_stream_t *S_MP3_OpenMemoryStream(const byte *data, int length, const snd_info_t *info);
 void S_MP3_CloseMemoryStream(snd_stream_t *stream);
 #endif // USE_CODEC_MAD
 
-// Soundtrack files decoded on a thread (snd_stream_thread.cpp)
-void S_StreamThread_Prefetch(const char *filename);
-snd_stream_t *S_StreamThread_Open(const char *filename);
-qboolean S_StreamThread_Ready(snd_stream_t *stream, int bytes);
-void S_StreamThread_Flush(void);
-void S_StreamThread_Shutdown(void);
+// Soundtrack files kept in memory (snd_stream_memory.cpp)
+void S_StreamMemory_Prefetch(const char *filename);
+snd_stream_t *S_StreamMemory_Open(const char *filename);
+void S_StreamMemory_Flush(void);
 
 // Ogg Opus codec
 #ifdef USE_CODEC_OPUS

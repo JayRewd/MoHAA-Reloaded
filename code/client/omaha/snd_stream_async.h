@@ -24,9 +24,11 @@ source tree, or write to the Free Software Foundation, Inc.,
 
 // snd_stream_async.h -- decode-ahead worker for 2D sound streams (music, dialog).
 //
-// While attached, the worker thread owns the codec stream and decodes chunks
-// ahead of playback; the main thread only pops finished PCM. Opening, closing,
-// seeking and loop restarts stay on the main thread and require Detach first.
+// While attached, the worker thread owns the codec stream: it drops the
+// bytes the stream starts past (a start offset, a loop start), then decodes
+// chunks ahead of playback; the main thread only pops finished PCM and never
+// waits for the worker. Opening a stream stays on the main thread; a stream
+// is attached once and released with the job, which closes it.
 //
 // Worker contract: codec->read runs on the worker thread, so it must not
 // allocate from the zone or hunk, print, or call Com_Error. A negative read
@@ -38,18 +40,23 @@ source tree, or write to the Free Software Foundation, Inc.,
 
 typedef struct sndAsyncStream_s sndAsyncStream_t;
 
-// Hand an open stream to the worker. Returns NULL when async decode is disabled
-// (s_streamAsync 0) or the chunk does not fit; the caller keeps decoding inline.
-sndAsyncStream_t *S_AsyncStream_Attach(snd_stream_t *stream, unsigned int chunkBytes);
+// Whether streams decode on the worker (s_streamAsync 1); else on the main thread.
+qboolean S_AsyncStream_Enabled(void);
 
-// Next decoded chunk: > 0 bytes copied, 0 = not ready yet, -1 = end of stream.
-// With wait set, blocks until the worker finishes the chunk it is decoding
-// (use when playback is about to starve).
-int S_AsyncStream_Pop(sndAsyncStream_t *job, void *out, unsigned int outSize, qboolean wait);
+// Hand an open stream to the worker, which first decodes and drops skipBytes.
+// Returns NULL when async decode is disabled, every job slot is in use, or the
+// chunk does not fit; the caller keeps decoding inline.
+sndAsyncStream_t *S_AsyncStream_Attach(snd_stream_t *stream, unsigned int chunkBytes, unsigned int skipBytes);
 
-// Take the stream back. Returns the number of decoded bytes that were never
-// popped (the codec position is that far past what the caller consumed).
-unsigned int S_AsyncStream_Detach(sndAsyncStream_t *job);
+// Next decoded chunk: > 0 bytes copied, 0 = not decoded yet, -1 = end of stream.
+int S_AsyncStream_Pop(sndAsyncStream_t *job, void *out, unsigned int outSize);
 
-// Stop the worker thread (sound shutdown). All jobs must be detached.
+// Take the job back and close its stream: now, or once the worker is done
+// with its read (S_AsyncStream_Update). Never waits.
+void S_AsyncStream_Release(sndAsyncStream_t *job);
+
+// Main thread, every frame: close the released streams the worker has let go.
+void S_AsyncStream_Update(void);
+
+// Stop the worker thread (sound shutdown). All jobs must be released.
 void S_AsyncStream_Shutdown(void);

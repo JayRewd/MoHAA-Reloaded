@@ -214,9 +214,9 @@ protected:
 private:
     void clear_stream();
     bool queueChunk(const void *data, unsigned int size, const void *streamHandle); // Added in Omaha
-    int  fetchChunk(char *rawData, unsigned int cap, bool mayWait);                 // Added in Omaha
+    int  fetchChunk(char *rawData, unsigned int cap);                               // Added in Omaha
     void attachAsync();            // Added in Omaha
-    unsigned int detachAsync();    // Added in Omaha
+    void close_stream();           // Changed: the codec stream closed, through the worker when it has it
 
     unsigned int getQueueLength() const;
     unsigned int getCurrentStreamPosition() const;

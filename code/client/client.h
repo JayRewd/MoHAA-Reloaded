@@ -772,13 +772,6 @@ void CL_WriteAVIAudioFrame( const byte *pcmBuffer, int size );
 qboolean CL_CloseAVI( void );
 qboolean CL_VideoRecording( void );
 
-/* Added in Omaha: capture through the active sound host (snd_host.cpp). */
-qboolean S_Capture_Begin( void );
-void     S_Capture_End( void );
-void     S_Capture_Frame( int aviFps );
-qboolean S_Capture_Active( void );
-int      S_Capture_SampleRate( void );
-
 //
 // cl_consolecmds.cpp
 //

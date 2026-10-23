@@ -24,7 +24,6 @@ set(MYSOFA_SOURCES
     ${MYSOFA_DIR}/hrtf/interpolate.c
     ${MYSOFA_DIR}/hrtf/resample.c
     ${MYSOFA_DIR}/hrtf/loudness.c
-    ${MYSOFA_DIR}/hrtf/minphase.c
     ${MYSOFA_DIR}/hrtf/easy.c
     ${MYSOFA_DIR}/hrtf/cache.c
     ${MYSOFA_DIR}/resampler/speex_resampler.c

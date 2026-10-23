@@ -1719,11 +1719,6 @@ void OmHrtf_VoiceProcess(omHrtfVoice_t *hv, const float dir[3], const float *in,
 	}
 }
 
-qboolean OmHrtf_Active(void)
-{
-	return s_hrtf.ready;
-}
-
 /* Drop SOFA + design scratch once DIRECT bake owns runtime lookups. */
 static void Hrtf_ReleaseSofa(void)
 {
@@ -1985,14 +1980,4 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 		);
 	}
 	return qtrue;
-}
-
-qboolean OmHrtf_BakeActive(void)
-{
-	return (s_hrtf.ready && s_hrtf.bakeReady && !s_hrtf.sofaLive) ? qtrue : qfalse;
-}
-
-float OmHrtf_BakeGateMaxMagDb(void)
-{
-	return s_hrtf.bakeGateMaxMagDb;
 }

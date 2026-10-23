@@ -660,13 +660,14 @@ void S_MP3_CodecCloseStream(snd_stream_t* stream)
 =================
 S_MP3_OpenMemoryStream
 
-A stream of an mp3 file in memory, for the sound system's stream thread
-(snd_stream_thread.cpp): no file system or zone calls, its own dithering
-sequence (the same PCM every time it is decoded). Read with
-S_MP3_CodecReadStream, close with S_MP3_CloseMemoryStream.
+A stream of an mp3 file in memory (snd_stream_memory.cpp), decoded on any
+thread: no file system or zone calls, its own dithering sequence (the same PCM
+every time it is decoded). info: what an earlier scan of the file found, or
+NULL to scan it. Read with S_MP3_CodecReadStream, close with
+S_MP3_CloseMemoryStream.
 =================
 */
-snd_stream_t* S_MP3_OpenMemoryStream(const byte* data, int length)
+snd_stream_t* S_MP3_OpenMemoryStream(const byte* data, int length, const snd_info_t* info)
 {
     snd_stream_t* stream;
     struct snd_codec_mp3_info* mp3info;
@@ -682,7 +683,12 @@ snd_stream_t* S_MP3_OpenMemoryStream(const byte* data, int length)
     stream->mem = data;
     stream->length = length;
 
-    if (S_MP3_Scanfile(stream) < 0)
+    if (info)
+    {
+        // scanned before (snd_stream_memory.cpp)
+        stream->info = *info;
+    }
+    else if (S_MP3_Scanfile(stream) < 0)
     {
         free(stream);
         return NULL;
@@ -828,7 +834,9 @@ void* S_MP3_CodecLoad(const char* filename, snd_info_t* info)
     info->dataofs = stream->info.dataofs;
 
     // allocate enough buffer for all pcm data
-    pcmbuffer = Z_Malloc(stream->info.size);
+    // (temporary hunk memory, as the other codecs: the callers free it with
+    // Hunk_FreeTempMemory, which crashed on the zone block this was)
+    pcmbuffer = Hunk_AllocateTempMemory(stream->info.size);
     if (!pcmbuffer)
     {
         S_MP3_CodecCloseStream(stream);
@@ -840,7 +848,7 @@ void* S_MP3_CodecLoad(const char* filename, snd_info_t* info)
     if (info->size <= 0)
     {
         // we didn't read anything at all. darn.
-        Z_Free(pcmbuffer);
+        Hunk_FreeTempMemory(pcmbuffer);
         pcmbuffer = NULL;
     }
 

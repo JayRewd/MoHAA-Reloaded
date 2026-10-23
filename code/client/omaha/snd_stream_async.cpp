@@ -38,14 +38,15 @@ source tree, or write to the Free Software Foundation, Inc.,
 struct sndAsyncStream_s {
     snd_stream_t *stream;
     unsigned int  chunkBytes;
+    unsigned int  skip; // bytes still to decode and drop before the first chunk (start offset, loop start)
     unsigned int  sizes[ASYNC_STREAM_RING];
     byte          data[ASYNC_STREAM_RING][ASYNC_STREAM_CHUNK_SIZE];
     int           head;  // next chunk to pop (main thread)
     int           count; // decoded chunks waiting
-    unsigned int  lost;  // bytes decoded after dead was set (codec advanced, never queued)
+    bool          used;  // the slot holds a stream (attached, or released while the worker still reads it)
     bool          eof;
     bool          busy;  // worker is inside S_CodecReadStream for this job
-    bool          dead;  // never decode again (detaching, or handles closed by FS_Shutdown)
+    bool          dead;  // never decode again (released, or handles closed by FS_Shutdown)
 };
 
 static std::mutex              s_asyncMutex;
@@ -53,6 +54,7 @@ static std::condition_variable s_asyncWork;
 static std::condition_variable s_asyncIdle;
 static std::thread             s_asyncThread;
 static bool                    s_asyncQuit;
+// allocated on first use and kept: an attach costs no allocation
 static sndAsyncStream_t       *s_asyncJobs[ASYNC_STREAM_MAX_JOBS];
 static int                     s_asyncNext;
 static cvar_t                 *s_streamAsync;
@@ -64,7 +66,7 @@ static sndAsyncStream_t *S_AsyncStream_NextJob(void)
     for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
         sndAsyncStream_t *job = s_asyncJobs[(s_asyncNext + i) % ASYNC_STREAM_MAX_JOBS];
 
-        if (job && !job->dead && !job->eof && job->count < ASYNC_STREAM_RING) {
+        if (job && job->used && !job->dead && !job->eof && job->count < ASYNC_STREAM_RING) {
             s_asyncNext = (s_asyncNext + i + 1) % ASYNC_STREAM_MAX_JOBS;
             return job;
         }
@@ -78,7 +80,9 @@ static void S_AsyncStream_Worker(void)
 
     while (!s_asyncQuit) {
         sndAsyncStream_t *job = S_AsyncStream_NextJob();
+        unsigned int      want;
         int               slot, bytes;
+        bool              skipping;
 
         if (!job) {
             s_asyncWork.wait(lock);
@@ -86,24 +90,29 @@ static void S_AsyncStream_Worker(void)
         }
 
         // The tail slot is outside [head, head + count), so the main thread
-        // never reads it while we decode into it unlocked.
+        // never reads it while we decode into it unlocked. A skip decodes into
+        // it too and drops the bytes.
         slot      = (job->head + job->count) % ASYNC_STREAM_RING;
+        skipping  = job->skip > 0;
+        want      = skipping ? Q_min(job->skip, job->chunkBytes) : job->chunkBytes;
         job->busy = true;
         lock.unlock();
 
-        bytes = S_CodecReadStream(job->stream, job->chunkBytes, job->data[slot]);
+        bytes = S_CodecReadStream(job->stream, want, job->data[slot]);
 
         lock.lock();
         job->busy = false;
         if (job->dead) {
-            if (bytes > 0) {
-                job->lost += (unsigned int)bytes;
+            // released: the main thread closes the stream (S_AsyncStream_Update)
+        } else if (bytes > 0 && (unsigned int)bytes <= want) {
+            if (skipping) {
+                job->skip -= (unsigned int)bytes;
+            } else {
+                job->sizes[slot] = (unsigned int)bytes;
+                job->count++;
             }
-        } else if (bytes > 0 && (unsigned int)bytes <= job->chunkBytes) {
-            job->sizes[slot] = (unsigned int)bytes;
-            job->count++;
         } else {
-            if (bytes < 0 || (unsigned int)bytes > job->chunkBytes) {
+            if (bytes < 0 || (unsigned int)bytes > want) {
                 job->dead = true;
             }
             job->eof = true;
@@ -119,7 +128,7 @@ static void S_AsyncStream_FSShutdown(void)
     int                          i;
 
     for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
-        if (s_asyncJobs[i]) {
+        if (s_asyncJobs[i] && s_asyncJobs[i]->used) {
             s_asyncJobs[i]->dead = true;
         }
     }
@@ -130,41 +139,54 @@ static void S_AsyncStream_FSShutdown(void)
     }
 }
 
-sndAsyncStream_t *S_AsyncStream_Attach(snd_stream_t *stream, unsigned int chunkBytes)
+qboolean S_AsyncStream_Enabled(void)
 {
-    sndAsyncStream_t *job;
-    int               i;
-
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    // no threads: the streams decode on the main thread
+    return qfalse;
+#endif
     if (!s_streamAsync) {
         s_streamAsync = Cvar_Get("s_streamAsync", "1", CVAR_ARCHIVE);
     }
-    if (!s_streamAsync->integer || !stream || !chunkBytes || chunkBytes > ASYNC_STREAM_CHUNK_SIZE) {
+    return s_streamAsync->integer ? qtrue : qfalse;
+}
+
+sndAsyncStream_t *S_AsyncStream_Attach(snd_stream_t *stream, unsigned int chunkBytes, unsigned int skipBytes)
+{
+    sndAsyncStream_t *job = NULL;
+    int               i, freeSlot = -1;
+
+    if (!S_AsyncStream_Enabled() || !stream || !chunkBytes || chunkBytes > ASYNC_STREAM_CHUNK_SIZE) {
         return NULL;
     }
-
-    job             = new sndAsyncStream_t;
-    job->stream     = stream;
-    job->chunkBytes = chunkBytes;
-    job->head       = 0;
-    job->count      = 0;
-    job->lost       = 0;
-    job->eof        = false;
-    job->busy       = false;
-    job->dead       = false;
 
     {
         std::lock_guard<std::mutex> lock(s_asyncMutex);
 
         for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
-            if (!s_asyncJobs[i]) {
-                s_asyncJobs[i] = job;
+            if (!s_asyncJobs[i] || !s_asyncJobs[i]->used) {
+                freeSlot = i;
                 break;
             }
         }
-        if (i == ASYNC_STREAM_MAX_JOBS) {
-            delete job;
+        if (freeSlot < 0) {
+            // every slot streams: this one decodes on the main thread
             return NULL;
         }
+        if (!s_asyncJobs[freeSlot]) {
+            s_asyncJobs[freeSlot] = new sndAsyncStream_t;
+        }
+
+        job             = s_asyncJobs[freeSlot];
+        job->stream     = stream;
+        job->chunkBytes = chunkBytes;
+        job->skip       = skipBytes;
+        job->head       = 0;
+        job->count      = 0;
+        job->used       = true;
+        job->eof        = false;
+        job->busy       = false;
+        job->dead       = false;
 
         if (!s_asyncThread.joinable()) {
             s_asyncQuit   = false;
@@ -177,17 +199,14 @@ sndAsyncStream_t *S_AsyncStream_Attach(snd_stream_t *stream, unsigned int chunkB
     return job;
 }
 
-int S_AsyncStream_Pop(sndAsyncStream_t *job, void *out, unsigned int outSize, qboolean wait)
+int S_AsyncStream_Pop(sndAsyncStream_t *job, void *out, unsigned int outSize)
 {
     unsigned int size;
     int          slot;
 
     {
-        std::unique_lock<std::mutex> lock(s_asyncMutex);
+        std::lock_guard<std::mutex> lock(s_asyncMutex);
 
-        while (wait && !job->count && !job->eof && !job->dead && !s_asyncQuit) {
-            s_asyncIdle.wait(lock);
-        }
         if (!job->count) {
             // dead here means FS_Shutdown closed the handle: end the stream like a failed read
             return (job->eof || job->dead) ? -1 : 0;
@@ -213,49 +232,73 @@ int S_AsyncStream_Pop(sndAsyncStream_t *job, void *out, unsigned int outSize, qb
     return (int)size;
 }
 
-unsigned int S_AsyncStream_Detach(sndAsyncStream_t *job)
+void S_AsyncStream_Release(sndAsyncStream_t *job)
 {
-    unsigned int discarded = 0;
-    int          i;
+    snd_stream_t *stream;
 
     {
-        std::unique_lock<std::mutex> lock(s_asyncMutex);
+        std::lock_guard<std::mutex> lock(s_asyncMutex);
 
         job->dead = true;
-        while (job->busy) {
-            s_asyncIdle.wait(lock);
+        if (job->busy) {
+            // the worker still reads it: closed by a later S_AsyncStream_Update
+            return;
         }
-        discarded = job->lost;
-        for (i = 0; i < job->count; i++) {
-            discarded += job->sizes[(job->head + i) % ASYNC_STREAM_RING];
-        }
+        stream      = job->stream;
+        job->stream = NULL;
+        job->used   = false;
+    }
+
+    S_CodecCloseStream(stream);
+}
+
+void S_AsyncStream_Update(void)
+{
+    snd_stream_t *closing[ASYNC_STREAM_MAX_JOBS];
+    int           i, n = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(s_asyncMutex);
+
         for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
-            if (s_asyncJobs[i] == job) {
-                s_asyncJobs[i] = NULL;
+            sndAsyncStream_t *job = s_asyncJobs[i];
+
+            if (job && job->used && job->dead && !job->busy && job->stream) {
+                closing[n++] = job->stream;
+                job->stream  = NULL;
+                job->used    = false;
             }
         }
     }
 
-    delete job;
-    return discarded;
+    for (i = 0; i < n; i++) {
+        S_CodecCloseStream(closing[i]);
+    }
 }
 
 void S_AsyncStream_Shutdown(void)
 {
-    if (!s_asyncThread.joinable()) {
-        return;
-    }
+    int i;
 
-    {
-        std::lock_guard<std::mutex> lock(s_asyncMutex);
-        int                         i;
+    if (s_asyncThread.joinable()) {
+        {
+            std::lock_guard<std::mutex> lock(s_asyncMutex);
 
-        // Every stream channel detaches in clear_stream before the host shuts down.
-        for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
-            assert(!s_asyncJobs[i]);
+            // Every stream channel releases its job in clear_stream before the host shuts down.
+            for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
+                assert(!s_asyncJobs[i] || !s_asyncJobs[i]->used || s_asyncJobs[i]->dead);
+            }
+            s_asyncQuit = true;
         }
-        s_asyncQuit = true;
+        s_asyncWork.notify_all();
+        s_asyncThread.join();
     }
-    s_asyncWork.notify_all();
-    s_asyncThread.join();
+
+    // the worker is gone: close what it was still reading
+    S_AsyncStream_Update();
+
+    for (i = 0; i < ASYNC_STREAM_MAX_JOBS; i++) {
+        delete s_asyncJobs[i];
+        s_asyncJobs[i] = NULL;
+    }
 }

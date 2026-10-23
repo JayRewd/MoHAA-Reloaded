@@ -4,6 +4,7 @@ Project: Omaha headphone HRTF data
 SADIE_KU100_DFC_256_order_fir_48000.sofa
   Neumann KU100 dummy head, diffuse-field compensated, 256-tap FIR, 48 kHz (AES69 SOFA).
   From the SADIE database, University of York (https://www.york.ac.uk/sadie-project/).
+  Copyright University of York.
   Zenodo record 12542676 (https://zenodo.org/records/12542676).
   Licensed under the Apache License 2.0; see SADIE_LICENSE.txt.
 

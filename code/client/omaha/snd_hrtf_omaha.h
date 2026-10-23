@@ -55,11 +55,6 @@ typedef struct omHrtfVoice_s omHrtfVoice_t;
 /* voicePool: direct voices preallocated for OmHrtf_VoiceAlloc. */
 qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *label, int voicePool);
 void     OmHrtf_Unload(void);
-qboolean OmHrtf_Active(void);
-/* Added in Omaha: DIRECT dense bake is active (SOFA closed). */
-qboolean OmHrtf_BakeActive(void);
-/* Added in Omaha: last bake-vs-live gate max magnitude error (dB). */
-float OmHrtf_BakeGateMaxMagDb(void);
 
 /* Per-voice direct path. Alloc pops the load-time pool (NULL when empty); Free returns it there. */
 omHrtfVoice_t *OmHrtf_VoiceAlloc(void);

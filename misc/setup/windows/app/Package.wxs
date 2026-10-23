@@ -56,6 +56,28 @@
                         <File Source="files/libcurl.dll" />
                     </Component>
 
+                    <!-- Sound: the headphone HRTF set and the notices of the sound libraries -->
+                    <Component Id="OMAHA_SOUND_LICENSES.txt">
+                        <File Source="files/OMAHA-SOUND-LICENSES.txt" />
+                    </Component>
+                    <Directory Name="main">
+                        <Directory Name="sound">
+                            <Directory Name="prom">
+                                <Directory Name="hrtf">
+                                    <Component Id="SADIE_KU100.sofa">
+                                        <File Source="files/main/sound/prom/hrtf/SADIE_KU100_DFC_256_order_fir_48000.sofa" />
+                                    </Component>
+                                    <Component Id="hrtf_README.txt">
+                                        <File Source="files/main/sound/prom/hrtf/README.txt" />
+                                    </Component>
+                                    <Component Id="SADIE_LICENSE.txt">
+                                        <File Source="files/main/sound/prom/hrtf/SADIE_LICENSE.txt" />
+                                    </Component>
+                                </Directory>
+                            </Directory>
+                        </Directory>
+                    </Directory>
+
                     <!-- Launchers -->
                     <Component Id="launch_openmohaa_base.exe">
                         <File Source="files/launch_openmohaa_base.exe"
@@ -108,6 +130,13 @@
         <ComponentGroup Id="ThirdParty">
             <ComponentRef Id="SDL2.dll" />
             <ComponentRef Id="libcurl.dll" />
+        </ComponentGroup>
+
+        <ComponentGroup Id="Sound">
+            <ComponentRef Id="OMAHA_SOUND_LICENSES.txt" />
+            <ComponentRef Id="SADIE_KU100.sofa" />
+            <ComponentRef Id="hrtf_README.txt" />
+            <ComponentRef Id="SADIE_LICENSE.txt" />
         </ComponentGroup>
 
         <ComponentGroup Id="Launchers">

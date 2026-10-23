@@ -388,8 +388,9 @@ below are done.
   configstrings, each copying the whole gamestate; a playing song decoded
   8 buffers in 8 frames in a row every few seconds. The soundtrack's mp3s
   are now read into memory when it loads and decoded ahead on a thread of
-  the sound system, the same PCM (`s_streamThread`), the soundtrack file is
-  kept (`s_soundtrackCache`), and a changed configstring goes after the
+  the sound system, the same PCM (`s_streamThread`; since Plan 31 the Omaha
+  mixer's worker decodes them, see the sound system below), the soundtrack
+  file is kept (`s_soundtrackCache`), and a changed configstring goes after the
   others in the client's and cgame's gamestates (`cl_csAppend`,
   `cg_csAppend`). The round changes' frames take 1.0 to 1.4 ms less
   uncapped in two matches (`o4match` 3.1 to 3.8 ms to 1.9 to 2.4; 2.6 to
@@ -403,14 +404,35 @@ below are done.
   the patches where they would change nothing and a patch's indexes are
   kept until its triangles change (`r_terrainCache`; the same
   tessellation, checked over 21 matches), and each registered sound's
-  OpenAL buffer is made when the registration ends instead of in the
-  frame that first
+  OpenAL buffer (the Omaha mixer's sound since Plan 31) is made when the
+  registration ends instead of in the frame that first
   plays it (`s_loadBuffers`: 131 to 146 first plays a match, 0.2 to 0.6
   ms each; 47.6 MB of buffers at the load). In `o4match` the 99th
   percentile goes from 1.52 to 1.37 ms uncapped and the mean 70 µs lower,
   input to present lower at every percentile (at 250 the 99.9th 2.22 to
   1.80 ms); `o2match` 0.03 to 0.06 ms lower; the slowest 0.1 % unchanged;
   the same frames (see Performance, Busy moments)
+- the sound system (2026-10-23, Plan 31, an engine change for both
+  renderers): JayRewd's pull request #2 replaces OpenAL with the Omaha mixer
+  (miniaudio for the device, a mixer of its own on the device's thread, HRTF
+  for headphones), which changes what the player hears: a gain per kind of
+  sound (footsteps louder, weapons and explosions softer), overlapping and
+  bursting sounds ducked, the music dipped under voices, sounds behind walls
+  and closed doors muffled, a limiter; its tuning is kept as it came. Merged
+  with Plans 29 and 30 redone for it, and improved without changing the
+  mixed output: a walk of every alias at each sound's first play and the
+  waits for its stream worker in the frame moved to the load or removed, the
+  soundtrack's decoding off the main thread, device loss, a reused voice id,
+  a `playmp3` crash, the HRTF set's lookup and the Windows package fixed;
+  its obstruction traces (every playing world sound, every 100 ms) are left
+  as they are, a budget for them is an option (`s_obstructionBudget`).
+  Against OpenAL the pull request costs `o2match` 0.06 ms of mean frame time
+  and 0.2 to 0.3 ms at the 99th and 99.9th percentiles uncapped (its
+  obstruction traces); Plan 31 takes 0.05 to 0.12 ms off the 99.9th
+  percentiles, and with `s_obstructionBudget 2` `o2match` is back at
+  OpenAL's level; input to present at 250 frames a second within the runs'
+  spread (see Implementation notes, Sound system, and Performance, Sound
+  system)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -484,21 +506,27 @@ Performance, cgame caches), and the registration at load
 `code/cgame/cg_public.h` and `code/client/cl_cgame.cpp`: the cgame import
 `CM_EntityString`; `code/qcommon/files.cpp`: `FS_DirMayHave`,
 `fs_listDirs`; see Implementation notes, Registration at load), and the
-round changes (`code/client/snd_stream_thread.cpp`, new: the stream thread,
-`s_streamThread`; `code/client/snd_codec_mp3.c`: memory streams and their
+round changes (`code/client/snd_codec_mp3.c`: memory streams and their
 own dithering, `S_MP3_OpenMemoryStream`; `code/client/snd_codec.c`/`.h`:
-`S_CodecLoad` opens the thread's streams, `S_CodecStreamReady`;
-`code/client/snd_openal_new.cpp`: the soundtrack's songs handed to the
-thread, `MUSIC_SoundtrackText`, `s_soundtrackCache`, a stream channel's
-update that doesn't wait; `code/client/snd_dma_new.cpp`: the cvars,
-`MUSIC_FlushCaches` at each load; `code/client/cl_cgame.cpp`:
+`S_CodecLoad` opens the memory streams; `code/client/snd_dma_new.cpp`: the
+cvars, `MUSIC_FlushCaches` at each load; `code/client/cl_cgame.cpp`:
 `CL_ConfigstringModified`, `cl_csAppend`, the cgame import
 `GetConfigString`; `code/cgame/cg_servercmds.c`: `CG_ConfigStringModified`,
 `cg_csAppend`; see Implementation notes, Round changes), and the busy
-moments (`code/client/snd_openal_new.cpp`: `S_OPENAL_LoadSfxBuffer`,
-`S_OPENAL_PreloadSfx`, `S_OPENAL_FreeSfx`; `code/client/snd_dma_new.cpp`:
-`S_EndRegistration`, `s_loadBuffers`; see Implementation notes, Sound
-buffers at load).
+moments (`code/client/snd_dma_new.cpp`: `S_EndRegistration`,
+`s_loadBuffers`; see Implementation notes, Sound buffers at load), and the
+sound system (JayRewd's pull request #2 and Plan 31: `code/client/omaha/`,
+new, the Omaha sound host and mixer; `code/client/snd_host.cpp`/`.h`;
+`code/client/snd_stream_memory.cpp`, new, the soundtrack's files in memory;
+`code/client/snd_dma_new.cpp`, `snd_mem_new.cpp`, `snd_local_new.h`,
+`snd_info.cpp`, `snd_codec_mp3.c`, `cl_uiview3d.cpp`, `snd_main.c`;
+`code/client/snd_openal.c`, `snd_openal_new.cpp`/`.h`, `qal.c`/`.h` and the
+OpenAL headers deleted; `code/qcommon/files.cpp`, `qcommon.h`:
+`fs_shutdownHook`; `code/thirdparty/miniaudio`, `libmysofa`, `pffft` and
+`OMAHA-SOUND-LICENSES.txt`, new; `assets/main/sound/prom/hrtf`, new: the
+HRTF set; `cmake/client.cmake`, `cmake/libraries/{miniaudio,mysofa,pffft}.cmake`,
+`openal.cmake` deleted; the CI workflows and the Windows installer without
+OpenAL, with the HRTF set; see Implementation notes, Sound system).
 
 ## Build and run
 
@@ -1793,6 +1821,39 @@ imports no GL or Vulkan symbol. With temporary test builds (not kept):
   146 sounds both made; none made in the match with it on. A local game
   through four map loads with bots and a `snd_restart` (the freed sounds'
   buffers deleted at each load): no OpenAL error.
+
+The sound system (2026-10-23, Plan 31, see Implementation notes, Sound
+system; the engine only, `renderer_vulkan.so` and `cgame.so` the same code
+as before). With temporary test builds (not kept) of the merged pull
+request as it came (the merge commit, conflicts resolved) and of the final
+one: the null playback device (no sound out of the speakers), the device
+callback's output written to a file and every command the streams gave the
+mixer (the queued PCM, seeks, stops) logged:
+
+- The streams: session by session, the chunks queued, the stops and seeks
+  and the PCM each stream plays from its start offset: `o2match` with a 3
+  minute test song (24 s of it at `com_maxfps 250`, 524 chunks, 4.3 MB),
+  `o4match`'s songs (started and freed at its round changes) and dialog
+  lines: the same chunks, seeks and bytes as the merged pull request.
+  `o2match` with this machine's 0.24 s songs, which loop: the same up to
+  the first loop, after which the final build repeats the song from its
+  loop start to the byte (12 loops) and the merged code lost 1318 samples
+  at every loop (Plan 29's thread with the pull request's reads). The
+  mixed output of the 3 minute song: no 5 ms window below -80 dB once the
+  music starts.
+- A local game script (`dm/mohdm1`): `loadsoundtrack` of two soundtracks
+  with 3 minute songs, `s_ambientvolume` and `s_volume` changes,
+  `snd_restart`, `restart`, a `devmap` to `obj/obj_team2`, `tmstart` and
+  `tmstop`, `playmp3` and `stopmp3`: the music in the output all along but
+  the loads, no error; `playmp3` crashed the merged code (a stack
+  overflow, see Implementation notes), not the final one.
+- Headphones (`s_speaker_type 1`, `fs_basepath` at the game data): the
+  HRTF set read from the client's `main` folder (the merged code fell back
+  to stereo); at 44.1 kHz the pull request's baked filters fail its own
+  check (median -27.4 dB, max -8.0 dB) and every voice designs its filters
+  from the measurements, as it came; with `s_khz 48` the check passes
+  (median -30.6 dB, max -15.6 dB) and the baked filters are used (0.61 s
+  for a sound start against 0.88, see Remaining).
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -5057,7 +5118,8 @@ the same memory, no registration in a frame of the match (the build before:
 one, a head icon).
 
 Round changes (2026-10-23, Plan 29; see Implementation notes, Round
-changes; the engine and cgame, both renderers). After Plan 28 the slowest
+changes; the engine and cgame, both renderers; measured with OpenAL, which
+Plan 31 replaced, see Sound system). After Plan 28 the slowest
 frames of `o4match` were its round changes (frames 4451, 7055, 11008 and
 13483, and frame 30: the server restarted once more right after the load),
 3.2 to 3.9 ms against a median frame of 0.94 ms, with about 1.1 ms more
@@ -5335,6 +5397,88 @@ which grow with what is in view.
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
+
+Sound system (2026-10-23, Plan 31; see Implementation notes, Sound system;
+the engine's client, both renderers). JayRewd's pull request #2 replaced
+OpenAL with the Omaha mixer. Its main-thread work, from a temporary build
+that timed the sound host's calls (`o2match` and `o4match` at 1920x1080
+uncapped, `fixedtime 16`, the merged pull request, µs; a frame's sum over
+the 15000 frames):
+
+| in a frame | mean | p99 | p99.9 | max |
+| --- | --- | --- | --- | --- |
+| `o2match`: obstruction traces (109 thousand, 3 rays each) | 57 | 304 | 678 | 927 |
+| the same with `s_obstructionBudget 2` (17.6 thousand) | 11 | 79 | 156 | 363 |
+| `o4match`: obstruction traces (101 thousand) | 31 | 136 | 189 | 319 |
+| the rest of `S_Respatialize` (positions, loops) | 5 to 7 | | | |
+| `S_Update` (the voices' updates, music, the mixer's returns) | 7 to 8 | 25 | 50 to 56 | 89 to 123 |
+
+and in single frames: a walk of every global alias at a sound's first play
+(`S_OMAHA_ClassifySfx`, 153 to 161 a match, 0.18 to 0.89 ms each) and at
+every start of a streamed sound that isn't combat speech (0.27 to 0.52 ms
+each, a player's taunt, a plane's fly-by), a pain line loaded at its first
+play (0.09 to 0.52 ms), and the streams' waits for their worker (0.12 to
+0.16 ms at a song's start, 0.07 to 0.10 ms at a detach) and, with the
+merge's Plan 29 thread, decodes (0.3 to 0.55 ms at a start or a loop).
+After Plan 31: the first plays' walk 3 to 9 µs, a song's start 3 to 41 µs,
+no wait; the obstruction traces as they were (the pull request's rule), an
+option for them (`s_obstructionBudget`, off: it changes when the muffling
+follows a move). Played back at `fixedtime 16` the 100 ms between a
+sound's traces come every 6 frames: at a real 250 frames a second every 25,
+so a frame's mean is about a quarter of these in a real match, its clusters
+(the loops started at a load come due together) as large but rarer.
+
+Results (idle machine: other processes at most 0.7 CPUs, no Plex
+transcoding; `base` (a5120199, OpenAL), `raw` (the merge commit: the pull
+request with the conflicts resolved), `new` (Plan 31) and `budget` (`new`
+with `s_obstructionBudget 2`), interleaved, 5 runs of 15000 frames of
+`o2match` and `o4match` at 1920x1080 in a window, `perf.py --caps 0` and
+`--caps 250`, `--preload libinlat.so --framelog`, the same renderer and
+cgame; the medians of the runs' percentiles of the frames from the third
+on (the measured window of `new` started a frame earlier in every run, on
+the first frame after the load, 4.7 ms of input to present that the other
+builds' windows leave out); ms):
+
+| demo | `com_maxfps` | build | frame time p99.9 | max | p99 | mean | input to present p99.9 | max | p99 | median |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | `base` | 1.305 | 1.66 | 1.003 | 0.479 | 1.253 | 1.64 | 0.946 | 0.406 |
+| | | `raw` | 1.613 | 2.02 | 1.205 | 0.537 | 1.550 | 1.86 | 1.130 | 0.480 |
+| | | `new` | 1.563 | 2.06 | 1.181 | 0.532 | 1.531 | 1.97 | 1.134 | 0.477 |
+| | | `budget` | 1.296 | 1.64 | 1.010 | 0.484 | 1.272 | 1.60 | 0.965 | 0.419 |
+| | 250 | `base` | 4.163 | 4.38 | 4.045 | 4.000 | 1.291 | 2.29 | 0.949 | 0.467 |
+| | | `raw` | 4.225 | 5.47 | 4.044 | 4.000 | 1.378 | 2.24 | 1.018 | 0.477 |
+| | | `new` | 4.195 | 4.51 | 4.043 | 4.000 | 1.271 | 2.17 | 1.013 | 0.471 |
+| | | `budget` | 4.196 | 4.43 | 4.043 | 4.000 | 1.262 | 2.34 | 0.964 | 0.468 |
+| `o4match` | 0 | `base` | 1.820 | 2.54 | 1.386 | 0.874 | 1.785 | 2.49 | 1.339 | 0.810 |
+| | | `raw` | 1.896 | 3.02 | 1.452 | 0.894 | 1.861 | 2.56 | 1.415 | 0.838 |
+| | | `new` | 1.771 | 2.53 | 1.389 | 0.889 | 1.701 | 2.48 | 1.351 | 0.834 |
+| | | `budget` | 1.809 | 2.63 | 1.386 | 0.873 | 1.784 | 2.60 | 1.338 | 0.823 |
+| | 250 | `base` | 4.144 | 4.34 | 4.038 | 4.000 | 1.712 | 2.27 | 1.353 | 0.848 |
+| | | `raw` | 4.197 | 5.03 | 4.039 | 4.000 | 1.779 | 2.13 | 1.371 | 0.843 |
+| | | `new` | 4.164 | 5.05 | 4.040 | 4.000 | 1.856 | 2.28 | 1.362 | 0.855 |
+| | | `budget` | 4.147 | 4.29 | 4.038 | 4.000 | 1.800 | 2.39 | 1.386 | 0.842 |
+
+- The pull request as it came costs `o2match` 0.06 ms of mean frame time
+  and 0.2 to 0.3 ms at the 99th and 99.9th percentiles uncapped, input to
+  present the same, against OpenAL; `o4match` 0.02 ms and 0.07 ms. Most of
+  it is the obstruction traces (above), which Plan 31 leaves as they are:
+  `new` takes 0.05 ms off `o2match`'s 99.9th percentile and 0.12 off
+  `o4match`'s (the waits and walks), the rest of `raw`'s cost stays.
+- With `s_obstructionBudget 2` `o2match` is back at OpenAL's level (99.9th
+  percentile 1.296 against 1.305, mean 0.484 against 0.479), and so is
+  `o4match`.
+- At 250 frames a second every build fits its 4 ms; input to present
+  within the runs' spread of OpenAL's (the 99.9th percentile of 15000
+  frames is the 15th slowest; `o4match`'s 1.71 to 1.86 ms over the four
+  builds), its median 0.47 and 0.84 to 0.86 ms in all.
+- The mixer thread: the game takes 1.08 to 1.10 CPUs uncapped against
+  OpenAL's 1.01 to 1.03 (its main thread 0.95 to 0.99 either way), at 250
+  0.41 to 0.51 against 0.40 to 0.50.
+- With a 3 minute test song as both maps' music (3 runs of `base` and
+  `new`, uncapped): `o2match`'s song streams from the load on: the same
+  picture (99.9th percentile 1.268 and 1.536 ms, mean 0.489 and 0.531);
+  its decoding is on the worker and no longer shows (Plan 29's 0.85 to 0.92
+  ms buffers with OpenAL).
 
 ### Coordinate conventions
 
@@ -6576,46 +6720,19 @@ selects the sample count (see Implementation notes).
   since OpenMoHAA's fix, comes a frame later and frees it again; in a local
   game the restart comes first and the song plays on; unchanged). Three
   parts, each with its own switch:
-  - `s_streamThread` (`snd_stream_thread.cpp`): a song of the soundtrack
-    is an mp3 that a stream channel (`openal_channel_two_d_stream`) decoded
-    on the main thread, 16384 samples each time it queued a buffer (64 KB
-    for 16-bit stereo, 0.4 to 0.9 ms), after scanning the whole file's
-    headers to open it (0.05 ms for this data's 0.24 s files, 0.7 to 0.9 ms
-    for a 3 minute song); a round restart opened and decoded twice in one
-    frame, and a playing song queued 8 buffers in 8 frames in a row every
-    few seconds (every 1.9 s with the 0.24 s files, which loop). With the
-    switch on, `MUSIC_LoadSoundtrackFile` hands each song's file to the
-    stream thread when the soundtrack loads (`S_StreamThread_Prefetch`:
-    the main thread reads the file into memory, during the map load for
-    the first soundtrack and from memory at each round restart), the
-    thread scans it and decodes its first read (the head), and a stream of
-    it (`S_CodecLoad(name, NULL)`, which every stream channel opens) starts
-    from the head while the thread decodes the head again, to get past it,
-    and then the following reads, up to 4 ahead, into slots of one read
-    each. The main thread copies PCM; the channel's update asks
-    `S_CodecStreamReady` before a read and queues it a frame later when the
-    thread hasn't decoded it yet (a song keeps 16 buffers, about 6 s,
-    queued); the other reads (a stream's first, a seek in
-    `set_sample_offset`) wait for the thread, and a song whose file is
-    still being prepared (a soundtrack loaded in that frame) waits for the
-    preparation. The memory streams (`S_MP3_OpenMemoryStream`) feed libmad
-    the same blocks as the file streams and use the codec's functions, with
-    the C library's memory instead of the zone and a dithering sequence of
-    their own (the codec's file streams share one sequence, whose state
-    depends on every mp3 decoded before), so the thread makes no file
-    system, zone or OpenAL call, and the PCM of a stream is the same each
-    time (the head and the thread's decode of it are the same bytes). The
-    buffers a song queues are the same bytes as with the file streams
-    given the same sequence (checked below); against the shared sequence
-    the dithering differs by 1 or 2 in a sample (mean 0.46), inaudible. The
-    files stay in memory until the next map load (`S_BeginRegistration`,
-    `MUSIC_FlushCaches`; those a stream still uses stay), at most 64 MB of
-    them; one thread, started with the first soundtrack and joined when the
-    sound system shuts down (`snd_restart` too).
+  - `s_streamThread` (`snd_stream_thread.cpp`, until Plan 31): a song of
+    the soundtrack, an mp3 that a stream channel decoded on the main thread
+    16384 samples at a time after scanning the whole file to open it, was
+    read into memory when the soundtrack loaded and decoded ahead on a
+    thread of the sound system. The Omaha mixer that replaced OpenAL (Plan
+    31, see Sound system below) decodes every stream on its own worker:
+    the soundtrack's files are still read into memory and scanned when it
+    loads (`snd_stream_memory.cpp`, under `s_soundtrackCache`), and the
+    thread is gone.
   - `s_soundtrackCache` (`MUSIC_SoundtrackText`): the soundtrack file's
     text (`music/<map>.mus`) is kept from its load to the next map load,
     instead of reading it from the pk3 again when the restart sets the
-    same soundtrack (40 to 70 µs).
+    same soundtrack (40 to 70 µs); since Plan 31 its songs' mp3 files too.
   - `cl_csAppend` (`CL_ConfigstringModified`) and `cg_csAppend`
     (`CG_ConfigStringModified`): a changed configstring went into the
     client's gamestate by copying the whole gamestate (53 KB) aside and
@@ -6629,23 +6746,129 @@ selects the sample count (see Implementation notes).
     configstring for each `cs` command cgame runs, so both keep the same
     string for every index as before (checked with shadow copies below).
 - **Sound buffers at load** (the engine's sound system, both renderers:
-  `S_EndRegistration`, `S_OPENAL_PreloadSfx`, `s_loadBuffers`, default 1;
-  see Performance, Busy moments). The registration reads every sound's
-  samples into memory, but OpenAL got them (`alGenBuffers`,
-  `alBufferData`: a copy, 0.1 to 0.8 MB for a weapon's or an explosion's
-  sound) only when a channel first played the sound
-  (`openal_channel::set_sfx`), in the frame of the match that fired the
-  weapon: 118 to 146 first plays a match, 0.2 to 0.6 ms each. When the
-  registration ends, each registered sound's buffer is now made from the
-  same samples (`S_OPENAL_LoadSfxBuffer`, the code `set_sfx` ran; the
-  streamed sounds and the mp3 sound effects, which are decoded from their
-  file, still on their first play); a sound registered later in the match
-  gets its buffer on its first play as before. The registration also
-  deletes the buffers of the sounds whose slots it frees
-  (`S_OPENAL_FreeSfx`, after the channels that last played them let them
-  go: a stopped source keeps its buffer): before, these stayed in OpenAL
-  until the sound system restarted, one more each time a map's own sounds
-  were replaced.
+  `S_EndRegistration`, `s_loadBuffers`, default 1; see Performance, Busy
+  moments). The registration reads every sound's samples into memory, but
+  the sound system made its own copy (OpenAL's buffer until Plan 31, the
+  Omaha mixer's sound since, decoded to its format) only when a channel
+  first played the sound, in the frame of the match that fired the weapon:
+  118 to 146 first plays a match, 0.2 to 0.6 ms each with OpenAL. When the
+  registration ends, each registered sound's copy is now made from the
+  same samples (`S_OMAHA_PreloadSfx`, `S_OMAHA_LoadSfxSound`, the code the
+  first play ran; the streamed sounds and the mp3 sound effects, which are
+  decoded from their file, still on their first play; since Plan 31 also
+  each sound's category and its pain or death lines' 3D load, see Sound
+  system); a sound registered later in the match gets it on its first play
+  as before. The sounds whose slots the registration frees give theirs
+  back (`S_OMAHA_FreeSfx`, after the channels that last played them let
+  them go).
+- **Sound system** (the engine's client, both renderers; JayRewd's pull
+  request #2, merged 2026-10-23 with the changes below, Plan 31; see
+  Performance, Sound system). OpenAL is gone: `code/client/omaha/` mixes
+  every sound itself and miniaudio (`code/thirdparty/miniaudio`, 0.11.25,
+  its decoders, engine and resource manager compiled out) plays the mix
+  on the device's own thread, with PulseAudio, ALSA or JACK on Linux,
+  WASAPI, DirectSound or WinMM on Windows and Core Audio on macOS, all
+  opened at run time (no new link dependency). Layers: the sound host
+  (`snd_host.cpp`, `omaha/snd_omaha.cpp`, the old OpenAL host's channel
+  policy, music and streams, with the mix rules below) calls the mixer's
+  voice interface (`omaha/snd_renderer.h`, `omaha/snd_render_omaha.cpp`):
+  the game thread sends commands through a lock-free ring and each
+  voice's latest parameters through a mailbox, the device's callback
+  applies them, mixes (a windowed-sinc resampler per voice, the speaker
+  or headphone panning, filters, a limiter) and hands back what it let go
+  of through a return ring; no lock, allocation or print in the callback,
+  and no call of the game thread waits for it. What changes what the
+  player hears, as the pull request made it: a gain per category of
+  sound (`OM_MIX_*`, `s_mix`: footsteps 1.35, the player's own fire 0.6
+  and others' 0.65, foley 0.7, impacts 0.6, explosions 0.75, voices 0.9,
+  vehicles and the world 0.8), sounds without an entity (cgame's shots'
+  impacts and the like) quieter when the same kind already plays from
+  the same direction (overlap ducking), others' fire and explosions
+  quieter in a burst from one spot (pocket ducking, never below 0.35),
+  the music dipped by 2 to 10 dB under voices, world sounds behind
+  brushes and across closed area portals muffled (low-pass and gain,
+  `s_obstruction`), a high-frequency ducker and a limiter on the master,
+  and `s_volume` applied after the limiter. Headphones (`s_speaker_type
+  1`) render other players' gunfire, foley, steps and voices through
+  their own HRTF filters and everything else through a shared ambisonic
+  bus, from the SADIE KU100 set in `main/sound/prom/hrtf` (12.5 MB, Apache
+  2.0, read with libmysofa); 5.1 and quad layouts exist too. The pull
+  request's tuning (the filters, levels, gains, distances, HRTF and update
+  rates) is kept as it came, at the user's word (2026-10-23: it is finely
+  tuned): every change below leaves the mixed output the same, and what
+  would change it is a proposal (see Remaining). Changed against the pull
+  request:
+  - Streams (`omaha_channel_two_d_stream`, `snd_stream_async.cpp`): its
+    update waited for the decode-ahead worker when a stream was about to
+    run dry, which right after every start (one chunk queued) it was, and
+    a stream's detach waited for the worker's decode in progress (every
+    song start, seek and loop end): 0.1 to 0.16 ms each in the frame. Now
+    the update queues what the worker has decoded and never waits (a song
+    keeps 0.3 s queued; the PCM the voice plays is the same), a stream is
+    released to the worker, which closes it once its read is done
+    (`S_AsyncStream_Update`, every frame), a stream that `queue_stream`
+    opened goes to the worker in its first update, after its start offset
+    was read on without opening the file again, and the worker's 16 jobs
+    are allocated once (an attach cost a 128 KB allocation, and a 17th
+    stream decodes on the main thread as before). The starts, seeks and
+    loop restarts take the pull request's paths (the same chunks queued in
+    the same frames). `s_streamAsync 0` decodes all on the main thread.
+  - The soundtrack's files (`snd_stream_memory.cpp`, `s_soundtrackCache`,
+    replacing Plan 29's `snd_stream_thread.cpp` and `s_streamThread`): a
+    song's mp3 is read into memory, scanned and its first 8192 samples
+    decoded (the head) when the soundtrack loads, and kept with the
+    soundtrack file's text until the next map load. A stream of it opens
+    with no file system call or scan (0.7 to 0.9 ms for a 3 minute song),
+    the reads of its start, start offset and loop restarts (on the main
+    thread, as the pull request does) copy the head, and its own decoder
+    decodes the rest on the worker. The same PCM as the file's own decode
+    in any read sizes. Plan 29's thread decoded into reads of a fixed size,
+    which the pull request's reads didn't match: the merged code lost 30 ms
+    (1318 samples) at every restart of a looping song.
+  - Sound starts: the category of a sound came from a walk of every
+    global alias at its first play (0.2 to 0.9 ms in that frame), and
+    every start of a streamed sound that isn't combat speech walked them
+    again to find out (0.3 to 0.5 ms each time a player's taunt played).
+    One walk of the alias list (at each registration and when the list
+    changed) keeps, for each file, its aliases' categories and whether one
+    is combat speech (`S_OMAHA_AliasFiles`, the same answers), and every
+    registered sound is classified and its pain or death lines loaded for
+    3D (`s_pain_hrtf`) when the registration ends (`S_OMAHA_PreloadSfx`,
+    the state the pull request reaches at their first play); a sound
+    registered later is looked up in the table.
+  - The mixer: a device is lost when its callbacks stop for 0.5 s (the
+    pull request reopened it on every stop notification, also those of a
+    rerouting WASAPI restarts itself, and missed an unplugged device whose
+    stop fails, which notifies nothing: silence until `snd_restart`);
+    while the callbacks stop, the game thread applies the commands so ids
+    keep coming back; a voice's handle takes no command after its stop or
+    destroy (an id the mixer frees could be reused while an old command
+    for it was still queued); the HRTF set is also read from the client's
+    own `main` folder (where the build and the installs put it) when
+    `fs_basepath` points at the game data (headphones fell back to stereo
+    then); the HRTF data is freed when no device opens; `s_khz 48` mixes
+    at 48 kHz (and loads the sounds without downsampling to 22 kHz); the
+    capture path for AVI export, which nothing called, and unused HRTF
+    functions are removed.
+  - `s_obstructionBudget` (new, default 0: the pull request's rule, every
+    playing world sound traced again every 100 ms): with N > 0 at most N
+    sounds are traced again in a frame and the others that are due wait
+    for the next frames, an answer holds while both ends moved 8 units or
+    less (else only for the same points), and a new sound takes the answer
+    of one from the same spot in the last 100 ms. Off: it changes when the
+    muffling follows a move (see Remaining).
+  - Fixes: `playmp3` crashed (GCC 15 devirtualized `chan->stop()` of an
+    `omaha_channel *` pointing at the stream member `omaha.chan_mp3` to no
+    target and dropped `S_OMAHA_LoadMP3`'s body, a recursion until the
+    stack overflowed; the parameter is the stream type now), and the mp3
+    codec's whole-file decode (`S_MP3_CodecLoad`) returned zone memory that
+    every caller freed as temporary hunk memory (the other codecs' kind;
+    the old OpenAL host did the same).
+  - Build: the Windows package and installer carry the HRTF set and the
+    licenses' notice (`OMAHA-SOUND-LICENSES.txt`; the pull request's
+    package step copied only DLLs and executables), a macOS `.app` gets no
+    data in `Contents/MacOS` (code signing), libmysofa's unused
+    `minphase.c` is left out, the SADIE copyright line is in its README.
 - **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
   the static geometry, `effectsDraws` those of them with the effects
   shader). Every `vkAllocateMemory` goes
@@ -7340,6 +7563,40 @@ Done:
     outside the view were tried and left out (1.5 µs a frame; the sky no
     longer covered the cracks between faces where it did before).
 
+31. The sound system (2026-10-23, see Performance, Sound system, and
+    Implementation notes, Sound system; the engine's client, both
+    renderers): JayRewd's pull request #2 (the Omaha mixer: miniaudio,
+    HRTF with libmysofa and PFFFT, OpenAL dropped from the build and the
+    CI) merged into the branch, its conflicts with Plans 29 and 30 resolved
+    (the OpenAL host's soundtrack cache and load-time buffers moved to the
+    new host), then measured with temporary builds that timed the sound
+    host's calls in each frame: its obstruction traces (every playing world
+    sound every 100 ms, the loops started at a load due in the same frames),
+    a walk of every global alias at each sound's first play and at each
+    start of a streamed taunt (0.2 to 0.9 ms), and its streams waiting for
+    their worker in the frame (0.1 to 0.16 ms at a song's start, seek or
+    loop). Improved without changing the mixed output (the user, 2026-10-23:
+    its filters, levels and 3D space are finely tuned): the streams never
+    wait for the worker, the soundtrack's mp3s read, scanned and their head
+    decoded when it loads (`snd_stream_memory.cpp`, Plan 29's stream thread
+    gone; it lost 30 ms at every loop of a song with the pull request's
+    reads), the aliases read once per registration and every registered
+    sound classified and its pain lines loaded at the load; a lost device
+    found by its callbacks stopping, no command for a freed voice id, the
+    HRTF set read from the client's folder, `playmp3`'s crash (a GCC
+    devirtualization) and the mp3 codec's memory fixed, `s_khz 48`, the
+    unused capture path removed, the Windows package with the HRTF set and
+    notices. The obstruction traces stay as they are; a budget for them
+    (`s_obstructionBudget`, off) and headphones at 48 kHz are proposals
+    (see Remaining). Against OpenAL (5 runs, 1920x1080): the pull
+    request costs `o2match` 0.06 ms of mean frame time and 0.2 to 0.3 ms at
+    the 99th and 99.9th percentiles uncapped, `o4match` 0.02 and 0.07 ms;
+    Plan 31 takes 0.05 and 0.12 ms off their 99.9th percentiles, the budget
+    the rest of `o2match`'s; input to present at 250 within the runs'
+    spread; the same stream chunks, seeks and PCM as the pull request (its
+    loops' 30 ms loss fixed), ThreadSanitizer clean but RADV's own report,
+    GL1 plays with the new engine.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -7421,8 +7678,8 @@ Remaining:
      time checked. Tools that report frame times from the CPU's side
      (present to present) see this spread; what is displayed is even.
   5. Round changes: done (2026-10-23, Plan 29): the soundtrack's mp3s are
-     decoded on a thread of the sound system and the configstrings change
-     in place. Their frames take 1.0 to 1.4 ms less uncapped (`o4match`
+     decoded on a thread of the sound system (since Plan 31 on the Omaha
+     mixer's worker) and the configstrings change in place. Their frames take 1.0 to 1.4 ms less uncapped (`o4match`
      1.9 to 2.4 ms, below the first frame after the load; 2.6 to 3.0 ms
      less with a 3 minute song) and their input to present 0.5 to 0.7 ms
      less at 250. What is left in those frames is cgame's
@@ -7436,6 +7693,48 @@ Remaining:
      53 % of the slow frames at 3840x2160): GPU time, see the texture
      compression item below.
 
+- The sound system (Plan 31, see Implementation notes and Performance,
+  Sound system). Proposals that change what the player hears, left for the
+  user to decide (the pull request's tuning is kept as it came):
+  (1) the obstruction traces, now the sound system's largest main-thread
+  cost (every playing world sound traces 3 rays every 100 ms, and the
+  loops started at a load come due in the same frames: in `o2match` 109
+  thousand traces, 57 µs a frame on average and 0.68 ms in its slowest
+  0.1 % of frames, up to 0.93 ms, played back at `fixedtime 16`, where the
+  100 ms come due every 6 frames; at 250 frames a second in a real match
+  every 25): `s_obstructionBudget 2` (in the build, off) traces at most 2
+  sounds again per frame, keeps an answer while both ends moved 8 units or
+  less and gives a new sound the answer of one from the same spot in the
+  last 100 ms: 17.6 thousand traces, 11 µs a frame, 0.16 ms in the slowest
+  0.1 % (see Performance, Sound system); the muffling then follows a move
+  a few frames later when many sounds are due at once (the mixer smooths
+  it over 80 ms anyway), and is up to 8 units stale. A spread of the
+  loops' first checks after a load would take the clusters off without
+  the budget (each sound still every 100 ms, at another moment); not done.
+  (2) Headphones at 48 kHz (`s_khz 48`): at the default 44.1 kHz the pull
+  request's baked HRTF filters (a 72 MB direction table built at every
+  sound start) fail its own check against the measurements, so every
+  voice designs its filters from the measurements on the mixer thread; at
+  48 kHz, the set's own rate, the check passes (median -30.6 dB, max -15.6
+  dB from the measured filters), the baked ones are used and the sound
+  start takes 0.61 s instead of 0.88; the headphone sound changes by that
+  difference.
+  Not done (no change to the sound): a lost device is closed and opened
+  again on the main thread (an `ma_context_init` and a device start, tens
+  of ms, once a second while it stays lost); the null device that a start
+  without a device falls back to is kept until `snd_restart`; a stream's
+  file is still opened on the main thread (a pk3 handle of its own: 0.04
+  to 0.14 ms for a dialog line or a plane's fly-by); a freed sound makes
+  the mixer's callback walk every voice (some hundred thousand checks at a
+  map load, on the device's thread); the HRTF set's file is 12.5 MB, 6.4
+  MB re-saved without its HDF5 chunks' padding (a changed file under
+  Apache 2.0, and git keeps the old one); the obstruction traces stay on
+  the main thread (the collision model's trace isn't thread-safe:
+  `cm.checkcount`). Untested: Windows (WASAPI; the package and installer
+  changes too), macOS (Core Audio, the `.app` layout), emscripten (no
+  threads: the streams decode on the main thread there). The device's
+  period on this machine's PulseAudio is 15 ms (5 ms x 3 requested); the
+  audio latency against OpenAL's was not measured.
 - The submit thread (see Performance, Submit thread): not measured on
   NVIDIA, where its gain was reported (a tester's input to display runs
   with `libinlat.so` and `INLAT_DISPLAY=1`, the thread on and off, would

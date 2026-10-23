@@ -376,18 +376,25 @@ static qboolean   s_deviceReady;
 static qboolean   s_nullDevice;
 static ma_channel s_map[OM_OUT_MAX];
 
-/* Added in Omaha: device loss recovery. */
-static std::atomic<bool> s_deviceLost{false};
-static std::atomic<bool> s_deliberateStop{false};
-static sndDeviceConfig_t s_cfg;
-static char              s_cfgDevice[256];
-static int               s_lastReopen;
+/*
+ * Added in Omaha: device loss recovery. Changed: a device is lost when its
+ * callbacks stopped (OM_DEVICE_STALL_MS), not on a stop notification: WASAPI
+ * notifies the stop of a reroute it restarts itself, and an unplugged device
+ * whose stop failed notifies nothing.
+ */
+#define OM_DEVICE_STALL_MS 500
+static std::atomic<unsigned> s_callbacks{0}; /* device callbacks so far */
+static unsigned              s_seenCallbacks;
+static int                   s_lastCallbackTime;
+static bool                  s_deviceLost;
+static sndDeviceConfig_t     s_cfg;
+static char                  s_cfgDevice[256];
+static int                   s_lastReopen;
 
 static int      s_sampleRate = 44100;
 static int      s_outCh      = 2;
 static qboolean s_hrtfOn;
 static int      s_layout; /* 0 stereo, 1 hrtf, 2 5.1, 3 quad */
-static std::atomic<bool> s_captureActive{false};
 
 static float s_lisPos[3];
 static float s_lisVel[3];
@@ -2502,30 +2509,6 @@ static void Om_Interleave(float *dst, int frames, int ch)
 	}
 }
 
-static void Om_Downmix(float *stereo, int frames)
-{
-	int i;
-	for (i = 0; i < frames; i++) {
-		float l, r;
-		if (s_layout == 3) {
-			l = s_bus[0][i] + s_bus[2][i];
-			r = s_bus[1][i] + s_bus[3][i];
-			l *= 0.7071f;
-			r *= 0.7071f;
-		} else if (s_layout == 2) {
-			l = s_bus[0][i] + 0.7071f * s_bus[2][i] + s_bus[4][i];
-			r = s_bus[1][i] + 0.7071f * s_bus[2][i] + s_bus[5][i];
-			l *= 0.7071f;
-			r *= 0.7071f;
-		} else {
-			l = s_bus[0][i];
-			r = s_bus[1][i];
-		}
-		stereo[i * 2 + 0] = l;
-		stereo[i * 2 + 1] = r;
-	}
-}
-
 /* Bit test: stays correct under -ffast-math, unlike isfinite. */
 static qboolean Om_Finite(float f)
 {
@@ -2584,23 +2567,18 @@ static void Om_Master(float *interleaved, int frames, int ch)
 	Om_ApplyMaster(interleaved, frames, ch);
 }
 
-static void Om_RenderLine(float *dst, int frames, int ch, qboolean stereoOut)
+static void Om_RenderLine(float *dst, int frames, int ch)
 {
 	Om_MixBlock(frames);
-	if (stereoOut) {
-		Om_Downmix(dst, frames);
-		Om_Master(dst, frames, 2);
-	} else {
-		Om_Interleave(dst, frames, ch);
-		Om_Master(dst, frames, ch);
-	}
+	Om_Interleave(dst, frames, ch);
+	Om_Master(dst, frames, ch);
 }
 
 /* HRTF filters take whole blocks; a short request is served from one stashed block. */
-static void Om_Mix(float *dst, int frames, int ch, qboolean stereoOut)
+static void Om_Mix(float *dst, int frames, int ch)
 {
 	OmFtzGuard ftz;
-	const int  oc = stereoOut ? 2 : ch;
+	const int  oc = ch;
 	if (s_hrtfOn) {
 		OmHrtf_BeginMix();
 	}
@@ -2608,7 +2586,7 @@ static void Om_Mix(float *dst, int frames, int ch, qboolean stereoOut)
 		int n;
 		if (!s_hrtfOn) {
 			n = frames < OM_LINE ? frames : OM_LINE;
-			Om_RenderLine(dst, n, ch, stereoOut);
+			Om_RenderLine(dst, n, ch);
 		} else if (s_stashLen > 0) {
 			n = frames < s_stashLen ? frames : s_stashLen;
 			memcpy(dst, s_stash + (size_t)s_stashPos * oc, sizeof(float) * (size_t)n * oc);
@@ -2619,9 +2597,9 @@ static void Om_Mix(float *dst, int frames, int ch, qboolean stereoOut)
 			if (n > OM_LINE) {
 				n = OM_LINE;
 			}
-			Om_RenderLine(dst, n, ch, stereoOut);
+			Om_RenderLine(dst, n, ch);
 		} else {
-			Om_RenderLine(s_stash, OM_HRTF_BLOCK, ch, stereoOut);
+			Om_RenderLine(s_stash, OM_HRTF_BLOCK, ch);
 			s_stashPos = 0;
 			s_stashLen = OM_HRTF_BLOCK;
 			continue;
@@ -3081,38 +3059,31 @@ static void Om_Push(const omCmd_t &c)
 }
 
 /* Holder of s_mixGate only. frames == 0 applies state without mixing (device down). */
-static void Om_MixGated(float *dst, int frames, int ch, qboolean stereoOut)
+static void Om_MixGated(float *dst, int frames, int ch)
 {
 	s_mixEpoch.fetch_add(1, std::memory_order_seq_cst);
 	Om_ReadListener();
 	Om_Drain();
 	Om_PollMail();
 	if (frames > 0) {
-		Om_Mix(dst, frames, ch, stereoOut);
+		Om_Mix(dst, frames, ch);
 	}
 	Om_PublishReturns();
 	s_mixEpoch.fetch_add(1, std::memory_order_seq_cst);
 }
 
-/* Changed in Omaha: takes no lock. A busy gate means the game thread is capturing; play silence. */
+/* Changed in Omaha: takes no lock. A busy gate means the game thread applies the commands of a stalled device; play silence. */
 static void Om_DataCallback(ma_device *dev, void *output, const void *input, ma_uint32 frameCount)
 {
 	(void)dev;
 	(void)input;
-	if (s_captureActive.load(std::memory_order_acquire) || s_mixGate.test_and_set(std::memory_order_acquire)) {
+	s_callbacks.fetch_add(1, std::memory_order_relaxed);
+	if (s_mixGate.test_and_set(std::memory_order_acquire)) {
 		memset(output, 0, sizeof(float) * s_outCh * (size_t)frameCount);
 		return;
 	}
-	Om_MixGated((float *)output, (int)frameCount, s_outCh, qfalse);
+	Om_MixGated((float *)output, (int)frameCount, s_outCh);
 	s_mixGate.clear(std::memory_order_release);
-}
-
-/* Added in Omaha: miniaudio thread. A stop nobody asked for is a lost device (unplugged USB, driver reset). */
-static void Om_DeviceNotify(const ma_device_notification *n)
-{
-	if (n && n->type == ma_device_notification_type_stopped && !s_deliberateStop.load(std::memory_order_acquire)) {
-		s_deviceLost.store(true, std::memory_order_release);
-	}
 }
 
 static void Om_LogDevices(void)
@@ -3148,19 +3119,60 @@ static qboolean Om_FindDevice(const char *name, ma_device_id *id)
 	return qfalse;
 }
 
+extern "C" char *Sys_BinaryPath(void);
+
+/*
+ * Changed: a file of the client's own main/ folder (where the build and the
+ * installs put the HRTF set), read when fs_basepath points at the game data
+ * elsewhere. Freed with free().
+ */
+static void *Om_ReadAppFile(const char *name, long *size)
+{
+	char  path[MAX_OSPATH];
+	FILE *f;
+	void *data = NULL;
+	long  n;
+
+	*size = 0;
+	Com_sprintf(path, sizeof(path), "%s%cmain%c%s", Sys_BinaryPath(), PATH_SEP, PATH_SEP, name);
+	f = Sys_FOpen(path, "rb");
+	if (!f) {
+		return NULL;
+	}
+	if (!fseek(f, 0, SEEK_END) && (n = ftell(f)) > 0 && !fseek(f, 0, SEEK_SET)) {
+		data = malloc((size_t)n);
+		if (data && fread(data, 1, (size_t)n, f) == (size_t)n) {
+			*size = n;
+		} else {
+			free(data);
+			data = NULL;
+		}
+	}
+	fclose(f);
+	return data;
+}
+
 static qboolean Om_LoadHrtf(void)
 {
 	cvar_t  *file = Cvar_Get("s_hrtf_file", SND_HRTF_DEFAULT_FILE, CVAR_ARCHIVE | CVAR_SOUND_LATCH);
 	void    *data = NULL;
 	long     size;
-	qboolean ok;
+	qboolean ok, appFile = qfalse;
 	size = FS_ReadFile(file->string, &data);
+	if (size <= 0 || !data) {
+		data    = Om_ReadAppFile(file->string, &size);
+		appFile = qtrue;
+	}
 	if (size <= 0 || !data) {
 		Com_Printf("Sound/omaha: HRTF file '%s' not found; headphones fall back to stereo.\n", file->string);
 		return qfalse;
 	}
 	ok = OmHrtf_Load(data, (int)size, s_sampleRate, file->string, 3 * OM_DIRECT_CAP);
-	FS_FreeFile(data);
+	if (appFile) {
+		free(data);
+	} else {
+		FS_FreeFile(data);
+	}
 	if (!ok) {
 		Com_Printf("Sound/omaha: headphones fall back to stereo.\n");
 	}
@@ -3251,7 +3263,6 @@ static qboolean Om_OpenDevice(const sndDeviceConfig_t *cfg, qboolean nullBackend
 	dcfg.playback.pDeviceID = haveId ? &devId : NULL;
 	dcfg.sampleRate         = (ma_uint32)s_sampleRate;
 	dcfg.dataCallback       = Om_DataCallback;
-	dcfg.notificationCallback = Om_DeviceNotify;
 	/* Changed in Omaha: s_period_ms x 3. HRTF stays on 128-sample blocks via the mix stash. */
 	dcfg.periodSizeInMilliseconds = (ma_uint32)Om_PeriodMs();
 	dcfg.periods            = 3;
@@ -3261,17 +3272,17 @@ static qboolean Om_OpenDevice(const sndDeviceConfig_t *cfg, qboolean nullBackend
 		s_contextReady = qfalse;
 		return qfalse;
 	}
-	s_deliberateStop.store(false, std::memory_order_release);
 	res = ma_device_start(&s_device);
 	if (res != MA_SUCCESS) {
-		s_deliberateStop.store(true, std::memory_order_release);
 		ma_device_uninit(&s_device);
 		ma_context_uninit(&s_context);
 		s_contextReady = qfalse;
 		return qfalse;
 	}
-	s_deviceReady = qtrue;
-	s_nullDevice  = nullBackend;
+	s_deviceReady      = qtrue;
+	s_nullDevice       = nullBackend;
+	s_seenCallbacks    = s_callbacks.load(std::memory_order_relaxed);
+	s_lastCallbackTime = Sys_Milliseconds();
 	return qtrue;
 }
 
@@ -3368,7 +3379,6 @@ static void Om_SnapshotCvars(void)
 /* Game thread. Stops the callback for good before the device goes. */
 static void Om_CloseDevice(void)
 {
-	s_deliberateStop.store(true, std::memory_order_release);
 	if (s_deviceReady) {
 		ma_device_uninit(&s_device);
 		s_deviceReady = qfalse;
@@ -3429,13 +3439,14 @@ static qboolean Om_Init(const sndDeviceConfig_t *cfg)
 	VectorClear(s_lisPosGame);
 	s_masterCur     = 1.f;
 	s_masterPrimed  = qfalse;
-	s_captureActive.store(false, std::memory_order_relaxed);
-	s_deviceLost.store(false, std::memory_order_relaxed);
+	s_deviceLost    = false;
 	s_lastReopen = 0;
 	if (!Om_OpenDevice(&s_cfg, qfalse)) {
-		Com_Printf("Sound/omaha: no playback device, using a null device.\n");
+		Com_Printf("Sound/omaha: no playback device, using a null device (snd_restart tries again).\n");
 		if (!Om_OpenDevice(&s_cfg, qtrue)) {
 			Com_Printf("Sound/omaha: null device failed\n");
+			OmHrtf_Unload();
+			s_hrtfOn = qfalse;
 			return qfalse;
 		}
 	}
@@ -3446,11 +3457,10 @@ static qboolean Om_Init(const sndDeviceConfig_t *cfg)
 static void Om_Shutdown(void)
 {
 	Om_CloseDevice();
-	s_captureActive.store(false, std::memory_order_relaxed);
 	Om_ResetState();
 	OmHrtf_Unload();
-	s_hrtfOn = qfalse;
-	s_deviceLost.store(false, std::memory_order_relaxed);
+	s_hrtfOn     = qfalse;
+	s_deviceLost = false;
 }
 
 /*
@@ -3461,11 +3471,11 @@ static void Om_RecoverDevice(void)
 {
 	sndDeviceConfig_t cfg;
 	const int         now = Sys_Milliseconds();
-	if (!s_deviceLost.load(std::memory_order_acquire) || (s_lastReopen && now - s_lastReopen < 1000)) {
+	if (!s_deviceLost || (s_lastReopen && now - s_lastReopen < 1000)) {
 		return;
 	}
 	s_lastReopen = now;
-	s_deviceLost.store(false, std::memory_order_release);
+	s_deviceLost = false;
 	Com_Printf("Sound/omaha: playback device stopped, reopening.\n");
 	Om_CloseDevice();
 	cfg = s_cfg;
@@ -3484,7 +3494,7 @@ static void Om_RecoverDevice(void)
 		return;
 	}
 	Com_Printf("Sound/omaha: could not reopen any device; retrying.\n");
-	s_deviceLost.store(true, std::memory_order_release);
+	s_deviceLost = true;
 }
 
 static omSoundId_t Om_CreateSound(void)
@@ -3638,6 +3648,14 @@ static void Om_VoiceCmd(int op, omVoiceId_t id, int state)
 		h->state.store(state);
 	}
 	Om_Push(c);
+	/*
+	 * Changed: the mixer frees the handle on this command; until it comes back
+	 * (Om_Reclaim) the game thread sends nothing more for the id, which a later
+	 * PlayVoice may get again.
+	 */
+	if (h && (op == OM_OP_DESTROY || (op == OM_OP_STOP && !h->stream))) {
+		h->used.store(0, std::memory_order_relaxed);
+	}
 }
 
 /* Changed in Omaha: params go to the handle mailbox; only the newest reaches the mixer. */
@@ -3803,80 +3821,33 @@ static void Om_GetListenerPosition(float out[3])
 	memcpy(out, s_lisPosGame, sizeof(s_lisPosGame));
 }
 
-/* Game thread. The capture path is kept but not hooked up yet. */
-static qboolean Om_BeginCapture(int sampleRate)
+/* Game thread: whether the device's callbacks stopped (a lost device, or one that never started). */
+static qboolean Om_DeviceStalled(int now, int ms)
 {
-	(void)sampleRate;
-	if (s_captureActive.load(std::memory_order_acquire)) {
-		return qtrue;
-	}
-	s_captureActive.store(true, std::memory_order_release);
-	/* Stopping waits for a running callback to return; after this the game thread mixes. */
-	if (s_deviceReady) {
-		s_deliberateStop.store(true, std::memory_order_release);
-		ma_device_stop(&s_device);
-	}
-	while (s_mixGate.test_and_set(std::memory_order_acquire)) {
-	}
-	Om_LimiterReset();
-	s_stashPos = 0;
-	s_stashLen = 0;
-	s_mixGate.clear(std::memory_order_release);
-	return qtrue;
-}
+	const unsigned n = s_callbacks.load(std::memory_order_relaxed);
 
-static int Om_RenderCapture(float *interleavedStereo, int frames)
-{
-	if (!s_captureActive.load(std::memory_order_acquire) || !interleavedStereo || frames <= 0) {
-		return 0;
+	if (n != s_seenCallbacks) {
+		s_seenCallbacks    = n;
+		s_lastCallbackTime = now;
+		return qfalse;
 	}
-	if (s_mixGate.test_and_set(std::memory_order_acquire)) {
-		return 0;
-	}
-	Om_MixGated(interleavedStereo, frames, 2, qtrue);
-	s_mixGate.clear(std::memory_order_release);
-	return frames;
-}
-
-static void Om_EndCapture(void)
-{
-	if (!s_captureActive.load(std::memory_order_acquire)) {
-		return;
-	}
-	while (s_mixGate.test_and_set(std::memory_order_acquire)) {
-	}
-	s_stashPos = 0;
-	s_stashLen = 0;
-	s_mixGate.clear(std::memory_order_release);
-	s_captureActive.store(false, std::memory_order_release);
-	if (s_deviceReady) {
-		s_deliberateStop.store(false, std::memory_order_release);
-		ma_device_start(&s_device);
-	}
-}
-
-static qboolean Om_CaptureActive(void)
-{
-	return s_captureActive.load(std::memory_order_acquire) ? qtrue : qfalse;
-}
-
-static int Om_CaptureSampleRate(void)
-{
-	return s_sampleRate;
+	return now - s_lastCallbackTime > ms ? qtrue : qfalse;
 }
 
 static void Om_Update(void)
 {
+	const int now = Sys_Milliseconds();
+
 	Om_SnapshotCvars();
 	Om_Reclaim();
 	Om_FlushSpill();
-	if (s_captureActive.load(std::memory_order_acquire)) {
-		return;
+	if (s_deviceReady && Om_DeviceStalled(now, OM_DEVICE_STALL_MS)) {
+		s_deviceLost = true;
 	}
 	Om_RecoverDevice();
 	/* No callback is running: apply commands here so handles and rings stay bounded. */
-	if (!s_deviceReady && !s_mixGate.test_and_set(std::memory_order_acquire)) {
-		Om_MixGated(NULL, 0, s_outCh, qfalse);
+	if ((!s_deviceReady || Om_DeviceStalled(now, 100)) && !s_mixGate.test_and_set(std::memory_order_acquire)) {
+		Om_MixGated(NULL, 0, s_outCh);
 		s_mixGate.clear(std::memory_order_release);
 		Om_Reclaim();
 	}
@@ -3907,11 +3878,6 @@ static const sndRenderer_t s_omahaRenderer = {
 	Om_SetListener,
 	Om_SetListenerGain,
 	Om_GetListenerPosition,
-	Om_BeginCapture,
-	Om_RenderCapture,
-	Om_EndCapture,
-	Om_CaptureActive,
-	Om_CaptureSampleRate,
 	Om_Update,
 };
 

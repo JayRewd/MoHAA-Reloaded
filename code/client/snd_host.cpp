@@ -125,28 +125,3 @@ void S_DumpInfo()
 {
     s_sndHost->DumpInfo();
 }
-
-qboolean S_Capture_Begin(void)
-{
-    return s_sndHost->CaptureBegin();
-}
-
-void S_Capture_End(void)
-{
-    s_sndHost->CaptureEnd();
-}
-
-void S_Capture_Frame(int aviFps)
-{
-    s_sndHost->CaptureFrame(aviFps);
-}
-
-qboolean S_Capture_Active(void)
-{
-    return s_sndHost->CaptureActive();
-}
-
-int S_Capture_SampleRate(void)
-{
-    return s_sndHost->CaptureSampleRate();
-}

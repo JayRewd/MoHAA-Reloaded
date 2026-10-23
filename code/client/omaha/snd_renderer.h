@@ -87,7 +87,6 @@ typedef struct {
 	int         sampleRate;
 	const char *deviceName;
 	int         speakerType; /* 0 stereo, 1 headphones, 2 5.1, 3 quad */
-	qboolean    wantCapture;
 } sndDeviceConfig_t;
 
 /* Bundled HRTF set for headphones. */
@@ -139,12 +138,6 @@ typedef struct sndRenderer_s {
 	void (*SetListenerGain)(float g);
 	void (*GetListenerPosition)(float out[3]);
 
-	qboolean (*BeginCapture)(int sampleRate);
-	int (*RenderCapture)(float *interleavedStereo, int frames);
-	void (*EndCapture)(void);
-	qboolean (*CaptureActive)(void);
-	int (*CaptureSampleRate)(void);
-
 	void (*Update)(void);
 } sndRenderer_t;
 
@@ -160,11 +153,6 @@ float S_Omaha_HfDuckMaxCutDb(void);
 float S_Omaha_HfDuckSidechainDb(void);
 float S_Omaha_HfDuckThreshDb(void);
 
-qboolean S_OMAHA_CaptureBegin(void);
-void     S_OMAHA_CaptureEnd(void);
-void     S_OMAHA_CaptureFrame(int aviFps);
-qboolean S_OMAHA_CaptureActive(void);
-int      S_OMAHA_CaptureSampleRate(void);
 
 #ifdef __cplusplus
 }

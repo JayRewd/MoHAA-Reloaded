@@ -38,6 +38,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #define MAX_MUSIC_SONGS 16
@@ -45,6 +47,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // Host-internal; the public sound API reaches these through s_sndHostOmaha.
 static void S_OMAHA_FadeSound(float fTime);
 static void S_OMAHA_PreloadSfx(sfx_t *pSfx);
+static sndCategory_t S_OMAHA_ResolveCategory(const sfx_t *pSfx, int iEntChannel);
+static qboolean S_OMAHA_TryPromoteCombatVo(sfx_t *pSfx);
 static float S_OMAHA_GetBaseVolume(void);
 static qboolean S_OMAHA_NeedFullRestart(void);
 static void S_OMAHA_PrintInfo(void);
@@ -131,6 +135,19 @@ static constexpr float OM_POCKET_EXPL_R    = 512.f;
 static constexpr float OM_POCKET_EXPL_TAU  = 120.f;
 /* Changed in Omaha: obstruction trace interval fixed (was s_obstruction_cal_time). */
 static constexpr int OM_OBSTRUCT_CAL_MS = 100;
+/*
+ * Added: with s_obstructionBudget N > 0 (default 0, the pull request's rule),
+ * at most N playing voices are traced again in a frame (3 rays each), the
+ * others that are due wait for the next frames; an answer holds while both
+ * ends moved OM_OBSTRUCT_REUSE_DIST or less (else only for the same points);
+ * a new sound takes the answer of one from the same spot in the last interval.
+ * It changes when the muffling follows a move, so it is the user's to turn on:
+ * o2match had up to 108 thousand traces in 15000 frames and 1 ms frames of
+ * them (the loops started at the load fell due in the same frames).
+ */
+static cvar_t         *s_obstructionBudget;
+static constexpr float OM_OBSTRUCT_REUSE_DIST = 8.f;
+static int             s_obstructBudget;
 /* Added in Omaha: how long a looping one-shot outlives an entity that left the snapshot. */
 static constexpr int OM_LOOP_STALE_ENT_MS = 1000;
 // Added in Omaha: stream queue target and the most chunks one update may queue.
@@ -311,13 +328,16 @@ static void S_OMAHA_ApplyFrequency(void)
         al_frequency = 11025;
         break;
     default:
-        Com_Printf("Sound: s_khz %d is not supported (use 11, 22 or 44); using 22\n", khz);
+        Com_Printf("Sound: s_khz %d is not supported (use 11, 22, 44 or 48); using 22\n", khz);
         // fall through
     case 22:
         al_frequency = 22050;
         break;
     case 44:
         al_frequency = 44100;
+        break;
+    case 48:
+        al_frequency = 48000;
         break;
     }
 }
@@ -396,6 +416,8 @@ qboolean S_OMAHA_Init()
     s_speaker_type           = Cvar_Get("s_speaker_type", "0", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     /* Added in Omaha: world-trace obstruction on the omaha mixer (1 = on). */
     s_obstruction = Cvar_Get("s_obstruction", "1", CVAR_ARCHIVE);
+    /* Added: at most this many obstruction traces of playing sounds a frame, 0 = every 100 ms each (see above). */
+    s_obstructionBudget = Cvar_Get("s_obstructionBudget", "0", CVAR_ARCHIVE);
     /* Added in Omaha: 1 = OM_MIX_* bus gains; 0 = unity (overlap/pocket unchanged). */
     s_mix         = Cvar_Get("s_mix", "1", CVAR_ARCHIVE);
     /* Added in Omaha: 1 = force-load pain/death VO for 3D/HRTF (0 = retail streamed 2D). */
@@ -415,7 +437,6 @@ qboolean S_OMAHA_Init()
     cfg.sampleRate  = (int)al_frequency;
     cfg.deviceName  = S_OMAHA_DeviceName();
     cfg.speakerType = s_speaker_type->integer;
-    cfg.wantCapture = qfalse;
 
     if (!S_Renderer_Init(&cfg)) {
         return qfalse;
@@ -588,7 +609,6 @@ void S_OMAHA_Shutdown()
     s_soundReady = false;
 
     S_AsyncStream_Shutdown(); // Added in Omaha
-    S_StreamThread_Shutdown();
 }
 
 /*
@@ -770,6 +790,66 @@ shared by aliases of different categories (puddle step vs grenade bounce,
 gear foley vs step) are decided by the path, independent of alias order.
 ==============
 */
+/*
+==============
+S_OMAHA_AliasFiles
+
+Changed: what the global aliases say about each file they play, from one walk
+of the alias list (again after each registration and when it changed): the
+category bits of the aliases and whether one is combat VO (OM_ALIAS_COMBAT_VO).
+Each sound's first play walked the whole list before (0.2 to 0.9 ms in that
+frame), and every start of a streamed sound that isn't combat VO did (0.3 to
+0.5 ms).
+==============
+*/
+#define OM_ALIAS_COMBAT_VO (1u << 31)
+
+static qboolean S_OMAHA_IsCombatVoAlias(const char *alias);
+
+static std::unordered_map<std::string, unsigned int> s_aliasFiles;
+static const AliasList_t                            *s_aliasFilesList;
+static const AliasListNode_t                        *s_aliasFilesHead;
+static int                                           s_aliasFilesCount = -1;
+
+static unsigned int S_OMAHA_AliasFiles(const char *sfxName)
+{
+    std::unordered_map<std::string, unsigned int> &files = s_aliasFiles;
+    AliasList_t                                   *list;
+    AliasListNode_t                               *node;
+    std::string                                    key;
+
+    list = Alias_GetGlobalList();
+    if (!list) {
+        return 0;
+    }
+
+    if (list != s_aliasFilesList || list->data_list != s_aliasFilesHead || list->num_in_list != s_aliasFilesCount) {
+        files.clear();
+        for (node = list->data_list; node; node = node->next) {
+            unsigned int bits = 1u << S_SoundCategory_ClassifyName(node->alias_name, node->real_name);
+
+            if (S_OMAHA_IsCombatVoAlias(node->alias_name)) {
+                bits |= OM_ALIAS_COMBAT_VO;
+            }
+            key = node->real_name;
+            for (char &c : key) {
+                c = (char)tolower((unsigned char)c);
+            }
+            files[key] |= bits;
+        }
+        s_aliasFilesList  = list;
+        s_aliasFilesHead  = list->data_list;
+        s_aliasFilesCount = list->num_in_list;
+    }
+
+    key = sfxName;
+    for (char &c : key) {
+        c = (char)tolower((unsigned char)c);
+    }
+    auto it = files.find(key);
+    return it != files.end() ? it->second : 0;
+}
+
 static sndCategory_t S_OMAHA_ClassifySfx(const char *sfxName)
 {
     // When aliases disagree and the path decides nothing, the first listed wins.
@@ -786,20 +866,12 @@ static sndCategory_t S_OMAHA_ClassifySfx(const char *sfxName)
         SND_CAT_NONE,
         SND_CAT_AUTO,
     };
-    AliasList_t     *list;
-    AliasListNode_t *node;
-    sndCategory_t    pathCat;
-    unsigned int     seen = 0;
-    size_t           i;
+    sndCategory_t pathCat;
+    unsigned int  seen = 0;
+    size_t        i;
 
-    list = Alias_GetGlobalList();
-    if (list && sfxName && sfxName[0]) {
-        for (node = list->data_list; node; node = node->next) {
-            if (Q_stricmp(node->real_name, sfxName)) {
-                continue;
-            }
-            seen |= 1u << S_SoundCategory_ClassifyName(node->alias_name, sfxName);
-        }
+    if (sfxName && sfxName[0]) {
+        seen = S_OMAHA_AliasFiles(sfxName) & ~OM_ALIAS_COMBAT_VO;
     }
 
     if (!seen) {
@@ -968,7 +1040,12 @@ static void S_OMAHA_Pitch()
 S_OMAHA_LoadMP3
 ==============
 */
-static bool S_OMAHA_LoadMP3(const char *_path, omaha_channel *chan)
+/*
+ * Changed: takes the stream channel it loads into. With omaha_channel *, GCC 15
+ * (-O2) devirtualized chan->stop() on &omaha.chan_mp3 to no target and
+ * dropped the whole function: playmp3 recursed until the stack overflowed.
+ */
+static bool S_OMAHA_LoadMP3(const char *_path, omaha_channel_two_d_stream *chan)
 {
     char          path[MAX_QPATH];
     snd_info_t    info;
@@ -1902,6 +1979,34 @@ static float S_OMAHA_AreaOcclusion(const vec3_t vListener, const vec3_t vOrigin)
 
 /*
 ==============
+S_OMAHA_SharedTrace
+
+A voice whose answer a new sound at the same spot can take: traced from
+within a few units of both ends in the last interval.
+==============
+*/
+static const omaha_channel *
+S_OMAHA_SharedTrace(const omaha_channel *pChannel, const vec3_t vListener, const vec3_t vOrigin, int iNow)
+{
+    int i;
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_POSITION_CHANNELS + omaha.channel_extra_count; i++) {
+        const omaha_channel *pOther = S_OMAHA_GetPosChannel(i);
+
+        if (!pOther || pOther == pChannel || !pOther->bTraceValid || pOther->voiceKind != 0
+            || iNow - pOther->iTraceTime >= OM_OBSTRUCT_CAL_MS) {
+            continue;
+        }
+        if (Distance(pOther->vTraceListener, vListener) <= OM_OBSTRUCT_REUSE_DIST
+            && Distance(pOther->vTraceOrigin, vOrigin) <= OM_OBSTRUCT_REUSE_DIST) {
+            return pOther;
+        }
+    }
+    return NULL;
+}
+
+/*
+==============
 S_OMAHA_UpdateObstruction
 
 Added in Omaha: obstruction target for one channel on the omaha mixer. bWorld
@@ -1924,11 +2029,10 @@ static void S_OMAHA_UpdateObstruction(
     pChannel->iSpatialRoute = iRoute;
 
     /*
-     * Added in Omaha: demo export uses server time so two captures take the
-     * same traces. Unchanged endpoints reuse the last fraction for up to a
+     * Added in Omaha: unchanged endpoints reuse the last fraction for up to a
      * second (movers can still close the ray after that).
      */
-    iNow = S_OMAHA_CaptureActive() ? cl.serverTime : cls.realtime;
+    iNow = cls.realtime;
 
     fObstruction = pChannel->fObstruction;
     fOcclusion   = pChannel->fOcclusion;
@@ -1937,17 +2041,42 @@ static void S_OMAHA_UpdateObstruction(
         fObstruction = 0;
         fOcclusion   = 0;
     } else if (bForce || iNow >= pChannel->iNextObstructionCheck) {
-        vec3_t vDelta;
-        float  fDist;
-        int    iInterval;
+        const omaha_channel *pShared = NULL;
+        const bool           bBudget = s_obstructionBudget && s_obstructionBudget->integer > 0;
+        vec3_t               vDelta;
+        float                fDist;
+        bool                 bReuse, bDefer = false;
 
-        iInterval = OM_OBSTRUCT_CAL_MS;
-        pChannel->iNextObstructionCheck = iNow + iInterval;
+        if (bBudget) {
+            bReuse = pChannel->bTraceValid && iNow - pChannel->iTraceTime < 1000
+                  && Distance(pChannel->vTraceListener, vListener) <= OM_OBSTRUCT_REUSE_DIST
+                  && Distance(pChannel->vTraceOrigin, vOrigin) <= OM_OBSTRUCT_REUSE_DIST;
+        } else {
+            bReuse = pChannel->bTraceValid && iNow - pChannel->iTraceTime < 1000
+                  && VectorCompare(pChannel->vTraceListener, vListener) && VectorCompare(pChannel->vTraceOrigin, vOrigin);
+        }
+        if (!bReuse && bBudget) {
+            if (bForce) {
+                pShared = S_OMAHA_SharedTrace(pChannel, vListener, vOrigin, iNow);
+            } else if (s_obstructBudget > 0) {
+                s_obstructBudget--;
+            } else {
+                bDefer = true;
+            }
+        }
 
-        if (pChannel->bTraceValid && iNow - pChannel->iTraceTime < 1000
-            && VectorCompare(pChannel->vTraceListener, vListener) && VectorCompare(pChannel->vTraceOrigin, vOrigin)) {
-            fObstruction = pChannel->fObstruction;
-            fOcclusion   = pChannel->fOcclusion;
+        if (bDefer) {
+            // still due: traced in a later frame, the mixer keeps the last answer
+        } else if (pShared) {
+            fObstruction = pShared->fObstruction;
+            fOcclusion   = pShared->fOcclusion;
+            VectorCopy(pShared->vTraceListener, pChannel->vTraceListener);
+            VectorCopy(pShared->vTraceOrigin, pChannel->vTraceOrigin);
+            pChannel->iTraceTime            = pShared->iTraceTime;
+            pChannel->bTraceValid           = qtrue;
+            pChannel->iNextObstructionCheck = iNow + OM_OBSTRUCT_CAL_MS;
+        } else if (bReuse) {
+            pChannel->iNextObstructionCheck = iNow + OM_OBSTRUCT_CAL_MS;
         } else {
             VectorSubtract(vOrigin, vListener, vDelta);
             fDist = VectorLength(vDelta);
@@ -1960,8 +2089,9 @@ static void S_OMAHA_UpdateObstruction(
             }
             VectorCopy(vListener, pChannel->vTraceListener);
             VectorCopy(vOrigin, pChannel->vTraceOrigin);
-            pChannel->iTraceTime  = iNow;
-            pChannel->bTraceValid = qtrue;
+            pChannel->iTraceTime            = iNow;
+            pChannel->bTraceValid           = qtrue;
+            pChannel->iNextObstructionCheck = iNow + OM_OBSTRUCT_CAL_MS;
         }
     }
 
@@ -2090,9 +2220,6 @@ Added in Omaha: path match, or any global alias that plays this file.
 */
 static qboolean S_OMAHA_IsCombatVoSfx(const sfx_t *pSfx)
 {
-    AliasList_t     *list;
-    AliasListNode_t *node;
-
     if (!pSfx || !pSfx->name[0]) {
         return qfalse;
     }
@@ -2100,19 +2227,7 @@ static qboolean S_OMAHA_IsCombatVoSfx(const sfx_t *pSfx)
         return qtrue;
     }
 
-    list = Alias_GetGlobalList();
-    if (!list) {
-        return qfalse;
-    }
-    for (node = list->data_list; node; node = node->next) {
-        if (Q_stricmp(node->real_name, pSfx->name)) {
-            continue;
-        }
-        if (S_OMAHA_IsCombatVoAlias(node->alias_name)) {
-            return qtrue;
-        }
-    }
-    return qfalse;
+    return (S_OMAHA_AliasFiles(pSfx->name) & OM_ALIAS_COMBAT_VO) ? qtrue : qfalse;
 }
 
 /*
@@ -3030,7 +3145,6 @@ void S_OMAHA_Respatialize(int iEntNum, const vec3_t vHeadPos, const vec3_t vAxis
     vec3_t          vEntOrigin;
     vec3_t          vEntVelocity;
     vec3_t          vDir;
-    vec3_t          vUp;
     vec3_t          vListenerOrigin;
     int             iPan;
     vec3_t          vTempAxis;
@@ -3062,6 +3176,7 @@ void S_OMAHA_Respatialize(int iEntNum, const vec3_t vHeadPos, const vec3_t vAxis
 
     VectorCopy(vAxis[1], vTempAxis);
     VectorCopy(vListenerOrigin, s_vObstructionListener); // Added in Omaha
+    s_obstructBudget = s_obstructionBudget ? s_obstructionBudget->integer : 0;
 
     fVolume = 1;
     iPan    = 64;
@@ -3211,7 +3326,6 @@ S_OMAHA_SpatializeStereoSound
 */
 static int S_OMAHA_SpatializeStereoSound(const vec3_t listener_origin, const vec3_t listener_left, const vec3_t origin)
 {
-    float  lscale, rscale;
     vec3_t source_vec;
     float  pan;
 
@@ -3355,6 +3469,9 @@ void S_OMAHA_Update()
             omaha.channel_extra[i]->update();
         }
     }
+
+    // the streams released while the worker still read them
+    S_AsyncStream_Update();
 }
 
 /*
@@ -4030,9 +4147,30 @@ plays it. Not for the streamed sounds and the mp3 files, which are decoded
 on their first play
 ==============
 */
+static int s_preloadSequence;
+
 static void S_OMAHA_PreloadSfx(sfx_t *pSfx)
 {
-    if (!s_soundReady || !g_sndRenderer || !pSfx->data || !pSfx->length || pSfx->buffer) {
+    if (!s_soundReady || !g_sndRenderer) {
+        return;
+    }
+
+    if (pSfx->registration_sequence > s_preloadSequence) {
+        // a new registration: the aliases are read again, every sound classified again
+        s_preloadSequence = pSfx->registration_sequence;
+        s_aliasFilesCount = -1;
+        memset(s_sfxCategory, 0, sizeof(s_sfxCategory));
+    }
+
+    // classified now (one walk of the aliases for all), not on its first play
+    S_OMAHA_ResolveCategory(pSfx, CHAN_AUTO);
+
+    // pain/death VO loaded for 3D now, not on its first play
+    if ((pSfx->iFlags & SFX_FLAG_STREAMED) && !(pSfx->iFlags & SFX_FLAG_DEFAULT_SOUND)) {
+        S_OMAHA_TryPromoteCombatVo(pSfx);
+    }
+
+    if (!pSfx->data || !pSfx->length || pSfx->buffer) {
         return;
     }
 
@@ -4358,7 +4496,7 @@ void MUSIC_FlushCaches()
     }
     music_textName[0] = 0;
 
-    S_StreamThread_Flush();
+    S_StreamMemory_Flush();
 }
 
 /*
@@ -4511,8 +4649,8 @@ qboolean S_OMAHA_MUSIC_LoadSoundtrackFile(const char *filename)
             music_songs[music_numsongs].mood_num    = MusicMood_NameToNum(alias);
             music_numsongs++;
 
-            // read into memory and scanned on the stream thread from now on
-            S_StreamThread_Prefetch(psong->path);
+            // read into memory and scanned (s_soundtrackCache)
+            S_StreamMemory_Prefetch(psong->path);
         }
     }
 
@@ -4960,7 +5098,6 @@ qboolean S_OMAHA_MUSIC_PlaySong(const char *alias)
     int                          channel_to_play_on;
     int                          fading_song;
     omaha_channel_two_d_stream *song_channel;
-    unsigned int                 loop_start;
     int                          rate;
 
     fading_song = 0;
@@ -5273,11 +5410,9 @@ S_OMAHA_TriggeredMusic_SetupHandle
 */
 void S_OMAHA_TriggeredMusic_SetupHandle(const char *pszName, int iLoopCount, int iOffset, qboolean autostart)
 {
-    char            *pszFilename;
     const char      *pszRealName;
     float            fVolume     = 1.0;
     AliasListNode_t *pSoundAlias = NULL;
-    void            *stream      = NULL;
 
     if (!s_bSoundStarted) {
         return;
@@ -5303,8 +5438,6 @@ void S_OMAHA_TriggeredMusic_SetupHandle(const char *pszName, int iLoopCount, int
     } else if (pSoundAlias) {
         fVolume = random() * pSoundAlias->volumeMod + pSoundAlias->volume;
     }
-
-    pszFilename = FS_BuildOSPath(Cvar_VariableString("fs_basepath"), FS_Gamedir(), pszRealName);
 
     if (!omaha.chan_trig_music.queue_stream(pszRealName)) {
         /* Fixed in Omaha: release the old renderer voice before re-creating the channel. */
@@ -5639,27 +5772,27 @@ void omaha_channel_two_d_stream::attachAsync()
     }
 
     chunkBytes = S_StreamChunkBytes(stream, MAX_BUFFER_SAMPLES * 2 * 2);
-    asyncJob   = S_AsyncStream_Attach(stream, chunkBytes);
+    asyncJob   = S_AsyncStream_Attach(stream, chunkBytes, 0);
 }
 
 /*
 ==============
-omaha_channel_two_d_stream::detachAsync
-Added in Omaha: take streamHandle back from the worker. Returns decoded bytes that
-were never queued (the codec position is that far past streamNextOffset).
+omaha_channel_two_d_stream::close_stream
+
+Changed: the codec stream is closed, through the worker when it has it: once
+its read is done, never waited for (detaching waited for the worker's decode,
+which every song start, seek and loop end did in the frame).
 ==============
 */
-unsigned int omaha_channel_two_d_stream::detachAsync()
+void omaha_channel_two_d_stream::close_stream()
 {
-    unsigned int discarded;
-
-    if (!asyncJob) {
-        return 0;
+    if (asyncJob) {
+        S_AsyncStream_Release(asyncJob);
+        asyncJob = NULL;
+    } else if (streamHandle) {
+        S_CodecCloseStream((snd_stream_t *)streamHandle);
     }
-
-    discarded = S_AsyncStream_Detach(asyncJob);
-    asyncJob  = NULL;
-    return discarded;
+    streamHandle = NULL;
 }
 
 /*
@@ -5789,7 +5922,7 @@ omaha_channel_two_d_stream::~omaha_channel_two_d_stream()
 omaha_channel_two_d_stream::update
 ==============
 */
-int omaha_channel_two_d_stream::fetchChunk(char *rawData, unsigned int cap, bool mayWait)
+int omaha_channel_two_d_stream::fetchChunk(char *rawData, unsigned int cap)
 {
     snd_stream_t *stream = (snd_stream_t *)streamHandle;
     unsigned int  bytesRead;
@@ -5802,12 +5935,11 @@ int omaha_channel_two_d_stream::fetchChunk(char *rawData, unsigned int cap, bool
     /* Changed in Omaha: take a chunk the worker decoded ahead; decode inline only
      * when async is off. End of stream returns the handle for the loop logic. */
     if (asyncJob) {
-        got = S_AsyncStream_Pop(asyncJob, rawData, cap, mayWait ? qtrue : qfalse);
+        got = S_AsyncStream_Pop(asyncJob, rawData, cap);
         if (!got) {
             return 0;
         }
         if (got < 0) {
-            detachAsync();
             got = 0;
         }
     } else {
@@ -5817,8 +5949,7 @@ int omaha_channel_two_d_stream::fetchChunk(char *rawData, unsigned int cap, bool
     streamNextOffset += bytesRead;
 
     if (!bytesRead) {
-        S_CodecCloseStream(stream);
-        streamHandle = NULL;
+        close_stream();
 
         sampleLooped++;
         if (sampleLoopCount && sampleLooped >= sampleLoopCount) {
@@ -5898,9 +6029,12 @@ void omaha_channel_two_d_stream::update()
     }
 
     /*
-     * Changed in Omaha: top the queue up to about OM_STREAM_AHEAD_MS of audio. Only the
-     * first chunk may wait for the worker, and only when the voice is about to run dry.
+     * Changed in Omaha: top the queue up to about OM_STREAM_AHEAD_MS of audio.
+     * Changed: what the worker hasn't decoded yet is queued in a later frame (the
+     * first chunk waited for it when the voice was about to run dry, also right
+     * after a start); a stream opened by queue_stream goes to the worker here.
      */
+    attachAsync();
     bitsPerSample = getBitsPerSample();
     targetBytes   = (unsigned int)((unsigned long long)iBaseRate * bitsPerSample / 8 * OM_STREAM_AHEAD_MS / 1000);
     for (chunks = 0; chunks < OM_STREAM_REFILL_MAX; chunks++) {
@@ -5911,7 +6045,7 @@ void omaha_channel_two_d_stream::update()
             break;
         }
 
-        fetched = fetchChunk(rawData, sizeof(rawData), chunks == 0 && numQueuedBuffers <= 1);
+        fetched = fetchChunk(rawData, sizeof(rawData));
         if (fetched == -2) {
             clear_stream();
             return;
@@ -6038,10 +6172,9 @@ void omaha_channel_two_d_stream::set_sample_offset(U32 offset)
 
     /* Added in Omaha: decoded-ahead data moved the codec past streamNextOffset;
      * reopen so the forward read below starts from a known position. */
-    if (detachAsync() && stream) {
-        S_CodecCloseStream(stream);
-        streamHandle = NULL;
-        stream       = NULL;
+    if (asyncJob) {
+        close_stream();
+        stream = NULL;
     }
 
     if (stream) {
@@ -6160,7 +6293,8 @@ bool omaha_channel_two_d_stream::queue_stream(const char *fileName)
     streamNextOffset = bytesRead;
     queueChunk(rawData, bytesRead, stream);
     streaming = true;
-    attachAsync();
+    // Changed: handed to the worker by the first update, after the start offset
+    // (set_sample_offset), so the offset is read on without opening the file again
     return true;
 }
 
@@ -6171,7 +6305,7 @@ omaha_channel_two_d_stream::clear_stream
 */
 void omaha_channel_two_d_stream::clear_stream()
 {
-    detachAsync(); // Added in Omaha
+    close_stream(); // Changed: also when nothing streamed (no handle then)
 
     /* Changed in Omaha: the voice goes even when nothing streamed, or it would leak. */
     if (voiceId != OM_VOICE_NONE && g_sndRenderer) {
@@ -6184,12 +6318,7 @@ void omaha_channel_two_d_stream::clear_stream()
         return;
     }
 
-    if (streamHandle) {
-        S_CodecCloseStream((snd_stream_t *)streamHandle);
-    }
-
     fileName[0]  = 0;
-    streamHandle = NULL;
 
     currentBuf       = 0;
     streamNextOffset = 0;
@@ -6300,10 +6429,4 @@ const sndHost_t s_sndHostOmaha = {
     S_OMAHA_NeedFullRestart,
     S_OMAHA_PrintInfo,
     S_OMAHA_DumpInfo,
-
-    S_OMAHA_CaptureBegin,
-    S_OMAHA_CaptureEnd,
-    S_OMAHA_CaptureFrame,
-    S_OMAHA_CaptureActive,
-    S_OMAHA_CaptureSampleRate,
 };
