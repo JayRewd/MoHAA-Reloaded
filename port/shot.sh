@@ -82,7 +82,8 @@ fi
 if [ "${1:-}" = regress ]; then
 	# The six fixed views on Metal only (GL1's side never changes), diffed against GL1 per view and, capture by
 	# capture, against a saved Metal baseline: after a change meant to be pixel-identical, only the views that vary
-	# from run to run differ (dm6 view 8, dm5's snow, dm6fx views 4-7, m2l1 view 0 by up to ~17 pixels).
+	# from run to run differ (dm6 view 8, dm5's snow, dm6fx views 4-7, m2l1 view 0 by up to ~17 pixels; now and then
+	# m2l1 views 3-5 by one level in their fading "Game Saved" line, under the compass).
 	# Engine args after the baseline dir go to every Metal run (e.g. +set r_metalStaticWorld 2).
 	BASE="$OUT/${2:-base}"
 	EXTRA=("${@:3}")
