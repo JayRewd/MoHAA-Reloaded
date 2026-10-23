@@ -1196,35 +1196,55 @@ UIFloatingDMConsole *getNewDMConsole()
 
 /*
 ====================
+getCompassRectangle
+
+The compass hud's frame, which the message boxes keep clear of. Before the hud is loaded, upstream's estimate
+from ui_compass_scale (too narrow below 1280 pixels wide: the chat started under the compass)
+====================
+*/
+static UIRect2D getCompassRectangle(void)
+{
+    UIWidget *compass = hud_compass ? hud_compass->GetContainerWidget() : NULL;
+
+    if (compass && compass->getFrame().size.width > 0 && compass->getFrame().size.height > 0) {
+        return compass->getFrame();
+    }
+
+    return UIRect2D(
+        0,
+        0,
+        getScreenWidth() * uid.scaleRes[0] * ui_compass_scale->value * 0.2f,
+        uid.vidHeight * ui_compass_scale->value * 0.25f
+    );
+}
+
+/*
+====================
 getDefaultGMBoxRectangle
+
+The game messages: below the compass and the chat
 ====================
 */
 static UIRect2D getDefaultGMBoxRectangle(void)
 {
-    UIRect2D dmRect = getDefaultDMBoxRectangle();
-    float    height = uid.vidHeight * ui_compass_scale->value * 0.25f;
-    float    y      = dmRect.size.height + dmRect.pos.y;
+    float y = Q_max(getCompassRectangle().getMaxY(), getDefaultDMBoxRectangle().getMaxY());
 
-    if (height < y) {
-        height = y;
-    }
-
-    return UIRect2D(20.0f, height, (getScreenWidth() - 20) * uid.scaleRes[0], 128.0f * uid.scaleRes[1]);
+    return UIRect2D(20.0f * uid.scaleRes[0], y, uid.vidWidth - 20.0f * uid.scaleRes[0], 128.0f * uid.scaleRes[1]);
 }
 
 /*
 ====================
 getDefaultDMBoxRectangle
+
+The chat: right of the compass, 192 pixels short of the right edge
 ====================
 */
 static UIRect2D getDefaultDMBoxRectangle(void)
 {
-    float width;
-    float screenWidth = getScreenWidth();
+    float x     = getCompassRectangle().getMaxX();
+    float width = uid.vidWidth - x - 192.0f * uid.scaleRes[0];
 
-    width = screenWidth * uid.scaleRes[0] * ui_compass_scale->value * 0.2f;
-
-    return UIRect2D(width, 0, (screenWidth - (width + 192.0f)) * uid.scaleRes[0], 120.0f * uid.scaleRes[1]);
+    return UIRect2D(x, 0, Q_max(width, 0.0f), 120.0f * uid.scaleRes[1]);
 }
 
 /*
@@ -5506,6 +5526,15 @@ void CL_InitializeUI(void)
 
     // realign menus
     menuManager.RealignMenus();
+
+    // the message boxes, made before the compass hud was loaded
+    if (gmbox) {
+        gmbox->setFrame(getDefaultGMBoxRectangle());
+    }
+
+    if (dmbox) {
+        dmbox->setFrame(getDefaultDMBoxRectangle());
+    }
 
     // clear input
     CL_ClearButtons();
