@@ -1,8 +1,8 @@
-# OpenMoHAA for Apple Silicon 1.0.0: a native Metal port
+# MoHAA Reloaded 1.0.0: native Metal for Apple Silicon
 
 > Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0), from 08f19e40, replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
 
-The first release of [pstngh/openmohaa-metal](https://github.com/pstngh/openmohaa-metal), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
+The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstngh/MoHAA-Reloaded) (its `metal` branch), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
 **You need** an Apple Silicon Mac (M1 or later) with macOS 26 or later, and your own retail game data (`main/` with `Pak0.pk3` to `Pak6.pk3`, plus `mainta/` and `maintt/` for the expansions). The game data is not included.
 
@@ -54,7 +54,7 @@ seta r_swapInterval 0
 seta in_mouseRaw 1
 ```
 
-The README's [Settings that matter here](https://github.com/pstngh/openmohaa-metal#settings-that-matter-here) explains each one and the display modes.
+The README's [Settings that matter here](https://github.com/pstngh/MoHAA-Reloaded#settings-that-matter-here) explains each one and the display modes.
 
 ## Online
 
@@ -75,7 +75,7 @@ On fixed test views across multiplayer, objective and single-player maps, it mat
 
 ## Source and licenses
 
-Built from the `main` branch at the tagged commit, with OpenMoHAA 0.83.0 (upstream `a2f34019`, 2026-04-23, still upstream's latest) as its base. The full record of the port (every decision and measurement) is [`docs/METAL_PORT_PLAN.md`](https://github.com/pstngh/openmohaa-metal/blob/main/docs/METAL_PORT_PLAN.md). OpenMoHAA is GPL-2.0 (`COPYING.txt` in the zip); the bundled libraries' licenses are in the zip's `licenses/`. This software is based in part on the work of the Independent JPEG Group.
+Built from the `metal` branch at the tagged commit, with OpenMoHAA 0.83.0 (upstream `a2f34019`, 2026-04-23, still upstream's latest) as its base. The full record of the port (every decision and measurement) is [`docs/METAL_PORT_PLAN.md`](https://github.com/pstngh/MoHAA-Reloaded/blob/metal/docs/METAL_PORT_PLAN.md). OpenMoHAA is GPL-2.0 (`COPYING.txt` in the zip); the bundled libraries' licenses are in the zip's `licenses/`. This software is based in part on the work of the Independent JPEG Group.
 
 Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose ideas were measured and re-implemented here, and to notuern for the sub-grid.
 

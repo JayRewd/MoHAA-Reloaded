@@ -10,7 +10,7 @@ name: "macOS Metal build"
 
 on:
   push:
-    branches: [main]
+    branches: [metal]
   workflow_dispatch:
 
 permissions:
