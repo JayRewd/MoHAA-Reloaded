@@ -173,9 +173,10 @@ Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They sa
 ## Not done, parked and known issues
 
 - **Parked:** a still black window over the other displays in exclusive fullscreen, so that mode would match the Space's latency.
-- **Not done:** a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
+- **Not done:** a frame-cap suggestion from frame-time percentiles, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
+- **macOS Game Mode** turns on in fullscreen (the app declares itself a game). Measured on against off: the same input latency and average frame time; with it on, the slowest 1% of frames took ~0.1–0.2 ms longer on the benchmark.
 - **Removed on purpose:** gamepads and joysticks, the `openmohaa://` link handler, the update checker.
-- **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the terrain's own per-vertex work). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
+- **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the rest of the terrain's tessellation work, skinning the few multi-pass character shaders on the GPU). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
 
 The full record (every decision, measurement and session) is [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md). This work is on `main` (named `metal` until 2026-10-20); upstream's own history is at [openmoh/openmohaa](https://github.com/openmoh/openmohaa).
 
