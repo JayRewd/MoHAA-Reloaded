@@ -1451,6 +1451,20 @@ void Com_Setenv_f(void)
 
 /*
 ==================
+Com_ExecuteConfigFile
+
+The player's config, configs/<config>: the file Com_WriteConfiguration writes, read from the home or the
+game folder, never from a pk3 (FS_FOpenFileRead). Executed at startup and again after the game directory
+changes (Com_GameRestart, FS_Restart)
+==================
+*/
+void Com_ExecuteConfigFile(cbufExec_t exec_when)
+{
+	Cbuf_ExecuteText(exec_when, va("exec \"configs/%s\"\n", config ? config->string : Q3CONFIG_CFG));
+}
+
+/*
+==================
 Com_ExecuteCfg
 
 For controlling environment variables
@@ -1465,7 +1479,7 @@ void Com_ExecuteCfg(void)
 	if(!Com_SafeMode())
 	{
 		// skip the q3config.cfg and autoexec.cfg if "safe" is on the command line
-		Cbuf_ExecuteText(EXEC_NOW, "exec " Q3CONFIG_CFG "\n");
+		Com_ExecuteConfigFile(EXEC_NOW);
 		Cbuf_Execute(0);
 		Cbuf_ExecuteText(EXEC_NOW, "exec autoexec.cfg\n");
 		Cbuf_Execute(0);
@@ -1803,7 +1817,7 @@ void Com_Init( char *commandLine ) {
 	// override anything from the config files with command line args
 	Com_StartupVariable( "config" );
 
-	config = Cvar_Get( "config", configname, 0 );
+	config = Cvar_Get( "config", configname, CVAR_NORESTART );
 
 	if( strlen( config->string ) > 1 )
 	{
@@ -1840,7 +1854,7 @@ void Com_Init( char *commandLine ) {
 			//FS_WriteFile(va("configs/%s", configname), "", 0);
 		}
 
-		Cbuf_AddText( va( "exec configs/%s\n", configname ) );
+		Com_ExecuteConfigFile( EXEC_APPEND );
 	} else if ( Com_ConfigExists( "unnamedsoldier.cfg" ) ) {
 		Com_Printf( "The config file '%s' doesn't exist, using unnamedsoldier.cfg as a template\n", configname );
 		// Grab the config file from the original game

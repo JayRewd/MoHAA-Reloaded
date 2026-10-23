@@ -1610,10 +1610,11 @@ long FS_FOpenFileRead(const char *filename, fileHandle_t *file, qboolean uniqueF
 	if(!fs_searchpaths)
 		Com_Error(ERR_FATAL, "Filesystem call made without initialization");
 
-	isLocalConfig = !strcmp(filename, "autoexec.cfg") || !strcmp(filename, Q3CONFIG_CFG);
+	isLocalConfig = !Q_stricmp(filename, "autoexec.cfg")
+		|| (!Q_stricmpn(filename, "configs", 7) && (filename[7] == '/' || filename[7] == '\\'));
 	for(search = fs_searchpaths; search; search = search->next)
 	{
-		// autoexec.cfg and q3config.cfg can only be loaded outside of pk3 files.
+		// autoexec.cfg and the configs (configs/omconfig.cfg) can only be loaded outside of pk3 files.
 		if (isLocalConfig && search->pack)
 			continue;
 
@@ -4201,10 +4202,11 @@ void FS_Restart( int checksumFeed ) {
 		Com_Error( ERR_FATAL, "Couldn't load default.cfg" );
 	}
 
-	if ( Q_stricmp(fs_gamedirvar->string, lastValidGame) ) {
+	// Com_GameRestart executes it itself, after Cvar_Restart and default.cfg
+	if ( Q_stricmp(fs_gamedirvar->string, lastValidGame) && !com_gameRestarting ) {
 		// skip the q3config.cfg if "safe" is on the command line
 		if ( !Com_SafeMode() ) {
-			Cbuf_AddText ("exec " Q3CONFIG_CFG "\n");
+			Com_ExecuteConfigFile( EXEC_APPEND );
 		}
 	}
 
