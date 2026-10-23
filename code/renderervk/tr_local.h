@@ -1178,6 +1178,8 @@ typedef struct {
 	unsigned short* lightGridOffsets;
 	byte		*lightGridData;
 	byte        lightGridPalette[768];
+	struct lightGridCell_s	*lightGridCells;	// decoded cells, see R_InitLightGridCaches
+	struct lightGridPoint_s	*lightGridPoints;	// lookups by the point's bits
 
     int numTerraPatches;
     cTerraPatchUnpacked_t* terraPatches;
@@ -2273,6 +2275,7 @@ LIGHTS
 */
 
 dlightMask_t R_DlightBmodel( bmodel_t *bmodel );
+void R_InitLightGridCaches(world_t *w);
 void R_GetLightingGridValue(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingGridValueFast(const vec3_t vPos, vec3_t vLight);
 void R_GetLightingForDecal(vec3_t vLight, const vec3_t vFacing, const vec3_t vOrigin);

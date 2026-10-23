@@ -2058,6 +2058,8 @@ void R_LoadLightGrid(gamelump_t* plPal, gamelump_t* plOffsets, gamelump_t* plDat
 
     w->lightGridData = ri.Hunk_Alloc(plData->length, h_dontcare);
     Com_Memcpy(w->lightGridData, plData->buffer, plData->length);
+
+    R_InitLightGridCaches(w);
 }
 
 /*

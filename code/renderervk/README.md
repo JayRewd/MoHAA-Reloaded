@@ -348,6 +348,17 @@ below are done.
   µs), their slow frames' percentiles too, 13 µs less GPU time a frame, the
   input to present time the same or lower; the same frames to the bit,
   merged and separate draws of one frame too (see Performance, 2D batches)
+- light grid lookups (2026-10-22, from JayRewd's b26d8a67): the samples of
+  the last 1024 light grid cells looked up, which every lookup decoded from
+  4 run-length encoded columns, are kept, and so are the results of the
+  last 1024 points by the point's exact bits (cgame lights every piece of
+  debris and every smoke sprite with a lookup, and debris mostly lies
+  still), in tables allocated with the world (his were dropped when the
+  grid's address changed, which the next map's grid can reuse). 13 to 35 ns
+  less per smoke or debris lookup, 8 to 12 µs less in the frames with 200
+  or more of them, the 99th and 99.9th percentiles of cgame and the
+  renderer 2 to 13 µs lower in three matches (0.3 to 1.6 %); the same
+  results to the bit (see Performance, Light grid lookups)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -857,6 +868,14 @@ Test content:
   masked. What is drawn as one batch in a match, the compass's triangles and
   the kill feed's lines, was compared within one run instead (see the 2D
   batches in Comparing).
+- Debris and smoke (2026-10-22): `smoke` puts emitters on the square of
+  `dm/mohdm1` (a single-player game, so `spawn` and `script` work) that
+  keep throwing pipes and beams, which bounce and come to rest, and
+  volumetric smoke, in front of the camera: cgame lights every piece of
+  debris with a light grid lookup every frame (`R_GetLightingForSmoke`),
+  about 130 a frame in `sm_front`, more than the smokiest matches average.
+  For timing (`perf.py`, see Performance, Light grid lookups); its content
+  is random, the debris lands elsewhere in every run.
 - Debug drawing: `mohdm1_debug`. `r_showtris` and `r_shownormals` only draw
   with `developer 1` (`r_developer`), which is why they seemed to show
   nothing. The game's debug lines (`sv_showbboxes`, camera paths shown with
@@ -1571,6 +1590,26 @@ in every menu but the 17 of `mn_video`, the views over `m1_spawn` 5.2 to 7.4
 match can't be paused, and GL1's screenshot reads a frame from two or three
 swaps earlier, see Deterministic 3D views). `renderer_vulkan.so` imports no
 GL or Vulkan symbol and exports only `GetRefAPI`.
+
+The light grid lookups (2026-10-22, see Performance, Light grid lookups),
+against the build before (`run.sh`, `tgadiff.py`, 640x480, `r_vkValidation
+1`): on the 46 view lists (198 views) 167 give the same frames to the bit,
+the other 31 are in the lists with random content or run-to-run noise named
+above (`m1l1`, `m1l2a`, `m1l3a`, `m2l1_skyportal`, `m3l1a`, `m4l1_fog`,
+`m5l1a`, `m5l2a`, `m5l3`, `m6l1a`, `mohdm5_fog`, and ±1 in `d7_arch` of
+`mohdm7`); the same 167 as the 2D batches gave. The new list `smoke` (debris and smoke emitters in
+front of the camera on `dm/mohdm1`, for timing: see Performance, Light grid
+lookups) has random content: its debris lands elsewhere in every run, and
+two runs of one build differ in 99.6 % of the pixels. A verification build
+that ran the old function next to every lookup and compared the results'
+bits found no difference in 4 matches (`o2match`, `o4match` and two
+`dm/mohdm6` matches with the most debris; 5.74 million lookups, 4.09
+million of them answered by the table of points). No validation message in
+these runs, nor with synchronization validation (`r_vkValidation 2`) in a
+session that loads `obj/obj_team4`, runs `vid_restart`, loads `dm/mohdm6`
+and `obj/obj_team4` again (the tables made again with each world) and
+plays a `dm/mohdm6` match. `renderer_vulkan.so` imports no GL or Vulkan
+symbol and exports only `GetRefAPI`.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -4612,6 +4651,84 @@ frame, in every run (the runs within 0.003 ms of each other). The final build
 differs from the one timed and checked here in `RE_Shutdown` alone, which
 forgets an open batch (`objdump -d` per function, addresses left out).
 
+Light grid lookups (2026-10-22, Plan 27; see Implementation notes, Light
+grid lookups). JayRewd's b26d8a67 kept the light grid cells' decoded
+samples and the smoke's lookups; he measured 3.8 and 3.5 % off the 99th
+percentile frame time in a 22-player fight in the middle of `dm/mohdm6`
+(5 runs after a warm-up run, on his hardware and settings). Where the
+lookups are here, from a counting build (every caller's calls and CPU
+cycles per frame, and the two tables simulated) over 20 matches at 640x480
+(14 `obj` and 6 `dm` maps, 40000 frames each, `fixedtime 16`): 13 to 66
+lookups a frame on average, 126 to 482 in the 99th percentile frame, at
+most 898; 81 to 125 ns each (the lighting spheres' 120 to 165); 1.4 to 6.1
+µs a frame, 0.2 to 1.3 % of the frame time, 11 to 34 µs in the 99th
+percentile frame (one `obj/obj_team3` match has 3 lookups a frame, 0.3 µs).
+60 to 85 % of them are
+cgame's `R_GetLightingForSmoke` (debris and smoke), most of the rest the
+entities' lighting spheres. The smokiest are the `dm/mohdm6` matches
+(`115335d7`: 50 smoke lookups a frame on average, 472 at the 99th
+percentile, 599 at most). The tables would have found 92 to 96 % of the
+cells and 71 to 84 % of the points looked up (JayRewd's point hash within
+0.6 % of a good one).
+
+Results (idle machine: other processes at most 1.3 CPUs, no Plex
+transcoding; the build before (`base`, 6256ed41) and this one (`new`)
+interleaved, medians of 5 runs, 640x480 uncapped; 15000 frames of
+`o2match` and of the two smokiest `dm/mohdm6` matches, `d6a` (`164c7b5c`)
+and `d6b` (`115335d7`), and 5000 of `sm_front` (`views/smoke.txt`, about
+130 smoke lookups a frame); cgame's time per frame from `renderer_timed.so`'s
+frame files (the part of the frame between `BeginFrame` and `EndFrame`
+outside the exports it times; `R_GetLightingForSmoke`, which cgame calls
+through the renderer's export table, isn't one of them, so it counts as
+cgame), and each frame's median over the runs of cgame
+and the renderer ("content", see Frame spikes) for the percentiles; ms,
+cgame and content in µs):
+
+| view | frame time base / new (runs) | renderer base / new | cgame base / new | content mean, p99, p99.9: base / new |
+| --- | --- | --- | --- | --- |
+| `o2match` | 0.424 (0.411 to 0.426) / 0.413 (0.409 to 0.430) | 0.298 / 0.290 | 97.3 / 94.7 | 391, 783, 971 / 386, 776, 959 |
+| `d6a` | 0.432 (0.426 to 0.444) / 0.439 (0.426 to 0.440) | 0.310 / 0.317 | 95.4 / 94.1 | 404, 668, 817 / 406, 664, 804 |
+| `d6b` | 0.492 (0.486 to 0.497) / 0.487 (0.478 to 0.497) | 0.353 / 0.350 | 108.9 / 108.7 | 461, 772, 883 / 455, 770, 876 |
+| `sm_front` | 0.696 (0.692 to 0.719) / 0.691 (0.671 to 0.709) | 0.573 / 0.571 | 78.3 / 77.3 | |
+
+The frame times are within the runs' ranges, of either sign: what the
+tables take off is less than the difference that the code's placement
+makes between two builds (every global of the library 32 bytes further
+on here). Frame by frame (the runs aligned with `framelog.best_shift`,
+each frame's smoke lookups from a run of the counting build under
+`perf.py`) the difference grows with the frame's lookups: 13, 28 and 35 ns
+less per smoke lookup in `o2match`, `d6a` and `d6b` (a least-squares
+line), on top of -4.5, +2.5 and -3.5 µs in frames without any (the
+placement); the frames with 200 or more lookups (615 of `d6a`'s 15000, 248
+of `d6b`'s) 8 and 12 µs lower; the slowest 1 % of the frames 1.5 to 6 µs
+(0.2 to 0.8 %); the content's 99th and 99.9th percentiles 2 to 13 µs (0.3
+to 1.6 %). The cells save the walk of 4 columns, the points the whole
+lookup, but the lookup itself was 80 to 125 ns of a frame of 400 to 700 µs,
+and the lookups are 2 to 3 % of these matches' slowest frames: JayRewd's
+3.5 % is not reached here.
+
+At 1920x1080 in a window, uncapped and at the user's cap of 250 (`perf.py
+--caps 0,250 --seconds 10 --preload libinlat.so --framelog`, 5 runs, other
+processes at most 1.1 CPUs; ms; the renderer's time per frame, input read
+to present from `libinlat.so`, the medians of the runs' median, 99th and
+99.9th percentiles):
+
+| demo | `com_maxfps` | renderer base / new | frames a second | input to present median, p99, p99.9: base / new |
+| --- | --- | --- | --- | --- |
+| `o2match` | 0 | 0.402 / 0.399 | 1777 / 1794 | 0.465, 1.005, 1.319 / 0.460, 0.996, 1.360 |
+| | 250 | 0.403 / 0.405 | 250 | 0.492, 0.868, 1.329 / 0.491, 0.874, 1.290 |
+| `d6a` | 0 | 0.400 / 0.397 | 1879 / 1864 | 0.478, 0.877, 1.095 / 0.479, 0.884, 1.076 |
+| | 250 | 0.326 / 0.338 | 250 | 0.395, 0.687, 1.111 / 0.410, 0.703, 1.098 |
+| `d6b` | 0 | 0.412 / 0.416 | 1765 / 1748 | 0.512, 0.926, 1.178 / 0.516, 0.930, 1.156 |
+| | 250 | 0.443 / 0.449 | 250 | 0.564, 0.919, 1.413 / 0.564, 0.920, 1.412 |
+
+Within the runs' spread, of either sign (at 250 the CPU runs at lower
+clocks and the renderer's time spreads by 0.01 to 0.02 ms between runs;
+the renderer's own lookups, the lighting spheres', are at most 2 µs a
+frame, so its differences are the placement). Nothing waits or is queued
+for longer; the work taken off lies between the input read and the
+present.
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -5612,6 +5729,43 @@ selects the sample count (see Implementation notes).
   included (37 of the 40 boxes a frame in matches). Its state changes are
   kept, so the draws after it see the same state; with `r_measureOverdraw`
   (its fragments counted in the stencil buffer) the box is drawn.
+- **Light grid lookups** (`tr_light.c`, `R_GetLightingGridValue`; see
+  Performance, Light grid lookups). A lookup blends the 8 light grid
+  samples around a point: those of the 4 columns around it, at its row and
+  the row above. The grid stores each column run-length encoded (runs of
+  one repeated sample and runs of different samples), so every lookup used
+  to walk 4 columns from their start. `R_InitLightGridCaches` allocates two
+  tables on the hunk once the grid is loaded (zeroed: empty; they go with
+  the world): 1024 cells (`lightGridCell_t`, 16 bytes: the cell's index + 1
+  as its key, and for each column the palette indexes the walk found at
+  the two rows, or one index for both when one run covers them; a Fibonacci
+  hash of the key picks the slot, and a cell decoded there replaces the
+  one it held), left out on a grid of 2^32 cells or more, whose indexes
+  don't fit the key; and 1024 points (`lightGridPoint_t`, 32 bytes: the
+  point's 3 floats as bits, and its result), looked up first. The blend
+  reads the samples of the same columns and adds them with the same
+  weights in the same order as the walk did, so every result is the same to
+  the bit (a verification build compared every lookup with the old
+  function's: 5.74 million in 4 matches, none different). `floor` became a
+  truncation corrected for negative values, the same integer for every
+  value in the grid's range. The callers: cgame's `R_GetLightingForSmoke`
+  for every debris model (`T_COLLISION` temporary models, every frame) and
+  the volumetric smoke's sprites (at `vss_lighting_fps`), nearly all the
+  lookups in a match; the entities' lighting spheres
+  (`RB_GetEntityGridLighting`, `RB_Sphere_ResetPointColors`), decals and
+  static models. Besides the world, a result depends on
+  `tr.identityLightByte` alone (no sample lit), which is set once per start
+  of the renderer (`R_SetColorMappings` reads latched cvars and the window
+  state of its creation; `R_Init` clears `tr`), and every start loads the
+  world again. JayRewd's version kept the samples' colors of 1024 cells (32
+  bytes each, keyed by 10 bits of each coordinate) and the smoke's lookups
+  by origin in `R_GetLightingForSmoke`, both dropped when the
+  `lightGridData` pointer changed: `Hunk_Alloc` is `Z_TagMalloc` here, so
+  the next map's grid can land at the last one's address and find its
+  entries. His point hash
+  (`x * 73856093 ^ y * 19349663 ^ z * 83492791`, the low 10 bits) keeps the
+  low zero bits of whole coordinates, but debris doesn't rest at whole
+  coordinates: its hit rate in matches is that of a good hash.
 - **Push constants** (`vkPushConstants_t`, the guaranteed 128 bytes).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -6310,6 +6464,22 @@ Done:
     one (`r_batch2D` 3 and 0 in one run). The renderer's time 5 and 2.3 %
     lower in two matches at 640x480, 13 µs less GPU time a frame; the
     frames the same to the bit (new list `hud`).
+
+27. Light grid lookups (2026-10-22, see Performance, Light grid lookups,
+    and Implementation notes, Light grid lookups), from JayRewd's b26d8a67:
+    the samples of the last 1024 light grid cells looked up, decoded from
+    the run-length encoded columns once, and the results of the last 1024
+    points by the point's bits (debris lit by cgame every frame mostly lies
+    still), in tables allocated with the world; his were keyed by the
+    grid's address, which the next map can reuse. A verification build
+    compared every lookup with the old function in 4 matches (5.74 million,
+    none different). In matches the lookups are 0.2 to 1.3 % of the frame,
+    nearly all cgame's lighting of debris and smoke; 13 to 35 ns less per
+    smoke lookup, 8 to 12 µs less in the frames with 200 or more, the
+    slowest frames' percentiles of cgame and the renderer 2 to 13 µs lower
+    (0.3 to 1.6 %), within the runs' noise as a whole (JayRewd measured 3.5
+    to 3.8 % off the 99th percentile frame time in a 22-player fight on
+    `dm/mohdm6`; new list `smoke`).
 
 Remaining:
 
