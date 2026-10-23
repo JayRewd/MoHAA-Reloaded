@@ -2817,7 +2817,6 @@ static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geomet
 	qboolean sameXyz, sameIndexes;
 	byte *data;
 	int i;
-
 	// the passes of a multi-pass shader: same positions, usually the same
 	// indexes (not for the dlight pass)
 	sameXyz = geometry->version && vk_lastGeometry.epoch == vk_vertexEpoch && vk_lastGeometry.version == geometry->version

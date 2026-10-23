@@ -32,6 +32,50 @@ qboolean   g_bInfoworldtris = qfalse;
 static int entityNumIndexes[MAX_ENTITIES];
 static int staticModelNumIndexes[4095];
 
+enum { SKEL_MESH_MAP = 1024 };
+static struct {
+	const dtiki_t     *tiki;
+	skelSurfaceGame_t *sf;
+	skelHeaderGame_t  *skel;
+	int                mesh;
+} s_skelMeshMap[SKEL_MESH_MAP];
+
+static void R_SkelMeshCachePut( const dtiki_t *tiki, skelSurfaceGame_t *sf, int mesh, skelHeaderGame_t *skel )
+{
+	unsigned h0 = ( (unsigned)(uintptr_t)sf ^ (unsigned)(uintptr_t)tiki ) & ( SKEL_MESH_MAP - 1 );
+	unsigned probe, h;
+
+	for ( probe = 0; probe < SKEL_MESH_MAP; probe++ ) {
+		h = ( h0 + probe ) & ( SKEL_MESH_MAP - 1 );
+		if ( !s_skelMeshMap[h].sf || ( s_skelMeshMap[h].sf == sf && s_skelMeshMap[h].tiki == tiki ) ) {
+			s_skelMeshMap[h].tiki = tiki;
+			s_skelMeshMap[h].sf   = sf;
+			s_skelMeshMap[h].skel = skel;
+			s_skelMeshMap[h].mesh = mesh;
+			return;
+		}
+	}
+}
+
+static qboolean R_SkelMeshCacheGet( const dtiki_t *tiki, skelSurfaceGame_t *sf, int *meshOut, skelHeaderGame_t **skelOut )
+{
+	unsigned h0 = ( (unsigned)(uintptr_t)sf ^ (unsigned)(uintptr_t)tiki ) & ( SKEL_MESH_MAP - 1 );
+	unsigned probe, h;
+
+	for ( probe = 0; probe < SKEL_MESH_MAP; probe++ ) {
+		h = ( h0 + probe ) & ( SKEL_MESH_MAP - 1 );
+		if ( s_skelMeshMap[h].sf == sf && s_skelMeshMap[h].tiki == tiki && s_skelMeshMap[h].skel ) {
+			*meshOut = s_skelMeshMap[h].mesh;
+			*skelOut = s_skelMeshMap[h].skel;
+			return qtrue;
+		}
+		if ( !s_skelMeshMap[h].sf ) {
+			return qfalse;
+		}
+	}
+	return qfalse;
+}
+
 static int R_CullSkelModel(dtiki_t *tiki, refEntity_t *e, skelAnimFrame_t *newFrame, float fScale, float *vLocalOrg);
 
 /*
@@ -991,6 +1035,7 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
 
             shader         = NULL;
             surface->ident = SF_TIKI_SKEL;
+            R_SkelMeshCachePut( tiki, surface, mesh, skelmodel );
 
             // use a custom shader if specified
             if (!(ent->e.customShader) || (ent->e.renderfx & RF_CUSTOMSHADERPASS)) {
@@ -1142,24 +1187,50 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
     scale = tiki->load_scale * backEnd.currentEntity->e.scale;
 
     //
-    // get the mesh associated with the surface
+    // get the mesh associated with the surface.
+    // FE pre-seeds s_skelMeshMap in R_AddSkelSurfaces; last-hit covers repeats.
     //
-    bFound = qfalse;
-    for (mesh = 0; mesh < tiki->numMeshes; mesh++) {
-        skelmodel = ri.TIKI_GetSkel(tiki->mesh[mesh]);
-        psurface  = skelmodel->pSurfaces;
+    {
+        static skelSurfaceGame_t *s_lastSf;
+        static const dtiki_t     *s_lastTiki;
+        static skelHeaderGame_t  *s_lastSkel;
+        static int                s_lastMesh;
 
-        // find the surface
-        for (surf = 0; surf < skelmodel->numSurfaces; surf++) {
-            if (psurface == sf) {
-                bFound = qtrue;
-                break;
+        bFound = qfalse;
+        if ( sf == s_lastSf && tiki == s_lastTiki && s_lastSkel ) {
+            mesh      = s_lastMesh;
+            skelmodel = s_lastSkel;
+            bFound    = qtrue;
+        } else if ( R_SkelMeshCacheGet( tiki, sf, &mesh, &skelmodel ) ) {
+            bFound = qtrue;
+        } else {
+            for ( mesh = 0; mesh < tiki->numMeshes; mesh++ ) {
+                skelmodel = ri.TIKI_GetSkel( tiki->mesh[mesh] );
+                if ( !skelmodel ) {
+                    continue;
+                }
+                psurface = skelmodel->pSurfaces;
+
+                for ( surf = 0; surf < skelmodel->numSurfaces; surf++ ) {
+                    if ( psurface == sf ) {
+                        bFound = qtrue;
+                        break;
+                    }
+                    psurface = psurface->pNext;
+                }
+
+                if ( bFound ) {
+                    R_SkelMeshCachePut( tiki, sf, mesh, skelmodel );
+                    break;
+                }
             }
-            psurface = psurface->pNext;
         }
 
-        if (bFound) {
-            break;
+        if ( bFound ) {
+            s_lastSf   = sf;
+            s_lastTiki = tiki;
+            s_lastSkel = skelmodel;
+            s_lastMesh = mesh;
         }
     }
 
