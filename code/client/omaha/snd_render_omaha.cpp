@@ -2579,9 +2579,6 @@ static void Om_Mix(float *dst, int frames, int ch)
 {
 	OmFtzGuard ftz;
 	const int  oc = ch;
-	if (s_hrtfOn) {
-		OmHrtf_BeginMix();
-	}
 	while (frames > 0) {
 		int n;
 		if (!s_hrtfOn) {

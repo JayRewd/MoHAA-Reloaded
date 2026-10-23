@@ -434,6 +434,10 @@ qboolean S_OMAHA_Init()
 
     memset(&cfg, 0, sizeof(cfg));
     S_OMAHA_ApplyFrequency();
+    if (s_speaker_type->integer == 1) {
+        /* Changed: headphones mix at the HRTF set's 48 kHz; resampled to 44.1 (s_khz's default) its baked filters fail their check */
+        al_frequency = 48000;
+    }
     cfg.sampleRate  = (int)al_frequency;
     cfg.deviceName  = S_OMAHA_DeviceName();
     cfg.speakerType = s_speaker_type->integer;

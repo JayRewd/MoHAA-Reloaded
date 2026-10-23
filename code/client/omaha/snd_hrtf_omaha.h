@@ -32,7 +32,8 @@ source tree, or write to the Free Software Foundation, Inc.,
  * comb while pinna / ITD cues stay intact:
  *  - per-voice direct: dense elev/az bake of onset-aligned + min-phase FIRs (full IR,
  *    float ITD) with bilinear lookup; live SOFA only if bake gate fails or
- *    s_hrtf_live_query; re-query + crossfade only the min-phase filters, and
+ *    s_hrtf_live_query (designed on a thread of its own, the bake's filter until
+ *    then); re-query + crossfade only the min-phase filters, and
  *  - 3rd-order 3D ambisonic bus (ACN / N3D): MagLS Lebedev decoder (complex LS / ITD
  *    below ~2 kHz, magnitude match above with Hold average phase continuation) plus
  *    diffuse-field EQ. Bus runs ~64 samples behind.
@@ -40,7 +41,9 @@ source tree, or write to the Free Software Foundation, Inc.,
  * Directions are unit vectors in Omaha listener space (x front, y left, z up).
  * Every process call takes a sample count that is a multiple of OM_HRTF_BLOCK; the
  * mixer renders whole blocks in HRTF mode so filtering adds no latency.
- * Nothing here locks: only the mixer calls in, inside the s_mixGate section.
+ * Nothing here locks: only the mixer calls in, inside the s_mixGate section. With live
+ * SOFA it posts a semaphore to the design thread, which owns a voice's filtNext while
+ * its request is queued.
  */
 
 #include "../../qcommon/q_shared.h"
@@ -70,5 +73,3 @@ void OmHrtf_AmbiCoeffs(const float dir[3], float coeffs[OM_AMBI_CHANNELS]);
 void OmHrtf_AmbiReset(void);
 /* Convolve the bus with the decoder filters and add to outL / outR. */
 void OmHrtf_AmbiDecode(float *const ambi[OM_AMBI_CHANNELS], float *outL, float *outR, int count);
-/* Start of a mix callback: refills the live SOFA re-query budget. */
-void OmHrtf_BeginMix(void);

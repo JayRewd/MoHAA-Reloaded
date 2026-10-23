@@ -424,6 +424,9 @@ below are done.
   waits for its stream worker in the frame moved to the load or removed, the
   soundtrack's decoding off the main thread, device loss, a reused voice id,
   a `playmp3` crash, the HRTF set's lookup and the Windows package fixed;
+  headphones mix at the HRTF set's 48 kHz, where its baked filters pass
+  its own check, and filters designed from the measurements are made on a
+  thread of their own, no longer on the mixer's;
   its obstruction traces (every playing world sound, every 100 ms) are left
   as they are, a budget for them is an option (`s_obstructionBudget`).
   Against OpenAL the pull request costs `o2match` 0.06 ms of mean frame time
@@ -1851,9 +1854,23 @@ mixer (the queued PCM, seeks, stops) logged:
   HRTF set read from the client's `main` folder (the merged code fell back
   to stereo); at 44.1 kHz the pull request's baked filters fail its own
   check (median -27.4 dB, max -8.0 dB) and every voice designs its filters
-  from the measurements, as it came; with `s_khz 48` the check passes
-  (median -30.6 dB, max -15.6 dB) and the baked filters are used (0.61 s
-  for a sound start against 0.88, see Remaining).
+  from the measurements on the mixer thread, as it came; at 48 kHz, now
+  the headphones' rate, the check passes (median -30.6 dB, max -15.6 dB)
+  and the baked filters are used (0.61 s for a sound start against 0.88).
+  `o2match` with headphones on the null device: the same levels as the
+  merged code at `s_khz 48` (RMS within 0.5 %), no silence; with
+  `s_hrtf_live_query 1` (filters from the measurements) the design thread
+  runs and the output is as loud. A test program running the HRTF code of
+  the merged commit and the final one (a voice still, turning 1.5° a
+  callback, still again; 36 voices freed and taken again while their
+  filters were being designed), the live path in both: the final one's
+  output bit-identical to the merged code's from the second callback after
+  a voice starts or stops turning (10 ms; until then it plays the baked
+  filter, then the crossfade), one callback behind while it turns; the
+  designs for freed voices dropped. ThreadSanitizer clean on the test
+  program (the thread and the mixer at once) and on the game in live mode
+  (the demo, the live script with its `snd_restart` and speaker changes)
+  but RADV's own report.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -5480,6 +5497,26 @@ builds' windows leave out); ms):
   its decoding is on the worker and no longer shows (Plan 29's 0.85 to 0.92
   ms buffers with OpenAL).
 
+Headphones (2026-10-23, after Plan 31; see Implementation notes, Sound
+system): the mixer's callback timed (a temporary build, the null device's
+5 ms callbacks, `o2match` with `s_speaker_type 1` played at about real
+time, `com_maxfps 63` with `fixedtime 16`, 49 s, 9800 callbacks; the
+medians of 3 interleaved runs, µs):
+
+| build | rate, filters | mean | p99 | p99.9 |
+| --- | --- | --- | --- | --- |
+| merged (`35b5c93e`) | 44.1 kHz, designed in the callback (the default as it came) | 83.0 | 239 | 312 |
+| final | 48 kHz, baked (the default now) | 82.2 | 190 | 239 |
+| merged | 48 kHz, `s_hrtf_live_query 1`: designed in the callback | 88.4 | 248 | 309 |
+| final | 48 kHz, `s_hrtf_live_query 1`: designed on the thread | 83.1 | 197 | 255 |
+
+A filter's design takes 20 µs (18 at best, 48 kHz); the merged code made
+every new voice's first in the callback it started in and up to 4 more a
+callback for voices that turned. A sound start takes 0.61 s at 48 kHz
+against 0.88. One run of the last row had a slow stretch (99.9th
+percentile 0.57 ms, max 0.90), the others' max 0.29 and 0.34 ms. The
+frame isn't touched: the mixer runs on the device's thread.
+
 ### Coordinate conventions
 
 - Projection matrices are OpenGL ones (column-major, clip z in [-w, w], y up).
@@ -6850,6 +6887,28 @@ selects the sample count (see Implementation notes).
     at 48 kHz (and loads the sounds without downsampling to 22 kHz); the
     capture path for AVI export, which nothing called, and unused HRTF
     functions are removed.
+  - Headphones (the user's OK, 2026-10-23; they change the headphone sound
+    by the baked filters' difference from the measured ones): they mix at
+    48 kHz, the HRTF set's own rate, whatever `s_khz` says. At 44.1 kHz,
+    the default, the set resampled made the pull request's baked filters
+    (a 72 MB table of directions every 1.5°, built at the sound's start)
+    fail its own check against the filters designed from the measurements
+    (median -27.4 dB, max -8.0 dB from them, the limits -20 and -10), so
+    every voice used designed ones, made on the mixer thread: a new
+    voice's first in the callback it started in, about 20 µs each, and up
+    to 4 more per callback for voices that turned more than 1°. At 48 kHz
+    the check passes (median -30.6 dB, max -15.6 dB) and the baked ones
+    are used: a lookup per voice and turn, and the sound start takes 0.61
+    s instead of 0.88. Where designed filters are still used (a set whose
+    baked filters fail the check, `s_hrtf_live_query 1`, or no memory for
+    the table) a thread of their own makes them (`Hrtf_DesignThread`,
+    woken by a semaphore the mixer posts; scratch of its own): a voice
+    asks for one when it starts or has turned more than 1° and plays the
+    baked filter (kept for that; none without a table) until the thread's
+    is made, then crossfades to it over a block like every change of
+    filter; one request per voice in flight, the reply for a voice that
+    was freed and taken again in between dropped. The mixer no longer
+    designs any.
   - `s_obstructionBudget` (new, default 0: the pull request's rule, every
     playing world sound traced again every 100 ms): with N > 0 at most N
     sounds are traced again in a frame and the others that are due wait
@@ -7587,8 +7646,13 @@ Done:
     devirtualization) and the mp3 codec's memory fixed, `s_khz 48`, the
     unused capture path removed, the Windows package with the HRTF set and
     notices. The obstruction traces stay as they are; a budget for them
-    (`s_obstructionBudget`, off) and headphones at 48 kHz are proposals
-    (see Remaining). Against OpenAL (5 runs, 1920x1080): the pull
+    (`s_obstructionBudget`, off) is a proposal (see Remaining). Then (the
+    user's OK): headphones mix at 48 kHz, where the baked HRTF filters pass
+    the pull request's check (at 44.1 kHz every voice's filters were
+    designed on the mixer thread), and filters designed from the
+    measurements are made on a thread of their own (bit-identical to the
+    merged code's from 10 ms after a voice starts or stops turning).
+    Against OpenAL (5 runs, 1920x1080): the pull
     request costs `o2match` 0.06 ms of mean frame time and 0.2 to 0.3 ms at
     the 99th and 99.9th percentiles uncapped, `o4match` 0.02 and 0.07 ms;
     Plan 31 takes 0.05 and 0.12 ms off their 99.9th percentiles, the budget
@@ -7694,9 +7758,9 @@ Remaining:
      compression item below.
 
 - The sound system (Plan 31, see Implementation notes and Performance,
-  Sound system). Proposals that change what the player hears, left for the
-  user to decide (the pull request's tuning is kept as it came):
-  (1) the obstruction traces, now the sound system's largest main-thread
+  Sound system). A proposal that changes what the player hears, left for
+  the user to decide (the pull request's tuning is kept as it came): the
+  obstruction traces, now the sound system's largest main-thread
   cost (every playing world sound traces 3 rays every 100 ms, and the
   loops started at a load come due in the same frames: in `o2match` 109
   thousand traces, 57 µs a frame on average and 0.68 ms in its slowest
@@ -7711,14 +7775,6 @@ Remaining:
   it over 80 ms anyway), and is up to 8 units stale. A spread of the
   loops' first checks after a load would take the clusters off without
   the budget (each sound still every 100 ms, at another moment); not done.
-  (2) Headphones at 48 kHz (`s_khz 48`): at the default 44.1 kHz the pull
-  request's baked HRTF filters (a 72 MB direction table built at every
-  sound start) fail its own check against the measurements, so every
-  voice designs its filters from the measurements on the mixer thread; at
-  48 kHz, the set's own rate, the check passes (median -30.6 dB, max -15.6
-  dB from the measured filters), the baked ones are used and the sound
-  start takes 0.61 s instead of 0.88; the headphone sound changes by that
-  difference.
   Not done (no change to the sound): a lost device is closed and opened
   again on the main thread (an `ma_context_init` and a device start, tens
   of ms, once a second while it stays lost); the null device that a start

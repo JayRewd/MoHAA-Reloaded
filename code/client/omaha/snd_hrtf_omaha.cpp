@@ -32,8 +32,16 @@ source tree, or write to the Free Software Foundation, Inc.,
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <atomic>
 #include <new>
+#include <thread>
 #include <vector>
+
+#ifdef USE_INTERNAL_SDL_HEADERS
+#	include "SDL.h"
+#else
+#	include <SDL.h>
+#endif
 
 #include "mysofa.h"
 #include "pffft.h"
@@ -85,8 +93,18 @@ source tree, or write to the Free Software Foundation, Inc.,
 #define OM_BAKE_GATE_MED_DB    (-20.0f)
 #define OM_BAKE_GATE_MAX_DB    (-10.0f)
 #define OM_BAKE_GATE_MED_DELAY 0.25f
-/* Live SOFA re-queries allowed per mix callback; the rest wait for the next one. */
-#define OM_HRTF_LIVE_REQUERIES 4
+/*
+ * Changed: with live SOFA (bake gate failed, or s_hrtf_live_query), a thread
+ * designs the voices' filters (it was the mixer, up to 4 a callback and every
+ * new voice's first); a voice plays the bake's filter until the live one is
+ * made and crossfades to it. Requests in flight, at most one per voice.
+ */
+#define OM_DESIGN_RING 64
+enum {
+	OM_DESIGN_IDLE,
+	OM_DESIGN_QUEUED, /* the design thread owns filtNext */
+	OM_DESIGN_DONE    /* the mixer takes filtNext */
+};
 
 struct omHrtfVoice_s {
 	float   *fdl;     /* [parts][FFT] input spectra ring */
@@ -104,6 +122,15 @@ struct omHrtfVoice_s {
 	qboolean hasFilter;
 	float    filtDir[3];
 	unsigned gen; /* s_hrtf.gen at allocation; stale voices are destroyed, not pooled */
+
+	/* Changed: live SOFA filters from the design thread (see OM_DESIGN_RING). */
+	float           *filtNext; /* [ear][parts][FFT] */
+	float            nextDir[3];
+	float            nextDelays[2];
+	unsigned         reqSeq;  /* mixer: bumped by every reset */
+	unsigned         nextSeq; /* the reqSeq the queued request was made for */
+	std::atomic<int> design;
+	qboolean         filtLive; /* the current filter is the live one for filtDir */
 };
 
 static struct {
@@ -120,12 +147,13 @@ static struct {
 	PFFFT_Setup        *setup;
 	PFFFT_Setup        *mpSetup; /* designN: min-phase + MagLS design */
 
-	/* Scratch, single-threaded (mixer or loader). */
+	/* Scratch: work, time, acc, accB the mixer's; the others design (loader, then the design thread). */
 	float *work;
 	float *time;
 	float *acc;
 	float *accB; /* Added in Omaha: second accumulator so both ears convolve in one walk. */
 	float *padded;
+	float *dWork; /* Changed: Hrtf_Partition's, not the mixer's work */
 	float *shifted;
 	float *irL;
 	float *irR;
@@ -158,7 +186,13 @@ static struct {
 	float    bakeGateMedMagDb;
 	float    bakeGateMedDelay;
 
-	int requeryBudget; /* live SOFA re-queries left in this mix callback */
+	/* Changed: the design thread, live SOFA only. */
+	std::thread           designThread;
+	SDL_sem              *designSem;
+	std::atomic<bool>     designQuit;
+	omHrtfVoice_t        *designRing[OM_DESIGN_RING];
+	std::atomic<unsigned> designHead;
+	std::atomic<unsigned> designTail;
 
 	unsigned                     gen;
 	std::vector<omHrtfVoice_t *> freeVoices; /* preallocated at load; never grows */
@@ -653,7 +687,7 @@ static void Hrtf_Partition(const float *ir, int parts, float *spectra)
 	for (p = 0; p < parts; p++) {
 		memcpy(s_hrtf.padded, ir + p * OM_HRTF_BLOCK, sizeof(float) * OM_HRTF_BLOCK);
 		memset(s_hrtf.padded + OM_HRTF_BLOCK, 0, sizeof(float) * OM_HRTF_BLOCK);
-		pffft_transform(s_hrtf.setup, s_hrtf.padded, spectra + p * OM_HRTF_FFT, s_hrtf.work, PFFFT_FORWARD);
+		pffft_transform(s_hrtf.setup, s_hrtf.padded, spectra + p * OM_HRTF_FFT, s_hrtf.dWork, PFFFT_FORWARD);
 	}
 }
 
@@ -996,19 +1030,52 @@ static qboolean Hrtf_BakeQualityGate(void)
 	return qtrue;
 }
 
-/* Voice filter slot from a listener-space direction; delays are ITD/onset in samples. */
-static void Hrtf_BuildVoiceFilter(const float dir[3], float *slot, float delays[2])
+/* Live SOFA filter slot from a listener-space direction; delays are ITD/onset in samples. Design scratch. */
+static void Hrtf_DesignVoiceFilter(const float dir[3], float *slot, float delays[2])
 {
 	const int total = s_hrtf.parts * OM_HRTF_BLOCK;
 
-	/* Changed in Omaha: prefer dense bake; live SOFA only when sofaLive. */
-	if (s_hrtf.bakeReady && !s_hrtf.sofaLive) {
-		Hrtf_LookupBaked(dir, slot, delays);
-		return;
-	}
 	Hrtf_QueryIr(dir[0], dir[1], dir[2], s_hrtf.shifted, s_hrtf.shifted + total, delays);
 	Hrtf_Partition(s_hrtf.shifted, s_hrtf.parts, slot);
 	Hrtf_Partition(s_hrtf.shifted + total, s_hrtf.parts, slot + s_hrtf.parts * OM_HRTF_FFT);
+}
+
+/* Changed: the design thread, while live SOFA is on (started by OmHrtf_Load, joined by OmHrtf_Unload). */
+static void Hrtf_DesignThread(void)
+{
+	for (;;) {
+		unsigned       head;
+		omHrtfVoice_t *hv;
+
+		SDL_SemWait(s_hrtf.designSem);
+		if (s_hrtf.designQuit.load(std::memory_order_acquire)) {
+			return;
+		}
+		head = s_hrtf.designHead.load(std::memory_order_relaxed);
+		if (head == s_hrtf.designTail.load(std::memory_order_acquire)) {
+			continue;
+		}
+		hv = s_hrtf.designRing[head & (OM_DESIGN_RING - 1)];
+		Hrtf_DesignVoiceFilter(hv->nextDir, hv->filtNext, hv->nextDelays);
+		hv->design.store(OM_DESIGN_DONE, std::memory_order_release);
+		s_hrtf.designHead.store(head + 1, std::memory_order_release);
+	}
+}
+
+/* Mixer: queue a voice's live filter for dir; the next callback tries again when the ring is full. */
+static void Hrtf_RequestDesign(omHrtfVoice_t *hv, const float dir[3])
+{
+	const unsigned tail = s_hrtf.designTail.load(std::memory_order_relaxed);
+
+	if (tail - s_hrtf.designHead.load(std::memory_order_acquire) >= OM_DESIGN_RING) {
+		return;
+	}
+	VectorCopy(dir, hv->nextDir);
+	hv->nextSeq = hv->reqSeq;
+	hv->design.store(OM_DESIGN_QUEUED, std::memory_order_relaxed);
+	s_hrtf.designRing[tail & (OM_DESIGN_RING - 1)] = hv;
+	s_hrtf.designTail.store(tail + 1, std::memory_order_release);
+	SDL_SemPost(s_hrtf.designSem);
 }
 
 /* Push a wet block through the per-ear fractional delay line and add to out. */
@@ -1525,6 +1592,7 @@ static void Hrtf_VoiceDestroy(omHrtfVoice_t *hv)
 	Hrtf_Free(&hv->fdl);
 	Hrtf_Free(&hv->filt[0]);
 	Hrtf_Free(&hv->filt[1]);
+	Hrtf_Free(&hv->filtNext);
 	Hrtf_Free(&hv->inBuf);
 	Hrtf_Free(&hv->delayBuf[0]);
 	Hrtf_Free(&hv->delayBuf[1]);
@@ -1542,11 +1610,12 @@ static omHrtfVoice_t *Hrtf_VoiceCreate(void)
 	hv->fdl         = Hrtf_Alloc(specs);
 	hv->filt[0]     = Hrtf_Alloc(specs * 2);
 	hv->filt[1]     = Hrtf_Alloc(specs * 2);
+	hv->filtNext    = Hrtf_Alloc(specs * 2);
 	hv->inBuf       = Hrtf_Alloc(OM_HRTF_FFT);
 	hv->delayBuf[0] = Hrtf_Alloc(s_hrtf.delayLen);
 	hv->delayBuf[1] = Hrtf_Alloc(s_hrtf.delayLen);
 	hv->gen         = s_hrtf.gen;
-	if (!hv->fdl || !hv->filt[0] || !hv->filt[1] || !hv->inBuf || !hv->delayBuf[0] || !hv->delayBuf[1]) {
+	if (!hv->fdl || !hv->filt[0] || !hv->filt[1] || !hv->filtNext || !hv->inBuf || !hv->delayBuf[0] || !hv->delayBuf[1]) {
 		Hrtf_VoiceDestroy(hv);
 		return NULL;
 	}
@@ -1600,6 +1669,9 @@ void OmHrtf_VoiceReset(omHrtfVoice_t *hv)
 	hv->filtDir[0] = 0.0f;
 	hv->filtDir[1] = 0.0f;
 	hv->filtDir[2] = -1.0f;
+	/* a design still queued for the voice's last use comes back with an old reqSeq */
+	hv->reqSeq++;
+	hv->filtLive = qfalse;
 }
 
 int OmHrtf_TailBlocks(void)
@@ -1628,27 +1700,62 @@ void OmHrtf_VoiceProcess(omHrtfVoice_t *hv, const float dir[3], const float *in,
 	outs[1] = outR;
 
 	/* Rate-limited per line: re-query only after ~1 degree of movement. */
-	if (!hv->hasFilter) {
-		float delays[2];
-		if (s_hrtf.sofaLive && s_hrtf.requeryBudget > 0) {
-			s_hrtf.requeryBudget--;
+	if (!s_hrtf.sofaLive) {
+		if (!hv->hasFilter) {
+			float delays[2];
+			Hrtf_LookupBaked(dir, hv->filt[hv->cur], delays);
+			hv->delay[0] = hv->delayTgt[0] = delays[0];
+			hv->delay[1] = hv->delayTgt[1] = delays[1];
+			VectorCopy(dir, hv->filtDir);
+			hv->hasFilter = qtrue;
+		} else if (DotProduct(dir, hv->filtDir) < OM_HRTF_REQUERY_COS) {
+			float delays[2];
+			Hrtf_LookupBaked(dir, hv->filt[hv->cur ^ 1], delays);
+			hv->delayTgt[0] = delays[0];
+			hv->delayTgt[1] = delays[1];
+			VectorCopy(dir, hv->filtDir);
+			fade = qtrue;
 		}
-		Hrtf_BuildVoiceFilter(dir, hv->filt[hv->cur], delays);
-		hv->delay[0] = hv->delayTgt[0] = delays[0];
-		hv->delay[1] = hv->delayTgt[1] = delays[1];
-		VectorCopy(dir, hv->filtDir);
-		hv->hasFilter = qtrue;
-	} else if (DotProduct(dir, hv->filtDir) < OM_HRTF_REQUERY_COS
-			   && (!s_hrtf.sofaLive || s_hrtf.requeryBudget > 0)) {
-		float delays[2];
-		if (s_hrtf.sofaLive) {
-			s_hrtf.requeryBudget--;
+	} else {
+		/*
+		 * Changed: live SOFA. The design thread's filter crossfades in when made; a
+		 * new voice starts with the bake's (without a bake, silent until the
+		 * thread's first); a voice asks for a new one after ~1 degree of movement.
+		 */
+		if (hv->design.load(std::memory_order_acquire) == OM_DESIGN_DONE) {
+			if (hv->nextSeq == hv->reqSeq) {
+				float *made = hv->filtNext;
+
+				if (hv->hasFilter) {
+					hv->filtNext          = hv->filt[hv->cur ^ 1];
+					hv->filt[hv->cur ^ 1] = made;
+					fade                  = qtrue;
+				} else {
+					hv->filtNext      = hv->filt[hv->cur];
+					hv->filt[hv->cur] = made;
+					hv->delay[0]      = hv->nextDelays[0];
+					hv->delay[1]      = hv->nextDelays[1];
+					hv->hasFilter     = qtrue;
+				}
+				hv->delayTgt[0] = hv->nextDelays[0];
+				hv->delayTgt[1] = hv->nextDelays[1];
+				VectorCopy(hv->nextDir, hv->filtDir);
+				hv->filtLive = qtrue;
+			}
+			hv->design.store(OM_DESIGN_IDLE, std::memory_order_relaxed);
 		}
-		Hrtf_BuildVoiceFilter(dir, hv->filt[hv->cur ^ 1], delays);
-		hv->delayTgt[0] = delays[0];
-		hv->delayTgt[1] = delays[1];
-		VectorCopy(dir, hv->filtDir);
-		fade = qtrue;
+		if (!hv->hasFilter && s_hrtf.bakeReady) {
+			float delays[2];
+			Hrtf_LookupBaked(dir, hv->filt[hv->cur], delays);
+			hv->delay[0] = hv->delayTgt[0] = delays[0];
+			hv->delay[1] = hv->delayTgt[1] = delays[1];
+			VectorCopy(dir, hv->filtDir);
+			hv->hasFilter = qtrue;
+		}
+		if (hv->design.load(std::memory_order_relaxed) == OM_DESIGN_IDLE
+			&& (!hv->filtLive || DotProduct(dir, hv->filtDir) < OM_HRTF_REQUERY_COS)) {
+			Hrtf_RequestDesign(hv, dir);
+		}
 	}
 
 	for (b = 0; b + OM_HRTF_BLOCK <= count; b += OM_HRTF_BLOCK) {
@@ -1677,7 +1784,7 @@ void OmHrtf_VoiceProcess(omHrtfVoice_t *hv, const float dir[3], const float *in,
 			hv->prevZero             = curZero;
 		}
 
-		if (skipConvolve) {
+		if (skipConvolve || !hv->hasFilter) {
 			for (ear = 0; ear < 2; ear++) {
 				memset(wet, 0, sizeof(wet));
 				Hrtf_DelayBlock(hv, ear, wet, outs[ear] + b);
@@ -1737,10 +1844,28 @@ static void Hrtf_ReleaseSofa(void)
 	}
 }
 
+/* Changed: stop the design thread (the mixer is stopped: no request comes any more). */
+static void Hrtf_StopDesign(void)
+{
+	if (s_hrtf.designThread.joinable()) {
+		s_hrtf.designQuit.store(true, std::memory_order_release);
+		SDL_SemPost(s_hrtf.designSem);
+		s_hrtf.designThread.join();
+	}
+	if (s_hrtf.designSem) {
+		SDL_DestroySemaphore(s_hrtf.designSem);
+		s_hrtf.designSem = NULL;
+	}
+	s_hrtf.designQuit.store(false, std::memory_order_relaxed);
+	s_hrtf.designHead.store(0, std::memory_order_relaxed);
+	s_hrtf.designTail.store(0, std::memory_order_relaxed);
+}
+
 void OmHrtf_Unload(void)
 {
 	size_t i;
 
+	Hrtf_StopDesign();
 	for (i = 0; i < s_hrtf.freeVoices.size(); i++) {
 		Hrtf_VoiceDestroy(s_hrtf.freeVoices[i]);
 	}
@@ -1768,6 +1893,7 @@ void OmHrtf_Unload(void)
 	Hrtf_Free(&s_hrtf.acc);
 	Hrtf_Free(&s_hrtf.accB);
 	Hrtf_Free(&s_hrtf.padded);
+	Hrtf_Free(&s_hrtf.dWork);
 	Hrtf_Free(&s_hrtf.shifted);
 	Hrtf_Free(&s_hrtf.irL);
 	Hrtf_Free(&s_hrtf.irR);
@@ -1784,11 +1910,6 @@ void OmHrtf_Unload(void)
 	s_hrtf.delayBase  = 0.0f;
 	s_hrtf.designN    = 0;
 	s_hrtf.ready      = qfalse;
-}
-
-void OmHrtf_BeginMix(void)
-{
-	s_hrtf.requeryBudget = OM_HRTF_LIVE_REQUERIES;
 }
 
 qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *label, int voicePool)
@@ -1884,6 +2005,7 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 	s_hrtf.acc     = Hrtf_Alloc(OM_HRTF_FFT);
 	s_hrtf.accB    = Hrtf_Alloc(OM_HRTF_FFT);
 	s_hrtf.padded  = Hrtf_Alloc(OM_HRTF_FFT);
+	s_hrtf.dWork   = Hrtf_Alloc(OM_HRTF_FFT);
 	s_hrtf.shifted = Hrtf_Alloc(total * 2);
 	s_hrtf.irL     = Hrtf_Alloc(filterLength);
 	s_hrtf.irR     = Hrtf_Alloc(filterLength);
@@ -1891,7 +2013,7 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 	s_hrtf.mpSpec  = Hrtf_Alloc(s_hrtf.designN);
 	s_hrtf.mpWork  = Hrtf_Alloc(s_hrtf.designN);
 	if (!s_hrtf.setup || !s_hrtf.mpSetup || !s_hrtf.work || !s_hrtf.time || !s_hrtf.acc || !s_hrtf.accB || !s_hrtf.padded
-		|| !s_hrtf.shifted || !s_hrtf.irL || !s_hrtf.irR || !s_hrtf.mpBuf || !s_hrtf.mpSpec || !s_hrtf.mpWork) {
+		|| !s_hrtf.dWork || !s_hrtf.shifted || !s_hrtf.irL || !s_hrtf.irR || !s_hrtf.mpBuf || !s_hrtf.mpSpec || !s_hrtf.mpWork) {
 		Com_Printf("Sound/omaha: HRTF setup failed (out of memory)\n");
 		OmHrtf_Unload();
 		return qfalse;
@@ -1927,25 +2049,10 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 		} else {
 			gateOk = Hrtf_BakeQualityGate();
 			if (!gateOk) {
-				const float medM = s_hrtf.bakeGateMedMagDb;
-				const float maxM = s_hrtf.bakeGateMaxMagDb;
-				const float medD = s_hrtf.bakeGateMedDelay;
-				Hrtf_BakeFree();
-				/* Keep gate numbers for tests / logs after freeing the table. */
-				s_hrtf.bakeGateMedMagDb = medM;
-				s_hrtf.bakeGateMaxMagDb = maxM;
-				s_hrtf.bakeGateMedDelay = medD;
-				s_hrtf.sofaLive         = qtrue;
+				/* Changed: the bake stays, the voices' first filter until the live one is made. */
+				s_hrtf.sofaLive = qtrue;
 			} else if (forceLive) {
-				/* Changed in Omaha: the bake is unused at runtime here, so drop it but keep the gate numbers. */
-				const float medM = s_hrtf.bakeGateMedMagDb;
-				const float maxM = s_hrtf.bakeGateMaxMagDb;
-				const float medD = s_hrtf.bakeGateMedDelay;
-				Hrtf_BakeFree();
-				s_hrtf.bakeGateMedMagDb = medM;
-				s_hrtf.bakeGateMaxMagDb = maxM;
-				s_hrtf.bakeGateMedDelay = medD;
-				s_hrtf.sofaLive         = qtrue;
+				s_hrtf.sofaLive = qtrue;
 				Com_Printf("Sound/omaha: s_hrtf_live_query 1 — DIRECT uses live SOFA\n");
 			} else {
 				Hrtf_ReleaseSofa();
@@ -1955,7 +2062,6 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 
 		s_hrtf.ready = qtrue;
 		OmHrtf_AmbiReset();
-		OmHrtf_BeginMix();
 
 		/* Added in Omaha: the mixer only pops this pool, so direct voices never allocate there. */
 		s_hrtf.freeVoices.reserve(voicePool > 0 ? (size_t)voicePool : 0);
@@ -1967,6 +2073,17 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 			s_hrtf.freeVoices.push_back(hv);
 		}
 
+		if (s_hrtf.sofaLive) {
+			s_hrtf.designSem = SDL_CreateSemaphore(0);
+			if (s_hrtf.designSem) {
+				s_hrtf.designThread = std::thread(Hrtf_DesignThread);
+			} else {
+				Com_Printf("Sound/omaha: HRTF design thread failed; headphones fall back to stereo\n");
+				OmHrtf_Unload();
+				return qfalse;
+			}
+		}
+
 		Com_Printf(
 			"Sound/omaha: HRTF '%s' loaded (%u measurements, %d taps at %d Hz, %d/%d x %d partitions%s)\n",
 			label,
@@ -1976,7 +2093,7 @@ qboolean OmHrtf_Load(const void *data, int size, int sampleRate, const char *lab
 			s_hrtf.parts,
 			s_hrtf.ambiParts,
 			OM_HRTF_BLOCK,
-			s_hrtf.bakeReady && !s_hrtf.sofaLive ? ", baked DIRECT" : ", live DIRECT"
+			!s_hrtf.sofaLive ? ", baked DIRECT" : ", live DIRECT from its thread"
 		);
 	}
 	return qtrue;
