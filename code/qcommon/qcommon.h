@@ -998,6 +998,7 @@ void 		QDECL Com_DPrintf( const char *fmt, ... ) Q_PRINTF_FUNC(1, 2);
 void 		QDECL Com_Error( int code, const char *fmt, ... ) Q_NO_RETURN Q_PRINTF_FUNC(2, 3);
 void 		Com_Quit_f( void ) Q_NO_RETURN;
 void		Com_GameRestart(int checksumFeed, qboolean disconnect);
+void		Com_ExecuteConfigFile(cbufExec_t exec_when);
 
 int			Com_Milliseconds( void );	// will be journaled properly
 long long	Com_Microseconds( void );	// wall clock, for benchmark measurements only
@@ -1023,6 +1024,7 @@ int QDECL	Com_strCompare( const void *a, const void *b );
 extern	float currentfps;
 extern	cvar_t	*paused;
 extern	cvar_t	*config;
+extern	qboolean	com_gameRestarting;
 extern	cvar_t	*fps;
 extern	cvar_t	*fps_location;
 extern	cvar_t	*developer;
