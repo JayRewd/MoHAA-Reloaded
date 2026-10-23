@@ -135,21 +135,6 @@ static constexpr float OM_POCKET_EXPL_R    = 512.f;
 static constexpr float OM_POCKET_EXPL_TAU  = 120.f;
 /* Changed in Omaha: obstruction trace interval fixed (was s_obstruction_cal_time). */
 static constexpr int OM_OBSTRUCT_CAL_MS = 100;
-/*
- * Added: with s_obstructionBudget N > 0 (default 0, the pull request's rule),
- * at most N playing voices are traced again in a frame (3 rays each), the
- * others that are due wait for the next frames; an answer holds while both
- * ends moved OM_OBSTRUCT_REUSE_DIST or less (else only for the same points);
- * a new sound takes the answer of one from the same spot in the last interval.
- * It changes when the muffling follows a move, so it is the user's to turn on.
- * Not needed at real speed: o2match whole at 250 fps had 8.5 thousand traces,
- * 0.14 ms in the slowest 0.1 % of frames (the 108 thousand and 1 ms frames it
- * was made for came from playing the demo 30 times faster than real time,
- * where every sound stays playing 30 times longer in the match).
- */
-static cvar_t         *s_obstructionBudget;
-static constexpr float OM_OBSTRUCT_REUSE_DIST = 8.f;
-static int             s_obstructBudget;
 /* Added in Omaha: how long a looping one-shot outlives an entity that left the snapshot. */
 static constexpr int OM_LOOP_STALE_ENT_MS = 1000;
 // Added in Omaha: stream queue target and the most chunks one update may queue.
@@ -418,8 +403,6 @@ qboolean S_OMAHA_Init()
     s_speaker_type           = Cvar_Get("s_speaker_type", "0", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     /* Added in Omaha: world-trace obstruction on the omaha mixer (1 = on). */
     s_obstruction = Cvar_Get("s_obstruction", "1", CVAR_ARCHIVE);
-    /* Added: at most this many obstruction traces of playing sounds a frame, 0 = every 100 ms each (see above). */
-    s_obstructionBudget = Cvar_Get("s_obstructionBudget", "0", CVAR_ARCHIVE);
     /* Added in Omaha: 1 = OM_MIX_* bus gains; 0 = unity (overlap/pocket unchanged). */
     s_mix         = Cvar_Get("s_mix", "1", CVAR_ARCHIVE);
     /* Added in Omaha: 1 = force-load pain/death VO for 3D/HRTF (0 = retail streamed 2D). */
@@ -1985,34 +1968,6 @@ static float S_OMAHA_AreaOcclusion(const vec3_t vListener, const vec3_t vOrigin)
 
 /*
 ==============
-S_OMAHA_SharedTrace
-
-A voice whose answer a new sound at the same spot can take: traced from
-within a few units of both ends in the last interval.
-==============
-*/
-static const omaha_channel *
-S_OMAHA_SharedTrace(const omaha_channel *pChannel, const vec3_t vListener, const vec3_t vOrigin, int iNow)
-{
-    int i;
-
-    for (i = 0; i < MAX_SOUNDSYSTEM_POSITION_CHANNELS + omaha.channel_extra_count; i++) {
-        const omaha_channel *pOther = S_OMAHA_GetPosChannel(i);
-
-        if (!pOther || pOther == pChannel || !pOther->bTraceValid || pOther->voiceKind != 0
-            || iNow - pOther->iTraceTime >= OM_OBSTRUCT_CAL_MS) {
-            continue;
-        }
-        if (Distance(pOther->vTraceListener, vListener) <= OM_OBSTRUCT_REUSE_DIST
-            && Distance(pOther->vTraceOrigin, vOrigin) <= OM_OBSTRUCT_REUSE_DIST) {
-            return pOther;
-        }
-    }
-    return NULL;
-}
-
-/*
-==============
 S_OMAHA_UpdateObstruction
 
 Added in Omaha: obstruction target for one channel on the omaha mixer. bWorld
@@ -2047,42 +2002,17 @@ static void S_OMAHA_UpdateObstruction(
         fObstruction = 0;
         fOcclusion   = 0;
     } else if (bForce || iNow >= pChannel->iNextObstructionCheck) {
-        const omaha_channel *pShared = NULL;
-        const bool           bBudget = s_obstructionBudget && s_obstructionBudget->integer > 0;
-        vec3_t               vDelta;
-        float                fDist;
-        bool                 bReuse, bDefer = false;
+        vec3_t vDelta;
+        float  fDist;
+        int    iInterval;
 
-        if (bBudget) {
-            bReuse = pChannel->bTraceValid && iNow - pChannel->iTraceTime < 1000
-                  && Distance(pChannel->vTraceListener, vListener) <= OM_OBSTRUCT_REUSE_DIST
-                  && Distance(pChannel->vTraceOrigin, vOrigin) <= OM_OBSTRUCT_REUSE_DIST;
-        } else {
-            bReuse = pChannel->bTraceValid && iNow - pChannel->iTraceTime < 1000
-                  && VectorCompare(pChannel->vTraceListener, vListener) && VectorCompare(pChannel->vTraceOrigin, vOrigin);
-        }
-        if (!bReuse && bBudget) {
-            if (bForce) {
-                pShared = S_OMAHA_SharedTrace(pChannel, vListener, vOrigin, iNow);
-            } else if (s_obstructBudget > 0) {
-                s_obstructBudget--;
-            } else {
-                bDefer = true;
-            }
-        }
+        iInterval = OM_OBSTRUCT_CAL_MS;
+        pChannel->iNextObstructionCheck = iNow + iInterval;
 
-        if (bDefer) {
-            // still due: traced in a later frame, the mixer keeps the last answer
-        } else if (pShared) {
-            fObstruction = pShared->fObstruction;
-            fOcclusion   = pShared->fOcclusion;
-            VectorCopy(pShared->vTraceListener, pChannel->vTraceListener);
-            VectorCopy(pShared->vTraceOrigin, pChannel->vTraceOrigin);
-            pChannel->iTraceTime            = pShared->iTraceTime;
-            pChannel->bTraceValid           = qtrue;
-            pChannel->iNextObstructionCheck = iNow + OM_OBSTRUCT_CAL_MS;
-        } else if (bReuse) {
-            pChannel->iNextObstructionCheck = iNow + OM_OBSTRUCT_CAL_MS;
+        if (pChannel->bTraceValid && iNow - pChannel->iTraceTime < 1000
+            && VectorCompare(pChannel->vTraceListener, vListener) && VectorCompare(pChannel->vTraceOrigin, vOrigin)) {
+            fObstruction = pChannel->fObstruction;
+            fOcclusion   = pChannel->fOcclusion;
         } else {
             VectorSubtract(vOrigin, vListener, vDelta);
             fDist = VectorLength(vDelta);
@@ -2095,9 +2025,8 @@ static void S_OMAHA_UpdateObstruction(
             }
             VectorCopy(vListener, pChannel->vTraceListener);
             VectorCopy(vOrigin, pChannel->vTraceOrigin);
-            pChannel->iTraceTime            = iNow;
-            pChannel->bTraceValid           = qtrue;
-            pChannel->iNextObstructionCheck = iNow + OM_OBSTRUCT_CAL_MS;
+            pChannel->iTraceTime  = iNow;
+            pChannel->bTraceValid = qtrue;
         }
     }
 
@@ -3182,7 +3111,6 @@ void S_OMAHA_Respatialize(int iEntNum, const vec3_t vHeadPos, const vec3_t vAxis
 
     VectorCopy(vAxis[1], vTempAxis);
     VectorCopy(vListenerOrigin, s_vObstructionListener); // Added in Omaha
-    s_obstructBudget = s_obstructionBudget ? s_obstructionBudget->integer : 0;
 
     fVolume = 1;
     iPan    = 64;
