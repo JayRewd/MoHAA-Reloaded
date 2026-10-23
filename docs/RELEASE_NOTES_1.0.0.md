@@ -1,6 +1,6 @@
 # MoHAA Reloaded 1.0.0: native Metal for Apple Silicon
 
-> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0), from 08f19e40, replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
+> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from bdce5ca9 (first from 08f19e40 the same day; the tag moved and the zip replaced for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
 
 The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstngh/MoHAA-Reloaded) (its `metal` branch), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
@@ -81,4 +81,4 @@ Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose 
 
 | File | SHA-256 |
 |---|---|
-| `openmohaa-metal-1.0.0-macos-arm64.zip` | `9c2f8e978a38c7c767c249e19342e20be1c90c0a3b077352bf9bc8bc359928c1` |
+| `openmohaa-metal-1.0.0-macos-arm64.zip` | `fb61b8de0760cbd59792460d5fa2079841c619847540ce5b3fef2e22ac26deae` |
