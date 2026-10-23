@@ -24,7 +24,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // sound math as the PC game played it on Miles' "Fast 2D Positional Audio" (the 3D model, the 2D pan law, the volume
 // scales, s_volume's law), the decompiled driver's own curves, and the loader's IMA ADPCM decoder. C and no engine
 // header: port/sndtest.c checks every function against the plan's numbers. 9e's open decisions are each one constant
-// or one function here; the user's listening kept every default (session 61).
+// or one function here; the user's listening kept every default (session 61). Headphone 3D's direction (9f) too.
 
 #pragma once
 
@@ -38,6 +38,7 @@ extern "C" {
 #define SNM_SCALE_2D (84.f / 127.f) // A3: 2D voices against 3D ones, the decompiled scales (kept at 9e)
 #define SNM_BEHIND   0.70794578f    // C6: Fast 2D's -3 dB straight behind the listener (kept at 9e)
 #define SNM_EDGE     0.05f          // B1: the fade to silence before the max distance, as a part of it
+#define SNM_NEAR     1.f            // 9f: closer than this a 3D voice has no direction (at the listener: the centre)
 
 /*
 ==============
@@ -169,6 +170,21 @@ static inline void SNM_Pan3D(float front, float left, float *gainLeft, float *ga
         *gainLeft *= behind;
         *gainRight *= behind;
     }
+}
+
+/*
+==============
+SNM_Direction
+
+9f, headphone 3D: where a 3D voice is for Apple's spatial mixer, which renders it in place of SNM_Pan3D (its HRTF has
+its own front and back, up and down; SNM_Distance stays). front, left, up: the unit direction from the listener to
+the source in its frame. Azimuth in degrees, 0 ahead, positive to the right; elevation in degrees, positive up.
+==============
+*/
+static inline void SNM_Direction(float front, float left, float up, float *azimuth, float *elevation)
+{
+    *azimuth   = atan2f(-left, front) * 57.2957795f;
+    *elevation = asinf(up < -1 ? -1 : up > 1 ? 1 : up) * 57.2957795f;
 }
 
 /*

@@ -3,10 +3,11 @@
 // stress test renders on a second thread, as the IO thread does, while this one posts at random (built with
 // ThreadSanitizer); the device modes play silence on the real output: start -> output, CPU, overloads.
 //
-//   sndtest [test ...]                    offline: resample loop offset pause ramp limiter free misc capture stream math ima (all by
-//                                         default); math and ima are the native driver's (snd_native_math.h)
+//   sndtest [test ...]                    offline: resample loop offset pause ramp limiter free misc capture stream spatial math ima
+//                                         (all by default); math and ima are the native driver's (snd_native_math.h)
 //   sndtest stress [seconds]              the threaded stress test
 //   sndtest device [frames ...]           start -> output at random phases, CPU at 0/16/40/96 voices, a restart
+//   sndtest device3d [frames ...]         the same with headphone 3D, the voices with a direction (0/16/40/64)
 //   sndtest load frames seconds [busy] [voices]   96 voices for a while, overloads counted; busy = spinning threads
 //   sndtest devices                       the output devices
 //
@@ -1050,6 +1051,293 @@ static void test_stream( void )
 }
 
 /*
+==============================================================================
+headphone 3D (Phase 9f): the voices with a direction through Apple's spatial mixer
+==============================================================================
+*/
+
+static double energy( const float *out, int channel, int from, int to )
+{
+	double e = 0;
+	int i;
+
+	for ( i = from; i < to; i++ )
+		e += (double)out[2 * i + channel] * out[2 * i + channel];
+	return e;
+}
+
+static int sound_noise( int frames, int channels, short amp )
+{
+	short *pcm = malloc( sizeof( short ) * frames * channels );
+	unsigned r = 62;
+	int i, h;
+
+	for ( i = 0; i < frames; i++ ) {
+		r = r * 1103515245 + 12345;
+		pcm[i * channels] = (short)( (int)( ( r >> 8 ) % ( 2 * amp + 1 ) ) - amp );
+		if ( channels == 2 )
+			pcm[i * channels + 1] = pcm[i * channels];
+	}
+	h = MacSnd_CreateSound( pcm, frames, channels, (int)RATE );
+	free( pcm );
+	return h;
+}
+
+static macSndStart_t play3d( int sound, float gain, float azimuth, float elevation )
+{
+	macSndStart_t s = play( sound, gain );
+
+	s.spatial = 1;
+	s.gainR = 0;
+	s.azimuth = azimuth;
+	s.elevation = elevation;
+	s.loopCount = 0;
+	return s;
+}
+
+// the output's level at the right ear against the left (dB) over frames [from, to)
+static double right_left( const float *out, int from, int to )
+{
+	return 10.0 * log10( ( energy( out, 1, from, to ) + 1e-20 ) / ( energy( out, 0, from, to ) + 1e-20 ) );
+}
+
+// callbacks until the spatial mixer has no input enabled (0: not within max)
+static int inputs_off( int max )
+{
+	macSndStats_t st;
+	int f;
+
+	for ( f = 1; f <= max; f++ ) {
+		render( NULL, BLOCK );
+		MacSnd_GetStats( &st );
+		if ( st.spatialInputs == 0 )
+			return f;
+	}
+	return 0;
+}
+
+static void test_spatial( void )
+{
+	enum { N = 24000 };
+	static float out[2 * N], ref[2 * N];
+	macSndStats_t st;
+	macSndStart_t s;
+	int noise, noise2, click, sine, i, k, first, peak, off, inputs;
+	double d, dmax, ph, po, pin, rl[4];
+	float l, r, maxDiff, maxStep, ownStep;
+	short one[64] = { 16000 };
+
+	printf( "spatial\n" );
+	offline();
+	MacSnd_SetStopFade( 0 );
+	noise = sound_noise( 48000, 1, 8000 );
+	noise2 = sound_noise( 48000, 2, 8000 );
+	click = MacSnd_CreateSound( one, 64, 1, (int)RATE );
+	sine = sound_sine( 48000, (int)RATE, 1000.0, 0.5, 1 );
+
+	// stereo (the default): no unit; a voice with a direction plays at the centre, -3 dB a side
+	MacSnd_GetStats( &st );
+	s = play3d( noise, 0.8f, 90, 0 );
+	MacSnd_Start( 0, &s );
+	render( out, 2048 );
+	MacSnd_Stop( 0 );
+	render( NULL, 64 );
+	s = play( noise, 0.8f * 0.70710678f );
+	s.loopCount = 0;
+	MacSnd_Start( 0, &s );
+	render( ref, 2048 );
+	MacSnd_Stop( 0 );
+	render( NULL, 64 );
+	maxDiff = 0;
+	for ( i = 0; i < 2 * 2048; i++ )
+		maxDiff = fmaxf( maxDiff, fabsf( out[i] - ref[i] ) );
+	check( !st.spatialMade && st.spatial == MACSND_STEREO && maxDiff < 1e-6f,
+		"stereo: no spatial mixer made; a voice with a direction at the centre, as gains 0.707 (%.2g)", maxDiff );
+
+	// headphone 3D on: the unit, its latency
+	k = MacSnd_SetSpatial( MACSND_HEADPHONES );
+	MacSnd_GetStats( &st );
+	check( k == MACSND_HEADPHONES && st.spatialMade && st.spatial == MACSND_HEADPHONES && st.spatialLatency >= 0
+		&& st.spatialLatency < 0.0005, "headphones: the spatial mixer made, its latency %.3f ms, %s HRTF",
+		st.spatialLatency * 1000.0, st.personalized ? "the personalized" : "Apple's" );
+
+	// the direction: right, left, ahead, behind
+	{
+		static const float az[4] = { 90, -90, 0, 180 };
+
+		for ( k = 0; k < 4; k++ ) {
+			s = play3d( noise, 0.8f, az[k], 0 );
+			MacSnd_Start( 0, &s );
+			render( out, 9600 );
+			rl[k] = right_left( out, 1600, 9600 );
+		}
+		MacSnd_Stop( 0 );
+		render( NULL, 64 );
+	}
+	check( rl[0] > 10 && rl[1] < -10 && fabs( rl[2] ) < 1.5 && fabs( rl[3] ) < 1.5,
+		"direction: right %+.1f dB, left %+.1f, ahead %+.1f, behind %+.1f (right ear against left)", rl[0], rl[1], rl[2], rl[3] );
+
+	// the latency it adds: a click on a voice ahead against the stereo voice's, which is at frame 0
+	render( NULL, 1024 );
+	s = play3d( click, 1.0f, 0, 0 );
+	s.loopCount = 1;
+	MacSnd_Start( 0, &s );
+	render( out, 1024 );
+	dmax = 0;
+	first = peak = -1;
+	for ( i = 0; i < 1024; i++ )
+		dmax = fmax( dmax, fmax( fabs( out[2 * i] ), fabs( out[2 * i + 1] ) ) );
+	for ( i = 0; i < 1024; i++ ) {
+		d = fmax( fabs( out[2 * i] ), fabs( out[2 * i + 1] ) );
+		if ( first < 0 && d > dmax * 1e-3 )
+			first = i;
+		if ( peak < 0 && d == dmax )
+			peak = i;
+	}
+	for ( i = 300, d = 0; i < 1024; i++ )
+		d = fmax( d, fmax( fabs( out[2 * i] ), fabs( out[2 * i + 1] ) ) );
+	check( first >= 0 && first <= 1 && peak <= 6 && d < dmax * 1e-4,
+		"latency: a click ahead starts at frame %d, peaks at frame %d (%.3f ms), its response over by frame 300 (%.1g)",
+		first, peak, peak / RATE * 1000.0, d / dmax );
+
+	// the level: the mean power over the horizontal circle equals the stereo pans' (SNM_Pan3D)
+	ph = po = pin = 0;
+	{
+		const short *pcm = MacSnd_SoundData( noise );
+
+		for ( i = 0; i < 48000; i++ )
+			pin += ( pcm[i] / 32768.0 ) * ( pcm[i] / 32768.0 );
+		pin /= 48000;
+	}
+	for ( k = 0; k < 24; k++ ) {
+		const float a = -180.0f + 15.0f * k;
+
+		s = play3d( noise, 1.0f, a, 0 );
+		MacSnd_Start( 0, &s );
+		render( out, 4096 );
+		render( out, N );
+		ph += ( energy( out, 0, 0, N ) + energy( out, 1, 0, N ) ) / N;
+		SNM_Pan3D( cosf( a * (float)M_PI / 180 ), -sinf( a * (float)M_PI / 180 ), &l, &r );
+		po += ( l * l + r * r ) * pin;
+	}
+	MacSnd_Stop( 0 );
+	check( fabs( 10 * log10( ph / po ) ) < 0.3, "level: the mean power over 24 directions %+.2f dB against the stereo pans'",
+		10 * log10( ph / po ) );
+
+	// a stereo sound with a direction: its two channels' mean, here the same as the mono sound
+	render( NULL, 2048 );
+	s = play3d( noise, 0.8f, 30, 20 );
+	MacSnd_Start( 0, &s );
+	render( ref, 4096 );
+	MacSnd_Stop( 0 );
+	render( NULL, 2048 );
+	s = play3d( noise2, 0.8f, 30, 20 );
+	MacSnd_Start( 0, &s );
+	render( out, 4096 );
+	MacSnd_Stop( 0 );
+	maxDiff = 0;
+	for ( i = 0; i < 2 * 4096; i++ )
+		maxDiff = fmaxf( maxDiff, fabsf( out[i] - ref[i] ) );
+	check( maxDiff < 1e-6f, "a stereo sound with a direction: the mean of its channels (%.2g from the mono sound)", maxDiff );
+
+	// the inputs: one while a voice plays, none 10 ms after it stopped; a voice at gain 0 takes none
+	render( NULL, 2048 );
+	s = play3d( noise, 0.8f, -40, 0 );
+	MacSnd_Start( 0, &s );
+	render( NULL, 640 );
+	MacSnd_GetStats( &st );
+	inputs = st.spatialInputs;
+	MacSnd_Stop( 0 );
+	off = inputs_off( 20 );
+	s = play3d( noise, 0.0f, 40, 0 );
+	MacSnd_Start( 1, &s );
+	render( NULL, 640 );
+	MacSnd_GetStats( &st );
+	check( inputs == 1 && off >= 7 && off <= 9 && st.spatialInputs == 0,
+		"inputs: 1 while a voice plays, 0 %d callbacks after its stop (%.1f ms), none for a voice at gain 0 (%d)", off,
+		off * BLOCK / RATE * 1000.0, st.spatialInputs );
+	MacSnd_Stop( 1 );
+
+	// a voice last to the left: a start to the right is on the right from its first callback; and at once, while
+	// that one plays out to the right, a start to the left on the left
+	render( NULL, 1024 );
+	s = play3d( noise, 0.8f, -90, 0 );
+	MacSnd_Start( 0, &s );
+	render( NULL, 2048 );
+	MacSnd_Stop( 0 );
+	render( NULL, 1024 );
+	s = play3d( noise, 0.8f, 90, 0 );
+	MacSnd_Start( 0, &s );
+	render( out, 256 );
+	d = right_left( out, 0, 64 );
+	MacSnd_Stop( 0 );
+	render( NULL, 64 );
+	s = play3d( noise, 0.8f, -90, 0 );
+	MacSnd_Start( 0, &s );
+	render( out, 256 );
+	dmax = right_left( out, 0, 64 );
+	MacSnd_Stop( 0 );
+	render( NULL, 2048 );
+	check( d > 6 && dmax < -6, "a new direction from the first callback: right %+.1f dB after a rest, left %+.1f dB "
+		"at once (a new input, the old one playing out to the right)", d, dmax );
+
+	// a playing voice switched from a stereo pan (hard right) to a direction to the left, then headphone 3D off
+	s = play( noise, 0.0f );
+	s.gainR = 0.8f;
+	s.loopCount = 0;
+	MacSnd_Start( 0, &s );
+	render( out, 1024 );
+	rl[0] = right_left( out, 0, 1024 );
+	MacSnd_SetParams3D( 0, 0.8f, -90, 0, 0 );
+	render( out, 1024 );
+	rl[1] = right_left( out, 64, 1024 );
+	MacSnd_SetSpatial( MACSND_STEREO );
+	render( out, 1024 );
+	rl[2] = right_left( out, 64, 1024 );
+	MacSnd_GetStats( &st );
+	check( rl[0] > 100 && rl[1] < -10 && fabs( rl[2] ) < 0.01 && st.spatialInputs == 0 && st.spatial == MACSND_STEREO,
+		"a pan to a direction: right %+.0f -> %+.1f dB; headphone 3D off: at the centre (%+.3f dB), its input off "
+		"after playing out", rl[0], rl[1], rl[2] );
+	MacSnd_SetSpatial( MACSND_HEADPHONES );
+	MacSnd_SetParams3D( 0, 0.8f, -90, 0, 0 );
+	render( out, 1024 );
+	rl[3] = right_left( out, 64, 1024 );
+	check( rl[3] < -10, "headphone 3D on again (the same unit): left %+.1f dB", rl[3] );
+
+	// a stop fades out without a step (a 1 kHz sine: no step larger than its own); a sound freed under a voice with a
+	// direction (its tail, then its input)
+	MacSnd_Stop( 0 );
+	render( NULL, 2048 );
+	MacSnd_SetStopFade( 1.5f );
+	s = play3d( sine, 0.8f, 45, 0 );
+	MacSnd_Start( 0, &s );
+	render( out, 2048 );
+	ownStep = 0;
+	for ( i = 1025; i < 2048; i++ )
+		ownStep = fmaxf( ownStep, fmaxf( fabsf( out[2 * i] - out[2 * i - 2] ), fabsf( out[2 * i + 1] - out[2 * i - 1] ) ) );
+	MacSnd_Stop( 0 );
+	render( out + 2 * 2048, 512 );
+	maxStep = 0;
+	for ( i = 2048; i < 2048 + 512; i++ )
+		maxStep = fmaxf( maxStep, fmaxf( fabsf( out[2 * i] - out[2 * i - 2] ), fabsf( out[2 * i + 1] - out[2 * i - 1] ) ) );
+	d = fmax( fabs( out[2 * 2559] ), fabs( out[2 * 2559 + 1] ) );
+	s = play3d( noise, 0.8f, 60, -30 );
+	MacSnd_Start( 2, &s );
+	render( NULL, 1024 );
+	MacSnd_FreeSound( noise );
+	for ( i = 0; i < 20; i++ ) {
+		render( out, BLOCK );
+		MacSnd_Update();
+	}
+	MacSnd_GetStats( &st );
+	check( maxStep <= ownStep && d < 1e-6 && st.spatialInputs == 0 && st.spatialErrors == 0
+		&& MacSnd_Status( 2 ) == MACSND_STOPPED && st.sounds == 3, "a stop fades out (largest step %.4f, the sine's own "
+		"%.4f; silent after 512 frames); a sound freed under a voice: its input off, the sound gone; %u render errors",
+		maxStep, ownStep, st.spatialErrors );
+	MacSnd_Shutdown();
+}
+
+/*
 The native driver's math (code/client/snd_native_math.h) against the plan's numbers (Phase 9, the parity checklist):
 the original's Fast 2D model, its pan laws, the volume scales and s_volume's law. OpenAL's levels for the same cases
 (openal-soft 1.25.2's stereo decoder, alc/panning.cpp: 0.5 +- 0.5 x left + 0.0957 x front a side) are printed beside
@@ -1061,6 +1349,23 @@ static void openal_pan( double front, double left, double *l, double *r )
 {
 	*l = 0.5 + 0.288675135 * sqrt( 3.0 ) * left + 0.0552305643 * sqrt( 3.0 ) * front;
 	*r = 0.5 - 0.288675135 * sqrt( 3.0 ) * left + 0.0552305643 * sqrt( 3.0 ) * front;
+}
+
+static void test_math_direction( void )
+{
+	float a[6], e[6];
+	const float s = 0.70710678f;
+
+	SNM_Direction( 1, 0, 0, &a[0], &e[0] );		// ahead
+	SNM_Direction( 0, -1, 0, &a[1], &e[1] );	// right
+	SNM_Direction( 0, 1, 0, &a[2], &e[2] );		// left
+	SNM_Direction( -1, 0, 0, &a[3], &e[3] );	// behind
+	SNM_Direction( s, 0, s, &a[4], &e[4] );		// ahead and up
+	SNM_Direction( 0, 0, 0, &a[5], &e[5] );		// at the listener
+	check( near( a[0], 0, 1e-4 ) && near( e[0], 0, 1e-4 ) && near( a[1], 90, 1e-4 ) && near( a[2], -90, 1e-4 )
+		&& near( fabs( a[3] ), 180, 1e-4 ) && near( a[4], 0, 1e-4 ) && near( e[4], 45, 1e-3 ) && a[5] == 0 && e[5] == 0
+		&& near( e[1], 0, 1e-4 ), "9f: the direction for headphone 3D: ahead %.0f, right %.0f, left %.0f, behind %.0f, "
+		"ahead and up %.0f / %.0f, at the listener %.0f / %.0f", a[0], a[1], a[2], a[3], a[4], e[4], a[5], e[5] );
 }
 
 static void test_math( void )
@@ -1170,6 +1475,8 @@ static void test_math( void )
 		&& SNM_Linear2D( 1600, 160, 1600 ) == 0, "B4: 2D linear falloff 160/1600 at 160, 880, 1600: 1, 0.5, 0" );
 	check( SNM_LoopLevel( 100, 160, 1600 ) == 1 && near( SNM_LoopLevel( 320, 160, 1600 ), 0.25, 1e-7 )
 		&& SNM_LoopLevel( 1600, 160, 1600 ) == 0, "B5: loops' inverse square 160/1600 at 100, 320, 1600: 1, 0.25, 0" );
+
+	test_math_direction();
 }
 
 /*
@@ -1375,16 +1682,30 @@ static void test_stress( double seconds )
 			s.loopEnd = random() % ( frames[k] + 1 );
 			s.loopCount = random() % 4;
 			s.paused = random() % 8 == 0;
+			s.spatial = random() % 2;
+			s.azimuth = (float)( random() % 400 - 200 );
+			s.elevation = (float)( random() % 200 - 100 );
 			MacSnd_Start( v, &s );
 			voiceFrames[v] = frames[k];
 			break;
 		case 4: MacSnd_Stop( v ); break;
 		case 5: MacSnd_Pause( v, random() % 2 ); break;
-		case 6: MacSnd_SetParams( v, (float)( random() % 150 ) / 100.0f, 0.5f, random() % 2 ? 0.0f : 30000.0f ); break;
+		case 6:
+			if ( random() % 2 )
+				MacSnd_SetParams( v, (float)( random() % 150 ) / 100.0f, 0.5f, random() % 2 ? 0.0f : 30000.0f );
+			else
+				MacSnd_SetParams3D( v, (float)( random() % 150 ) / 100.0f, (float)( random() % 1000 - 500 ),
+					(float)( random() % 300 - 150 ), random() % 2 ? 0.0f : 30000.0f );
+			break;
 		case 7: MacSnd_SetLoop( v, random() % 2000, random() % 4000, random() % 3 ); break;
 		case 8: MacSnd_Seek( v, random() % 5000 ); break;
 		case 9: MacSnd_SetStopFade( (float)( random() % 4 ) ); break;
-		case 10: MacSnd_SetResampler( random() % 2 ); MacSnd_SetMaster( (float)( random() % 200 ) / 100.0f ); break;
+		case 10:
+			MacSnd_SetResampler( random() % 2 );
+			MacSnd_SetMaster( (float)( random() % 200 ) / 100.0f );
+			if ( random() % 64 == 0 )
+				MacSnd_SetSpatial( random() % 2 );
+			break;
 		default: MacSnd_Update(); break;
 		}
 		status = MacSnd_Status( v );
@@ -1471,10 +1792,10 @@ static int device_init( int frames )
 	return 1;
 }
 
-static void device_run( int frames )
+static void device_run( int frames, int spatial )
 {
 	enum { TRIALS = 300 };
-	static const int counts[] = { 0, 16, 40, 96 };
+	static const int counts[] = { 0, 16, 40, 96 }, counts3d[] = { 0, 16, 40, 64 };
 	static double d[TRIALS];
 	macSndStats_t st, a, b;
 	macSndStart_t s;
@@ -1484,9 +1805,14 @@ static void device_run( int frames )
 	int snd, t, c, i, timeouts = 0;
 	short *zeros;
 
-	printf( "device, %d frames:\n", frames );
+	printf( "device, %d frames%s:\n", frames, spatial ? ", headphone 3D" : "" );
 	if ( !device_init( frames ) )
 		return;
+	if ( spatial && MacSnd_SetSpatial( MACSND_HEADPHONES ) != MACSND_HEADPHONES ) {
+		printf( "  no headphone 3D\n" );
+		MacSnd_Shutdown();
+		return;
+	}
 	MacSnd_GetStats( &st );
 	if ( !st.device[0] ) {
 		printf( "  no device\n" );
@@ -1503,7 +1829,8 @@ static void device_run( int frames )
 	srandom( 58 );
 	for ( t = 0; t < TRIALS; t++ ) {
 		usleep( 20000 + random() % 13000 );
-		s = play( snd, 1.0f );
+		s = spatial ? play3d( snd, 1.0f, (float)( random() % 360 - 180 ), 0 ) : play( snd, 1.0f );
+		s.loopCount = 1;
 		t0 = mach_absolute_time();
 		MacSnd_Start( 0, &s );
 		deadline = t0 + (uint64_t)( 100e6 * tb.denom / tb.numer );
@@ -1518,16 +1845,25 @@ static void device_run( int frames )
 		MacSnd_Stop( 0 );
 	}
 	qsort( d, TRIALS, sizeof( d[0] ), cmpd );
-	printf( "  start -> output (%d starts at random phases): mean %.2f p50 %.2f p95 %.2f max %.2f ms (min %.2f; latency %.2f ms in it)%s\n",
+	MacSnd_GetStats( &st );
+	printf( "  start -> output (%d starts at random phases): mean %.2f p50 %.2f p95 %.2f max %.2f ms (min %.2f; latency %.2f ms in it)%s",
 		TRIALS, sum / TRIALS, d[TRIALS / 2], d[TRIALS * 95 / 100], d[TRIALS - 1], d[0], lat * 1000.0,
 		timeouts ? " TIMEOUTS" : "" );
+	if ( spatial )
+		printf( "; the spatial mixer's own %.3f ms on top, %s HRTF", st.spatialLatency * 1000.0,
+			st.personalized ? "the personalized" : "Apple's" );
+	printf( "\n" );
 
-	// the CPU with N voices: looping, rates 0.9-1.1 of 22050, panned
+	// the CPU with N voices: looping, rates 0.9-1.1 of 22050, panned (or each in its own direction)
 	for ( c = 0; c < 4; c++ ) {
-		for ( i = 0; i < counts[c]; i++ ) {
-			s = play( snd, 1.0f );
-			s.gainL = 0.2f + ( i % 7 ) * 0.1f;
-			s.gainR = 0.9f - ( i % 7 ) * 0.1f;
+		const int n = spatial ? counts3d[c] : counts[c];
+
+		for ( i = 0; i < n; i++ ) {
+			s = spatial ? play3d( snd, 0.5f, -180.0f + 360.0f * i / 64, ( i % 5 ) * 15.0f - 30.0f ) : play( snd, 1.0f );
+			if ( !spatial ) {
+				s.gainL = 0.2f + ( i % 7 ) * 0.1f;
+				s.gainR = 0.9f - ( i % 7 ) * 0.1f;
+			}
 			s.rate = 22050.0f * ( 0.9f + ( i % 5 ) * 0.05f );
 			s.loopCount = 0;
 			MacSnd_Start( i, &s );
@@ -1542,14 +1878,16 @@ static void device_run( int frames )
 		MacSnd_GetStats( &b );
 		wms = ms( w1 - w0 );
 		printf( "  %2d voices: process CPU %.1f us per ms, %.0f cycles and %.0f instructions per ms (%.2f GHz), %.1f uJ per s; "
-			"the render %.1f us per ms, longest %.1f us, %d mixed; ", counts[c], ( u1.cpu - u0.cpu ) / wms,
+			"the render %.1f us per ms, longest %.1f us, %d mixed, %d spatial inputs; ", n, ( u1.cpu - u0.cpu ) / wms,
 			( u1.cycles - u0.cycles ) / wms, ( u1.instructions - u0.instructions ) / wms,
 			( u1.cycles - u0.cycles ) / ( ( u1.cpu - u0.cpu ) * 1000.0 ), ( u1.energy - u0.energy ) / wms,
-			( b.renderSeconds - a.renderSeconds ) * 1e6 / ( b.wallSeconds - a.wallSeconds ) / 1000.0, b.maxRender * 1e6, b.voices );
+			( b.renderSeconds - a.renderSeconds ) * 1e6 / ( b.wallSeconds - a.wallSeconds ) / 1000.0, b.maxRender * 1e6, b.voices,
+			b.spatialInputs );
 		print_cores( &a, &b );
 		printf( "\n" );
-		for ( i = 0; i < counts[c]; i++ )
+		for ( i = 0; i < n; i++ )
 			MacSnd_Stop( i );
+		usleep( 50000 );
 	}
 
 	// a re-created output unit (a device change): a looping voice goes on
@@ -1563,8 +1901,8 @@ static void device_run( int frames )
 	MacSnd_GetStats( &st );
 	check( st.reopens == 1 && st.device[0] && MacSnd_Status( 0 ) == MACSND_PLAYING && MacSnd_Position( 0 ) != i,
 		"restart: the unit re-created, the looping voice goes on (%d -> %d)", i, MacSnd_Position( 0 ) );
-	printf( "  callbacks %u, overloads %u, ring drops %u, longest render %.1f us\n", st.callbacks, st.overloads,
-		st.ringDrops, st.maxRender * 1e6 );
+	printf( "  callbacks %u, overloads %u, ring drops %u, longest render %.1f us, spatial render errors %u\n", st.callbacks,
+		st.overloads, st.ringDrops, st.maxRender * 1e6, st.spatialErrors );
 	MacSnd_Shutdown();
 }
 
@@ -1588,14 +1926,19 @@ static void device_load( int frames, int seconds, int threads, int voices )
 	int snd, i, t;
 	short *zeros;
 
-	printf( "load: %d frames, %d voices, %d s, %d spinning threads\n", frames, voices, seconds, threads );
+	const int spatial = getenv( "SNDTEST_SPATIAL" ) && atoi( getenv( "SNDTEST_SPATIAL" ) );
+
+	printf( "load: %d frames, %d voices, %d s, %d spinning threads%s\n", frames, voices, seconds, threads,
+		spatial ? ", headphone 3D (64 of them with a direction)" : "" );
 	if ( !device_init( frames ) )
 		return;
+	if ( spatial )
+		MacSnd_SetSpatial( MACSND_HEADPHONES );
 	zeros = calloc( 22050 * 2, sizeof( short ) );
 	snd = MacSnd_CreateSound( zeros, 22050 * 2, 1, 22050 );
 	free( zeros );
 	for ( i = 0; i < voices; i++ ) {
-		s = play( snd, 0.5f );
+		s = spatial && i < 64 ? play3d( snd, 0.5f, -180.0f + 360.0f * i / 64, 0 ) : play( snd, 0.5f );
 		s.rate = 22050.0f * ( 0.9f + ( i % 5 ) * 0.05f );
 		s.loopCount = 0;
 		MacSnd_Start( i, &s );
@@ -1667,13 +2010,15 @@ int main( int argc, char **argv )
 	setvbuf( stdout, NULL, _IOLBF, 0 );
 	if ( argc > 1 && !strcmp( argv[1], "stress" ) ) {
 		test_stress( argc > 2 ? atof( argv[2] ) : 5.0 );
-	} else if ( argc > 1 && !strcmp( argv[1], "device" ) ) {
+	} else if ( argc > 1 && ( !strcmp( argv[1], "device" ) || !strcmp( argv[1], "device3d" ) ) ) {
+		const int spatial = !strcmp( argv[1], "device3d" );
+
 		if ( argc == 2 ) {
-			device_run( 64 );
-			device_run( 32 );
+			device_run( 64, spatial );
+			device_run( 32, spatial );
 		}
 		for ( i = 2; i < argc; i++ )
-			device_run( atoi( argv[i] ) );
+			device_run( atoi( argv[i] ), spatial );
 	} else if ( argc > 1 && !strcmp( argv[1], "load" ) ) {
 		device_load( argc > 2 ? atoi( argv[2] ) : 64, argc > 3 ? atoi( argv[3] ) : 60, argc > 4 ? atoi( argv[4] ) : 0,
 			argc > 5 ? atoi( argv[5] ) : 96 );
@@ -1684,7 +2029,7 @@ int main( int argc, char **argv )
 		static const struct { const char *name; void ( *fn )( void ); } tests[] = {
 			{ "resample", test_resample }, { "loop", test_loop }, { "offset", test_offset }, { "pause", test_pause },
 			{ "ramp", test_ramp }, { "limiter", test_limiter }, { "free", test_free }, { "misc", test_misc },
-			{ "capture", test_capture }, { "stream", test_stream }, { "math", test_math }, { "ima", test_ima } };
+			{ "capture", test_capture }, { "stream", test_stream }, { "spatial", test_spatial }, { "math", test_math }, { "ima", test_ima } };
 		int t;
 
 		for ( t = 0; t < (int)( sizeof( tests ) / sizeof( tests[0] ) ); t++ ) {

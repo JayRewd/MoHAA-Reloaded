@@ -30,7 +30,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // Until 9g both drivers are in the binary: the latched s_native (1 by default since 9e) picks this one (snd_restart
 // switches), and at 0 every entry point hands its call to OpenAL's (the S_OPENAL_ names, snd_openal_new.h). The sound effects are 9c's; the
 // streamed sounds, the music (moods, crossfades), the triggered music, the movies' audio and playmp3 9d's: a stream
-// is read ahead into a mixer ring a little each frame, a short one decoded whole and looped by the mixer.
+// is read ahead into a mixer ring a little each frame, a short one decoded whole and looped by the mixer. Headphone
+// 3D (9f, s_speaker_type 1): the 3D voices go to the mixer with a direction, for Apple's HRTF, in place of the pan.
 //
 // A channel is a mixer voice, the same number. The policy code below keeps snd_openal_new.cpp's shape (the
 // channel's Miles-named methods), so the two compare line by line: a start sends everything at once (MacSnd_Start),
@@ -157,6 +158,8 @@ struct native_channel {
     int      iOffset;   // set_sample_offset: where the next start begins
     int      iLoopStart, iLoopEnd, iLoopCount;
     float    fPostedL, fPostedR, fPostedRate; // what the mixer was last told
+    float    fPostedAzimuth, fPostedElevation; // ... with a direction (headphone 3D: fPostedL is the level)
+    bool     bPostedDirection;
     vec3_t   vSpatial;    // the origin a 2D voice was last panned from (the event log)
     uint64_t iRequestTime; // the probe: the host time of a start not yet seen leaving the device
 
@@ -210,6 +213,8 @@ public:
     int sample_status();
 
     void gains(float *left, float *right);
+    bool direction(float *gain, float *azimuth, float *elevation);
+    bool post_direction();
     void post();
 };
 
@@ -222,6 +227,7 @@ static struct {
     vec3_t vListenerOrigin;
     vec3_t vListenerAxis[3];
     float  fMaster;
+    bool   bHeadphones; // 9f: headphone 3D in effect (s_speaker_type 1)
 
     // the event log, the capture
     fileHandle_t eventLog;
@@ -543,6 +549,30 @@ static void S_NATIVE_InitChannel(int idx, int iKind)
 
 /*
 ==============
+S_NATIVE_SpeakerType
+
+9f: s_speaker_type 1 is headphone 3D (Apple's spatial mixer, made the first time; the 3D voices posted with a
+direction from the next frame on); 0 stereo, the default; 2 and 3 (the original's 4 speakers and 5.1) play stereo:
+its Fast 2D was stereo, and this port has no surround output
+==============
+*/
+static void S_NATIVE_SpeakerType()
+{
+    const bool bWant = s_speaker_type->integer == 1;
+
+    s_speaker_type->modified = qfalse;
+    native.bHeadphones       = MacSnd_SetSpatial(bWant ? MACSND_HEADPHONES : MACSND_STEREO) == MACSND_HEADPHONES;
+    if (bWant && !native.bHeadphones) {
+        Com_Printf("sound: headphone 3D isn't available, stereo\n");
+    } else if (s_speaker_type->integer > 1) {
+        Com_Printf("sound: s_speaker_type %d plays stereo on the native driver\n", s_speaker_type->integer);
+    } else if (native_initialized || native.bHeadphones) {
+        Com_Printf("sound: %s\n", native.bHeadphones ? "headphone 3D" : "stereo");
+    }
+}
+
+/*
+==============
 S_NATIVE_Init
 ==============
 */
@@ -584,6 +614,7 @@ qboolean S_NATIVE_Init()
     mixer.bufferFrames = s_bufferFrames->integer;
     mixer.maxVoices    = NATIVE_CHANNELS;
     mixer.maxSounds    = MAX_SFX + 64;
+    mixer.maxSpatial   = 2 * (MAX_SOUNDSYSTEM_CHANNELS_3D + NATIVE_OVERFLOW_3D); // and as many playing out
     mixer.print        = S_NATIVE_MixerPrint;
     if (!MacSnd_Init(&mixer)) {
         Com_Printf("sound: the native mixer couldn't start. No audio will play.\n");
@@ -631,12 +662,9 @@ qboolean S_NATIVE_Init()
         native.parked[i] = {};
     }
 
-    if (s_speaker_type->integer) {
-        // 9f: headphone 3D; the original's Fast 2D was stereo (no 5.1 or quad)
-        Com_Printf("sound: s_speaker_type %d plays stereo on the native driver\n", s_speaker_type->integer);
-    }
-    s_speaker_type->modified = qfalse;
-    s_reverb->modified       = qfalse;
+    native.bHeadphones = false;
+    S_NATIVE_SpeakerType();
+    s_reverb->modified = qfalse;
 
     Cmd_AddCommand("playmp3", S_NATIVE_PlayMP3);
     Cmd_AddCommand("stopmp3", S_NATIVE_StopMP3);
@@ -723,6 +751,15 @@ static void S_NATIVE_Summary()
         stats.wallSeconds > 0 ? stats.renderSeconds * 1e3 / stats.wallSeconds : 0,
         stats.maxRender * 1e6
     );
+    if (stats.spatialMade) {
+        Com_Printf(
+            "sound: headphone 3D %s, %s HRTF, its latency %.2f ms, %u render errors\n",
+            stats.spatial == MACSND_HEADPHONES ? "on" : "off",
+            stats.personalized ? "the personalized" : "Apple's",
+            stats.spatialLatency * 1e3,
+            stats.spatialErrors
+        );
+    }
     Com_Printf(
         "sound: game thread %.2f us a frame over %u frames; %d sounds, %.1f MB\n",
         native.frames ? S_NATIVE_TicksToMs(native.gameTicks) * 1e3 / native.frames : 0,
@@ -882,6 +919,8 @@ void S_PrintInfo()
         Com_Printf("voices - %d playing, %d sounds (%.1f MB)\n", stats.voices, stats.sounds,
             stats.soundBytes / (1024.0 * 1024.0));
         Com_Printf("overloads - %u, ring drops - %u\n", stats.overloads, stats.ringDrops);
+        Com_Printf("speakers - %s\n", stats.spatial == MACSND_HEADPHONES ? (stats.personalized
+            ? "headphone 3D (the personalized HRTF)" : "headphone 3D (Apple's HRTF)") : "stereo");
     } else {
         Com_Printf("sound system not started\n");
     }
@@ -2651,8 +2690,7 @@ void S_NATIVE_Update()
     }
 
     if (s_speaker_type->modified) {
-        s_speaker_type->modified = qfalse;
-        Com_Printf("sound: s_speaker_type plays stereo on the native driver\n");
+        S_NATIVE_SpeakerType();
     }
 
     if (s_show_num_active_sounds->integer == 1) {
@@ -4504,7 +4542,7 @@ static void S_NATIVE_LogStart(native_channel *pChannel, float fLeft, float fRigh
         native.eventLog,
         "start t %d st %d v %d k %s loop %d ent %d ch %d sfx %s vol %.9g min %.9g max %.9g rate %.9g base %d "
         "pos %.9g %.9g %.9g lis %.9g %.9g %.9g fwd %.9g %.9g %.9g left %.9g %.9g %.9g pan %d gain %.9g "
-        "L %.9g R %.9g master %.9g 3d %d stereo %d\n",
+        "L %.9g R %.9g master %.9g 3d %d stereo %d hrtf %d az %.9g el %.9g\n",
         cls.realtime,
         cl.serverTime,
         pChannel->iVoice,
@@ -4536,7 +4574,10 @@ static void S_NATIVE_LogStart(native_channel *pChannel, float fLeft, float fRigh
         fRight,
         native.fMaster,
         pChannel->b3D,
-        pChannel->channels() == 2
+        pChannel->channels() == 2,
+        pChannel->bPostedDirection,
+        pChannel->bPostedDirection ? pChannel->fPostedAzimuth : 0.f,
+        pChannel->bPostedDirection ? pChannel->fPostedElevation : 0.f
     );
 }
 
@@ -4582,10 +4623,75 @@ void native_channel::gains(float *left, float *right)
 
 /*
 ==============
-native_channel::post
+native_channel::direction
+
+9f, headphone 3D: a 3D voice's level by the Fast 2D distance model (B1) and its direction for Apple's HRTF, which
+replaces the pan (C6); false for a 2D voice, without headphone 3D, or at the listener (no direction: the pan's centre)
 ==============
 */
-void native_channel::post()
+bool native_channel::direction(float *gain, float *azimuth, float *elevation)
+{
+    vec3_t dir;
+    float  d;
+
+    if (!b3D || !native.bHeadphones) {
+        return false;
+    }
+
+    VectorSubtract(vPosition, native.vListenerOrigin, dir);
+    d = VectorNormalize(dir);
+    if (d < SNM_NEAR) {
+        return false;
+    }
+
+    *gain = fGain * SNM_Distance(d, fMinDist, fMaxDist);
+    SNM_Direction(
+        DotProduct(dir, native.vListenerAxis[0]),
+        DotProduct(dir, native.vListenerAxis[1]),
+        DotProduct(dir, native.vListenerAxis[2]),
+        azimuth,
+        elevation
+    );
+    return true;
+}
+
+/*
+==============
+native_channel::post_direction
+
+Headphone 3D's post: false when the voice has no direction. Out of line, so post() stays small in the loop over every
+channel, twice a frame
+==============
+*/
+__attribute__((noinline)) bool native_channel::post_direction()
+{
+    float g, az, el;
+
+    if (!direction(&g, &az, &el)) {
+        return false;
+    }
+
+    if (!bPostedDirection || g != fPostedL || az != fPostedAzimuth || el != fPostedElevation || fRate != fPostedRate) {
+        MacSnd_SetParams3D(iVoice, g, az, el, fRate);
+        fPostedL         = g;
+        fPostedR         = g;
+        fPostedAzimuth   = az;
+        fPostedElevation = el;
+        fPostedRate      = fRate;
+        bPostedDirection = true;
+    }
+    return true;
+}
+
+/*
+==============
+native_channel::post
+
+Always inlined in its one caller, the loop over every channel twice a frame (S_NATIVE_PostAll): a call per channel
+there costs the driver ~0.85 us a frame on the bench (session 62)
+==============
+*/
+__attribute__((always_inline)) void native_channel::post()
 {
     float l, r;
 
@@ -4593,12 +4699,17 @@ void native_channel::post()
         return;
     }
 
+    if (b3D && native.bHeadphones && post_direction()) {
+        return;
+    }
+
     gains(&l, &r);
-    if (l != fPostedL || r != fPostedR || fRate != fPostedRate) {
+    if (bPostedDirection || l != fPostedL || r != fPostedR || fRate != fPostedRate) {
         MacSnd_SetParams(iVoice, l, r, fRate);
-        fPostedL    = l;
-        fPostedR    = r;
-        fPostedRate = fRate;
+        fPostedL         = l;
+        fPostedR         = r;
+        fPostedRate      = fRate;
+        bPostedDirection = false;
     }
 }
 
@@ -4628,8 +4739,16 @@ void native_channel::play()
         return;
     }
 
-    gains(&l, &r);
     memset(&start, 0, sizeof(start));
+    bPostedDirection = direction(&l, &start.azimuth, &start.elevation);
+    if (bPostedDirection) {
+        r                = l;
+        start.spatial    = 1;
+        fPostedAzimuth   = start.azimuth;
+        fPostedElevation = start.elevation;
+    } else {
+        gains(&l, &r);
+    }
     start.sound      = iSound;
     start.gainL      = l;
     start.gainR      = r;
@@ -5130,10 +5249,11 @@ void native_channel::stream_start(bool bPaused)
     start.paused = bPaused;
     MacSnd_Start(iVoice, &start);
 
-    fPostedL     = l;
-    fPostedR     = r;
-    fPostedRate  = fRate;
-    iRequestTime = mach_absolute_time();
+    fPostedL         = l;
+    fPostedR         = r;
+    fPostedRate      = fRate;
+    bPostedDirection = false;
+    iRequestTime     = mach_absolute_time();
 
     if (s_eventLog->integer) {
         S_NATIVE_LogStart(this, l, r);
