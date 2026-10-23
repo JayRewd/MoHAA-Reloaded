@@ -108,7 +108,7 @@ The install signs `install/lib/openmohaa/openmohaa.app` ad hoc (the game librari
 
 ## Looks and limits
 
-- **Looks like GL1**, except on purpose: foliage drawn after walls (a few tie pixels), all of 32+ dynamic lights lighting the world (MOHAA lit nothing on arm64), doors and lifts lit by every dynamic light, models at full detail, and `r_gamma` applied in the final pass instead of the display's gamma table.
+- **Looks like GL1**, except on purpose: foliage drawn after walls (a few tie pixels), all of 32+ dynamic lights lighting the world (MOHAA lit nothing on arm64), doors and lifts lit by every dynamic light, models at full detail, the chat and game messages kept clear of the compass at every resolution, and `r_gamma` applied in the final pass instead of the display's gamma table.
 - **Tested on one Mac.** Reports from other Macs and ProMotion displays are welcome.
 - **Not notarized**, hence the quarantine step.
 - **At low frame caps** (about 60 or less) with `cl_movefps` on, the game keeps a CPU core busy between frames to send each command on time.
@@ -117,6 +117,6 @@ The install signs `install/lib/openmohaa/openmohaa.app` ad hoc (the game librari
 ## More
 
 - The full record of the port (every decision, measurement and session): [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
-- Upstream, its documentation and community: [openmoh/openmohaa](https://github.com/openmoh/openmohaa). Its guides in [`docs/markdown`](docs/markdown) apply here except for Windows, Linux, the launchers and building.
+- Upstream, its documentation and community: [openmoh/openmohaa](https://github.com/openmoh/openmohaa). Its guides in [`docs/markdown`](docs/markdown) apply here except for Windows, Linux, the launchers, the update checker, where configs go (above) and building.
 - Thanks to the OpenMoHAA team for the engine (built on [ioquake3](https://github.com/ioquake/ioq3) and the F.A.K.K SDK), to JayRewd, whose ideas were measured and re-implemented here, and to notuern for the sub-grid.
 - OpenMoHAA is GPL-2.0 ([`COPYING.txt`](COPYING.txt)). It is an independent project, not affiliated with or endorsed by Electronic Arts.
