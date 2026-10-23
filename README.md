@@ -1,9 +1,9 @@
-# OpenMoHAA for Apple Silicon: a native Metal port
+# MoHAA Reloaded: native Metal for Apple Silicon
 
-A native macOS port of [OpenMoHAA](https://github.com/openmoh/openmohaa) for Apple Silicon Macs. It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
+**MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `metal` branch: a native macOS port for Apple Silicon Macs. It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
 
 > [!IMPORTANT]
-> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/openmohaa-metal/issues), not upstream's tracker or Discord.
+> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues), not upstream's tracker or Discord.
 
 - **Metal only.** Hand-written Metal shaders, no OpenGL, no translation layers (no MoltenVK, ANGLE or similar).
 - **Native macOS.** The window, keyboard and mouse are AppKit and GCMouse (raw mouse input), and the sound is the port's own mixer on Core Audio, playing MOHAA's sound as the PC original did. No SDL, no OpenAL.
@@ -15,7 +15,7 @@ Needs an Apple Silicon Mac (M1 or later) with macOS 26 or later. Developed and m
 
 ## Install
 
-1. Download `openmohaa-metal-<version>-macos-arm64.zip` from [Releases](https://github.com/pstngh/openmohaa-metal/releases) and unzip it.
+1. Download `openmohaa-metal-<version>-macos-arm64.zip` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases) and unzip it.
 2. **Clear the quarantine, once.** The app is signed ad hoc, not notarized by Apple, so macOS refuses to run the download until you do. In Terminal, type `xattr -dr com.apple.quarantine ` (with the trailing space), drag the unzipped folder onto the window and press Return:
    ```bash
    xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
