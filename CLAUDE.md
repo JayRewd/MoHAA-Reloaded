@@ -8,7 +8,7 @@
 
 Standing requirement, added by the user on 2026-10-16: "can we also optimize for lowest input lag/delay possible? like lowest overhead". Judge every design choice on input-to-photon latency and overhead as well as fps. Rules in the plan, §4b.
 
-**Status: all phases (0–8) are done** (session 44, 2026-10-20). `docs/METAL_PORT_PLAN.md` holds the closing summary (at the top), every decision (§3), the measurements (§2) and, in §6, what is optional, parked or needs the user. `README.md`'s first section is the user-facing description. Release 1 is out: [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0) (session 46, ad-hoc signed, `io.github.pstngh.openmohaa-metal`); §6 "Release 1, what is left" has what follows. New work starts only when the user brings it up: read the plan's closing summary and §6 first.
+**Status: all phases (0–8) are done** (session 44, 2026-10-20). `docs/METAL_PORT_PLAN.md` holds the closing summary (at the top), every decision (§3), the measurements (§2) and, in §6, what is optional, parked or needs the user. `README.md`'s first section is the user-facing description. Release 1 is out: [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0) (session 46, ad-hoc signed, `io.github.pstngh.openmohaa-metal`); §6 "Release 1, what is left" has what follows. New work starts only when the user brings it up: read the plan's closing summary and §6 first. **Phase 9 is in progress** (the user's choice of 2026-10-22, §3.1 #36): a native sound engine, our own mixer on Core Audio playing the PC original's Miles behavior, openal-soft out at the end; the plan's Phase 9 is its spec (9a, the survey and design, done in session 57).
 
 ## Repo layout
 
