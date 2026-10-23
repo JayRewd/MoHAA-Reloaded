@@ -2,8 +2,13 @@
 
 **MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `metal` branch: a native macOS port for Apple Silicon Macs. It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
 
+| Branch | Renderer | Status |
+|---|---|---|
+| **`metal`** (this one) | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
+| `vulkan` | Vulkan | Coming soon |
+
 > [!IMPORTANT]
-> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues), not upstream's tracker or Discord.
+> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
 
 - **Metal only.** Hand-written Metal shaders, no OpenGL, no translation layers (no MoltenVK, ANGLE or similar).
 - **Native macOS.** The window, keyboard and mouse are AppKit and GCMouse (raw mouse input), and the sound is the port's own mixer on Core Audio, playing MOHAA's sound as the PC original did. No SDL, no OpenAL.
