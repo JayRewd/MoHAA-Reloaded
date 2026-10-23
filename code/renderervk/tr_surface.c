@@ -898,14 +898,20 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 	if (RB_StaticBatch()) {
 		if (RB_StaticAddSurface((surfaceType_t *)p, p->dlightBits, qtrue)) {
 			glIndex_t *out = RB_StaticCopyIndexes();
+			const glIndex_t *kept;
 			int n = 0;
 
-			for (i = p->iTriHead; i; i = g_pTris[i].iNext) {
-				if (g_pTris[i].byConstChecks & 4) {
-					out[n] = g_pTris[i].iPt[0];
-					out[n + 1] = g_pTris[i].iPt[1];
-					out[n + 2] = g_pTris[i].iPt[2];
-					n += 3;
+			kept = RB_TerrainPatchIndexes(p, &n);
+			if (kept) {
+				Com_Memcpy(out, kept, n * sizeof(glIndex_t));
+			} else {
+				for (i = p->iTriHead; i; i = g_pTris[i].iNext) {
+					if (g_pTris[i].byConstChecks & 4) {
+						out[n] = g_pTris[i].iPt[0];
+						out[n + 1] = g_pTris[i].iPt[1];
+						out[n + 2] = g_pTris[i].iPt[2];
+						n += 3;
+					}
 				}
 			}
 			RB_StaticIndexesAdded(n);

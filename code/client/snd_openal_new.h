@@ -228,6 +228,8 @@ extern "C" {
     void S_OPENAL_Respatialize(int iEntNum, const vec3_t vHeadPos, const vec3_t vAxis[3]);
     void S_OPENAL_SetReverb(int iType, float fLevel);
     void S_OPENAL_Update();
+    void S_OPENAL_PreloadSfx(sfx_t *pSfx);
+    void S_OPENAL_FreeSfx(sfx_t *pSfx);
 
     const char  *S_OPENAL_GetMusicFilename();
     int          S_OPENAL_GetMusicLoopCount();

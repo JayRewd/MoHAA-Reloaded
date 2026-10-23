@@ -94,7 +94,54 @@ static int   g_nLivePatches;
 static byte *g_pPatchLive;	// per patch: in g_pLivePatches
 static int   g_iLiveWindow;	// the merging's window when the list was filled
 
+// what the walks can leave out (r_terrainCache), kept up to date whatever
+// its bits, per patch: the lowest uiDistRecalc of its vertexes after
+// R_DoGeomorphs last walked it (0 once a vertex is added); the merging's
+// mode when R_DoTriMerging last walked it (TER_MERGE_*), 0 once anything
+// its merges read changed (a split or merge in it or in a neighbour, a
+// vertex height in it); the indexes of its drawn triangles in the order of
+// its list (RB_DrawTerrainTris), -1 once the list changed
+#define TER_MERGE_CAUTIOUS   1
+#define TER_MERGE_AGGRESSIVE 2
+// two root triangles, each split down to MAX_TERRAIN_LOD
+#define TER_PATCH_MAX_INDEXES (2 * 64 * 3)
+
+static unsigned int *g_pPatchMorphRecalc;
+static byte         *g_pPatchMergeMode;
+static glIndex_t    *g_pPatchIndexes;
+static short        *g_pPatchNumIndexes;
+static int           g_iTerCache;	// r_terrainCache, read once a frame
+
 static void R_FreeTerrainLists();
+
+/*
+================
+R_TerrainPatchChanged
+
+A split or a merge in the patch: its list of triangles changed, and the
+merges in it and in its neighbours (whose base triangles can be in it) may
+go differently
+================
+*/
+static void R_TerrainPatchChanged(const cTerraPatchUnpacked_t *patch)
+{
+    int iPatch = patch - tr.world->terraPatches;
+
+    g_pPatchNumIndexes[iPatch] = -1;
+    g_pPatchMergeMode[iPatch]  = 0;
+    if (patch->iNorth >= 0) {
+        g_pPatchMergeMode[patch->iNorth] = 0;
+    }
+    if (patch->iEast >= 0) {
+        g_pPatchMergeMode[patch->iEast] = 0;
+    }
+    if (patch->iSouth >= 0) {
+        g_pPatchMergeMode[patch->iSouth] = 0;
+    }
+    if (patch->iWest >= 0) {
+        g_pPatchMergeMode[patch->iWest] = 0;
+    }
+}
 
 /*
 ================
@@ -121,8 +168,9 @@ static void R_FillLivePatches()
     int i;
 
     for (i = 0; i < tr.world->numTerraPatches; i++) {
-        g_pLivePatches[i] = i;
-        g_pPatchLive[i]   = qtrue;
+        g_pLivePatches[i]    = i;
+        g_pPatchLive[i]      = qtrue;
+        g_pPatchMergeMode[i] = 0;
     }
 
     g_nLivePatches = tr.world->numTerraPatches;
@@ -153,7 +201,8 @@ static void R_AddLivePatch(int iPatch)
     memmove(&g_pLivePatches[lo + 1], &g_pLivePatches[lo], (g_nLivePatches - lo) * sizeof(g_pLivePatches[0]));
     g_pLivePatches[lo] = iPatch;
     g_nLivePatches++;
-    g_pPatchLive[iPatch] = qtrue;
+    g_pPatchLive[iPatch]      = qtrue;
+    g_pPatchMergeMode[iPatch] = 0;
 }
 
 /*
@@ -195,6 +244,7 @@ static terraInt R_AllocateVert(cTerraPatchUnpacked_t *patch)
 
     g_pVert[iVert].nRef         = 0;
     g_pVert[iVert].uiDistRecalc = 0;
+    g_pPatchMorphRecalc[patch - tr.world->terraPatches] = 0;
     // its position and texture coordinates follow
     R_MarkVertChanged(&g_pVert[iVert]);
 
@@ -290,6 +340,7 @@ terraInt R_AllocateTri(cTerraPatchUnpacked_t *patch, qboolean check)
     patch->drawinfo.nTris++;
     assert(g_tri.nFree > 0);
     g_tri.nFree--;
+    g_pPatchNumIndexes[patch - tr.world->terraPatches] = -1;
 
     g_pTris[iTri].byConstChecks = check ? 0 : 4;
     g_pTris[iTri].uiDistRecalc  = 0;
@@ -334,6 +385,7 @@ static void R_ReleaseTri(cTerraPatchUnpacked_t *patch, terraInt iTri)
     g_pTris[g_tri.iFreeHead].iPrev = iTri;
     g_tri.iFreeHead                = iTri;
     g_tri.nFree++;
+    g_pPatchNumIndexes[patch - tr.world->terraPatches] = -1;
 
     for (int i = 0; i < 3; i++) {
         terraInt ptNum = pTri->iPt[i];
@@ -405,6 +457,7 @@ static void R_DemoteInAncestry(cTerraPatchUnpacked_t *patch, terraInt iTri)
     g_pTris[iTri].iNext                       = patch->drawinfo.iMergeHead;
     g_pTris[patch->drawinfo.iMergeHead].iPrev = iTri;
     patch->drawinfo.iMergeHead                = iTri;
+    g_pPatchNumIndexes[patch - tr.world->terraPatches] = -1;
 }
 
 /*
@@ -485,6 +538,8 @@ void R_SplitTri(
     int                iNextLod = pSplit->lod + 1;
     int                index    = pSplit->index;
     varnodeUnpacked_t *varnode  = &pSplit->varnode[index];
+
+    R_TerrainPatchChanged(pSplit->patch);
 
     if (pLeft) {
         pLeft->patch   = pSplit->patch;
@@ -654,6 +709,7 @@ static void R_ForceMerge(terraInt iTri)
     terraInt               iNext = pTri->iNext;
 
     g_nMerge++;
+    R_TerrainPatchChanged(patch);
 
     if (pTri->iLeftChild) {
         terraInt iLeft = g_pTris[pTri->iLeftChild].iBase;
@@ -794,6 +850,15 @@ static void R_PreTessellateTerrain()
 
     g_pLivePatches = ri.Malloc(numTerrainPatches * sizeof(g_pLivePatches[0]));
     g_pPatchLive   = ri.Malloc(numTerrainPatches);
+
+    g_pPatchMorphRecalc = ri.Malloc(numTerrainPatches * sizeof(g_pPatchMorphRecalc[0]));
+    g_pPatchMergeMode   = ri.Malloc(numTerrainPatches);
+    g_pPatchIndexes     = ri.Malloc(numTerrainPatches * TER_PATCH_MAX_INDEXES * sizeof(g_pPatchIndexes[0]));
+    g_pPatchNumIndexes  = ri.Malloc(numTerrainPatches * sizeof(g_pPatchNumIndexes[0]));
+    for (size_t i = 0; i < numTerrainPatches; i++) {
+        g_pPatchMorphRecalc[i] = 0;
+        g_pPatchNumIndexes[i]  = -1;
+    }
     R_FillLivePatches();
 
     // Init triangles & vertices
@@ -1040,7 +1105,7 @@ static qboolean R_NeedSplitTri(terraTri_t *pTri)
 R_CalcVertMorphHeight
 ================
 */
-static void R_CalcVertMorphHeight(terrainVert_t *pVert)
+static qboolean R_CalcVertMorphHeight(terrainVert_t *pVert)
 {
     float dot;
     float z = pVert->xyz[2];
@@ -1065,7 +1130,10 @@ static void R_CalcVertMorphHeight(terrainVert_t *pVert)
 
     if (memcmp(&pVert->xyz[2], &z, sizeof(z))) {
         R_MarkVertChanged(pVert);
+        return qtrue;
     }
+
+    return qfalse;
 }
 
 /*
@@ -1073,11 +1141,13 @@ static void R_CalcVertMorphHeight(terrainVert_t *pVert)
 R_UpdateVertMorphHeight
 ================
 */
-static void R_UpdateVertMorphHeight(terrainVert_t *pVert)
+static qboolean R_UpdateVertMorphHeight(terrainVert_t *pVert)
 {
     if (pVert->uiDistRecalc <= g_uiTerDist) {
-        R_CalcVertMorphHeight(pVert);
+        return R_CalcVertMorphHeight(pVert);
     }
+
+    return qfalse;
 }
 
 /*
@@ -1149,6 +1219,8 @@ static void R_DoGeomorphs()
     for (i = 0, n = 0; i < g_nLivePatches; i++) {
         int                    iPatch = g_pLivePatches[i];
         cTerraPatchUnpacked_t *patch  = &tr.world->terraPatches[iPatch];
+        qboolean               moved  = qfalse;
+        unsigned int           lowest = ~0u;
 
         g_vert.iCur = patch->drawinfo.iVertHead;
 
@@ -1156,17 +1228,27 @@ static void R_DoGeomorphs()
             if (patch->byDirty) {
                 while (g_vert.iCur) {
                     terrainVert_t *pVert = &g_pVert[g_vert.iCur];
-                    R_CalcVertMorphHeight(pVert);
+                    moved |= R_CalcVertMorphHeight(pVert);
+                    if (pVert->uiDistRecalc < lowest) {
+                        lowest = pVert->uiDistRecalc;
+                    }
                     g_vert.iCur = pVert->iNext;
                 }
 
-                patch->byDirty = qfalse;
-            } else {
+                patch->byDirty              = qfalse;
+                g_pPatchMorphRecalc[iPatch] = lowest;
+            } else if (g_pPatchMorphRecalc[iPatch] <= g_uiTerDist || !(g_iTerCache & 1)) {
+                // (else no vertex of it needs its height again)
                 while (g_vert.iCur) {
                     terrainVert_t *pVert = &g_pVert[g_vert.iCur];
-                    R_UpdateVertMorphHeight(pVert);
+                    moved |= R_UpdateVertMorphHeight(pVert);
+                    if (pVert->uiDistRecalc < lowest) {
+                        lowest = pVert->uiDistRecalc;
+                    }
                     g_vert.iCur = pVert->iNext;
                 }
+
+                g_pPatchMorphRecalc[iPatch] = lowest;
             }
         } else {
             if (!patch->byDirty) {
@@ -1175,11 +1257,17 @@ static void R_DoGeomorphs()
                     terrainVert_t *pVert = &g_pVert[g_vert.iCur];
                     if (memcmp(&pVert->xyz[2], &pVert->fHgtAvg, sizeof(pVert->fHgtAvg))) {
                         R_MarkVertChanged(pVert);
+                        moved = qtrue;
                     }
                     pVert->xyz[2] = pVert->fHgtAvg;
                     g_vert.iCur   = pVert->iNext;
                 }
             }
+        }
+
+        if (moved) {
+            // the merges in it test its vertexes' heights
+            g_pPatchMergeMode[iPatch] = 0;
         }
 
         // R_DoTriMerging leaves a patch alone from g_iLiveWindow frames
@@ -1273,16 +1361,34 @@ static void R_DoTriMerging()
 
     // the patches past the window don't merge (R_DoGeomorphs)
     for (int i = 0; i < g_nLivePatches; i++) {
-        const cTerraPatchUnpacked_t *patch = &tr.world->terraPatches[g_pLivePatches[i]];
+        int                          iPatch = g_pLivePatches[i];
+        const cTerraPatchUnpacked_t *patch  = &tr.world->terraPatches[iPatch];
+        int                          mode;
+
+        if (patch->visCountDraw >= iCautiousFrame) {
+            mode = TER_MERGE_CAUTIOUS;
+        } else if (patch->visCountDraw > iCautiousFrame - 10) {
+            mode = TER_MERGE_AGGRESSIVE;
+        } else {
+            continue;
+        }
+
+        if (g_pPatchMergeMode[iPatch] == mode && (g_iTerCache & 2)) {
+            // every merge in it failed when it was last walked in this mode,
+            // and nothing they read changed since
+            continue;
+        }
+        // set before the walk: what the walk changes walks it again
+        g_pPatchMergeMode[iPatch] = mode;
 
         g_tri.iCur = patch->drawinfo.iMergeHead;
-        if (patch->visCountDraw >= iCautiousFrame) {
+        if (mode == TER_MERGE_CAUTIOUS) {
             while (g_tri.iCur) {
                 if (!R_MergeInternalCautious()) {
                     g_tri.iCur = g_pTris[g_tri.iCur].iNext;
                 }
             }
-        } else if (patch->visCountDraw > iCautiousFrame - 10) {
+        } else {
             while (g_tri.iCur) {
                 if (!R_MergeInternalAggressive()) {
                     g_tri.iCur = g_pTris[g_tri.iCur].iNext;
@@ -1299,6 +1405,8 @@ R_TessellateTerrain
 */
 void R_TessellateTerrain()
 {
+    g_iTerCache = r_terrainCache->integer;
+
     R_DoTriSplitting();
     // Morph geometry according to the view
     R_DoGeomorphs();
@@ -1364,6 +1472,10 @@ void R_TerrainPrepareFrame()
 
             for (index = 0; index < g_nVerts; index++) {
                 g_pVert[index].uiDistRecalc = 0;
+            }
+
+            for (index = 0; index < tr.world->numTerraPatches; index++) {
+                g_pPatchMorphRecalc[index] = 0;
             }
 
             g_uiTerDist = 0;
@@ -1836,6 +1948,22 @@ static void R_FreeTerrainLists()
         ri.Free(g_pPatchLive);
         g_pPatchLive = NULL;
     }
+    if (g_pPatchMorphRecalc) {
+        ri.Free(g_pPatchMorphRecalc);
+        g_pPatchMorphRecalc = NULL;
+    }
+    if (g_pPatchMergeMode) {
+        ri.Free(g_pPatchMergeMode);
+        g_pPatchMergeMode = NULL;
+    }
+    if (g_pPatchIndexes) {
+        ri.Free(g_pPatchIndexes);
+        g_pPatchIndexes = NULL;
+    }
+    if (g_pPatchNumIndexes) {
+        ri.Free(g_pPatchNumIndexes);
+        g_pPatchNumIndexes = NULL;
+    }
     g_nLivePatches = 0;
 }
 
@@ -1861,6 +1989,47 @@ qboolean RB_TerrainPool(void)
     );
     g_bVertChanged = qfalse;
     return ok;
+}
+
+/*
+================
+RB_TerrainPatchIndexes
+
+The indexes RB_DrawTerrainTris writes for a patch: the slots of its drawn
+triangles' vertexes in the order of its list, kept until the list changes
+(r_terrainCache 4; NULL without it)
+================
+*/
+const glIndex_t *RB_TerrainPatchIndexes(const srfTerrain_t *p, int *numIndexes)
+{
+    int        iPatch = (const cTerraPatchUnpacked_t *)p - tr.world->terraPatches;
+    glIndex_t *out;
+    int        i, n;
+
+    if (!(r_terrainCache->integer & 4)) {
+        return NULL;
+    }
+
+    out = &g_pPatchIndexes[iPatch * TER_PATCH_MAX_INDEXES];
+    if (g_pPatchNumIndexes[iPatch] < 0) {
+        n = 0;
+        for (i = p->iTriHead; i; i = g_pTris[i].iNext) {
+            if (g_pTris[i].byConstChecks & 4) {
+                if (n + 3 > TER_PATCH_MAX_INDEXES) {
+                    // no more than MAX_TERRAIN_LOD makes
+                    return NULL;
+                }
+                out[n]     = g_pTris[i].iPt[0];
+                out[n + 1] = g_pTris[i].iPt[1];
+                out[n + 2] = g_pTris[i].iPt[2];
+                n += 3;
+            }
+        }
+        g_pPatchNumIndexes[iPatch] = n;
+    }
+
+    *numIndexes = g_pPatchNumIndexes[iPatch];
+    return out;
 }
 
 /*

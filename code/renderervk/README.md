@@ -397,6 +397,20 @@ below are done.
   less at 250 frames a second, the 99.9th percentile the same or lower, and
   a match's first frames no longer decode the song's first buffers; the
   same frames, and the same PCM queued (see Performance, Round changes)
+- busy moments (2026-10-23, the renderer and the engine's sound system):
+  the slow frames of two matches profiled again; the terrain's
+  tessellation leads in one of them. Its geomorph and merging leave out
+  the patches where they would change nothing and a patch's indexes are
+  kept until its triangles change (`r_terrainCache`; the same
+  tessellation, checked over 21 matches), and each registered sound's
+  OpenAL buffer is made when the registration ends instead of in the
+  frame that first
+  plays it (`s_loadBuffers`: 131 to 146 first plays a match, 0.2 to 0.6
+  ms each; 47.6 MB of buffers at the load). In `o4match` the 99th
+  percentile goes from 1.52 to 1.37 ms uncapped and the mean 70 µs lower,
+  input to present lower at every percentile (at 250 the 99.9th 2.22 to
+  1.80 ms); `o2match` 0.03 to 0.06 ms lower; the slowest 0.1 % unchanged;
+  the same frames (see Performance, Busy moments)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -480,7 +494,11 @@ update that doesn't wait; `code/client/snd_dma_new.cpp`: the cvars,
 `MUSIC_FlushCaches` at each load; `code/client/cl_cgame.cpp`:
 `CL_ConfigstringModified`, `cl_csAppend`, the cgame import
 `GetConfigString`; `code/cgame/cg_servercmds.c`: `CG_ConfigStringModified`,
-`cg_csAppend`; see Implementation notes, Round changes).
+`cg_csAppend`; see Implementation notes, Round changes), and the busy
+moments (`code/client/snd_openal_new.cpp`: `S_OPENAL_LoadSfxBuffer`,
+`S_OPENAL_PreloadSfx`, `S_OPENAL_FreeSfx`; `code/client/snd_dma_new.cpp`:
+`S_EndRegistration`, `s_loadBuffers`; see Implementation notes, Sound
+buffers at load).
 
 ## Build and run
 
@@ -519,6 +537,7 @@ Cvars of the backend:
 | `r_maxDlights` (latched, archived, default 4) | 0 to 64: the dynamic lights a scene keeps, the nearest the view of those cgame added (GL1: the first 32 added to the frame); see Implementation notes, Dynamic lights |
 | `r_staticEffects` (default 1) | 0 leaves the static batches whose shaders deform vertexes or compute texture coordinates or colors per vertex to the CPU (tess) instead of the effects shader (see Implementation notes, Effects shader) |
 | `r_staticTerrain` (default 1) | 0 copies the LOD terrain's vertexes into tess every frame instead of drawing them from the terrain pool (see Implementation notes, Terrain) |
+| `r_terrainCache` (default 7) | bits: 1 the LOD terrain's geomorph leaves out the patches whose vertexes need no new height, 2 its merging leaves out the patches where nothing changed since every merge in them failed, 4 a patch's indexes are kept until its triangles change; 0 walks everything every frame (the same tessellation either way, see Implementation notes, Terrain) |
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
@@ -1741,6 +1760,39 @@ With temporary test builds (not kept):
 - `obj/obj_team1`'s flak wreck (see Plan, Remaining 1), one run of that
   match with the registration trace of Plan 28: the wreck and its
   explosion load with the map since `z_forteffa.pk3` left the game data.
+
+The busy moments (2026-10-23, see Performance, Busy moments; the renderer
+and the engine's sound system), the renderer of the build before against
+the new one, both with the new engine (`run.sh` through `cmplists.sh`,
+`tgadiff.py`, 640x480, `r_vkValidation 1`): on 47 view lists (all but
+`m3l1a` and the performance lists; 203 views), with the sky's faces
+culled then, 169 give the same frames to the bit; 33 others are in lists
+whose frames differ between two runs of the build before too (run again
+with it twice, with the sky part off and on: the snow of `dm/mohdm5` and
+`m6l1a`, `dm/mohdm7`'s and `pm7_front`'s pixels, the vehicle starts of
+`m1l1` and `m5l2a`, `m1l2a`, `m1l3a`, `m5l1a`, `m5l3`'s street (one
+pixel), `m2l1_skyportal`, `m4l1_fog`, `m3l3`'s grass, `smoke`'s debris);
+the last, `fx_mohdm1`'s view from above the map (`fx_e`), changed with the
+sky's faces culled and is the same with that part off, which was then
+left out. The final build against the build before on 13 lists
+(`fx_mohdm1`, `obj/obj_team1` to `obj/obj_team4`, `dm/mohdm1`,
+`dm/mohdm3`, two soldier lists, `team_obj_team2`, `m3l3`, `m6l2a`,
+`hud`; 62 views): the same frames to the bit; `r_terrainCache` 0, 1, 2
+and 4 on `m5l3`: its views the same but the street's random pixel. No
+validation message in these runs. No synchronization
+validation message (`r_vkValidation 2`) through 4000 frames of `o4match`;
+GL1 plays `o2match` and `o4match` with the new engine. `renderer_vulkan.so`
+imports no GL or Vulkan symbol. With temporary test builds (not kept):
+
+- The terrain's walks: the verification build described in Performance,
+  Busy moments, over the 21 matches (no walk left out that would have
+  done something, every kept index list the same as the walk).
+- The sounds' buffers: every buffer's samples (size, rate, a checksum)
+  made at the load against those made on the first plays
+  (`s_loadBuffers` 0), `o2match` and `o4match`: the same for the 118 and
+  146 sounds both made; none made in the match with it on. A local game
+  through four map loads with bots and a `snd_restart` (the freed sounds'
+  buffers deleted at each load): no OpenAL error.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -5120,6 +5172,167 @@ spread); with all four off 3.21 to 3.88, `base`'s 3.14 to 3.79. GL1 with
 the new engine and cgame (`cl_renderer opengl1`, one run of each, `o4match`
 uncapped): the round changes' frames 3.25 to 4.09 ms to 2.22 to 2.98 ms.
 
+Busy moments (2026-10-23, Plan 30; see Implementation notes, Terrain and
+Sound buffers at load; the renderer and the engine's sound system). The busier moments of a match on the CPU (Remaining, slow
+frames item 3) measured again after Plans 25 to 29: the frame log and the
+stack samples of `libstacks.so` in the same runs (`perf.py --framelog
+--vklog --stacks`, 4 runs of `o2match` and `o4match` at 1920x1080
+uncapped, the build before), the "content" slow frames (each frame's
+median over the runs above its 99th percentile, see Frame spikes) split
+by the frame log's parts, and the samples of those frames put into
+groups by the first of a list of functions on their stack, each group's
+time in a slow frame against an average frame (ms; a sample is about 1
+ms):
+
+| `o4match` (slow frames 1.49 ms and up, 0.73 ms over an average frame) | excess | `o2match` (1.02 ms and up, 0.65 ms over) | excess |
+| --- | --- | --- | --- |
+| terrain tessellation and its indexes | 0.234 | cgame's events of the shots (tracers, impacts, sounds, effects; first plays of sounds 0.014) | 0.141 |
+| world leaves (`R_AddWorldLeaves`, and `R_MarkLeaves` 0.020) | 0.112 | back end drawing | 0.108 |
+| back end drawing (`RB_RenderDrawSurfList`, the driver) | 0.106 | terrain tessellation and its indexes | 0.085 |
+| cgame's events (sounds, tracers, effects; first plays of sounds 0.014) | 0.085 | the fence wait (the GPU: 0.9 ms of main pass at its p99) | 0.069 |
+| the 2D calls (the HUD) | 0.047 | world leaves | 0.065 |
+| cgame's entities' animation and shadows | 0.019 | the 2D calls | 0.060 |
+| the sky's clipping (`RB_ClipSkyPolygons`) | 0.011 | cgame's entities' animation and shadows | 0.048 |
+
+By the frame log's parts the front end is 46 % of `o4match`'s slow
+frames' excess (back end 23 %, cgame 21 %), cgame 33 % of `o2match`'s
+(front end 29 %, back end 21 %, the fence wait 10 %). The terrain leads
+in `o4match` and is third in `o2match`: a temporary counting build (`o4match`, one run) gave its
+tessellation 120 µs in an average frame, 335 µs in the slow frames and
+561 µs in the slowest 0.1 % (1082 splits and 4116 triangles allocated in
+such a frame: a large turn of the view or a respawn splits the terrain in
+front of the camera, which the old view merges back over the next
+frames). Most of the walks' work changes nothing, though: each frame the
+geomorph went over 1714 vertexes of the drawn patches to recompute 74,
+the merging tried 2732 triangles to merge 47, and `RB_DrawTerrainTris`
+walked 2706 triangles, most of them in lists that hadn't changed since
+the frame before, to write 1034 triangles' indexes. Three parts in the
+renderer, each with its own switch:
+
+- `r_terrainCache` 1: the geomorph leaves out a patch whose vertexes all
+  have their height for longer (the lowest `uiDistRecalc` of its last
+  walk);
+- `r_terrainCache` 2: the merging leaves out a patch where every merge
+  failed when it was last walked and nothing they read changed since;
+- `r_terrainCache` 4: a patch's indexes are kept until its list changes.
+
+Their exactness: a temporary build that, wherever a walk
+was left out, ran its tests without changing anything and counted what it
+would have done, and compared every kept index list with the walk, over
+the 21 matches played frame by frame (`fixedtime 16`, 1920x1080, up to
+40000 frames each; one switches to a map not installed after its first
+seconds): 5.0 million geomorph walks left out, not one vertex due for a
+new height in them; 5.2 million merge walks left out, 431 million merge
+tests in them, none that would have merged; 11.7 million kept index
+lists, all the same as the walk. A part dropped: the free lists' back
+links, written into the next free triangle at each allocation and read by
+nothing (one cache miss each), measured nothing.
+
+Each part alone (a temporary build that timed the three passes, the
+indexes and the sky's clipping per frame, `CLOCK_MONOTONIC`; one run of
+each setting, 1920x1080 uncapped; µs per frame: all frames / the slow
+frames above the content's 99th percentile / its 99.9th):
+
+| `o4match` | split | geomorph | merging | indexes | sky | total |
+| --- | --- | --- | --- | --- | --- | --- |
+| all off | 17 / 125 / 273 | 30 / 51 / 46 | 41 / 85 / 98 | 40 / 83 / 132 | 12.8 / 14.9 / 16.0 | 141 / 359 / 565 |
+| geomorph (1) | 17 / 133 / 300 | 17 / 53 / 82 | 41 / 97 / 115 | 39 / 90 / 148 | | 127 / 387 / 661 |
+| merging (2) | 17 / 135 / 317 | 29 / 55 / 57 | 21 / 59 / 92 | 40 / 85 / 125 | | 120 / 350 / 608 |
+| indexes (4) | 20 / 138 / 323 | 28 / 49 / 49 | 41 / 88 / 104 | 10 / 39 / 106 | | 112 / 329 / 596 |
+| all three | 21 / 141 / 296 | 15 / 37 / 56 | 21 / 61 / 94 | 10 / 39 / 97 | 12.8 / 14.9 / 15.9 | 80 / 292 / 559 |
+| and the sky's faces culled | 20 / 145 / 319 | 13 / 34 / 53 | 20 / 57 / 92 | 10 / 36 / 91 | 11.3 / 13.9 / 14.5 | 74 / 286 / 569 |
+
+(`o2match`, whose terrain is in view less: 19.3 / 123 / 182 µs with all
+off, 14.9 / 115 / 205 with all on.) The terrain's time in an average
+frame of `o4match` goes from 141 to 74 µs, in the slow frames from 359
+to 286 µs; the slowest 0.1 % keep their 560 µs, which are the splits
+(a pass these parts don't shorten; the splits' time even grows a little
+when the other passes no longer bring the triangles into the caches).
+
+Tried and left out: the sky's faces outside the view culled like the
+other faces (a `viewCull` for the sky's faces behind a switch). They are
+about 10 % of the sky's triangles in these matches (71 to 64 a frame in
+`o4match`, 6 to 3 in `o2match`): 1.5 µs a frame. But the sky box is
+drawn over the rectangle (per side of the box) that the sky's polygons
+cover, and the faces outside the view widened it over directions in the
+view too: a pixel that no face covers (a crack between faces) showed the
+sky there and the clear color without them, and with no sky face in the
+view the sky isn't drawn at all. In the build-against-build check only
+`fx_mohdm1`'s view from above the map (`fx_e`) showed it: 806 pixels along
+the walls' tops, the sky's color (230, 201, 143) before, black with the
+faces culled (the same frame with the switch off, and the build before
+the same twice). The queue's condition (the same pixels where no world
+face covers) didn't hold, for 1.5 µs.
+
+A fourth part in the engine, `s_loadBuffers`, for the first plays of
+sounds (cgame's events, 0.014 ms of the slow frames in both matches, more
+in single frames): a temporary engine build that
+timed the creation of each sound's OpenAL buffer gave 131 first plays in
+`o2match` and 146 in `o4match`, all in the match (none during the load),
+11.9 and 12.7 ms in all, 0.38 and 0.60 ms the largest (a reload, an
+explosion, the river's loop); with `s_loadBuffers` the registration makes
+the 410 buffers of the map's sounds at its end (47.6 MB of samples in
+OpenAL's memory, against the 8.6 to 10.2 MB the two matches' first plays
+made; 0.02 to 0.03 s more map load) and the matches make none; the
+samples given to OpenAL are the same for every sound (their size, rate
+and a checksum compared, `s_loadBuffers` 1 against 0).
+
+Results (idle machine: other processes at most 0.6 CPUs, no Plex
+transcoding; `base` (7337a68b) and `new` (the three terrain parts and
+`s_loadBuffers` on, and the sky's faces culled: that part, 1.5 µs a
+frame, was left out after these runs, the code of the others the same),
+interleaved, 5 runs of 15000 frames of `o2match` and `o4match`
+at 1920x1080 in a window, `perf.py --caps 0` and `--caps 250`, `--preload
+libinlat.so --framelog`; the medians of the runs' percentiles, in
+parentheses the "content" ones (each frame's median over the runs, see
+Frame spikes); ms):
+
+| demo | `com_maxfps` | build | frame time p99.9 | max | p99 | mean | input to present p99.9 | max | p99 | median |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | `base` | 1.379 (1.252) | 1.99 (1.95) | 1.046 (0.995) | 0.496 | 1.334 | 2.65 | 0.995 | 0.418 |
+| | | `new` | 1.315 (1.215) | 2.44 (2.44) | 0.999 (0.974) | 0.483 | 1.272 | 2.26 | 0.952 | 0.409 |
+| | 250 | `base` | 4.219 (4.197) | 4.44 | 4.045 (4.041) | 3.999 | 1.448 | 2.69 | 1.011 | 0.476 |
+| | | `new` | 4.187 (4.167) | 5.03 | 4.045 (4.042) | 3.999 | 1.476 | 2.61 | 0.969 | 0.468 |
+| `o4match` | 0 | `base` | 1.987 (1.793) | 4.57 (4.57) | 1.518 (1.452) | 0.937 | 1.928 | 5.27 | 1.472 | 0.875 |
+| | | `new` | 1.923 (1.786) | 4.25 (4.25) | 1.373 (1.326) | 0.867 | 1.838 | 2.57 | 1.332 | 0.810 |
+| | 250 | `base` | 4.193 (4.194) | 4.74 | 4.042 (4.033) | 4.000 | 2.224 | 5.28 | 1.623 | 0.915 |
+| | | `new` | 4.169 (4.146) | 4.37 | 4.038 (4.032) | 3.999 | 1.802 | 2.47 | 1.420 | 0.848 |
+
+- `o4match`: the 99th percentile 0.145 ms lower uncapped (content 0.126),
+  the mean 70 µs (the renderer's time 0.732 to 0.672 ms, 0.769 to 0.701
+  at 250); frame by frame (each frame's median over the runs, the frames
+  chosen by the sum of both builds', see Frame spikes) the slowest 1 % 87
+  µs shorter (1.578 to 1.492 ms: the back end 39 µs, the front end 22,
+  cgame 20 with the first plays of sounds), every frame 64 µs on average
+  (the front end 33, the back end 26), the slowest 0.1 % the same (2.043
+  to 2.055 ms: the splits). Input to present
+  lower at every percentile, uncapped and at 250 (the runs' 99.9th
+  percentiles 2.08 to 2.25 to 1.71 to 1.89 ms at 250, the medians 0.90 to
+  0.92 to 0.83 to 0.86).
+- `o2match`: the 99th and 99.9th percentiles 0.03 to 0.06 ms lower
+  uncapped, the slowest 1 % of the frames 20 µs shorter, the mean 13 µs;
+  input to present lower uncapped, the same within the runs' spread at
+  250 (the runs' 99.9th percentiles 1.28 to 2.06 against 1.23 to 3.44 ms,
+  the 3.44 a run with a burst of 6 to 7 ms frames of the machine; the 99th
+  percentiles 0.96 to 1.05 against 0.94 to 1.00).
+- The maximum of `o2match` uncapped (and `o4match`'s input to present at
+  `base`) is the first frame of the window: the loading screen's last
+  frame (a 1.6 to 2.2 ms 2D draw, no cgame) fell into the window in 3 of
+  `new`'s 5 runs and none of `base`'s, a frame earlier; the match's first
+  frame is 1.8 to 2.1 ms in both. The map load 0.02 to 0.03 s longer (the
+  sounds' buffers).
+
+Not done: cgame's events themselves (each of a frame's model commands is
+built as an event by name, `new Event(name)`, its arguments copied as
+strings, then dispatched: in the slow frames of `o2match` the event
+lookups by name are about 15 µs, the rest the events' work: bullet traces,
+impact marks, sounds) and the init commands of a new effect (0.1 ms each,
+none in these two matches); the mark fragments' early rejects (JayRewd's,
+exact, `R_MarkFragments` is 0.017 ms of `o2match`'s slow frames and the
+rejects save part of its clipping); cgame's entities' animation (the
+skeletons' bone transforms); the world leaves and the back end's draws,
+which grow with what is in view.
+
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
 
@@ -5821,6 +6034,32 @@ selects the sample count (see Implementation notes).
   `ter_cautiousframes` changes, every patch is in it again. The same
   tessellation as GL1's walk, checked with a temporary build (see
   Performance, Terrain).
+  What the walks leave out (`r_terrainCache`, bits 1, 2 and 4, default 7;
+  see Performance, Busy moments): most of their work changes nothing,
+  so a few values per patch, kept up to date whatever the bits, say where
+  it can't. (1) `R_DoGeomorphs` gives a drawn patch's vertexes a new
+  height when their `uiDistRecalc` is no more than `g_uiTerDist`; the
+  lowest of them after its last walk (`g_pPatchMorphRecalc`, 0 once a
+  vertex is added, and for every patch when `g_uiTerDist` wraps) skips the
+  walk while it is above. (2) `R_DoTriMerging` tries every triangle of a
+  live patch's merge list; a merge reads the triangle's split count, its
+  left child's new vertex's height (in the same patch), its base
+  neighbour's split count and both varnodes' flags, which only a split or a
+  merge in the patch or in one of its four neighbours (a base neighbour
+  across the patch's edge) or a vertex height changed by the geomorph in
+  the patch can change. `g_pPatchMergeMode` holds the mode (cautious,
+  aggressive) of the patch's last walk, set before the walk and cleared by
+  any of those (`R_TerrainPatchChanged` from `R_SplitTri` and
+  `R_ForceMerge`, `R_DoGeomorphs`, a patch joining the live list): while it
+  equals the mode the patch is in now, every merge in it failed last time
+  with what it reads unchanged, and the walk is left out. (3) The indexes
+  `RB_DrawTerrainTris` writes for a patch (its drawn triangles' vertex
+  slots in the order of its list) are kept per patch
+  (`RB_TerrainPatchIndexes`, at most 128 triangles: two roots split down
+  to `MAX_TERRAIN_LOD`) until a triangle is allocated, released, demoted
+  or merged back into its list, and copied instead of walking the list.
+  The same tessellation and indexes (checked with a temporary build over
+  21 matches, see Performance, Busy moments).
 - **World culling** (`tr_world.c`). GL1's marking of the PVS and walk of
   the world's BSP tree (`R_MarkLeaves`, `R_RecursiveWorldNode`) are
   replaced by a list of the potentially visible leaves that gives the same
@@ -5849,8 +6088,9 @@ selects the sample count (see Implementation notes).
   of, by more than a unit (not for faces whose shader deforms vertexes,
   the sky, portals and the sky portal's faces: `viewCull` 0; not in the
   leaves dynamic lights reach, nor with `r_shownormals`:
-  `R_FaceViewPlanes`). Brush models keep GL1's culling. `RE_LoadWorldMap`
-  resets the view cluster (`tr.viewCluster`), as `RE_BeginRegistration`
+  `R_FaceViewPlanes`; the sky's faces outside the view were tried on
+  2026-10-23 and left in, see Performance, Busy moments). Brush models
+  keep GL1's culling. `RE_LoadWorldMap` resets the view cluster (`tr.viewCluster`), as `RE_BeginRegistration`
   does: the client loads a world without a registration when it connects
   to another server from a game, and `R_MarkLeaves`, finding the old map's
   last cluster again at the new map's first view, listed no leaf.
@@ -6388,6 +6628,24 @@ selects the sample count (see Implementation notes).
     whole gamestate when it doesn't fit. The client changes only that one
     configstring for each `cs` command cgame runs, so both keep the same
     string for every index as before (checked with shadow copies below).
+- **Sound buffers at load** (the engine's sound system, both renderers:
+  `S_EndRegistration`, `S_OPENAL_PreloadSfx`, `s_loadBuffers`, default 1;
+  see Performance, Busy moments). The registration reads every sound's
+  samples into memory, but OpenAL got them (`alGenBuffers`,
+  `alBufferData`: a copy, 0.1 to 0.8 MB for a weapon's or an explosion's
+  sound) only when a channel first played the sound
+  (`openal_channel::set_sfx`), in the frame of the match that fired the
+  weapon: 118 to 146 first plays a match, 0.2 to 0.6 ms each. When the
+  registration ends, each registered sound's buffer is now made from the
+  same samples (`S_OPENAL_LoadSfxBuffer`, the code `set_sfx` ran; the
+  streamed sounds and the mp3 sound effects, which are decoded from their
+  file, still on their first play); a sound registered later in the match
+  gets its buffer on its first play as before. The registration also
+  deletes the buffers of the sounds whose slots it frees
+  (`S_OPENAL_FreeSfx`, after the channels that last played them let them
+  go: a stopped source keeps its buffer): before, these stayed in OpenAL
+  until the sound system restarted, one more each time a map's own sounds
+  were replaced.
 - **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
   the static geometry, `effectsDraws` those of them with the effects
   shader). Every `vkAllocateMemory` goes
@@ -7058,6 +7316,30 @@ Done:
     item (the first frame's HUD registrations, the body's water sounds)
     was not done.
 
+30. Busy moments (2026-10-23, see Performance, Busy moments, and
+    Implementation notes, Terrain and Sound buffers at load; the renderer
+    and the engine's sound system): the slow frames of
+    `o2match` and `o4match` profiled again (the frame log and stack
+    samples of the same runs): in `o4match` the terrain's tessellation
+    leads (0.23 of the slow frames' 0.73 ms excess), in `o2match` cgame's
+    events of the shots (0.14 of 0.65 ms). Three exact parts for the
+    terrain's walks (`r_terrainCache` 1 to 4: the geomorph and the merging
+    leave out the patches where they would change nothing, a patch's
+    indexes are kept until its triangles change; checked over 21 matches),
+    and the sounds' OpenAL buffers made when the registration ends instead
+    of on their first play (`s_loadBuffers`, 0.2 to 0.6 ms each, 131 to 146
+    a match):
+    `o4match`'s 99th percentile 1.518 to 1.373 ms uncapped, its slowest 1
+    % of frames 87 µs shorter, the mean 70 µs lower, input to present
+    lower at every percentile (at 250 the 99.9th 2.224 to 1.802 ms);
+    `o2match` 0.03 to 0.06 ms lower percentiles uncapped, the same within
+    the spread at 250; the slowest 0.1 % of `o4match` unchanged (the
+    terrain's splits after a large turn, not shortened); the same frames,
+    the same tessellation, the same samples given to OpenAL; 47.6 MB of
+    sound buffers and 0.02 to 0.03 s more at the load. The sky's faces
+    outside the view were tried and left out (1.5 µs a frame; the sky no
+    longer covered the cracks between faces where it did before).
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -7102,31 +7384,26 @@ Remaining:
      boxes and the clear, shaders whose state combination no load shader
      has. Untested where pipelines compile more slowly than on RADV
      (NVIDIA, MoltenVK), where the load would grow more and the gain too.
-  3. The busier moments of a match on the CPU: front end, back end and
-     cgame are 60 to 80 % of the slow frames' excess at 1920x1080,
-     Vulkan's smaller than GL1's. In the stack samples of
-     `o4match`'s slow frames the world traversal (`R_RecursiveWorldNode`,
-     `R_AddWorldSurfaces`, 15.7 % of their samples against 11.3 % of all
-     frames' samples) led, then the terrain re-split every frame
-     (`RB_DrawTerrainTris`, `R_DoTriSplitting`, 8.6 % against 6.2 %; since
-     Plan 25 the terrain's vertexes are no longer copied, and
-     `RB_DrawTerrainTris` is 3 % of the samples),
-     `vk_draw` (7.5 %) and cgame's entities (`CG_AddPacketEntities`, 7 %);
-     `RB_SkelMesh`'s mesh search and the sky clipping are about 1 % each.
-     The world culling (Plan 14) took GL1's pass over the nodes off the
-     frames where the cluster changes and the faces outside the view off
-     the back end; what is left of the traversal (about 9 % of `o4match`'s
-     samples: the leaves' surface lists, the box tests, the first read of
-     each drawn face, the culling) has no exact shortcut left that this
-     step found worth it. Next candidates: the terrain's per-frame
-     tessellation (its triangle lists, walked by `RB_DrawTerrainTris` for
-     the indexes, and the geomorph, `R_UpdateVertMorphHeight`, 2 % each of
-     `o4match`); the sky's
-     faces outside the view (their clipping, `ClipSkyPolygon` and
-     `AddSkyPolygon`, is 1.2 % of `o4match`), if a sky box drawn from fewer
-     of them gives the same pixels where no world face covers the frame;
-     JayRewd's exact early rejects in cgame's mark fragments
-     (`R_MarkFragments`, 0.8 %).
+  3. The busier moments of a match on the CPU: done (2026-10-23, Plan 30):
+     profiled again, the terrain's walks leave out what changes nothing
+     (`r_terrainCache`) and the sounds' buffers are made at the load
+     (`s_loadBuffers`): `o4match`'s 99th percentile 1.52 to 1.37 ms
+     uncapped, the mean 70 µs lower, input to present lower at every
+     percentile; `o2match` 0.03 to 0.06 ms lower. What is left in the slow frames
+     (see Performance, Busy moments): the terrain's splits after a large
+     turn of the view (about 1000 in the slowest 0.1 % of `o4match`'s
+     frames, 0.3 ms: an exact speedup would need the triangles of a patch
+     close together in memory, not a free list's order), the back end's
+     draws and the world's leaves (they grow with what is in view; the
+     world culling of Plan 14 took what it found exact), cgame's events of
+     the shots (the event lookups by name about 15 µs of `o2match`'s slow
+     frames; the traces, marks and sounds are the game's work) and the
+     init commands of a new effect (0.1 ms each; e.g. keep each model's
+     parsed commands), cgame's entities' animation, and JayRewd's exact
+     early rejects in the mark fragments (`R_MarkFragments`, 0.017 ms of
+     `o2match`'s slow frames, of which they save part); the sky's faces
+     outside the view (1.5 µs a frame) only with a sky box that still
+     covers the cracks between the faces in the view.
   4. CPU-side frame pacing where the GPU limits (3840x2160 fixed views;
      with `r_vkSubmitThread 1` the wait comes at the end of the frame,
      before the next input instead, see below):

@@ -1657,6 +1657,12 @@ void R_Register( void )
 	// 0 copies the terrain's vertexes into tess every frame instead of drawing
 	// them from the terrain pool (tr_terrain.c, vk_sync_terrain_pool)
 	r_staticTerrain = ri.Cvar_Get("r_staticTerrain", "1", 0);
+	// what the terrain's tessellation leaves out (tr_terrain.c): 1 the
+	// geomorph of patches whose vertexes need no new height, 2 the merging
+	// in patches where nothing changed since it last failed, 4 the walk for
+	// a patch's indexes while its triangles stay (RB_DrawTerrainTris); 0
+	// walks everything every frame
+	r_terrainCache = ri.Cvar_Get("r_terrainCache", "7", 0);
 	// 0 skins and lights skeletal models on the CPU (tr_skin.c)
 	r_gpuSkinning = ri.Cvar_Get("r_gpuSkinning", "1", 0);
 	// 0 prepares and draws skeletal models outside the view too (tr_model.cpp)

@@ -2158,11 +2158,13 @@ typedef enum {
 extern cvar_t *r_staticGeometry;
 extern cvar_t *r_staticEffects;
 extern cvar_t *r_staticTerrain;
+extern cvar_t *r_terrainCache;
 
 void R_BuildStaticGeometry( void );
 void R_FreeStaticGeometry( void );
 qboolean RB_StaticBatch( void );
 qboolean RB_TerrainPool( void );
+const glIndex_t *RB_TerrainPatchIndexes( const srfTerrain_t *p, int *numIndexes );
 qboolean RB_StaticSurface( const surfaceType_t *surface );
 qboolean RB_StaticDlights( dlightMask_t dlightBits );
 qboolean RB_StaticAddSurface( surfaceType_t *surface, dlightMask_t dlightBits, qboolean opaque );

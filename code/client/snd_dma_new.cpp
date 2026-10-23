@@ -51,6 +51,7 @@ cvar_t *s_musicVolume;
 cvar_t *s_ambientVolume;
 cvar_t *s_streamThread;
 cvar_t *s_soundtrackCache;
+cvar_t *s_loadBuffers;
 
 sfx_info_t sfx_infos[MAX_SFX_INFOS];
 
@@ -109,6 +110,9 @@ void S_Init(qboolean full_startup)
     s_streamThread   = Cvar_Get("s_streamThread", "1", 0);
     // the soundtrack file's text kept until the next map load (MUSIC_LoadSoundtrackFile)
     s_soundtrackCache = Cvar_Get("s_soundtrackCache", "1", 0);
+    // the registered sounds' OpenAL buffers made when the registration ends,
+    // not on their first play; the freed sounds' buffers deleted (S_EndRegistration)
+    s_loadBuffers    = Cvar_Get("s_loadBuffers", "1", 0);
     s_separation     = Cvar_Get("s_separation", "0.5", CVAR_ARCHIVE);
     s_khz            = Cvar_Get("s_khz", "44", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_loadas8bit     = Cvar_Get("s_loadas8bit", "0", CVAR_ARCHIVE | CVAR_LATCH);
@@ -440,7 +444,22 @@ void S_EndRegistration()
                 Z_Free(sfx->data);
             }
 
+            if (s_loadBuffers->integer) {
+                // (else its buffer stays until the sound system restarts)
+                S_Driver_FreeSfx(sfx);
+            }
+
             *sfx = {};
+        }
+    }
+
+    if (s_loadBuffers->integer) {
+        // the copy of a sound's samples into its buffer on its first play
+        // took 0.2 to 0.6 ms in the frame of the match that played it
+        for (i = 0; i < s_numSfx; i++) {
+            if (s_knownSfx[i].name[0]) {
+                S_Driver_PreloadSfx(&s_knownSfx[i]);
+            }
         }
     }
 

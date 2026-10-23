@@ -37,6 +37,7 @@ extern cvar_t *s_musicVolume;
 extern cvar_t *s_ambientVolume;
 extern cvar_t *s_streamThread;
 extern cvar_t *s_soundtrackCache;
+extern cvar_t *s_loadBuffers;
 
 #define MAX_SOUNDSYSTEM_CHANNELS_3D        32
 #define MAX_SOUNDSYSTEM_CHANNELS_2D        32
@@ -238,6 +239,8 @@ qboolean S_LoadSound(const char *fileName, sfx_t *sfx, int streamed, qboolean fo
 #define S_Driver_Respatialize           S_Call_SndDriverX(SOUND_DRIVER, Respatialize)
 #define S_Driver_SetReverb              S_Call_SndDriverX(SOUND_DRIVER, SetReverb)
 #define S_Driver_Update                 S_Call_SndDriverX(SOUND_DRIVER, Update)
+#define S_Driver_PreloadSfx             S_Call_SndDriverX(SOUND_DRIVER, PreloadSfx)
+#define S_Driver_FreeSfx                S_Call_SndDriverX(SOUND_DRIVER, FreeSfx)
 #define S_Driver_GetMusicFilename       S_Call_SndDriverX(SOUND_DRIVER, GetMusicFilename)
 #define S_Driver_GetMusicLoopCount      S_Call_SndDriverX(SOUND_DRIVER, GetMusicLoopCount)
 #define S_Driver_GetMusicOffset         S_Call_SndDriverX(SOUND_DRIVER, GetMusicOffset)

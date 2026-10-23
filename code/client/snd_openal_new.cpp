@@ -3080,6 +3080,141 @@ void openal_channel::force_free()
 
 /*
 ==============
+S_OPENAL_LoadSfxBuffer
+
+The sound's OpenAL buffer, with a copy of its samples: made on its first
+play (openal_channel::set_sfx), or when the registration ends
+(S_OPENAL_PreloadSfx, s_loadBuffers)
+==============
+*/
+static bool S_OPENAL_LoadSfxBuffer(sfx_t *pSfx)
+{
+    if (pSfx->iFlags & SFX_FLAG_MP3) {
+        qalGenBuffers(1, &pSfx->buffer);
+        alDieIfError();
+
+        if (!S_OPENAL_LoadMP3_Codec(pSfx->name, pSfx)) {
+            qalDeleteBuffers(1, &pSfx->buffer);
+            alDieIfError();
+
+            Com_DPrintf("OpenAL: Failed to load MP3.\n");
+            return false;
+        }
+
+        alDieIfError();
+    } else {
+        ALenum fmt = S_OPENAL_Format(pSfx->info.width, pSfx->info.channels);
+
+        if (!fmt) {
+            Com_Printf(
+                "OpenAL: Bad Wave file (%d channels, %d bits) [%s].\n",
+                pSfx->info.channels,
+                (int)(pSfx->info.width * 8),
+                pSfx->name
+            );
+            return false;
+        }
+
+        if (pSfx->info.dataalign > 1 && !soft_block_align) {
+            Com_DPrintf(
+                "OpenAL: Alignment specified but AL doesn't support block alignment (%d).", pSfx->info.dataalign
+            );
+            return false;
+        }
+
+        qalGenBuffers(1, &pSfx->buffer);
+        alDieIfError();
+
+#if AL_SOFT_block_alignment
+        if (pSfx->info.dataalign > 1) {
+            qalBufferi(pSfx->buffer, AL_UNPACK_BLOCK_ALIGNMENT_SOFT, pSfx->info.dataalign);
+            alDieIfError();
+        }
+#endif
+
+        qalBufferData(
+            pSfx->buffer,
+            fmt,
+            &pSfx->data[pSfx->info.dataofs],
+            pSfx->info.datasize - pSfx->info.dataofs,
+            pSfx->info.rate
+        );
+        alDieIfError();
+    }
+
+    return true;
+}
+
+/*
+==============
+S_OPENAL_PreloadSfx
+
+The buffer of a sound the registration loaded, before its first play: a
+copy of 0.1 to 0.8 MB of samples (0.2 to 0.6 ms) is no longer made in the
+frame that first plays a weapon's or an explosion's sound. Not for the
+streamed sounds and the mp3 files, which are decoded on their first play
+==============
+*/
+void S_OPENAL_PreloadSfx(sfx_t *pSfx)
+{
+    if (!al_initialized || !pSfx->data || !pSfx->length) {
+        return;
+    }
+
+    if (pSfx->iFlags & (SFX_FLAG_STREAMED | SFX_FLAG_MP3 | SFX_FLAG_DEFAULT_SOUND)) {
+        return;
+    }
+
+    if (pSfx->buffer && qalIsBuffer(pSfx->buffer)) {
+        return;
+    }
+
+    if (!S_OPENAL_LoadSfxBuffer(pSfx)) {
+        pSfx->buffer = 0;
+    }
+}
+
+/*
+==============
+S_OPENAL_FreeSfx
+
+The buffer of a sound whose slot the registration frees: the channels that
+last played it let it go first (a stopped source keeps its buffer)
+==============
+*/
+void S_OPENAL_FreeSfx(sfx_t *pSfx)
+{
+    int i;
+
+    if (!al_initialized || !pSfx->buffer || !qalIsBuffer(pSfx->buffer)) {
+        return;
+    }
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_CHANNELS; i++) {
+        openal_channel *pChannel = openal.channel[i];
+        ALint           buffer   = 0;
+
+        if (!pChannel || !pChannel->source || !qalIsSource(pChannel->source)) {
+            continue;
+        }
+
+        qalGetSourcei(pChannel->source, AL_BUFFER, &buffer);
+        alDieIfError();
+        if ((ALuint)buffer == pSfx->buffer) {
+            qalSourceStop(pChannel->source);
+            alDieIfError();
+            qalSourcei(pChannel->source, AL_BUFFER, 0);
+            alDieIfError();
+        }
+    }
+
+    qalDeleteBuffers(1, &pSfx->buffer);
+    alDieIfError();
+    pSfx->buffer = 0;
+}
+
+/*
+==============
 openal_channel::set_sfx
 ==============
 */
@@ -3091,57 +3226,8 @@ bool openal_channel::set_sfx(sfx_t *pSfx)
 
     this->pSfx = pSfx;
     if (!pSfx->buffer || !qalIsBuffer(pSfx->buffer)) {
-        if (pSfx->iFlags & SFX_FLAG_MP3) {
-            qalGenBuffers(1, &pSfx->buffer);
-            alDieIfError();
-
-            if (!S_OPENAL_LoadMP3_Codec(pSfx->name, pSfx)) {
-                qalDeleteBuffers(1, &pSfx->buffer);
-                alDieIfError();
-
-                Com_DPrintf("OpenAL: Failed to load MP3.\n");
-                return false;
-            }
-
-            alDieIfError();
-        } else {
-            ALenum fmt = S_OPENAL_Format(pSfx->info.width, pSfx->info.channels);
-
-            if (!fmt) {
-                Com_Printf(
-                    "OpenAL: Bad Wave file (%d channels, %d bits) [%s].\n",
-                    pSfx->info.channels,
-                    (int)(pSfx->info.width * 8),
-                    pSfx->name
-                );
-                return false;
-            }
-
-            if (pSfx->info.dataalign > 1 && !soft_block_align) {
-                Com_DPrintf(
-                    "OpenAL: Alignment specified but AL doesn't support block alignment (%d).", pSfx->info.dataalign
-                );
-                return false;
-            }
-
-            qalGenBuffers(1, &pSfx->buffer);
-            alDieIfError();
-
-#if AL_SOFT_block_alignment
-            if (pSfx->info.dataalign > 1) {
-                qalBufferi(pSfx->buffer, AL_UNPACK_BLOCK_ALIGNMENT_SOFT, pSfx->info.dataalign);
-                alDieIfError();
-            }
-#endif
-
-            qalBufferData(
-                pSfx->buffer,
-                fmt,
-                &pSfx->data[pSfx->info.dataofs],
-                pSfx->info.datasize - pSfx->info.dataofs,
-                pSfx->info.rate
-            );
-            alDieIfError();
+        if (!S_OPENAL_LoadSfxBuffer(pSfx)) {
+            return false;
         }
     }
 

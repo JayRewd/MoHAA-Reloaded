@@ -76,6 +76,7 @@ typedef struct staticTiki_s {
 cvar_t *r_staticGeometry;
 cvar_t *r_staticEffects;
 cvar_t *r_staticTerrain;
+cvar_t *r_terrainCache;
 
 /*
 ====================================================================
