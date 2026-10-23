@@ -1759,6 +1759,7 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader);
 void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, int offsetX, int offsetY);
 void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhandle_t hShader);
 void DrawBox(float x, float y, float w, float h);
+void DrawBoxes(const float (*boxes)[4], int count, const float *color);
 void AddBox(float x, float y, float w, float h);
 void Set2DWindow(int x, int y, int w, int h, float left, float right, float bottom, float top, float n, float f);
 

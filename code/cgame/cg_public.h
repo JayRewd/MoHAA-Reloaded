@@ -453,6 +453,8 @@ functions exported to the main executable
         // the part of cg.time's millisecond the frame shows (0 to 1, 0 in the
         // stock mode), for the interpolation
         float (*GetRenderTimeFraction)(void);
+        // R_DrawBox for count boxes (x, y, width, height) in one draw (Metal port)
+        void (*R_DrawBoxes)(const float (*boxes)[4], int count, const float *color);
 
     } clientGameImport_t;
 

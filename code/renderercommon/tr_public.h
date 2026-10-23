@@ -193,6 +193,8 @@ typedef struct {
     // Added for the Metal port: called by Com_Frame once per frame, right after the frame limiter's wait (before the
     // input is sampled), so the renderer can wake an idle GPU before the frame commits. May be NULL.
     void        (*WakeGPU)(void);
+    // Added for the Metal port: DrawBox for count boxes (x, y, width, height) in one draw (the crosshair).
+    void        (*DrawBoxes)(const float (*boxes)[4], int count, const float *color);
 } refexport_t;
 
 //
