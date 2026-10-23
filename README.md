@@ -173,7 +173,7 @@ Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They sa
 ## Not done, parked and known issues
 
 - **Parked:** a still black window over the other displays in exclusive fullscreen, so that mode would match the Space's latency.
-- **Not done:** low-latency vsync (frame pacing for a tear-free mode without vsync's extra refresh), a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
+- **Not done:** a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
 - **Removed on purpose:** gamepads and joysticks, the `openmohaa://` link handler, the update checker.
 - **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the terrain's own per-vertex work). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
 
