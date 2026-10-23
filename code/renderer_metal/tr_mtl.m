@@ -1397,11 +1397,12 @@ static void MB_PrecacheFinish( qboolean report )
 /*
 ** mbPrecachePipeline
 **
-** The pipeline MB_PipelineKey gives for that state with the color mask on, for units 0..numUnits-1 bound.
+** The pipeline MB_PipelineKey gives for that state with the color mask on, for units 0..numUnits-1 bound (none: 0,
+** an untextured draw).
 */
 void mbPrecachePipeline( int numUnits, qboolean alphaTest, qboolean blend, int sfactor, int dfactor, qboolean skin )
 {
-	uint32_t key = ( numUnits > 1 && mbMultitexture ) ? 3 : 1;
+	uint32_t key = numUnits <= 0 ? 0 : ( numUnits > 1 && mbMultitexture ) ? 3 : 1;
 
 	if ( !mb_library || ( skin && !mb_skinVS ) ) {
 		return;
