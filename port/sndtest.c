@@ -3,7 +3,7 @@
 // stress test renders on a second thread, as the IO thread does, while this one posts at random (built with
 // ThreadSanitizer); the device modes play silence on the real output: start -> output, CPU, overloads.
 //
-//   sndtest [test ...]                    offline: resample loop offset pause ramp limiter free misc capture math ima (all by
+//   sndtest [test ...]                    offline: resample loop offset pause ramp limiter free misc capture stream math ima (all by
 //                                         default); math and ima are the native driver's (snd_native_math.h)
 //   sndtest stress [seconds]              the threaded stress test
 //   sndtest device [frames ...]           start -> output at random phases, CPU at 0/16/40/96 voices, a restart
@@ -781,6 +781,32 @@ static void test_misc( void )
 		if ( fabsf( out[2 * f] + out[2 * f + 1] ) > maxDiff )
 			maxDiff = fabsf( out[2 * f] + out[2 * f + 1] );
 	check( maxDiff < 1e-6f, "a stereo sine at step 0.46: left = -right within %.2g", maxDiff );
+
+	// a stereo frame through the one-frame path (a run's odd last frame, a loop's wrap) at its level (9d found it
+	// doubled since 9b): callbacks of 37 frames and a looped block give what 64-frame callbacks of the sound do
+	{
+		static float ref[2 * 8192];
+		int n;
+
+		memcpy( ref, out, sizeof( ref ) );
+		MacSnd_SetStopFade( 0 );	// the restart without the old sound's tail
+		MacSnd_Start( 0, &s );
+		for ( f = 0; f < 8192; f += n ) {
+			n = 8192 - f < 37 ? 8192 - f : 37;
+			MacSnd_Render( out + 2 * f, n );
+		}
+		for ( f = 0, maxDiff = 0; f < 2 * 8192; f++ )
+			maxDiff = fmaxf( maxDiff, fabsf( out[f] - ref[f] ) );
+		check( maxDiff == 0, "a stereo sine at step 0.46 in 37-frame callbacks: the 64-frame output within %.2g",
+			maxDiff );
+		s.loopStart = 1000; s.loopEnd = 1441; s.loopCount = 0;	// 20 whole cycles
+		MacSnd_Start( 0, &s );
+		render( out, 8192 );
+		for ( f = 0, maxDiff = 0; f < 8192; f++ )
+			maxDiff = fmaxf( maxDiff, fabsf( out[2 * f] ) );
+		check( maxDiff < 0.501f, "the same sine looped over 20 whole cycles (5 wraps): its peak %.4f, no doubled "
+			"frame at the wraps (0.5)", maxDiff );
+	}
 	MacSnd_Shutdown();
 
 	// the linear A/B at step 1 is bit for bit too; a rate twice the sound's moves twice as fast
@@ -858,6 +884,168 @@ static void test_capture( void )
 	render( out, 300 );
 	check( MacSnd_ReadCapture( got, 8192 ) == 0 && out[2 * 100] != 0, "stopped: nothing captured, the device hears it "
 		"again" );
+	MacSnd_Shutdown();
+}
+
+/*
+==============================================================================
+streams (Phase 9d): a ring written ahead of its voice
+==============================================================================
+*/
+
+static short stream_value( long k ) { return (short)( ( k * 13 + 1 ) % 30011 ); }	// under the limiter's ceiling
+
+// commits up to want frames of stream_value from *next, in pieces of at most piece frames; returns the frames written
+static int stream_write( int snd, long *next, int want, int piece )
+{
+	int done = 0, space, n, i;
+	short *p;
+
+	while ( done < want && ( p = MacSnd_StreamBuffer( snd, &space ) ) ) {
+		n = space < piece ? space : piece;
+		if ( n > want - done )
+			n = want - done;
+		for ( i = 0; i < n; i++ )
+			p[i] = stream_value( *next + i );
+		MacSnd_StreamCommit( snd, n );
+		*next += n;
+		done += n;
+	}
+	return done;
+}
+
+static void test_stream( void )
+{
+	enum { RING = 4096, TOTAL = 30000 };
+	static float out[2 * 40000], ref[2 * 40000];
+	macSndStats_t st;
+	long next = 0, f;
+	int snd, snd2, ok, bad, status, i, piece;
+	unsigned long long played;
+	float diff;
+
+	printf( "stream: a ring written ahead of its voice\n" );
+	offline();
+	MacSnd_SetStopFade( 0 );
+	check( !MacSnd_CreateStream( 96, 1, 48000 ) && MacSnd_CreateStream( 97, 1, 48000 ), "a ring needs more than "
+		"4 x 24 frames (the voice's window behind it, the end's silence ahead)" );
+
+	// written in uneven pieces while it plays: every frame once, in order, across 7 wraps; stopped with the last
+	snd = MacSnd_CreateStream( RING, 1, 48000 );
+	stream_write( snd, &next, 2000, 2000 );
+	MacSnd_Start( 0, &( macSndStart_t ){ .sound = snd, .gainL = 1, .gainR = 1, .startFrame = 500, .loopCount = 3 } );
+	for ( f = 0, piece = 1, status = -1; f < TOTAL + 64; f += BLOCK, piece++ ) {
+		stream_write( snd, &next, TOTAL - (int)next, 37 + piece * 101 % 777 );
+		if ( next == TOTAL )
+			MacSnd_StreamEnd( snd );
+		render( out + 2 * f, BLOCK );
+		if ( f + BLOCK == TOTAL - TOTAL % BLOCK )
+			status = MacSnd_Status( 0 );	// before the callback that plays the last frame
+	}
+	for ( f = 0, bad = -1; f < TOTAL + 64 && bad < 0; f++ ) {
+		const float want = f < TOTAL ? stream_value( f ) / 32768.0f : 0.0f;
+		if ( out[2 * f] != want || out[2 * f + 1] != want )
+			bad = (int)f;
+	}
+	MacSnd_GetStats( &st );
+	check( bad < 0 && status == MACSND_PLAYING && MacSnd_Status( 0 ) == MACSND_STOPPED
+		&& MacSnd_StreamPlayed( snd ) == TOTAL && st.underruns == 0, "30000 frames through a 4096-frame ring in "
+		"pieces of 37-814: each frame once and in order (first wrong frame %d; its offset and loops ignored), playing "
+		"before its last callback, stopped in it; played %llu; %u underruns", bad, MacSnd_StreamPlayed( snd ),
+		st.underruns );
+	MacSnd_FreeSound( snd );
+	MacSnd_Update();
+
+	// short of frames: it holds (silent) and goes on with the next frame, none lost or repeated
+	snd = MacSnd_CreateStream( RING, 1, 48000 );
+	next = 0;
+	stream_write( snd, &next, 1000, 1000 );
+	MacSnd_Start( 0, &( macSndStart_t ){ .sound = snd, .gainL = 1, .gainR = 1 } );
+	render( out, 3008 );
+	MacSnd_GetStats( &st );
+	status = MacSnd_Status( 0 );
+	played = MacSnd_StreamPlayed( snd );
+	for ( f = 0, ok = 1; f < 3008; f++ )
+		ok &= out[2 * f] == ( f < 1000 - 24 ? stream_value( f ) / 32768.0f : 0.0f );
+	check( ok && status == MACSND_PLAYING && played == 1000 - 24 && st.underruns == 32, "1000 frames committed: the "
+		"first 976 play (the last 24 are its window's), then silence; still playing at %llu, %u underrun callbacks",
+		played, st.underruns );
+	stream_write( snd, &next, 2000, 2000 );
+	MacSnd_StreamEnd( snd );
+	render( out, 2048 );
+	for ( f = 0, ok = 1; f < 2048; f++ )
+		ok &= out[2 * f] == ( f < 3000 - 976 ? stream_value( 976 + f ) / 32768.0f : 0.0f );
+	check( ok && MacSnd_Status( 0 ) == MACSND_STOPPED, "the rest committed and the end: it goes on at frame 976 to "
+		"the last (2999), then stops" );
+
+	// a stopped voice: the stream resumes where it stopped, on another voice (with the fade: in over 72 frames)
+	snd2 = MacSnd_CreateStream( RING, 1, 48000 );
+	next = 0;
+	stream_write( snd2, &next, RING, RING );
+	MacSnd_Start( 1, &( macSndStart_t ){ .sound = snd2, .gainL = 1, .gainR = 1 } );
+	render( out, 1280 );
+	MacSnd_Stop( 1 );
+	render( out, 64 );
+	played = MacSnd_StreamPlayed( snd2 );
+	stream_write( snd2, &next, RING, RING );
+	MacSnd_Start( 2, &( macSndStart_t ){ .sound = snd2, .gainL = 1, .gainR = 1 } );
+	render( out, 512 );
+	for ( f = 0, ok = 1; f < 512; f++ )
+		ok &= out[2 * f] == stream_value( 1280 + f ) / 32768.0f;
+	check( ok && played == 1280 && next == 1280 + RING - 48, "stopped at %llu: the ring filled up to the voice's "
+		"window and the end's silence (%ld written), a new voice goes on at frame 1280", played, next );
+	MacSnd_SetStopFade( 1.5f );
+	MacSnd_Stop( 2 );
+	render( out, 128 );
+	MacSnd_Start( 3, &( macSndStart_t ){ .sound = snd2, .gainL = 1, .gainR = 1 } );
+	render( out, 128 );
+	for ( f = 0, ok = 1; f < 128; f++ )
+		ok &= fabsf( out[2 * f] - stream_value( 1792 + f ) / 32768.0f * ( f < 72 ? f / 72.0f : 1.0f ) ) < 1e-5f;
+	check( ok, "with the stop fade a resumed stream fades in over 72 frames" );
+	MacSnd_Shutdown();
+
+	// resampled (44.1 kHz, step 0.92, stereo): the same output as the whole sound played from memory, wraps and all
+	offline();
+	snd = MacSnd_CreateStream( RING, 2, 44100 );
+	snd2 = MacSnd_CreateSound( NULL, 20000, 2, 44100 );
+	{
+		short *pcm = MacSnd_SoundData( snd2 ), *p;
+		int space;
+
+		for ( i = 0; i < 20000; i++ ) {
+			pcm[2 * i] = (short)lrint( 16000.0 * sin( 2.0 * M_PI * 3000.0 * i / 44100 ) );
+			pcm[2 * i + 1] = (short)lrint( 12000.0 * sin( 2.0 * M_PI * 700.0 * i / 44100 ) );
+		}
+		MacSnd_Start( 0, &( macSndStart_t ){ .sound = snd2, .gainL = 1, .gainR = 1, .loopCount = 1 } );
+		render( ref, 22080 );
+		MacSnd_Stop( 0 );
+		next = 0;
+		for ( f = 0; f < 22080; f += BLOCK ) {
+			while ( next < 20000 && ( p = MacSnd_StreamBuffer( snd, &space ) ) ) {
+				if ( space > 20000 - next )
+					space = 20000 - (int)next;
+				memcpy( p, pcm + 2 * next, sizeof( short ) * 2 * space );
+				MacSnd_StreamCommit( snd, space );
+				next += space;
+			}
+			if ( next == 20000 )
+				MacSnd_StreamEnd( snd );
+			if ( !f )
+				MacSnd_Start( 1, &( macSndStart_t ){ .sound = snd, .gainL = 1, .gainR = 1 } );
+			render( out + 2 * f, BLOCK );
+		}
+	}
+	for ( f = 0, diff = 0, bad = -1; f < 2 * 22080; f++ ) {
+		if ( bad < 0 && fabsf( out[f] - ref[f] ) > 2e-7f )
+			bad = (int)f;
+		diff = fmaxf( diff, fabsf( out[f] - ref[f] ) );
+	}
+	MacSnd_GetStats( &st );
+	if ( bad >= 0 )
+		printf( "  first difference at sample %d (frame %d): %.6f, from memory %.6f; %u underruns\n", bad, bad / 2,
+			out[bad], ref[bad], st.underruns );
+	check( diff < 2e-7f && MacSnd_Status( 1 ) == MACSND_STOPPED, "44.1 kHz stereo through the ring (4 wraps): "
+		"the sound from memory's output within %.1e (the gathered windows at the wraps), stopped at its end", diff );
 	MacSnd_Shutdown();
 }
 
@@ -1129,8 +1317,8 @@ static void test_stress( double seconds )
 	pthread_t io;
 	uint64_t end;
 	long ops = 0, bad = 0;
-	int i, v, k, status, pos;
-	short pcm[2 * 4096];
+	int i, v, k, status, pos, stream = 0, streamChannels = 1, space, n;
+	short pcm[2 * 4096], *p;
 
 	printf( "stress: %.0f s of random commands against a rendering thread\n", seconds );
 	offline();
@@ -1141,6 +1329,27 @@ static void test_stress( double seconds )
 	srandom( 58 );
 	end = mach_absolute_time() + (uint64_t)( seconds * 1e9 * tb.denom / tb.numer );
 	while ( mach_absolute_time() < end ) {
+		// a stream on voice 100, written ahead at random, ended, stopped and resumed, made again
+		if ( !stream || random() % 20000 == 0 ) {
+			MacSnd_FreeSound( stream );
+			streamChannels = 1 + random() % 2;
+			stream = MacSnd_CreateStream( 128 + random() % 8192, streamChannels, 8000 + random() % 88000 );
+			MacSnd_Start( 100, &( macSndStart_t ){ .sound = stream, .gainL = 0.5f, .gainR = 0.5f } );
+		}
+		if ( ( p = MacSnd_StreamBuffer( stream, &space ) ) ) {
+			n = random() % ( space + 1 );
+			memcpy( p, pcm, sizeof( short ) * streamChannels * ( n < 4096 / streamChannels ? n : 4096 / streamChannels ) );
+			MacSnd_StreamCommit( stream, n );
+		}
+		switch ( random() % 4000 ) {
+		case 0: MacSnd_StreamEnd( stream ); break;
+		case 1: MacSnd_Stop( 100 ); break;
+		case 2: MacSnd_Start( 100, &( macSndStart_t ){ .sound = stream, .gainL = 0.5f, .gainR = 0.5f } ); break;
+		case 3: MacSnd_Pause( 100, random() % 2 ); break;
+		}
+		if ( MacSnd_StreamPlayed( stream ) > 1ull << 40 )
+			bad++;
+
 		k = random() % SOUNDS;
 		v = random() % VOICES;
 		switch ( random() % 12 ) {
@@ -1187,8 +1396,10 @@ static void test_stress( double seconds )
 	for ( k = 0; k < SOUNDS; k++ )
 		if ( sounds[k] )
 			MacSnd_FreeSound( sounds[k] );
+	MacSnd_FreeSound( stream );
 	for ( v = 0; v < VOICES; v++ )
 		MacSnd_Stop( v );
+	MacSnd_Stop( 100 );
 	for ( i = 0; i < 200; i++ ) {
 		usleep( 1000 );
 		MacSnd_Update();
@@ -1473,7 +1684,7 @@ int main( int argc, char **argv )
 		static const struct { const char *name; void ( *fn )( void ); } tests[] = {
 			{ "resample", test_resample }, { "loop", test_loop }, { "offset", test_offset }, { "pause", test_pause },
 			{ "ramp", test_ramp }, { "limiter", test_limiter }, { "free", test_free }, { "misc", test_misc },
-			{ "capture", test_capture }, { "math", test_math }, { "ima", test_ima } };
+			{ "capture", test_capture }, { "stream", test_stream }, { "math", test_math }, { "ima", test_ima } };
 		int t;
 
 		for ( t = 0; t < (int)( sizeof( tests ) / sizeof( tests[0] ) ); t++ ) {

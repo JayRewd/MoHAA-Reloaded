@@ -28,8 +28,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // snd_native_math.h: the voices' levels without s_volume, which is the master gain's.
 //
 // Until 9g both drivers are in the binary: the latched s_native picks this one (snd_restart switches), and at 0 every
-// entry point hands its call to OpenAL's (the S_OPENAL_ names, snd_openal_new.h). This is 9c, the sound effects:
-// the streamed sounds, the music, the triggered music, the movies' audio and playmp3 are 9d's and don't play yet.
+// entry point hands its call to OpenAL's (the S_OPENAL_ names, snd_openal_new.h). The sound effects are 9c's; the
+// streamed sounds, the music (moods, crossfades), the triggered music, the movies' audio and playmp3 9d's: a stream
+// is read ahead into a mixer ring a little each frame, a short one decoded whole and looped by the mixer.
 //
 // A channel is a mixer voice, the same number. The policy code below keeps snd_openal_new.cpp's shape (the
 // channel's Miles-named methods), so the two compare line by line: a start sends everything at once (MacSnd_Start),
@@ -57,12 +58,52 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define NATIVE_PROBES          4096 // start -> output samples kept
 #define NATIVE_CAPTURE_FRAMES  48000
 
+// G1: a stream is read ahead into a mixer ring a little each frame on the main thread (the codecs use the zone and
+// the filesystem); a short one is decoded whole and looped by the mixer
+#define NATIVE_STREAM_SECONDS  0.5f // a ring's length
+#define NATIVE_STREAM_FIRST    4096 // frames read at the start; a stream this short is decoded whole
+#define NATIVE_STREAM_CHUNK    1024 // frames: a refill waits for this much room
+#define NATIVE_STREAM_STEP     4096 // frames: the most a refill reads in one frame
+#define NATIVE_STREAM_SEGMENTS 8
+#define NATIVE_PARKED          3    // G8: songs kept open where they stopped
+#define MAX_MUSIC_SONGS        16
+
 typedef enum {
     NATIVE_KIND_3D,
     NATIVE_KIND_2D,
     NATIVE_KIND_STREAM,
-    NATIVE_KIND_MUSIC // songs, mp3, triggered music, the movie: 9d
+    NATIVE_KIND_MUSIC // songs, mp3, triggered music, the movie
 } native_kind_t;
+
+typedef enum {
+    SONG_FADE_NONE,
+    SONG_FADE_IN,
+    SONG_FADE_OUT
+} native_fade_t;
+
+// a stream: the codec read ahead into the mixer's ring, or decoded whole (bWhole)
+typedef struct {
+    snd_stream_t *pCodec; // open while there is more to read
+    char          szFile[MAX_QPATH];
+    int           iRate;
+    int           iChannels;
+    int           iWidth;      // bytes a sample; 0 = IMA ADPCM
+    int           iBlockAlign; // IMA ADPCM's, bytes
+    int           iFrames;     // a pass's, as the codec counts them
+    int           iSound;      // the mixer's ring, or the whole stream
+    int           iRingFrames;
+    bool          bWhole;
+    bool          bStarted; // a voice was started on it
+    bool          bParked;  // stopped where it was, its voice to start again there (G8)
+    bool          bEnded;   // its last frame is in the ring
+    int           iPass;    // the pass being read (1 = the first)
+    int           iFilePos; // the codec's next frame
+    uint64_t      iWritten; // frames committed to the ring
+    // ring frame iSegRing[i] onward is file frame iSegFile[i] onward (the start offset, each loop)
+    uint64_t iSegRing[NATIVE_STREAM_SEGMENTS];
+    int      iSegFile[NATIVE_STREAM_SEGMENTS];
+    int      iNumSeg;
+} native_stream_t;
 
 typedef struct {
     vec3_t vOrigin;
@@ -119,10 +160,25 @@ struct native_channel {
     vec3_t   vSpatial;    // the origin a 2D voice was last panned from (the event log)
     uint64_t iRequestTime; // the probe: the host time of a start not yet seen leaving the device
 
+    // the streamed and music channels' (9d)
+    native_stream_t stream;
+    bool            bPlayedOut; // its stream ended by itself (G7)
+    int             song_number;
+    native_fade_t   fading;
+    float           fade_time; // ms
+    int             fade_start_time;
+
 public:
     void play();
     void stop();
     void pause();
+
+    bool         queue_stream(const char *fileName);
+    void         stream_start(bool bPaused);
+    void         update();
+    unsigned int sample_ms_offset();
+    void         set_sample_ms_offset(unsigned int offset);
+    int          channels();
 
     void set_no_3d();
     void set_3d();
@@ -180,7 +236,38 @@ static struct {
     unsigned reopens;
     uint64_t gameTicks;
     unsigned frames;
+
+    // G8: songs stopped where they were, their streams kept (the oldest goes first)
+    native_stream_t parked[NATIVE_PARKED];
+    int             parkedSong[NATIVE_PARKED];
+    int             parkedTime[NATIVE_PARKED];
+
+    // the streams' account (the shutdown's summary)
+    unsigned streamOpens, streamPasses, streamWhole, streamResumes;
+    uint64_t streamFrames;
+    short    scratch[8192]; // frames skipped
 } native;
+
+// the music: snd_openal_new.cpp's (the decompiled driver's), this driver's own
+static qboolean music_active            = qfalse;
+static int      music_current_mood      = 0;
+static int      music_fallback_mood     = 0;
+static float    old_music_volume        = 1.f;
+static float    music_volume            = 1.f;
+static float    new_music_volume        = 1.f;
+static float    music_volume_fade_time  = 0;
+static long int music_volume_start_time = 0;
+static int      music_loaded            = 0;
+static int      music_numsongs          = 0;
+static int      music_currentsong       = 0;
+static song_t   music_songs[MAX_MUSIC_SONGS];
+static char     tm_filename[MAX_RES_NAME];
+static int      tm_loopcount;
+
+#define chan_song       (&native.chan[MAX_SOUNDSYSTEM_POSITION_CHANNELS])
+#define chan_mp3        native.chan[SOUNDSYSTEM_CHANNEL_MP3_ID]
+#define chan_trig_music native.chan[SOUNDSYSTEM_CHANNEL_TRIGGER_MUSIC_ID]
+#define chan_movie      native.chan[SOUNDSYSTEM_CHANNEL_MOVIE_ID]
 
 static bool  s_bNative          = false; // the driver S_Init picked
 static bool  native_initialized = false;
@@ -213,6 +300,13 @@ static cvar_t *s_obstruction_cal_time;
 static int  S_NATIVE_SpatializeStereoSound(const vec3_t listener_origin, const vec3_t listener_left, const vec3_t origin);
 static void S_NATIVE_SpatializeChannel(native_channel *pChannel, const vec3_t vListenerOrigin, const vec3_t vTempAxis);
 static void S_NATIVE_LogStart(native_channel *pChannel, float fLeft, float fRight);
+static void S_NATIVE_PlayMP3();
+static void S_NATIVE_StopMP3();
+static void S_NATIVE_Pitch();
+static void MUSIC_Pause();
+static void MUSIC_Unpause();
+static void S_NATIVE_UpdateStreams();
+static void S_NATIVE_DropParked();
 
 // the game thread's time in the driver (the shutdown's summary)
 struct native_timer {
@@ -295,7 +389,7 @@ static int S_NATIVE_CreateSfx(sfx_t *pSfx)
     short *pcm;
 
     if (pSfx->iFlags & SFX_FLAG_STREAMED) {
-        // 9d
+        // read from its file when it plays (native_channel::stream_start)
         return 0;
     }
 
@@ -449,18 +543,6 @@ static void S_NATIVE_InitChannel(int idx, int iKind)
 
 /*
 ==============
-S_NATIVE_NotYet
-
-The music's, the mp3's and the triggered music's commands: 9d
-==============
-*/
-static void S_NATIVE_NotYet()
-{
-    Com_DPrintf("sound: '%s' doesn't play on the native driver yet\n", Cmd_Argv(0));
-}
-
-/*
-==============
 S_NATIVE_Init
 ==============
 */
@@ -535,11 +617,19 @@ qboolean S_NATIVE_Init()
     AxisClear(native.vListenerAxis);
     native.fMaster = S_NATIVE_MasterVolume();
     MacSnd_SetMaster(native.fMaster);
-    native.numProbes = 0;
-    native.gameTicks = 0;
-    native.frames    = 0;
-    native.reopens   = 0;
-    native.latency   = 0;
+    native.numProbes     = 0;
+    native.gameTicks     = 0;
+    native.frames        = 0;
+    native.reopens       = 0;
+    native.latency       = 0;
+    native.streamOpens   = 0;
+    native.streamWhole   = 0;
+    native.streamPasses  = 0;
+    native.streamResumes = 0;
+    native.streamFrames  = 0;
+    for (i = 0; i < NATIVE_PARKED; i++) {
+        native.parked[i] = {};
+    }
 
     if (s_speaker_type->integer) {
         // 9f: headphone 3D; the original's Fast 2D was stereo (no 5.1 or quad)
@@ -548,15 +638,15 @@ qboolean S_NATIVE_Init()
     s_speaker_type->modified = qfalse;
     s_reverb->modified       = qfalse;
 
-    Cmd_AddCommand("playmp3", S_NATIVE_NotYet);
-    Cmd_AddCommand("stopmp3", S_NATIVE_NotYet);
-    Cmd_AddCommand("loadsoundtrack", S_NATIVE_NotYet);
-    Cmd_AddCommand("playsong", S_NATIVE_NotYet);
-    Cmd_AddCommand("pitch", S_NATIVE_NotYet);
-    Cmd_AddCommand("tmstart", S_NATIVE_NotYet);
-    Cmd_AddCommand("tmstartloop", S_NATIVE_NotYet);
-    Cmd_AddCommand("tmstop", S_NATIVE_NotYet);
-    Cmd_AddCommand("tmvolume", S_NATIVE_NotYet);
+    Cmd_AddCommand("playmp3", S_NATIVE_PlayMP3);
+    Cmd_AddCommand("stopmp3", S_NATIVE_StopMP3);
+    Cmd_AddCommand("loadsoundtrack", S_loadsoundtrack);
+    Cmd_AddCommand("playsong", S_PlaySong);
+    Cmd_AddCommand("pitch", S_NATIVE_Pitch);
+    Cmd_AddCommand("tmstart", S_TriggeredMusic_Start);
+    Cmd_AddCommand("tmstartloop", S_TriggeredMusic_StartLoop);
+    Cmd_AddCommand("tmstop", S_TriggeredMusic_Stop);
+    Cmd_AddCommand("tmvolume", S_TriggeredMusic_Volume);
 
     S_NATIVE_ClearLoopingSounds();
     load_sfx_info();
@@ -639,6 +729,16 @@ static void S_NATIVE_Summary()
         native.frames,
         stats.sounds,
         stats.soundBytes / (1024.0 * 1024.0)
+    );
+    Com_Printf(
+        "sound: streams %u opened, %u decoded whole, %u passes looped, %u songs resumed, %llu frames read; %u "
+        "underruns\n",
+        native.streamOpens,
+        native.streamWhole,
+        native.streamPasses,
+        native.streamResumes,
+        (unsigned long long)native.streamFrames,
+        stats.underruns
     );
 }
 
@@ -899,6 +999,13 @@ static void S_NATIVE_PauseSound()
 
         pChannel->pause();
     }
+
+    if (chan_mp3.is_playing()) {
+        chan_mp3.pause();
+    }
+
+    MUSIC_Pause();
+    S_TriggeredMusic_Pause();
 }
 
 /*
@@ -925,6 +1032,13 @@ static void S_NATIVE_UnpauseSound()
             pChannel->play();
         }
     }
+
+    if (chan_mp3.is_paused()) {
+        chan_mp3.play();
+    }
+
+    MUSIC_Unpause();
+    S_TriggeredMusic_Unpause();
 
     s_bSoundPaused = false;
 }
@@ -1712,7 +1826,14 @@ void S_NATIVE_StopAllSounds(qboolean bStopMusic)
         }
     }
 
-    // the music (bStopMusic): 9d
+    if (bStopMusic) {
+        MUSIC_FreeAllSongs();
+        S_TriggeredMusic_Stop();
+        // Fixed in the Metal port (G11)
+        //  The mp3 and the movie's audio stop too (OpenAL's went on)
+        chan_mp3.stop();
+        chan_movie.stop();
+    }
 }
 
 /*
@@ -2260,7 +2381,7 @@ static void S_NATIVE_SpatializeChannel(native_channel *pChannel, const vec3_t vL
 ==============
 S_NATIVE_PostAll
 
-The playing voices' gains and rates to the mixer, those that changed
+The playing voices' gains and rates to the mixer, those that changed (the music's too)
 ==============
 */
 static void S_NATIVE_PostAll()
@@ -2268,9 +2389,7 @@ static void S_NATIVE_PostAll()
     int i;
 
     for (i = 0; i < NATIVE_CHANNELS; i++) {
-        if (S_NATIVE_IsPositionChannel(i)) {
-            native.channel[i]->post();
-        }
+        native.channel[i]->post();
     }
 }
 
@@ -2548,12 +2667,15 @@ void S_NATIVE_Update()
         Com_DPrintf("sound: Number of active sounds = %d\n", num);
     }
 
+    Music_Update();
+
     for (i = 0; i < MAX_SOUNDSYSTEM_LOOP_SOUNDS; i++) {
         if (!native.loop_sounds[i].bInUse) {
             S_NATIVE_StopLoopingSound(&native.loop_sounds[i]);
         }
     }
 
+    S_NATIVE_UpdateStreams();
     S_NATIVE_PostAll();
     MacSnd_Update();
 
@@ -2571,7 +2693,7 @@ void S_NATIVE_Update()
 ==============
 S_NATIVE_GetMusicFilename
 
-The triggered music: 9d
+The triggered music's (the savegame and snd_restart keep it)
 ==============
 */
 const char *S_NATIVE_GetMusicFilename()
@@ -2580,7 +2702,11 @@ const char *S_NATIVE_GetMusicFilename()
         return S_OPENAL_GetMusicFilename();
     }
 
-    return "";
+    if (!native_initialized || (!chan_trig_music.is_playing() && !chan_trig_music.is_paused())) {
+        return "";
+    }
+
+    return tm_filename;
 }
 
 /*
@@ -2594,7 +2720,7 @@ int S_NATIVE_GetMusicLoopCount()
         return S_OPENAL_GetMusicLoopCount();
     }
 
-    return 0;
+    return tm_loopcount;
 }
 
 /*
@@ -2608,7 +2734,11 @@ unsigned int S_NATIVE_GetMusicOffset()
         return S_OPENAL_GetMusicOffset();
     }
 
-    return 0;
+    if (!native_initialized) {
+        return 0;
+    }
+
+    return chan_trig_music.sample_offset();
 }
 
 /*
@@ -2915,9 +3045,695 @@ void S_LoadData(soundsystemsavegame_t *pSave)
 }
 
 /*
+==============================================================================
+
+The streams (9d): the 2D streamed channels' (dialogue, the streamed aliases) and the music's (the songs, playmp3,
+the triggered music, the movies' audio). OpenAL's driver read 16384 frames a frame into AL buffers, up to 16 of them
+(~6 s ahead, one big read on the main thread each frame until then); here a stream is read ahead into a mixer ring of
+NATIVE_STREAM_SECONDS, at most NATIVE_STREAM_STEP frames a frame and only once NATIVE_STREAM_CHUNK frames fit (G1), and
+a stream no longer than NATIVE_STREAM_FIRST frames is decoded whole at its start and looped by the mixer (no file
+opened again at every loop of a short song).
+
+==============================================================================
+*/
+
+/*
 ==============
-The music, the triggered music, the movies' audio: 9d. Until then the state the client saves and restores
-around snd_restart (cl_main.cpp) is kept, and nothing plays.
+S_NATIVE_CloseStream
+==============
+*/
+static void S_NATIVE_CloseStream(native_stream_t *s)
+{
+    if (s->pCodec) {
+        S_CodecCloseStream(s->pCodec);
+    }
+    if (s->iSound) {
+        MacSnd_FreeSound(s->iSound);
+    }
+    *s = {};
+}
+
+/*
+==============
+S_NATIVE_OpenStream
+
+The codec on a file: 16-bit or 8-bit PCM or IMA ADPCM (H2), mono or stereo
+==============
+*/
+static bool S_NATIVE_OpenStream(native_stream_t *s, const char *name)
+{
+    snd_stream_t *codec;
+
+    S_NATIVE_CloseStream(s);
+
+    codec = S_CodecOpenStream(name);
+    if (!codec) {
+        return false;
+    }
+
+    if (codec->info.channels < 1 || codec->info.channels > 2 || codec->info.rate < 1
+        || !(codec->info.width == 1 || codec->info.width == 2 || (codec->info.width == 0.5f && codec->info.dataalign > 1)
+        )) {
+        Com_Printf(
+            "sound: unsupported stream (%d channels, %d bits) [%s].\n",
+            codec->info.channels,
+            (int)(codec->info.width * 8),
+            name
+        );
+        S_CodecCloseStream(codec);
+        return false;
+    }
+
+    Q_strncpyz(s->szFile, name, sizeof(s->szFile));
+    s->pCodec    = codec;
+    s->iRate     = codec->info.rate;
+    s->iChannels = codec->info.channels;
+    s->iWidth    = codec->info.width >= 1 ? (int)codec->info.width : 0;
+    if (s->iWidth) {
+        s->iFrames = codec->info.samples;
+    } else {
+        s->iBlockAlign = ((codec->info.dataalign - 1) / 8 * 4 + 4) * s->iChannels;
+        s->iFrames     = SNM_IMAFrames(codec->info.size, s->iBlockAlign, s->iChannels);
+    }
+    s->iPass = 1;
+    native.streamOpens++;
+
+    return true;
+}
+
+/*
+==============
+S_NATIVE_ReadStream
+
+Up to frames from the codec as 16-bit PCM (8-bit widened in place: each sample's byte is read before its short is
+written); 0 at the end of the pass
+==============
+*/
+static int S_NATIVE_ReadStream(native_stream_t *s, short *out, int frames)
+{
+    int bytes, i;
+
+    if (!s->pCodec || !s->iWidth || frames <= 0) {
+        return 0;
+    }
+
+    if (s->iWidth == 2) {
+        bytes  = S_CodecReadStream(s->pCodec, frames * s->iChannels * 2, out);
+        frames = bytes > 0 ? bytes / (s->iChannels * 2) : 0;
+    } else {
+        byte *raw = (byte *)out + frames * s->iChannels;
+
+        bytes = S_CodecReadStream(s->pCodec, frames * s->iChannels, raw);
+        for (i = 0; i < bytes; i++) {
+            out[i] = (short)((raw[i] - 128) << 8);
+        }
+        frames = bytes > 0 ? bytes / s->iChannels : 0;
+    }
+
+    s->iFilePos += frames;
+    native.streamFrames += frames;
+    return frames;
+}
+
+/*
+==============
+S_NATIVE_SkipStream
+==============
+*/
+static void S_NATIVE_SkipStream(native_stream_t *s, int frames)
+{
+    const int max = ARRAY_LEN(native.scratch) / 2;
+    int       n;
+
+    while (frames > 0 && (n = S_NATIVE_ReadStream(s, native.scratch, frames < max ? frames : max)) > 0) {
+        frames -= n;
+    }
+}
+
+/*
+==============
+S_NATIVE_StreamWhole
+
+A short stream (or IMA ADPCM) decoded whole into a mixer sound, the codec closed
+==============
+*/
+static bool S_NATIVE_StreamWhole(native_stream_t *s)
+{
+    short *pcm;
+    int    got = 0, n;
+
+    if (s->iFrames <= 0) {
+        return false;
+    }
+    s->iSound = MacSnd_CreateSound(NULL, s->iFrames, s->iChannels, s->iRate);
+    pcm       = MacSnd_SoundData(s->iSound);
+    if (!pcm) {
+        s->iSound = 0;
+        return false;
+    }
+
+    if (s->iWidth) {
+        while (got < s->iFrames && (n = S_NATIVE_ReadStream(s, pcm + got * s->iChannels, s->iFrames - got)) > 0) {
+            got += n;
+        }
+    } else {
+        // the data chunk at once (not the hunk's temp memory: a long stream would drop the game)
+        const int bytes = s->pCodec->info.size;
+        byte     *raw   = bytes > 0 ? (byte *)malloc(bytes) : NULL;
+
+        if (raw) {
+            n   = S_CodecReadStream(s->pCodec, bytes, raw);
+            got = SNM_DecodeIMA(raw, n > 0 ? n : 0, s->iBlockAlign, s->iChannels, pcm, s->iFrames);
+            free(raw);
+        }
+    }
+
+    S_CodecCloseStream(s->pCodec);
+    s->pCodec = NULL;
+    s->bWhole = true;
+    s->bEnded = true;
+    if (got <= 0) {
+        return false;
+    }
+    // the frames the codec gave (its count was the header's)
+    s->iFrames = got;
+    native.streamWhole++;
+
+    return true;
+}
+
+/*
+==============
+S_NATIVE_AddSegment
+==============
+*/
+static void S_NATIVE_AddSegment(native_stream_t *s, uint64_t ring, int file)
+{
+    if (s->iNumSeg == NATIVE_STREAM_SEGMENTS) {
+        // the oldest is behind the voice (a looped stream's passes are longer than NATIVE_STREAM_FIRST frames)
+        memmove(s->iSegRing, s->iSegRing + 1, sizeof(s->iSegRing[0]) * (NATIVE_STREAM_SEGMENTS - 1));
+        memmove(s->iSegFile, s->iSegFile + 1, sizeof(s->iSegFile[0]) * (NATIVE_STREAM_SEGMENTS - 1));
+        s->iNumSeg--;
+    }
+    s->iSegRing[s->iNumSeg] = ring;
+    s->iSegFile[s->iNumSeg] = file;
+    s->iNumSeg++;
+}
+
+/*
+==============
+S_NATIVE_LoopStream
+
+The end of a pass: the next one from the loop block's start (G3: a looped song goes on 63 ms in; OpenAL's started
+over at 0), the codec opened again; a pass that gave nothing ends it
+==============
+*/
+static bool S_NATIVE_LoopStream(native_channel *pChannel)
+{
+    native_stream_t *s = &pChannel->stream;
+
+    if (pChannel->iLoopCount > 0 && s->iPass >= pChannel->iLoopCount) {
+        return false;
+    }
+    if (!s->pCodec || s->iWritten == s->iSegRing[s->iNumSeg - 1]) {
+        return false;
+    }
+
+    S_CodecCloseStream(s->pCodec);
+    s->pCodec = S_CodecOpenStream(s->szFile);
+    if (!s->pCodec) {
+        return false;
+    }
+    s->iFilePos = 0;
+    S_NATIVE_SkipStream(s, pChannel->iLoopStart < s->iFrames ? pChannel->iLoopStart : 0);
+    S_NATIVE_AddSegment(s, s->iWritten, s->iFilePos);
+    s->iPass++;
+    native.streamPasses++;
+
+    return true;
+}
+
+/*
+==============
+S_NATIVE_FillStream
+
+The ring topped up from the codec, at most budget frames
+==============
+*/
+static void S_NATIVE_FillStream(native_channel *pChannel, int budget)
+{
+    native_stream_t *s = &pChannel->stream;
+    short           *p;
+    int              space, n;
+
+    while (budget > 0 && !s->bEnded && (p = MacSnd_StreamBuffer(s->iSound, &space))) {
+        n = S_NATIVE_ReadStream(s, p, space < budget ? space : budget);
+        if (n > 0) {
+            MacSnd_StreamCommit(s->iSound, n);
+            s->iWritten += n;
+            budget -= n;
+        } else if (!S_NATIVE_LoopStream(pChannel)) {
+            MacSnd_StreamEnd(s->iSound);
+            s->bEnded = true;
+            if (s->pCodec) {
+                S_CodecCloseStream(s->pCodec);
+                s->pCodec = NULL;
+            }
+        }
+    }
+}
+
+/*
+==============
+S_NATIVE_StreamPosition
+
+The file's frame its voice is at
+==============
+*/
+static unsigned int S_NATIVE_StreamPosition(const native_channel *pChannel)
+{
+    const native_stream_t *s = &pChannel->stream;
+    uint64_t               played;
+    int                    i;
+
+    if (s->bWhole) {
+        return MacSnd_Position(pChannel->iVoice);
+    }
+    if (!s->iSound || !s->iNumSeg) {
+        return 0;
+    }
+
+    played = MacSnd_StreamPlayed(s->iSound);
+    for (i = s->iNumSeg - 1; i > 0 && s->iSegRing[i] > played; i--) {}
+
+    return s->iSegFile[i] + (unsigned int)(played - s->iSegRing[i]);
+}
+
+/*
+==============
+S_NATIVE_IsStreamKind
+==============
+*/
+static inline bool S_NATIVE_IsStreamKind(int iKind)
+{
+    return iKind == NATIVE_KIND_STREAM || iKind == NATIVE_KIND_MUSIC;
+}
+
+/*
+==============
+S_NATIVE_UpdateStreams
+==============
+*/
+static void S_NATIVE_UpdateStreams()
+{
+    int i;
+
+    for (i = MAX_SOUNDSYSTEM_CHANNELS_3D + MAX_SOUNDSYSTEM_CHANNELS_2D; i < MAX_SOUNDSYSTEM_CHANNELS; i++) {
+        native.chan[i].update();
+    }
+}
+
+/*
+==============
+S_NATIVE_DropParked
+==============
+*/
+static void S_NATIVE_DropParked()
+{
+    int i;
+
+    for (i = 0; i < NATIVE_PARKED; i++) {
+        S_NATIVE_CloseStream(&native.parked[i]);
+    }
+}
+
+/*
+==============
+S_NATIVE_ParkSong
+
+Added in the Metal port (G8): a song stopped where it was keeps its stream (the codec and the ring, the voice
+stopped), so playing it again goes on from there without reading the file up to its position again (OpenAL's
+songs started over); the oldest kept song goes when there is no room
+==============
+*/
+static void S_NATIVE_ParkSong(native_channel *pChannel)
+{
+    native_stream_t *s = &pChannel->stream;
+    int              i, slot = 0;
+
+    if (!s->bStarted || s->bWhole || !s->iSound) {
+        return;
+    }
+
+    MacSnd_Stop(pChannel->iVoice);
+    for (i = 0; i < NATIVE_PARKED; i++) {
+        if (!native.parked[i].bParked) {
+            slot = i;
+            break;
+        }
+        if (native.parkedTime[i] < native.parkedTime[slot]) {
+            slot = i;
+        }
+    }
+
+    S_NATIVE_CloseStream(&native.parked[slot]);
+    native.parked[slot]         = *s;
+    native.parked[slot].bParked = true;
+    native.parkedSong[slot]     = pChannel->song_number;
+    native.parkedTime[slot]     = cls.realtime;
+    *s                          = {};
+}
+
+/*
+==============
+S_NATIVE_UnparkSong
+==============
+*/
+static bool S_NATIVE_UnparkSong(native_channel *pChannel, int songnum)
+{
+    int i;
+
+    for (i = 0; i < NATIVE_PARKED; i++) {
+        if (native.parked[i].bParked && native.parkedSong[i] == songnum
+            && !Q_stricmp(native.parked[i].szFile, music_songs[songnum].path)) {
+            pChannel->stop();
+            pChannel->stream     = native.parked[i];
+            native.parked[i]     = {};
+            pChannel->iBaseRate  = pChannel->stream.iRate;
+            pChannel->fRate      = pChannel->iBaseRate;
+            pChannel->iOffset    = 0;
+            pChannel->iLoopStart = 0;
+            pChannel->iLoopEnd   = 0;
+            pChannel->iLoopCount = 1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/*
+==============
+MUSIC_LoadSoundtrackFile
+
+Fixed in the Metal port (G9): a one-argument line names the file and the alias is the name without its 4-character
+extension (OpenAL's took the second argument, nothing, and dropped a character more); "path" and "!" lines need
+their arguments; a line's tokens past MAX_MUSIC_SONGS are skipped (they overran the array)
+==============
+*/
+qboolean MUSIC_LoadSoundtrackFile(const char *filename)
+{
+    song_t *psong = NULL;
+    char    args[MAX_MUSIC_SONGS][MAX_RES_NAME];
+    int     numargs;
+    char    com_token[MAX_STRING_CHARS];
+    char    alias[128];
+    char    file[128];
+    char    load_path[128];
+    char   *buffer;
+    char    path[MAX_RES_NAME];
+    int     i;
+    byte   *data;
+
+    if (strrchr(filename, '.')) {
+        Com_sprintf(path, sizeof(path), "%s", filename);
+    } else {
+        Com_sprintf(path, sizeof(path), "%s.mus", filename);
+    }
+
+    music_numsongs = 0;
+
+    FS_ReadFile(path, (void **)&data);
+    if (!data) {
+        Com_DPrintf("sound: Couldn't load %s\n", path);
+        return false;
+    }
+    Com_DPrintf("SOUNDTRACK: Loading %s\n", path);
+
+    MUSIC_StopAllSongs();
+    S_NATIVE_DropParked();
+
+    buffer       = (char *)data;
+    load_path[0] = 0;
+
+    while (1) {
+        Q_strncpyz(com_token, COM_GetToken(&buffer, true), sizeof(com_token));
+        if (!com_token[0]) {
+            break;
+        }
+
+        if (strlen(com_token) >= MAX_RES_NAME) {
+            Com_Printf("MUSIC_LoadSoundtrackFile: argument too long, truncating in %s\n", path);
+            com_token[MAX_RES_NAME - 1] = 0;
+        }
+
+        numargs = 1;
+        Q_strncpyz(args[0], com_token, sizeof(args[0]));
+
+        while (1) {
+            Q_strncpyz(com_token, COM_GetToken(&buffer, false), sizeof(com_token));
+            if (!com_token[0]) {
+                break;
+            }
+
+            if (numargs >= MAX_MUSIC_SONGS) {
+                continue;
+            }
+
+            if (strlen(com_token) >= MAX_RES_NAME) {
+                Com_Printf("MUSIC_LoadSoundtrackFile: argument too long, truncating in %s\n", path);
+                com_token[MAX_RES_NAME - 1] = 0;
+            }
+
+            Q_strncpyz(args[numargs], com_token, sizeof(args[numargs]));
+            numargs++;
+        }
+
+        if (!Q_stricmp(args[0], "path")) {
+            if (numargs < 2) {
+                Com_Printf("MUSIC_LoadSoundtrackFile: path without a folder in %s\n", path);
+                continue;
+            }
+            Q_strncpyz(load_path, args[1], sizeof(load_path));
+            if (load_path[strlen(load_path) - 1] != '/' && load_path[strlen(load_path) - 1] != '\\') {
+                Q_strcat(load_path, sizeof(load_path), "/");
+            }
+        } else if (args[0][0] == '!') {
+            for (i = 0; i < music_numsongs; i++) {
+                psong = &music_songs[i];
+                if (!Q_stricmp(psong->alias, &args[0][1])) {
+                    break;
+                }
+            }
+
+            if (i == music_numsongs) {
+                Com_Printf("MUSIC_LoadSoundtrackFile: song %s not found, command skipped in %s.\n", &args[0][1], path);
+                continue;
+            }
+
+            if (numargs < 2) {
+                Com_Printf("MUSIC_LoadSoundtrackFile: no command for song %s in %s.\n", &args[0][1], path);
+            } else if (!Q_stricmp(args[1], "volume") && numargs > 2) {
+                psong->volume = atof(args[2]);
+            } else if (!Q_stricmp(args[1], "fadetime") && numargs > 2) {
+                psong->fadetime = atof(args[2]);
+            } else if (!Q_stricmp(args[1], "loop")) {
+                psong->flags |= 1;
+            } else if (!Q_stricmp(args[1], "restart")) {
+                psong->flags |= 2;
+            } else if (!Q_stricmp(args[1], "interrupt")) {
+                psong->fadetime = 0;
+                psong->flags |= 4 | 2;
+            } else {
+                Com_Printf(
+                    "MUSIC_LoadSoundtrackFile: unknown command %s for song %s in %s.\n", args[1], &args[0][1], path
+                );
+            }
+        } else {
+            if (numargs > 1) {
+                Q_strncpyz(alias, args[0], sizeof(alias));
+                Q_strncpyz(file, load_path, sizeof(file));
+                Q_strcat(file, sizeof(file), args[1]);
+            } else {
+                size_t len;
+
+                Q_strncpyz(file, load_path, sizeof(file));
+                Q_strcat(file, sizeof(file), args[0]);
+
+                len = strlen(args[0]);
+                if (len > 4) {
+                    Q_strncpyz(alias, args[0], len - 3);
+                } else {
+                    alias[0] = 0;
+                }
+            }
+
+            if (music_numsongs >= MAX_MUSIC_SONGS) {
+                Com_Printf("MUSIC_LoadSoundtrackFile: Too many songs in %s, skipping %s.\n", path, alias);
+                continue;
+            }
+
+            psong = &music_songs[music_numsongs];
+            Q_strncpyz(psong->alias, alias, sizeof(psong->alias));
+            Q_strncpyz(psong->path, file, sizeof(psong->path));
+            music_songs[music_numsongs].fadetime    = 1.0;
+            music_songs[music_numsongs].volume      = 1.0;
+            music_songs[music_numsongs].flags       = 0;
+            music_songs[music_numsongs].current_pos = 0;
+            music_songs[music_numsongs].mood_num    = MusicMood_NameToNum(alias);
+            music_numsongs++;
+        }
+    }
+
+    if (!music_numsongs) {
+        Com_Printf("MUSIC_LoadSoundtrackFile: could not load %s, no songs defined.\n", path);
+        FS_FreeFile(data);
+        return false;
+    }
+
+    music_currentsong = -1;
+    FS_FreeFile(data);
+
+    if (music_current_mood == mood_none) {
+        MUSIC_UpdateMood(mood_normal, mood_normal);
+    }
+
+    return true;
+}
+
+/*
+==============
+MUSIC_SongValid
+==============
+*/
+qboolean MUSIC_SongValid(const char *mood)
+{
+    return MUSIC_FindSong(mood) != -1;
+}
+
+/*
+==============
+MUSIC_Loaded
+==============
+*/
+qboolean MUSIC_Loaded()
+{
+    return music_loaded;
+}
+
+/*
+==============
+S_NATIVE_SongGain
+
+A song's level (A5: the song's volume x s_ambientvolume x the script's music volume; s_volume and the fade are
+the master's) at a crossfade's point
+==============
+*/
+static float S_NATIVE_SongGain(int song_number, float fade)
+{
+    return music_songs[song_number].volume * s_ambientVolume->value * music_volume * fade;
+}
+
+/*
+==============
+S_NATIVE_TriggeredGain
+
+Fixed in the Metal port (G10): the triggered music follows s_musicvolume and tmvolume without a soundtrack too
+(the menu's theme: OpenAL's Music_Update returned before it)
+==============
+*/
+static void S_NATIVE_TriggeredGain()
+{
+    if (chan_trig_music.is_playing() || chan_trig_music.is_paused()) {
+        chan_trig_music.set_gain(chan_trig_music.fVolume * s_musicVolume->value);
+    }
+}
+
+/*
+==============
+Music_Update
+==============
+*/
+void Music_Update()
+{
+    int currentsong;
+
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    S_NATIVE_TriggeredGain();
+
+    if (!music_active) {
+        return;
+    }
+
+    if (s_bSoundPaused) {
+        return;
+    }
+
+    MUSIC_CheckForStoppedSongs();
+
+    if (!MUSIC_Loaded() && music_active && strlen(current_soundtrack)) {
+        MUSIC_LoadSoundtrackFile(current_soundtrack);
+        music_loaded = true;
+    }
+
+    if (music_currentsong >= 0) {
+        currentsong = music_songs[music_currentsong].mood_num;
+    } else {
+        currentsong = -1;
+    }
+
+    if (music_current_mood == mood_none) {
+        if (MUSIC_Playing()) {
+            MUSIC_StopAllSongs();
+        }
+    } else if (music_current_mood != currentsong) {
+        const char *mood = MusicMood_NumToName(music_current_mood);
+        if (MUSIC_SongValid(mood) && MUSIC_Loaded() && strlen(current_soundtrack)) {
+            Com_DebugPrintf("Playing %s.\n", mood);
+            MUSIC_PlaySong(mood);
+        }
+    }
+
+    // Fixed in the Metal port (G6)
+    //  From the old volume to the new over the fade time (going down, OpenAL's started from 1)
+    if (new_music_volume != music_volume) {
+        if (music_volume_fade_time > 0) {
+            const float f = (cls.realtime - music_volume_start_time) / (music_volume_fade_time * 1000.f);
+
+            if (f >= 1) {
+                music_volume = new_music_volume;
+            } else {
+                music_volume = old_music_volume + (new_music_volume - old_music_volume) * (f > 0 ? f : 0);
+            }
+        } else {
+            music_volume = new_music_volume;
+        }
+    }
+
+    MUSIC_UpdateMusicVolumes();
+}
+
+/*
+==============
+MUSIC_SongEnded
+==============
+*/
+void MUSIC_SongEnded()
+{
+    Com_DPrintf(
+        "MUSIC: Song ended, changing from [ %s ] to [ %s ]\n",
+        MusicMood_NumToName(music_current_mood),
+        MusicMood_NumToName(music_fallback_mood)
+    );
+    music_current_mood = music_fallback_mood;
+}
+
+/*
+==============
+MUSIC_NewSoundtrack
 ==============
 */
 void MUSIC_NewSoundtrack(const char *name)
@@ -2927,25 +3743,186 @@ void MUSIC_NewSoundtrack(const char *name)
         return;
     }
 
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    if (!Q_stricmp(name, current_soundtrack)) {
+        return;
+    }
+
     Q_strncpyz(current_soundtrack, name, sizeof(current_soundtrack));
+
+    if (!Q_stricmp(current_soundtrack, "none") || !Q_stricmp(current_soundtrack, "")) {
+        music_active = qfalse;
+        if (MUSIC_Playing()) {
+            MUSIC_StopAllSongs();
+        }
+    } else {
+        music_active = qtrue;
+        MUSIC_LoadSoundtrackFile(name);
+        music_loaded = qtrue;
+    }
 }
 
+/*
+==============
+MUSIC_UpdateMood
+==============
+*/
 void MUSIC_UpdateMood(int current, int fallback)
 {
+    static int last_current_mood  = -1;
+    static int last_fallback_mood = -1;
+    static int current_mood       = -1;
+    static int fallback_mood      = -1;
+    qboolean   was_action;
+
     if (!s_bNative) {
         S_OPENAL_MUSIC_UpdateMood(current, fallback);
         return;
     }
+
+    if (current == current_mood && fallback == fallback_mood) {
+        return;
+    }
+
+    was_action          = current == last_current_mood && fallback == last_fallback_mood && current_mood == mood_action;
+    last_current_mood   = current_mood;
+    last_fallback_mood  = fallback_mood;
+    current_mood        = current;
+    music_current_mood  = current;
+    fallback_mood       = fallback;
+    music_fallback_mood = fallback;
+    music_active        = qtrue;
+
+    Com_DPrintf(
+        "MUSIC: changing from [ %s | %s ] to [ %s | %s ]\n",
+        MusicMood_NumToName(last_current_mood),
+        MusicMood_NumToName(last_fallback_mood),
+        MusicMood_NumToName(current_mood),
+        MusicMood_NumToName(fallback)
+    );
+
+    if (was_action) {
+        int songnum = MUSIC_FindSong(MusicMood_NumToName(current_mood));
+
+        if (songnum != -1 && (music_songs[songnum].flags & 4)) {
+            Com_DPrintf(
+                "MUSIC: restoring music from action state, skipping [ %s ] for [ %s ]\n",
+                MusicMood_NumToName(current_mood),
+                MusicMood_NumToName(fallback_mood)
+            );
+            music_current_mood = music_fallback_mood;
+        }
+    }
 }
 
+/*
+==============
+MUSIC_UpdateVolume
+==============
+*/
 void MUSIC_UpdateVolume(float volume, float fade_time)
 {
     if (!s_bNative) {
         S_OPENAL_MUSIC_UpdateVolume(volume, fade_time);
         return;
     }
+
+    if (new_music_volume == volume && music_volume_fade_time == fade_time) {
+        return;
+    }
+
+    old_music_volume        = music_volume;
+    new_music_volume        = volume;
+    music_volume_fade_time  = fade_time;
+    music_volume_start_time = cls.realtime;
 }
 
+/*
+==============
+MUSIC_StopAllSongs
+==============
+*/
+void MUSIC_StopAllSongs()
+{
+    for (int i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        MUSIC_StopChannel(i);
+    }
+
+    music_currentsong = -1;
+}
+
+/*
+==============
+MUSIC_FreeAllSongs
+==============
+*/
+void MUSIC_FreeAllSongs()
+{
+    MUSIC_StopAllSongs();
+    S_NATIVE_DropParked();
+    MUSIC_UpdateMood(mood_none, mood_none);
+    current_soundtrack[0] = 0;
+    music_loaded          = false;
+
+    // Added in OPM
+    //  Clear the list of songs so the songs from previous maps
+    //  won't get played
+    music_numsongs = 0;
+}
+
+/*
+==============
+MUSIC_Playing
+==============
+*/
+qboolean MUSIC_Playing()
+{
+    return MUSIC_CurrentSongChannel() != -1;
+}
+
+/*
+==============
+MUSIC_FindSong
+==============
+*/
+int MUSIC_FindSong(const char *name)
+{
+    int i;
+
+    for (i = 0; i < music_numsongs; i++) {
+        if (!Q_stricmp(music_songs[i].alias, name)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+/*
+==============
+S_loadsoundtrack
+==============
+*/
+void S_loadsoundtrack()
+{
+    if (Cmd_Argc() != 2) {
+        Com_Printf("loadsoundtrack <sound track file>\n");
+        return;
+    }
+
+    MUSIC_LoadSoundtrackFile(Cmd_Argv(1));
+    music_loaded = true;
+    Q_strncpyz(current_soundtrack, Cmd_Argv(1), sizeof(current_soundtrack));
+}
+
+/*
+==============
+S_CurrentSoundtrack
+==============
+*/
 const char *S_CurrentSoundtrack()
 {
     if (!s_bNative) {
@@ -2955,53 +3932,547 @@ const char *S_CurrentSoundtrack()
     return current_soundtrack;
 }
 
+/*
+==============
+S_PlaySong
+==============
+*/
+void S_PlaySong()
+{
+    if (Cmd_Argc() != 2) {
+        Com_Printf("playsong <song alias>\n");
+        return;
+    }
+
+    MUSIC_PlaySong(Cmd_Argv(1));
+    music_active = true;
+}
+
+/*
+==============
+MUSIC_CurrentSongChannel
+==============
+*/
+int MUSIC_CurrentSongChannel()
+{
+    int channel_number = -1;
+    int ch_idx         = 0;
+
+    for (ch_idx = 0; ch_idx < MAX_SOUNDSYSTEM_SONGS; ch_idx++) {
+        if (chan_song[ch_idx].is_playing() && chan_song[ch_idx].song_number == music_currentsong) {
+            channel_number = ch_idx;
+        }
+    }
+
+    return channel_number;
+}
+
+/*
+==============
+MUSIC_StopChannel
+
+Fixed in the Metal port (G8): the position read while the song still plays (OpenAL paused it first, and a paused
+channel's position read 0: songs never went on where they were), the song then kept where it stopped
+==============
+*/
+void MUSIC_StopChannel(int channel_number)
+{
+    native_channel *channel = &chan_song[channel_number];
+    song_t         *song    = &music_songs[channel->song_number];
+
+    if (channel->is_playing() || channel->is_paused()) {
+        if (song->flags & 2) {
+            song->current_pos = 0;
+        } else {
+            song->current_pos = channel->sample_ms_offset();
+            S_NATIVE_ParkSong(channel);
+        }
+    }
+
+    channel->stop();
+    channel->fading = SONG_FADE_NONE;
+}
+
+/*
+==============
+MUSIC_PlaySong
+==============
+*/
+qboolean MUSIC_PlaySong(const char *alias)
+{
+    int             channel_number;
+    song_t         *song;
+    int             songnum;
+    int             channel_to_play_on;
+    int             fading_song;
+    native_channel *song_channel;
+    int             rate;
+
+    fading_song = 0;
+    songnum     = MUSIC_FindSong(alias);
+
+    if (songnum == -1) {
+        return true;
+    }
+
+    song = &music_songs[songnum];
+
+    if (MUSIC_Playing() && songnum == music_currentsong) {
+        return true;
+    }
+
+    channel_number    = MUSIC_CurrentSongChannel();
+    music_currentsong = songnum;
+
+    if (channel_number != -1) {
+        if (song->flags & 4) {
+            MUSIC_StopChannel(channel_number);
+        } else {
+            // Fixed in the Metal port (G5)
+            //  The fade time in ms (OpenAL's in whole seconds: 0.5 was 0, a division by zero)
+            song_channel                  = &chan_song[channel_number];
+            song_channel->fading          = SONG_FADE_OUT;
+            song_channel->fade_time       = song->fadetime * 1000.f;
+            song_channel->fade_start_time = cls.realtime;
+            fading_song                   = true;
+        }
+    }
+    channel_to_play_on = (fading_song != 0) && (channel_number == 0);
+    song_channel       = &chan_song[channel_to_play_on];
+
+    if (song_channel->is_playing() || song_channel->is_paused()) {
+        MUSIC_StopChannel(channel_to_play_on);
+    }
+
+    // Added in the Metal port (G8)
+    //  A song kept where it stopped goes on from there
+    if (!S_NATIVE_UnparkSong(song_channel, songnum)) {
+        if (!song_channel->queue_stream(song->path)) {
+            Com_DPrintf("Could not start music file '%s'!", song->path);
+            return false;
+        }
+
+        rate = song_channel->sample_playback_rate();
+        if (song->current_pos) {
+            song_channel->set_sample_ms_offset(song->current_pos);
+        } else {
+            song_channel->set_sample_offset(rate * 0.063f);
+        }
+    }
+
+    rate                      = song_channel->sample_playback_rate();
+    song_channel->song_number = songnum;
+
+    if (song->flags & 1) {
+        song_channel->set_sample_loop_count(0);
+        song_channel->set_sample_loop_block(rate * 0.063f, -1);
+    } else {
+        song_channel->set_sample_loop_count(1);
+    }
+
+    if (fading_song) {
+        song_channel->fading          = SONG_FADE_IN;
+        song_channel->fade_time       = song->fadetime * 1000.f;
+        song_channel->fade_start_time = cls.realtime;
+        song_channel->set_gain(0.0);
+    } else {
+        song_channel->fading = SONG_FADE_NONE;
+        song_channel->set_gain(S_NATIVE_SongGain(songnum, 1));
+    }
+
+    song_channel->play();
+
+    return true;
+}
+
+/*
+==============
+MUSIC_UpdateMusicVolumes
+
+Fixed in the Metal port (G5): a crossfade's fraction is the time over the fade time, 0 to 1 (an instant change
+without one), the new song in on it and the old one out on 1 minus it, then stopped (OpenAL's fade-out grew from 0,
+so the old song got louder and never stopped). Every song's level each frame (it only reaches the mixer when it
+changes).
+==============
+*/
+void MUSIC_UpdateMusicVolumes()
+{
+    int   i;
+    float fade;
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        native_channel *chan = &chan_song[i];
+
+        if (!chan->is_playing() && !chan->is_paused()) {
+            continue;
+        }
+
+        if (chan->fading == SONG_FADE_NONE) {
+            chan->set_gain(S_NATIVE_SongGain(chan->song_number, 1));
+            continue;
+        }
+
+        if (chan->fade_time > 0) {
+            fade = (cls.realtime - chan->fade_start_time) / chan->fade_time;
+            fade = fade < 0 ? 0 : fade > 1 ? 1 : fade;
+        } else {
+            fade = 1;
+        }
+
+        if (chan->fading == SONG_FADE_IN) {
+            chan->set_gain(S_NATIVE_SongGain(chan->song_number, fade));
+            if (fade >= 1) {
+                chan->fading = SONG_FADE_NONE;
+            }
+        } else if (fade < 1) {
+            chan->set_gain(S_NATIVE_SongGain(chan->song_number, 1 - fade));
+        } else {
+            MUSIC_StopChannel(i);
+        }
+    }
+}
+
+/*
+==============
+MUSIC_CheckForStoppedSongs
+
+Fixed in the Metal port (G7): when the current song has played out the mood goes to the fallback (OpenAL's test
+needed a channel playing and stopped at once: never); a song that played out starts over the next time
+==============
+*/
+void MUSIC_CheckForStoppedSongs()
+{
+    int i;
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        if (!chan_song[i].bPlayedOut) {
+            continue;
+        }
+
+        chan_song[i].bPlayedOut                            = false;
+        music_songs[chan_song[i].song_number].current_pos = 0;
+        if (chan_song[i].song_number == music_currentsong) {
+            MUSIC_SongEnded();
+        }
+    }
+}
+
+/*
+==============
+S_TriggeredMusic_SetupHandle
+
+Fixed in the Metal port (G10): a failed start leaves nothing open; without autostart the music is set up paused
+(OpenAL's played, then paused it)
+==============
+*/
 void S_TriggeredMusic_SetupHandle(const char *pszName, int iLoopCount, int iOffset, qboolean autostart)
 {
+    const char      *pszRealName;
+    float            fVolume     = 1.0;
+    AliasListNode_t *pSoundAlias = NULL;
+
     if (!s_bNative) {
         S_OPENAL_TriggeredMusic_SetupHandle(pszName, iLoopCount, iOffset, autostart);
         return;
     }
+
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    if (chan_trig_music.is_playing() || chan_trig_music.is_paused()) {
+        Com_DPrintf("Didn't start new triggered music because some was already playing\n");
+        return;
+    }
+
+    chan_trig_music.stop();
+    Q_strncpyz(tm_filename, pszName, sizeof(tm_filename));
+
+    tm_loopcount = iLoopCount;
+    pszRealName  = Alias_FindRandom(pszName, &pSoundAlias);
+
+    if (!pszRealName) {
+        pszRealName = pszName;
+    } else if (pSoundAlias) {
+        fVolume = random() * pSoundAlias->volumeMod + pSoundAlias->volume;
+    }
+
+    if (!chan_trig_music.queue_stream(pszRealName)) {
+        Com_DPrintf("Could not start triggered music '%s'\n", pszName);
+        return;
+    }
+
+    chan_trig_music.fVolume = fVolume;
+    chan_trig_music.set_gain(fVolume * s_musicVolume->value);
+    chan_trig_music.set_sample_loop_count(iLoopCount);
+    chan_trig_music.set_sample_offset(iOffset);
+    chan_trig_music.stream_start(!autostart);
 }
 
+/*
+==============
+S_TriggeredMusic_Start
+==============
+*/
+void S_TriggeredMusic_Start()
+{
+    if (Cmd_Argc() != 2) {
+        Com_Printf("tmstart <sound file>\n");
+        return;
+    }
+
+    S_TriggeredMusic_SetupHandle(Cmd_Argv(1), 1, 0, true);
+}
+
+/*
+==============
+S_TriggeredMusic_StartLoop
+==============
+*/
+void S_TriggeredMusic_StartLoop()
+{
+    if (Cmd_Argc() != 2) {
+        Com_Printf("tmstartloop <sound file>\n");
+        return;
+    }
+
+    S_TriggeredMusic_SetupHandle(Cmd_Argv(1), 0, 0, true);
+}
+
+/*
+==============
+S_TriggeredMusic_Stop
+==============
+*/
 void S_TriggeredMusic_Stop()
 {
     if (!s_bNative) {
         S_OPENAL_TriggeredMusic_Stop();
         return;
     }
+
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    chan_trig_music.stop();
+    // Fixed in OPM
+    //  Make sure to clear the triggered music in case snd_restart is called
+    tm_filename[0] = 0;
+    tm_loopcount   = 0;
 }
 
+/*
+==============
+S_TriggeredMusic_Volume
+==============
+*/
+void S_TriggeredMusic_Volume()
+{
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    if (Cmd_Argc() != 2) {
+        Com_Printf("tmvolume <0-1>\n\n");
+        return;
+    }
+
+    chan_trig_music.fVolume = atof(Cmd_Argv(1));
+}
+
+/*
+==============
+S_TriggeredMusic_Pause
+==============
+*/
+void S_TriggeredMusic_Pause()
+{
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    if (chan_trig_music.is_playing()) {
+        chan_trig_music.pause();
+    }
+}
+
+/*
+==============
+S_TriggeredMusic_Unpause
+==============
+*/
+void S_TriggeredMusic_Unpause()
+{
+    if (!s_bSoundStarted) {
+        return;
+    }
+
+    if (chan_trig_music.is_paused()) {
+        chan_trig_music.play();
+    }
+
+    S_NATIVE_TriggeredGain();
+}
+
+/*
+==============
+S_TriggeredMusic_PlayIntroMusic
+==============
+*/
 void S_TriggeredMusic_PlayIntroMusic()
 {
     if (!s_bNative) {
         S_OPENAL_TriggeredMusic_PlayIntroMusic();
         return;
     }
+
+    S_TriggeredMusic_SetupHandle("sound/music/mus_MainTheme.mp3", 0, 0, true);
 }
 
+/*
+==============
+S_StopMovieAudio
+==============
+*/
 void S_StopMovieAudio()
 {
     if (!s_bNative) {
         S_OPENAL_StopMovieAudio();
         return;
     }
+
+    chan_movie.stop();
 }
 
+/*
+==============
+S_SetupMovieAudio
+
+G15: the movie's .mp3, else its .wav, at 1.5 (A5); the cinematic's clock follows its position
+==============
+*/
 void S_SetupMovieAudio(const char *pszMovieName)
 {
+    char filename[MAX_QPATH];
+
     if (!s_bNative) {
         S_OPENAL_SetupMovieAudio(pszMovieName);
         return;
     }
+
+    S_StopMovieAudio();
+
+    COM_StripExtension(pszMovieName, filename, sizeof(filename));
+    Q_strcat(filename, sizeof(filename), ".mp3");
+
+    if (!chan_movie.queue_stream(filename)) {
+        COM_StripExtension(pszMovieName, filename, sizeof(filename));
+        Q_strcat(filename, sizeof(filename), ".wav");
+
+        if (!chan_movie.queue_stream(filename)) {
+            Com_DPrintf("Can't find any matching audio file for movie: %s\n", pszMovieName);
+            return;
+        }
+    }
+
+    chan_movie.set_gain(1.5f);
+    chan_movie.play();
+
+    Com_DPrintf("Movie Audio setup: %s\n", filename);
 }
 
+/*
+==============
+S_CurrentMoviePosition
+==============
+*/
 int S_CurrentMoviePosition()
 {
     if (!s_bNative) {
         return S_OPENAL_CurrentMoviePosition();
     }
 
-    return 0;
+    return chan_movie.sample_ms_offset();
+}
+
+/*
+==============
+S_NATIVE_PlayMP3
+
+The whole file decoded at once on the main thread in OpenAL's; streamed here
+==============
+*/
+static void S_NATIVE_PlayMP3()
+{
+    char path[MAX_QPATH];
+
+    if (Cmd_Argc() != 2) {
+        Com_Printf("playmp3 <mp3 file>\n");
+        return;
+    }
+
+    Q_strncpyz(path, Cmd_Argv(1), sizeof(path));
+    FS_CorrectCase(path);
+
+    if (!chan_mp3.queue_stream(path)) {
+        Com_Printf("Failed to play mp3 - %s\n", Cmd_Argv(1));
+        return;
+    }
+
+    chan_mp3.set_no_3d();
+    chan_mp3.play();
+    Com_Printf("Playing mp3 - %s\n", Cmd_Argv(1));
+}
+
+/*
+==============
+S_NATIVE_StopMP3
+==============
+*/
+static void S_NATIVE_StopMP3()
+{
+    chan_mp3.stop();
+}
+
+/*
+==============
+S_NATIVE_Pitch
+==============
+*/
+static void S_NATIVE_Pitch()
+{
+    Com_Printf("S_NATIVE_Pitch() needs to be implemented!\n");
+}
+
+/*
+==============
+MUSIC_Pause
+==============
+*/
+static void MUSIC_Pause()
+{
+    int i;
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        chan_song[i].pause();
+    }
+}
+
+/*
+==============
+MUSIC_Unpause
+==============
+*/
+static void MUSIC_Unpause()
+{
+    int i;
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        if (chan_song[i].is_paused()) {
+            chan_song[i].play();
+        }
+    }
 }
 
 /*
@@ -3014,7 +4485,10 @@ scripts recompute them from the formulas, and compare them with a scratch-instru
 */
 static void S_NATIVE_LogStart(native_channel *pChannel, float fLeft, float fRight)
 {
-    const char *kind = pChannel->iKind == NATIVE_KIND_3D ? "3d" : pChannel->iKind == NATIVE_KIND_STREAM ? "stream" : "2d";
+    const char *kind = pChannel->iKind == NATIVE_KIND_3D       ? "3d"
+                     : pChannel->iKind == NATIVE_KIND_STREAM ? "stream"
+                     : pChannel->iKind == NATIVE_KIND_MUSIC  ? "music"
+                                                             : "2d";
     const float *pos = pChannel->b3D ? pChannel->vPosition : pChannel->vSpatial;
 
     if (!native.eventLog) {
@@ -3038,7 +4512,7 @@ static void S_NATIVE_LogStart(native_channel *pChannel, float fLeft, float fRigh
         (pChannel->iFlags & CHANNEL_FLAG_PAUSED) != 0,
         pChannel->iEntNum,
         pChannel->iEntChannel,
-        pChannel->pSfx ? pChannel->pSfx->name : "?",
+        pChannel->pSfx ? pChannel->pSfx->name : pChannel->stream.szFile[0] ? pChannel->stream.szFile : "?",
         pChannel->fVolume,
         pChannel->fMinDist,
         pChannel->fMaxDist,
@@ -3062,7 +4536,7 @@ static void S_NATIVE_LogStart(native_channel *pChannel, float fLeft, float fRigh
         fRight,
         native.fMaster,
         pChannel->b3D,
-        pChannel->pSfx && pChannel->pSfx->info.channels == 2
+        pChannel->channels() == 2
     );
 }
 
@@ -3094,7 +4568,7 @@ void native_channel::gains(float *left, float *right)
         d = VectorNormalize(dir);
         g = fGain * SNM_Distance(d, fMinDist, fMaxDist);
         SNM_Pan3D(DotProduct(dir, native.vListenerAxis[0]), DotProduct(dir, native.vListenerAxis[1]), &l, &r);
-    } else if (pSfx && pSfx->info.channels == 2) {
+    } else if (channels() == 2) {
         g = fGain * SNM_SCALE_2D;
         SNM_Balance2D(iPan, &l, &r);
     } else {
@@ -3145,6 +4619,11 @@ void native_channel::play()
         return;
     }
 
+    if (S_NATIVE_IsStreamKind(iKind)) {
+        stream_start(false);
+        return;
+    }
+
     if (!iSound) {
         return;
     }
@@ -3180,6 +4659,9 @@ native_channel::stop
 void native_channel::stop()
 {
     MacSnd_Stop(iVoice);
+    if (S_NATIVE_IsStreamKind(iKind)) {
+        S_NATIVE_CloseStream(&stream);
+    }
 }
 
 /*
@@ -3296,10 +4778,30 @@ bool native_channel::set_sfx(sfx_t *sfx)
     iLoopEnd   = 0;
     iLoopCount = 1;
 
-    if (iKind != NATIVE_KIND_3D && iKind != NATIVE_KIND_2D) {
-        // the streams: 9d
+    if (S_NATIVE_IsStreamKind(iKind)) {
         iSound = 0;
-        return false;
+
+        // Added in the Metal port
+        //  A missing stream isn't searched for again at every start (as OpenAL's)
+        if (pSfx->iFlags & SFX_FLAG_STREAM_FAILED) {
+            return false;
+        }
+        if (!S_NATIVE_OpenStream(&stream, pSfx->name)) {
+            pSfx->iFlags |= SFX_FLAG_STREAM_FAILED;
+            return false;
+        }
+
+        // the sfx is the stream's (OpenAL's)
+        pSfx->info.channels = stream.iChannels;
+        pSfx->info.dataofs  = stream.pCodec->info.dataofs;
+        pSfx->info.datasize = stream.pCodec->info.size;
+        pSfx->info.rate     = stream.iRate;
+        pSfx->info.samples  = stream.iFrames;
+        pSfx->info.width    = stream.pCodec->info.width;
+
+        iBaseRate = stream.iRate;
+        fRate     = iBaseRate;
+        return true;
     }
 
     // made when it was loaded (S_NATIVE_SfxLoaded): none means it couldn't be
@@ -3389,7 +4891,27 @@ unsigned int native_channel::sample_offset()
         return iOffset;
     }
 
+    if (S_NATIVE_IsStreamKind(iKind)) {
+        return S_NATIVE_StreamPosition(this);
+    }
+
     return MacSnd_Position(iVoice);
+}
+
+/*
+==============
+native_channel::sample_ms_offset
+
+0 when it isn't playing or paused (OpenAL's: also when paused); G13: the product in 64 bits
+==============
+*/
+unsigned int native_channel::sample_ms_offset()
+{
+    if (MacSnd_Status(iVoice) == MACSND_STOPPED || fRate <= 0) {
+        return 0;
+    }
+
+    return (unsigned int)((uint64_t)sample_offset() * 1000 / (uint64_t)fRate);
 }
 
 /*
@@ -3409,11 +4931,37 @@ native_channel::set_sample_offset
 */
 void native_channel::set_sample_offset(unsigned int offset)
 {
-    if (MacSnd_Status(iVoice) == MACSND_STOPPED) {
+    const int status = MacSnd_Status(iVoice);
+
+    if (status == MACSND_STOPPED) {
         iOffset = offset;
-    } else {
+    } else if (!S_NATIVE_IsStreamKind(iKind)) {
         MacSnd_Seek(iVoice, offset);
+    } else if (stream.bWhole) {
+        MacSnd_Seek(iVoice, offset);
+    } else {
+        // a stream reads its file again up to the offset (OpenAL's)
+        char name[MAX_QPATH];
+
+        Q_strncpyz(name, stream.szFile, sizeof(name));
+        MacSnd_Stop(iVoice);
+        if (S_NATIVE_OpenStream(&stream, name)) {
+            iOffset = offset;
+            stream_start(status == MACSND_PAUSED);
+        }
     }
+}
+
+/*
+==============
+native_channel::set_sample_ms_offset
+
+G13: the product in 64 bits (OpenAL's overflowed after ~97 s at 44.1 kHz)
+==============
+*/
+void native_channel::set_sample_ms_offset(unsigned int offset)
+{
+    set_sample_offset((unsigned int)((uint64_t)offset * (uint64_t)sample_playback_rate() / 1000));
 }
 
 /*
@@ -3426,6 +4974,13 @@ Fixed in the Metal port (E3): only the count changes (OpenAL's stopped the voice
 void native_channel::set_sample_loop_count(int count)
 {
     iLoopCount = count;
+    if (S_NATIVE_IsStreamKind(iKind)) {
+        // a stream counts its passes again (OpenAL's); a whole one is looped by the mixer
+        stream.iPass = 1;
+        if (!stream.bWhole) {
+            return;
+        }
+    }
     if (MacSnd_Status(iVoice) != MACSND_STOPPED) {
         MacSnd_SetLoop(iVoice, iLoopStart, iLoopEnd, iLoopCount);
     }
@@ -3443,6 +4998,10 @@ void native_channel::set_sample_loop_block(int start_offset, int end_offset)
 {
     iLoopStart = start_offset > 0 ? start_offset : 0;
     iLoopEnd   = end_offset > 0 ? end_offset : 0;
+    if (S_NATIVE_IsStreamKind(iKind) && !stream.bWhole) {
+        // a stream's next pass starts there (G3); its end is the file's
+        return;
+    }
     if (MacSnd_Status(iVoice) != MACSND_STOPPED) {
         MacSnd_SetLoop(iVoice, iLoopStart, iLoopEnd, iLoopCount);
     }
@@ -3456,4 +5015,161 @@ native_channel::sample_status
 int native_channel::sample_status()
 {
     return MacSnd_Status(iVoice);
+}
+
+/*
+==============
+native_channel::channels
+
+A stream's (a music channel has no sfx), else its sound's
+==============
+*/
+int native_channel::channels()
+{
+    if (S_NATIVE_IsStreamKind(iKind) && stream.iChannels) {
+        return stream.iChannels;
+    }
+
+    return pSfx ? pSfx->info.channels : 1;
+}
+
+/*
+==============
+native_channel::queue_stream
+
+Fixed in the Metal port (G12): the old stream cleared before the name is kept (OpenAL's kept the name, then cleared
+it with the stream still playing: the open failed); the end time in float seconds
+==============
+*/
+bool native_channel::queue_stream(const char *fileName)
+{
+    stop();
+
+    iOffset    = 0;
+    iLoopStart = 0;
+    iLoopEnd   = 0;
+    iLoopCount = 1;
+
+    if (!S_NATIVE_OpenStream(&stream, fileName)) {
+        return false;
+    }
+
+    iBaseRate  = stream.iRate;
+    fRate      = iBaseRate;
+    iStartTime = cl.serverTime;
+    iEndTime   = (int)(cl.serverTime + stream.iFrames * 1000.f / stream.iRate);
+
+    return true;
+}
+
+/*
+==============
+native_channel::stream_start
+
+Starts what set_sfx or queue_stream opened, from iOffset: decoded whole when short (or IMA ADPCM) and looped by the
+mixer as Miles' loop block, else a ring with its first frames; a song kept where it stopped (G8) goes on there
+==============
+*/
+void native_channel::stream_start(bool bPaused)
+{
+    native_stream_t *s = &stream;
+    macSndStart_t    start;
+    int              offset;
+    float            l, r;
+
+    memset(&start, 0, sizeof(start));
+
+    if (s->bParked) {
+        s->bParked = false;
+        native.streamResumes++;
+    } else {
+        if (!s->pCodec || s->bStarted) {
+            return;
+        }
+
+        offset  = iOffset;
+        iOffset = 0;
+        if (offset >= s->iFrames) {
+            // OpenAL's: an offset past the end (a save of another file)
+            offset = s->iFrames > 0 ? offset % s->iFrames : 0;
+        }
+
+        if (!s->iWidth || s->iFrames <= NATIVE_STREAM_FIRST) {
+            if (!S_NATIVE_StreamWhole(s)) {
+                S_NATIVE_CloseStream(s);
+                return;
+            }
+            start.startFrame = offset;
+            start.loopStart  = iLoopStart < s->iFrames ? iLoopStart : 0;
+            start.loopEnd    = iLoopEnd > 0 && iLoopEnd < s->iFrames ? iLoopEnd : s->iFrames;
+            start.loopCount  = iLoopCount;
+        } else {
+            s->iRingFrames = (int)(s->iRate * NATIVE_STREAM_SECONDS);
+            if (s->iRingFrames < 8192) {
+                s->iRingFrames = 8192;
+            }
+            s->iSound = MacSnd_CreateStream(s->iRingFrames, s->iChannels, s->iRate);
+            if (!s->iSound) {
+                S_NATIVE_CloseStream(s);
+                return;
+            }
+            S_NATIVE_SkipStream(s, offset);
+            S_NATIVE_AddSegment(s, 0, s->iFilePos);
+            S_NATIVE_FillStream(this, NATIVE_STREAM_FIRST);
+        }
+    }
+
+    s->bStarted = true;
+    bPlayedOut  = false;
+
+    gains(&l, &r);
+    start.sound  = s->iSound;
+    start.gainL  = l;
+    start.gainR  = r;
+    start.rate   = fRate;
+    start.paused = bPaused;
+    MacSnd_Start(iVoice, &start);
+
+    fPostedL     = l;
+    fPostedR     = r;
+    fPostedRate  = fRate;
+    iRequestTime = mach_absolute_time();
+
+    if (s_eventLog->integer) {
+        S_NATIVE_LogStart(this, l, r);
+    }
+}
+
+/*
+==============
+native_channel::update
+
+A stream's frame: its ring topped up (G1), its end seen
+==============
+*/
+void native_channel::update()
+{
+    native_stream_t *s = &stream;
+
+    if (!s->bStarted) {
+        return;
+    }
+
+    if (MacSnd_Status(iVoice) == MACSND_STOPPED) {
+        // it played out (a stop closes it at once)
+        bPlayedOut = true;
+        S_NATIVE_CloseStream(s);
+        return;
+    }
+
+    if (s->bWhole || s->bEnded) {
+        return;
+    }
+
+    // a chunk's room in the ring (the mixer keeps 48 frames of it)
+    if (s->iWritten - MacSnd_StreamPlayed(s->iSound) + NATIVE_STREAM_CHUNK + 48 > (uint64_t)s->iRingFrames) {
+        return;
+    }
+
+    S_NATIVE_FillStream(this, NATIVE_STREAM_STEP);
 }

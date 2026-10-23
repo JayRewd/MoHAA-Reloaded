@@ -83,6 +83,7 @@ typedef struct {
 	double		wallSeconds;	// since MacSnd_Init
 	unsigned	cpuCallbacks[16];	// callbacks per CPU number (here 0-5 efficiency, 6-9 performance cores)
 	unsigned	captureDrops;	// captured frames lost to a full capture ring
+	unsigned	underruns;		// callbacks in which a stream's voice ran out of committed frames
 } macSndStats_t;
 
 int			MacSnd_Init( const macSndConfig_t *config );	// 0 on failure
@@ -94,6 +95,16 @@ void		MacSnd_Update( void );		// once a frame: device changes, sounds the IO thr
 int			MacSnd_CreateSound( const short *pcm, int frames, int channels, int rate );
 short		*MacSnd_SoundData( int sound );
 void		MacSnd_FreeSound( int sound );	// voices on it fade out; its memory goes once the IO thread let go
+
+// A stream: a ring of frames the game writes ahead of the one voice playing it (MacSnd_Start, its loop and offset
+// ignored: the whole ring, from where the stream's last voice stopped, its first frame for a new one). The voice
+// reads only committed frames (short of them it holds, silent: stats' underruns); after MacSnd_StreamEnd it stops
+// at the last one. Positions count frames from the stream's start.
+int			MacSnd_CreateStream( int frames, int channels, int rate );	// a sound, 0 on failure
+short		*MacSnd_StreamBuffer( int sound, int *frames );	// where the next frames go, *frames of them in one piece
+void		MacSnd_StreamCommit( int sound, int frames );	// they are written
+void		MacSnd_StreamEnd( int sound );					// no frame after the committed ones
+unsigned long long	MacSnd_StreamPlayed( int sound );		// where its voice is (or stopped)
 
 void		MacSnd_Start( int voice, const macSndStart_t *start );	// replaces what the voice played
 void		MacSnd_SetParams( int voice, float gainL, float gainR, float rate );	// ramped across the next callback

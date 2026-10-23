@@ -114,6 +114,13 @@ typedef struct {
 	int			freePosted;		// the game's: its free reached the ring
 	int			ioDying;		// the IO thread's: freed, voices may still play it
 	_Atomic uint32_t	released;	// the gen the IO thread let go of
+
+	// a stream: a ring of frames the game writes ahead of the voice playing it, counted from the stream's start
+	int			stream;
+	uint64_t	written;		// the game's
+	_Atomic uint64_t	committed;	// what the voice may read: written, published
+	_Atomic uint64_t	played;		// the IO thread's: where its voice is (where the next voice starts)
+	_Atomic uint32_t	ended;		// no frame after the committed ones: the voice stops at the last
 } sndSound_t;
 
 // the IO thread's voice; the tails (stopped voices fading out) are copies
@@ -126,6 +133,8 @@ typedef struct {
 	int			loopStart, loopEnd;
 	int			passes;			// the loop block's passes left: 0 = forever, 1 = the last (no wrap)
 	int			wrapped;		// the loop block wrapped: the frames before loopStart are its end
+	uint32_t	wraps;			// the loop block's wraps (a stream's ring: its position is wraps * frames + pos)
+	int			stream;			// plays a stream's ring
 	float		gain[2];		// now, scaled by SND_SCALE
 	float		target[2];		// at the end of this callback
 	int			fadeIn, fadeLen;	// a fade-in's frames left, its length
@@ -187,7 +196,7 @@ static struct {
 	float			mix[SND_BLOCK * 2];
 
 	// stats
-	_Atomic uint32_t	callbacks, overloads, ringDrops, reopens, voicesMixed;
+	_Atomic uint32_t	callbacks, overloads, ringDrops, reopens, voicesMixed, underruns;
 	_Atomic uint64_t	pubRenderTicks, pubMaxTicks;
 	_Atomic uint32_t	cpu[16];
 
@@ -428,7 +437,7 @@ static inline __attribute__( ( always_inline ) ) float32x2_t SND_SincFrame( cons
 	{
 		const int32x4x2_t	a = SND_DotStereo( win, row, SND_Frac( frac ), taps );
 
-		return vcvt_f32_s32( vpadd_s32( vdup_n_s32( vaddvq_s32( a.val[0] ) ), vdup_n_s32( vaddvq_s32( a.val[1] ) ) ) );
+		return vcvt_f32_s32( vset_lane_s32( vaddvq_s32( a.val[1] ), vdup_n_s32( vaddvq_s32( a.val[0] ) ), 1 ) );
 	}
 }
 
@@ -593,6 +602,7 @@ static int SND_Resample( sndVoice_t *v, const sndKernel_t *k, int n, float *mix,
 		if( wrapping && i >= v->loopEnd ) {
 			v->pos -= (uint64_t)( v->loopEnd - v->loopStart ) << 32;
 			v->wrapped = 1;
+			v->wraps++;
 			if( v->passes > 1 )
 				v->passes--;
 			continue;
@@ -738,11 +748,24 @@ static void SND_StartVoice( sndVoice_t *v, const sndCmd_t *c, uint64_t now, int 
 	v->soundRate = (float)s->rate;
 	v->rate = c->rate > 0.0f ? c->rate : v->soundRate;
 	v->step = SND_Step( v->rate );
-	SND_SetLoop( v, c->loopStart, c->loopEnd, c->loopCount );
-	SND_SetPos( v, c->frame );
+	v->stream = s->stream;
+	if( s->stream ) {
+		// the whole ring forever, from where the stream's last voice stopped (its start for a new one)
+		const uint64_t	at = atomic_load_explicit( &s->played, memory_order_relaxed );
+
+		SND_SetLoop( v, 0, 0, 0 );
+		v->wraps = (uint32_t)( at / (uint64_t)s->frames );
+		v->pos = ( at % (uint64_t)s->frames ) << 32;
+		v->wrapped = v->wraps > 0;
+		v->fadeIn = at > 0 ? fade : 0;
+	} else {
+		SND_SetLoop( v, c->loopStart, c->loopEnd, c->loopCount );
+		SND_SetPos( v, c->frame );
+		v->wraps = 0;
+		v->fadeIn = c->frame > 0 ? fade : 0;
+	}
 	v->gain[0] = v->target[0] = c->gainL * SND_SCALE;
 	v->gain[1] = v->target[1] = c->gainR * SND_SCALE;
-	v->fadeIn = c->frame > 0 ? fade : 0;
 	v->fadeLen = fade;
 	v->seen = c->seq;
 	v->gen = c->gen;
@@ -821,13 +844,13 @@ static void SND_TakeCommands( uint64_t now, int fade )
 			}
 			break;
 		case CMD_LOOP:
-			if( v->state != MACSND_STOPPED )
+			if( v->state != MACSND_STOPPED && !v->stream )
 				SND_SetLoop( v, c->loopStart, c->loopEnd, c->loopCount );
 			break;
 		case CMD_SEEK:
 			v->gen = c->gen;
-			if( v->state == MACSND_STOPPED ) {
-				SND_Publish( v, c->voice );
+			if( v->state == MACSND_STOPPED || v->stream ) {
+				SND_Publish( v, c->voice );		// a stream doesn't seek: the game opens it again
 				break;
 			}
 			if( v->state == MACSND_PLAYING ) {
@@ -900,16 +923,72 @@ static void SND_MixVoice( sndVoice_t *v, const sndKernel_t *k, int n, float *mix
 	vst1_f32( v->gain, g1 );
 }
 
+/*
+===============
+SND_StreamFrames
+
+How many of the next n output frames a stream's voice (or its tail) can play: its window stays in the frames the
+game committed (short of them the voice holds where it is, silent: an underrun). After the stream's end the frames
+past it are silence (MacSnd_StreamEnd) and it plays up to its last frame: *end is set when that is within the n.
+===============
+*/
+static int SND_StreamFrames( const sndVoice_t *v, int n, int *end )
+{
+	const sndSound_t	*s = &snd.sounds[v->sound];
+	const uint32_t		ended = atomic_load_explicit( &s->ended, memory_order_acquire );	// before committed
+	const uint64_t		committed = atomic_load_explicit( &s->committed, memory_order_acquire );
+	const uint64_t		at = (uint64_t)v->wraps * (uint64_t)v->frames + ( v->pos >> 32 );
+	const uint64_t		limit = ended ? committed : committed > SND_GUARD ? committed - SND_GUARD : 0;
+	uint64_t			count;
+
+	*end = 0;
+	if( at >= limit ) {
+		*end = ended != 0;
+		return 0;
+	}
+	count = ( ( ( limit - at ) << 32 ) - (uint32_t)v->pos + v->step - 1 ) / v->step;
+	if( count > (uint64_t)n )
+		return n;
+	*end = ended != 0;
+	return (int)count;
+}
+
+// a stream's voice: what it can play of the n frames, then its position published for the game
+static void SND_MixStream( sndVoice_t *v, const sndKernel_t *k, int n, float *mix )
+{
+	sndSound_t	*s = &snd.sounds[v->sound];
+	int			end;
+	const int	m = SND_StreamFrames( v, n, &end );
+
+	if( m > 0 )
+		SND_MixVoice( v, k, m, mix );
+	else
+		vst1_f32( v->gain, vld1_f32( v->target ) );
+	if( end )
+		v->state = MACSND_STOPPED;
+	else if( m < n )
+		atomic_fetch_add_explicit( &snd.underruns, 1, memory_order_relaxed );
+	atomic_store_explicit( &s->played, (uint64_t)v->wraps * (uint64_t)v->frames + ( v->pos >> 32 ),
+		memory_order_release );
+}
+
 // a tail: its gains fall to 0 over its fade's frames left; returns 0 when it's done
 static int SND_MixTail( sndVoice_t *t, const sndKernel_t *k, int n, float *mix )
 {
-	const int			m = t->fadeOut < n ? t->fadeOut : n;
 	const float32x2_t	g0 = vld1_f32( t->gain );
 	const float32x2_t	dg = vmul_n_f32( g0, -1.0f / t->fadeOut );
+	int					m = t->fadeOut < n ? t->fadeOut : n;
+	int					cut = 0, end;
 
+	if( t->stream ) {
+		const int	can = SND_StreamFrames( t, m, &end );
+
+		cut = can < m;
+		m = can;
+	}
 	if( k )
 		k = SND_Kernel( t->step );
-	if( SND_Resample( t, k, m, mix, g0, dg ) < m )
+	if( SND_Resample( t, k, m, mix, g0, dg ) < m || cut )
 		return 0;
 	vst1_f32( t->gain, vfma_n_f32( g0, dg, (float)m ) );
 	t->fadeOut -= m;
@@ -1016,7 +1095,10 @@ static void SND_Render( float *out, int frames, uint64_t now )
 			sndVoice_t	*v = &snd.voices[snd.active[i]];
 
 			if( v->state == MACSND_PLAYING ) {
-				SND_MixVoice( v, k, n, snd.mix );
+				if( v->stream )
+					SND_MixStream( v, k, n, snd.mix );
+				else
+					SND_MixVoice( v, k, n, snd.mix );
 				if( v->state == MACSND_STOPPED ) {
 					SND_Deactivate( v );	// ended: moves the last active voice to i
 					continue;
@@ -1578,6 +1660,11 @@ int MacSnd_CreateSound( const short *pcm, int frames, int channels, int rate )
 	s->channels = channels;
 	s->rate = rate;
 	s->state = SOUND_LIVE;
+	s->stream = 0;
+	s->written = 0;
+	atomic_store_explicit( &s->committed, 0, memory_order_relaxed );
+	atomic_store_explicit( &s->played, 0, memory_order_relaxed );
+	atomic_store_explicit( &s->ended, 0, memory_order_relaxed );
 	snd.numSounds++;
 	snd.soundBytes += bytes;
 	return (int)( s->gen << 16 ) | ( slot + 1 );
@@ -1605,6 +1692,84 @@ void MacSnd_FreeSound( int sound )
 	s->freePosted = SND_Post( &c );
 	snd.numPending += !s->freePosted;
 	snd.freeing[snd.numFreeing++] = c.sound;
+}
+
+/*
+===============
+MacSnd_CreateStream
+
+A ring the game writes ahead of the voice playing it. The voice reads only what was committed (short of it, it
+holds, silent) and starts where the stream's last voice stopped (its first frame for a new stream). Behind the voice
+SND_GUARD frames stay for its window, and SND_GUARD more for the silence MacSnd_StreamEnd writes after the last frame.
+===============
+*/
+int MacSnd_CreateStream( int frames, int channels, int rate )
+{
+	sndSound_t	*s;
+	int			sound;
+
+	if( frames <= 4 * SND_GUARD )
+		return 0;
+	sound = MacSnd_CreateSound( NULL, frames, channels, rate );
+	s = SND_Sound( sound );
+	if( !s )
+		return 0;
+	s->stream = 1;
+	return sound;
+}
+
+short *MacSnd_StreamBuffer( int sound, int *frames )
+{
+	sndSound_t	*s = SND_Sound( sound );
+	int64_t		space;
+	int			at;
+
+	*frames = 0;
+	if( !s || !s->stream || atomic_load_explicit( &s->ended, memory_order_relaxed ) )
+		return NULL;
+	space = (int64_t)s->frames - 2 * SND_GUARD
+		- (int64_t)( s->written - atomic_load_explicit( &s->played, memory_order_acquire ) );
+	if( space <= 0 )
+		return NULL;
+	at = (int)( s->written % (uint64_t)s->frames );
+	if( space > s->frames - at )
+		space = s->frames - at;
+	*frames = (int)space;
+	return s->alloc + (size_t)( SND_GUARD + at ) * s->channels;
+}
+
+void MacSnd_StreamCommit( int sound, int frames )
+{
+	sndSound_t	*s = SND_Sound( sound );
+	int			space;
+
+	if( !s || !s->stream || frames <= 0 || !MacSnd_StreamBuffer( sound, &space ) )
+		return;
+	s->written += frames < space ? frames : space;
+	atomic_store_explicit( &s->committed, s->written, memory_order_release );
+}
+
+void MacSnd_StreamEnd( int sound )
+{
+	sndSound_t	*s = SND_Sound( sound );
+	int			i;
+
+	if( !s || !s->stream || atomic_load_explicit( &s->ended, memory_order_relaxed ) )
+		return;
+	// the voice's window past the last frame reads silence (in the space MacSnd_StreamBuffer kept for it)
+	for( i = 0; i < SND_GUARD; i++ ) {
+		const int	at = (int)( ( s->written + i ) % (uint64_t)s->frames );
+
+		memset( s->alloc + (size_t)( SND_GUARD + at ) * s->channels, 0, sizeof( short ) * s->channels );
+	}
+	atomic_store_explicit( &s->ended, 1, memory_order_release );
+}
+
+unsigned long long MacSnd_StreamPlayed( int sound )
+{
+	sndSound_t	*s = SND_Sound( sound );
+
+	return s && s->stream ? atomic_load_explicit( &s->played, memory_order_acquire ) : 0;
 }
 
 static void SND_PostParams( int voice, float gainL, float gainR, float rate )
@@ -1830,6 +1995,7 @@ void MacSnd_GetStats( macSndStats_t *stats )
 	for( i = 0; i < 16; i++ )
 		stats->cpuCallbacks[i] = atomic_load_explicit( &snd.cpu[i], memory_order_relaxed );
 	stats->captureDrops = atomic_load_explicit( &snd.captureDrops, memory_order_relaxed );
+	stats->underruns = atomic_load_explicit( &snd.underruns, memory_order_relaxed );
 }
 
 /*
