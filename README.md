@@ -56,7 +56,7 @@ Change settings in the console (`seta name value`) or at launch (`--args +set na
 
 | Setting | Default | What it does here |
 |---|---|---|
-| `com_maxfps` | `85` | The render cap, exact now (240 is 240, not 250). With `cl_movefps` on, any value; `0` is uncapped. On a 240 Hz display **480** showed input ~1 ms sooner than 250. With `cl_movefps 0` it is also the command rate: stay at 250 or below. |
+| `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (240 is 240, not 250). With `cl_movefps` on, any value; `0` is uncapped. On a 240 Hz display **480** showed input ~1 ms sooner than 250. With `cl_movefps 0` it is also the command rate: stay at 250 or below. |
 | `r_fullscreen`, `r_noborder` | `1`, `0` | `1` and `1`: the **fullscreen Space**, the cleanest mode (macOS blanks the other displays for it). `1` and `0`: exclusive fullscreen at `r_mode`'s size. `0`: a window, which macOS composites (more latency). Every fullscreen mode goes direct to the display. |
 | `r_swapInterval` | `0` | `0` shows each frame at once (it can tear). `1` is vsync: tear-free, about two refreshes later. |
 | `com_busyWait` | `0` | `1` spins the CPU through the frame wait: ~0.05–0.1 ms sooner, for a full core. |
