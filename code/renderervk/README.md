@@ -5468,8 +5468,13 @@ cross much of the map. Played back faster, the many sounds left playing
 made the slow frames: up to 26 traces a frame of 40 µs each in one part of
 `o2match`. Spreading the second checks of the sounds started in the same
 frame over the 100 ms (tried) took the slowest 0.1 % from 0.73 to 0.68 ms
-there, so it was left out. `S_Update`'s slowest frames at real speed: a
-stream's update (1.3 ms once in `o2match`) and others not broken down.
+there, so it was left out. `S_Update`'s slowest frame at real speed, 1.3
+ms once in `o2match`, was spent in the update of a stream channel that
+wasn't streaming (it returns at its first check): the trace times wall
+time, so it was the main thread off its core for a moment, the frame on
+time (3.98 ms); a replay with each stream update's state showed such idle
+updates at 40 to 60 µs too. The others (0.4 to 0.8 ms) aren't broken
+down.
 
 Results (idle machine: other processes at most 0.7 CPUs, no Plex
 transcoding; `base` (a5120199, OpenAL), `raw` (the merge commit: the pull
