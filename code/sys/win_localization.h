@@ -55,6 +55,8 @@ public:
     const char *ConvertString(const char *var);
 
 private:
+    const char *Lookup(const char *var);
+    const char *NoEntry(const char *var);
     void LoadFile(const char *name);
     void GenerateMissing(const char *file_name);
 };

@@ -28,6 +28,29 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define MAX_BUFFERS             6
 #define MAX_LOCALIZATION_LENGTH 1024
 
+// ConvertString's last answers. An answer depends only on the string (the entries are loaded once), and the HUD
+// converts the same lines every frame. A cached answer stays valid for CONVERT_CACHE_SIZE - 1 misses, longer than
+// a global_buf one (MAX_BUFFERS - 1 calls)
+#define CONVERT_CACHE_SIZE 16
+#define CONVERT_CACHE_KEY  128
+
+typedef enum {
+    CONVERT_LOC,     // loc
+    CONVERT_SELF,    // the string itself
+    CONVERT_NO_ENTRY // the string itself, through NoEntry
+} convert_answer_t;
+
+typedef struct {
+    size_t           len; // of var, 0 = unused
+    unsigned int     hash;
+    convert_answer_t answer;
+    char             var[CONVERT_CACHE_KEY];
+    char             loc[MAX_LOCALIZATION_LENGTH];
+} convert_cache_t;
+
+static convert_cache_t convert_cache[CONVERT_CACHE_SIZE];
+static size_t          convert_cache_next;
+
 cLocalization *g_localization;
 static char    global_buf[MAX_BUFFERS][MAX_LOCALIZATION_LENGTH];
 static char    szTemp[100];
@@ -328,6 +351,70 @@ static void bjb_rebreak(const char *var, char *buf, size_t max)
 
 const char *cLocalization::ConvertString(const char *var)
 {
+    convert_cache_t *cache;
+    const char      *loc;
+    unsigned int     hash;
+    size_t           len;
+    size_t           i;
+
+    if (!*var) {
+        return var;
+    }
+
+    hash = 2166136261u;
+    for (len = 0; var[len]; len++) {
+        hash = (hash ^ (unsigned char)var[len]) * 16777619u;
+    }
+
+    if (len >= CONVERT_CACHE_KEY) {
+        loc = Lookup(var);
+        return loc ? loc : NoEntry(var);
+    }
+
+    for (i = 0; i < CONVERT_CACHE_SIZE; i++) {
+        cache = &convert_cache[i];
+        if (cache->len == len && cache->hash == hash && !memcmp(cache->var, var, len)) {
+            switch (cache->answer) {
+            case CONVERT_LOC:
+                return cache->loc;
+            case CONVERT_SELF:
+                return var;
+            default:
+                return NoEntry(var);
+            }
+        }
+    }
+
+    loc   = Lookup(var);
+    cache = &convert_cache[convert_cache_next++ % CONVERT_CACHE_SIZE];
+    if (var >= (const char *)cache && var < (const char *)(cache + 1)) {
+        // an answer of this entry: keep it
+        cache = &convert_cache[convert_cache_next++ % CONVERT_CACHE_SIZE];
+    }
+
+    cache->len  = len;
+    cache->hash = hash;
+    memcpy(cache->var, var, len);
+    if (!loc) {
+        cache->answer = CONVERT_NO_ENTRY;
+        return NoEntry(var);
+    }
+
+    if (loc == var) {
+        cache->answer = CONVERT_SELF;
+    } else {
+        cache->answer = CONVERT_LOC;
+        Q_strncpyz(cache->loc, loc, sizeof(cache->loc));
+    }
+
+    return loc;
+}
+
+/*
+The entry's translation, the string itself, or NULL when no entry matches
+*/
+const char *cLocalization::Lookup(const char *var)
+{
     size_t       l;
     intptr_t     i, m, n, o;
     intptr_t     nArg1;
@@ -536,6 +623,16 @@ const char *cLocalization::ConvertString(const char *var)
             return buf;
         }
     }
+
+    return NULL;
+}
+
+/*
+No entry for the string: in developer mode, reported once
+*/
+const char *cLocalization::NoEntry(const char *var)
+{
+    size_t i;
 
     if (!developer->integer || !var[0] || !var[1]) {
         return var;

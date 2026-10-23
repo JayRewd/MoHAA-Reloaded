@@ -46,6 +46,21 @@ qkey_t ctrlkeys[MAX_KEYS];
 
 qboolean menubound[MAX_KEYS];
 
+// Key_GetKeysForCommand's answers while no binding changes: cgame asks for the same few commands every frame
+// (the spectator's lines)
+#define KEY_COMMAND_CACHE 8
+
+typedef struct {
+    int  generation; // keyBindingsGeneration when answered
+    int  key1;
+    int  key2;
+    char command[32];
+} keyCommandCache_t;
+
+static int               keyBindingsGeneration = 1;
+static keyCommandCache_t keyCommandCache[KEY_COMMAND_CACHE];
+static int               keyCommandCacheNext;
+
 qboolean alt_down;
 qboolean ctrl_down;
 
@@ -543,6 +558,7 @@ void Key_SetBinding(int keynum, const char *binding)
 
     // allocate memory for new binding
     keys[keynum].binding = CopyString(binding);
+    keyBindingsGeneration++;
 
     // consider this like modifying an archived cvar, so the
     // file write will be triggered at the next oportunity
@@ -659,7 +675,17 @@ Key_GetKeysForCommand
 */
 void Key_GetKeysForCommand(const char *command, int *key1, int *key2)
 {
-    int i;
+    keyCommandCache_t *cache;
+    int                i;
+
+    for (i = 0; i < KEY_COMMAND_CACHE; i++) {
+        cache = &keyCommandCache[i];
+        if (cache->generation == keyBindingsGeneration && !strcmp(cache->command, command)) {
+            *key1 = cache->key1;
+            *key2 = cache->key2;
+            return;
+        }
+    }
 
     *key1 = *key2 = -1;
 
@@ -672,9 +698,17 @@ void Key_GetKeysForCommand(const char *command, int *key1, int *key2)
                 *key1 = i;
             } else {
                 *key2 = i;
-                return;
+                break;
             }
         }
+    }
+
+    if (strlen(command) < sizeof(cache->command)) {
+        cache = &keyCommandCache[keyCommandCacheNext++ % KEY_COMMAND_CACHE];
+        cache->generation = keyBindingsGeneration;
+        cache->key1       = *key1;
+        cache->key2       = *key2;
+        Q_strncpyz(cache->command, command, sizeof(cache->command));
     }
 }
 

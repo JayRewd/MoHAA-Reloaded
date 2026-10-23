@@ -682,9 +682,9 @@ void CG_InitializeObjectives()
     cg.ObjectivesDesiredAlpha = 0.0;
     cg.ObjectivesCurrentAlpha = 0.0;
 
-    for (i = 0; i < MAX_OBJECTIVES; i++) {
-        cg.Objectives[i].flags   = 0;
-        cg.Objectives[i].text[0] = 0;
+    // as their configstrings hold them; CG_ProcessConfigString keeps them from here on
+    for (i = CS_OBJECTIVES; i < CS_OBJECTIVES + MAX_OBJECTIVES; ++i) {
+        CG_ProcessConfigString(i, qfalse);
     }
 }
 
@@ -704,12 +704,8 @@ void CG_DrawObjectives()
     const char  *pszLocalizedText;
     const char  *pszLine;
 
-    iTotalNumLines = 0;
-    for (i = CS_OBJECTIVES; i < CS_OBJECTIVES + MAX_OBJECTIVES; ++i) {
-        CG_ProcessConfigString(i, qfalse);
-    }
-
-    iCurrentObjective         = atoi(CG_ConfigString(CS_CURRENT_OBJECTIVE));
+    iTotalNumLines            = 0;
+    iCurrentObjective         = cg.ObjectivesCurrentIndex;
     fTimeDelta                = cg.ObjectivesAlphaTime - cg.time;
     cg.ObjectivesCurrentAlpha = cg.ObjectivesDesiredAlpha;
     if (fTimeDelta > 0) {
@@ -858,6 +854,32 @@ void CG_DrawObjectives()
     }
 }
 
+/*
+==============
+CG_TeamHudShader
+
+The team's icon, 0 for no team
+==============
+*/
+static qhandle_t CG_TeamHudShader(int team)
+{
+    int i;
+
+    if (team == TEAM_ALLIES) {
+        i = 0;
+    } else if (team == TEAM_AXIS) {
+        i = 1;
+    } else {
+        return 0;
+    }
+
+    if (!cgs.media.teamHudShaders[i]) {
+        cgs.media.teamHudShaders[i] = cgi.R_RegisterShader(i ? "textures/hud/axis" : "textures/hud/allies");
+    }
+
+    return cgs.media.teamHudShaders[i];
+}
+
 void CG_DrawPlayerTeam()
 {
     qhandle_t handle;
@@ -869,12 +891,7 @@ void CG_DrawPlayerTeam()
         return;
     }
 
-    handle = 0;
-    if (cg.snap->ps.stats[STAT_TEAM] == 3) {
-        handle = cgi.R_RegisterShader("textures/hud/allies");
-    } else if (cg.snap->ps.stats[STAT_TEAM] == 4) {
-        handle = cgi.R_RegisterShader("textures/hud/axis");
-    }
+    handle = CG_TeamHudShader(cg.snap->ps.stats[STAT_TEAM]);
 
     if (handle) {
         cgi.R_SetColor(NULL);
@@ -922,11 +939,7 @@ void CG_DrawPlayerEntInfo()
     fX = 56.0;
     fY = (float)cgs.glconfig.vidHeight * 0.5;
 
-    if (cg.clientinfo[iClientNum].team == TEAM_ALLIES) {
-        handle = cgi.R_RegisterShader("textures/hud/allies");
-    } else if (cg.clientinfo[iClientNum].team == TEAM_AXIS) {
-        handle = cgi.R_RegisterShader("textures/hud/axis");
-    }
+    handle = CG_TeamHudShader(cg.clientinfo[iClientNum].team);
 
     if (handle) {
         cgi.R_SetColor(0);
@@ -981,12 +994,7 @@ void CG_UpdateAttackerDisplay()
     if (cgs.gametype > GT_FFA) {
         qhandle_t handle;
 
-        handle = 0;
-        if (cg.clientinfo[iClientNum].team == TEAM_ALLIES) {
-            handle = cgi.R_RegisterShader("textures/hud/allies");
-        } else if (cg.clientinfo[iClientNum].team == TEAM_AXIS) {
-            handle = cgi.R_RegisterShader("textures/hud/axis");
-        }
+        handle = CG_TeamHudShader(cg.clientinfo[iClientNum].team);
 
         if (handle) {
             cgi.R_SetColor(0);
@@ -1029,6 +1037,9 @@ void CG_UpdateAttackerDisplay()
 
 void CG_UpdateCountdown()
 {
+    // the time left, formatted when its second changes (the words' translation never changes)
+    static int  iMessageSeconds = -1;
+    static char szMessage[MAX_STRING_CHARS + 32];
     const char *message = "";
 
     if (!cg.snap) {
@@ -1041,8 +1052,19 @@ void CG_UpdateCountdown()
 
             iSecondsLeft = (cgs.matchEndTime - cg.time) / 1000;
             if (iSecondsLeft >= 0) {
-                iMinutesLeft = iSecondsLeft / 60;
-                message      = va("%s %2i:%02i", cgi.LV_ConvertString("Time Left:"), iMinutesLeft, iSecondsLeft % 60);
+                if (iSecondsLeft != iMessageSeconds) {
+                    iMinutesLeft = iSecondsLeft / 60;
+                    Com_sprintf(
+                        szMessage,
+                        sizeof(szMessage),
+                        "%s %2i:%02i",
+                        cgi.LV_ConvertString("Time Left:"),
+                        iMinutesLeft,
+                        iSecondsLeft % 60
+                    );
+                    iMessageSeconds = iSecondsLeft;
+                }
+                message = szMessage;
             } else if (!cgs.matchEndTime) {
                 message = "";
             }
@@ -1258,11 +1280,7 @@ void CG_DrawSpectatorView_ver_15()
             cgs.media.attackerFont, buf, fX / cgs.uiHiResScale[0], fY / cgs.uiHiResScale[1], -1, cgs.uiHiResScale
         );
 
-        if (cg.clientinfo[iClientNum].team == TEAM_ALLIES) {
-            hShader = cgi.R_RegisterShader("textures/hud/allies");
-        } else if (cg.clientinfo[iClientNum].team == TEAM_AXIS) {
-            hShader = cgi.R_RegisterShader("textures/hud/axis");
-        }
+        hShader = CG_TeamHudShader(cg.clientinfo[iClientNum].team);
 
         if (hShader) {
             cgi.R_SetColor(NULL);

@@ -681,7 +681,6 @@ void CG_GetOrigin(centity_t *cent, vec3_t origin)
             return;
         }
 
-        cgi.R_Model_GetHandle(parent->hModel);
         or = cgi.TIKI_Orientation(parent, cent->currentState.tag_num);
 
         VectorCopy(parent->origin, origin);

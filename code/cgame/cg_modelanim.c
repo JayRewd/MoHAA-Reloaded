@@ -48,6 +48,39 @@ const char *CG_GetPlayerLocalModelTiki(const char *modelName)
     return va("models/player/%s_fps.tik", modelName);
 }
 
+typedef enum {
+    HEADICON_TALKING,
+    HEADICON_INMENU,
+    HEADICON_ARTILLERY,
+    HEADICON_ALLIES,
+    HEADICON_AXIS
+} headIcon_t;
+
+/*
+===============
+CG_HeadIconModel
+
+The head icon's sprite: a model looked up by name, which searches every model of the level, so only at its first
+use in the level
+===============
+*/
+static qhandle_t CG_HeadIconModel(headIcon_t icon)
+{
+    static const char *names[] = {
+        "textures/hud/talking_headicon.spr",
+        "textures/hud/inmenu_headicon.spr",
+        "textures/hud/inmenu_artilleryicon.spr",
+        "textures/hud/allies_headicon.spr",
+        "textures/hud/axis_headicon.spr",
+    };
+
+    if (!cgs.media.headIconModels[icon]) {
+        cgs.media.headIconModels[icon] = cgi.R_RegisterModel(names[icon]);
+    }
+
+    return cgs.media.headIconModels[icon];
+}
+
 /*
 ===============
 CG_PlayerTeamIcon
@@ -100,10 +133,10 @@ void CG_PlayerTeamIcon(refEntity_t *pModel, entityState_t *pPlayerState)
 
         memset(&iconEnt, 0, sizeof(iconEnt));
         if ((pPlayerState->eFlags & EF_PLAYER_TALKING) != 0 && ((cg.time >> 8) & 1) != 0) {
-            iconEnt.hModel = cgi.R_RegisterModel("textures/hud/talking_headicon.spr");
+            iconEnt.hModel = CG_HeadIconModel(HEADICON_TALKING);
             bSpecialIcon   = qtrue;
         } else if ((pPlayerState->eFlags & EF_PLAYER_IN_MENU) != 0) {
-            iconEnt.hModel = cgi.R_RegisterModel("textures/hud/inmenu_headicon.spr");
+            iconEnt.hModel = CG_HeadIconModel(HEADICON_INMENU);
             bSpecialIcon   = qtrue;
         } else {
             if (!bInTeam) {
@@ -111,12 +144,12 @@ void CG_PlayerTeamIcon(refEntity_t *pModel, entityState_t *pPlayerState)
             }
 
             if (bInArtillery) {
-                iconEnt.hModel = cgi.R_RegisterModel("textures/hud/inmenu_artilleryicon.spr");
+                iconEnt.hModel = CG_HeadIconModel(HEADICON_ARTILLERY);
                 bSpecialIcon   = qtrue;
             } else if ((pPlayerState->eFlags & 0x80) != 0) {
-                iconEnt.hModel = cgi.R_RegisterModel("textures/hud/allies_headicon.spr");
+                iconEnt.hModel = CG_HeadIconModel(HEADICON_ALLIES);
             } else {
-                iconEnt.hModel = cgi.R_RegisterModel("textures/hud/axis_headicon.spr");
+                iconEnt.hModel = CG_HeadIconModel(HEADICON_AXIS);
             }
         }
 
@@ -194,9 +227,9 @@ void CG_PlayerTeamIcon(refEntity_t *pModel, entityState_t *pPlayerState)
 
             if (bSpecialIcon && bInTeam && fAlpha > 0.0f) {
                 if (pPlayerState->eFlags & EF_ALLIES) {
-                    iconEnt.hModel = cgi.R_RegisterModel("textures/hud/allies_headicon.spr");
+                    iconEnt.hModel = CG_HeadIconModel(HEADICON_ALLIES);
                 } else {
-                    iconEnt.hModel = cgi.R_RegisterModel("textures/hud/axis_headicon.spr");
+                    iconEnt.hModel = CG_HeadIconModel(HEADICON_AXIS);
                 }
                 VectorMA(iconEnt.origin, 4.0f, cg.refdef.viewaxis[0], iconEnt.origin);
                 iconEnt.scale         = iconEnt.scale - 0.1;
@@ -1525,7 +1558,6 @@ void CG_ModelAnim(centity_t *cent, qboolean bDoShaderTime)
 
     model.reType = RT_MODEL;
     if (!(s1->renderfx & RF_DONTDRAW)) {
-        cgi.R_Model_GetHandle(model.hModel);
         if (VectorCompare(model.origin, vec3_origin)) {
             VectorCopy(s1->origin, model.origin);
             AngleVectors(s1->angles, model.axis[0], model.axis[1], model.axis[2]);

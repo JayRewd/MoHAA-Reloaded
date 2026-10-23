@@ -1820,8 +1820,10 @@ Updates the UI.
 */
 void UI_Update(void)
 {
-    Menu    *currentMenu;
-    UIRect2D frame;
+    static Menu *mainMenu, *dmMainMenu;
+    static int   mainMenusGeneration = -1;
+    Menu        *currentMenu;
+    UIRect2D     frame;
 
     re.SetRenderTime(cls.realtime);
     CL_FillUIDef();
@@ -1882,9 +1884,16 @@ void UI_Update(void)
 
     currentMenu = menuManager.CurrentMenu();
 
-    if (currentMenu == menuManager.FindMenu("main")) {
+    // the main menus, searched for only when the menus change
+    if (mainMenusGeneration != menuManager.Generation()) {
+        mainMenusGeneration = menuManager.Generation();
+        mainMenu            = menuManager.FindMenu("main");
+        dmMainMenu          = menuManager.FindMenu("dm_main");
+    }
+
+    if (currentMenu == mainMenu) {
         UI_MainMenuWidgetsUpdate();
-    } else if (currentMenu == menuManager.FindMenu("dm_main")) {
+    } else if (currentMenu == dmMainMenu) {
         UI_MultiplayerMainMenuWidgetsUpdate();
     }
 
@@ -5004,7 +5013,23 @@ UI_RemoveHud_f
 */
 void UI_RemoveHud_f(void)
 {
-    Menu *hud = menuManager.FindMenu(Cmd_Argv(1));
+    const char *name = Cmd_Argv(1);
+    Menu       *hud;
+    int         i;
+
+    // Nothing to do unless the hud list holds a menu of that name: cgame removes its stopwatch huds every frame,
+    // and the menu search is the slow part
+    for (i = 1; i <= hudList.NumObjects(); i++) {
+        if (!hudList.ObjectAt(i)->m_name.icmp(name)) {
+            break;
+        }
+    }
+
+    if (i > hudList.NumObjects()) {
+        return;
+    }
+
+    hud = menuManager.FindMenu(name);
 
     if (hud && hudList.ObjectInList(hud)) {
         hud->ForceHide();

@@ -378,6 +378,9 @@ extern "C" {
         qhandle_t     objectivesBackShader;
         qhandle_t     checkedBoxShader;
         qhandle_t     uncheckedBoxShader;
+        // looked up by name at their first use in the level
+        qhandle_t     teamHudShaders[2]; // allies, axis
+        qhandle_t     headIconModels[5]; // CG_PlayerTeamIcon's
     } media_t;
 
     // The client game static (cgs) structure hold everything
