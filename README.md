@@ -66,6 +66,7 @@ Change settings in the console (`seta name value`) or at launch (`--args +set na
 | `r_fullscreen`, `r_noborder` | `1`, `0` | `1` and `1`: the **fullscreen Space**, the cleanest mode (macOS blanks the other displays for it). `1` and `0`: exclusive fullscreen at `r_mode`'s size. `0`: a window, which macOS composites (more latency). Every fullscreen mode goes direct to the display. |
 | `r_swapInterval` | `0` | `0` shows each frame at once (it can tear). `1` is vsync: tear-free, about two refreshes later. |
 | `m_filter` | `0` (upstream `1` on macOS) | `1` averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. Configs saved by earlier builds hold `1`: set it to `0`. |
+| `cl_ctrlbindings` | `0` | A setting of its own now: `1` turns on the Ctrl and Del key bindings (`ctrlbind`), `cl_altbindings 1` only the Alt and Ins ones (`altbind`). Upstream's `cl_altbindings 1` turned on both: if you use Ctrl bindings, set `cl_ctrlbindings 1` too. |
 | `com_busyWait` | `0` | `1` spins the CPU through the frame wait: ~0.05–0.1 ms sooner, for a full core. |
 | `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
 | `s_speaker_type` | `0` | `1` is **headphone 3D** (Apple's HRTF): sounds behind, above or below you sound there. `0` is stereo, as the original pans. |
