@@ -10,7 +10,8 @@
 # as a real mouse; see that file) while the probe runs, and the game quits. Window: 1280x720, vsync off,
 # com_maxfps 250 (the user's setting) and the stock mode (cl_movefps 0, as every number recorded with it; the game's
 # default is the decoupled mode at 100 since session 39; cl_cmdRate 0 too, its name before session 47, for older
-# flavors) unless the engine args say otherwise, e.g.
+# flavors) and m_filter 0 (the default since session 68; older flavors default to 1, which halves each frame's
+# movement but doesn't delay its first frame, the probe's measure) unless the engine args say otherwise, e.g.
 #   port/latency.sh metal metal-fs-250 20 +set r_fullscreen 1 +set r_customwidth 1920 +set r_customheight 1080
 #   port/latency.sh metal metal-bfs-250 20 +set r_fullscreen 1 +set r_noborder 1     (borderless fullscreen)
 # The screen must be unlocked: while it is locked the WindowServer composites nothing (checked first).
@@ -67,7 +68,7 @@ if [ "$R" = opengl1 ]; then FLAVOR=gl; else FLAVOR="${OMM_FLAVOR:-metal}"; fi
 perl -e 'alarm shift; exec @ARGV' $(( SECS + 90 )) "$OMM_PORT/run.sh" "$FLAVOR" +set cl_renderer "$R" \
 	+set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 \
 	+set r_swapInterval 0 +set com_maxfps 250 +set com_maxfpsUnfocused 0 +set com_maxfpsMinimized 0 +set cl_cmdRate 0 +set cl_movefps 0 \
-	+set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 \
+	+set m_filter 0 +set s_volume 0 +set s_musicvolume 0 +set r_primitives 2 \
 	+set g_gametype 0 +set thereisnomonkey 1 ${RAW[@]+"${RAW[@]}"} "$@" +devmap dm/mohdm6 +exec lat_probe.cfg \
 	> "$LOG" 2>&1 &
 GAME=$!

@@ -42,6 +42,7 @@ seta r_fullscreen 1
 seta r_noborder 1
 seta r_swapInterval 0
 seta in_mouseRaw 1
+seta m_filter 0
 ```
 
 Change settings in the console (`seta name value`) or at launch (`--args +set name value`). Display settings take effect after `vid_restart`.
@@ -64,6 +65,7 @@ Change settings in the console (`seta name value`) or at launch (`--args +set na
 | `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (240 is 240, not 250). With `cl_movefps` on, any value; `0` is uncapped. On a 240 Hz display **480** showed input ~1 ms sooner than 250. With `cl_movefps 0` it is also the command rate: stay at 250 or below. |
 | `r_fullscreen`, `r_noborder` | `1`, `0` | `1` and `1`: the **fullscreen Space**, the cleanest mode (macOS blanks the other displays for it). `1` and `0`: exclusive fullscreen at `r_mode`'s size. `0`: a window, which macOS composites (more latency). Every fullscreen mode goes direct to the display. |
 | `r_swapInterval` | `0` | `0` shows each frame at once (it can tear). `1` is vsync: tear-free, about two refreshes later. |
+| `m_filter` | `0` (upstream `1` on macOS) | `1` averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. Configs saved by earlier builds hold `1`: set it to `0`. |
 | `com_busyWait` | `0` | `1` spins the CPU through the frame wait: ~0.05–0.1 ms sooner, for a full core. |
 | `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
 | `s_speaker_type` | `0` | `1` is **headphone 3D** (Apple's HRTF): sounds behind, above or below you sound there. `0` is stereo, as the original pans. |
