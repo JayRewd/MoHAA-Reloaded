@@ -996,7 +996,7 @@ void CL_InitKeyCommands(void)
     Cmd_AddCommand("unbindall", Key_Unbindall_f);
     Cmd_AddCommand("bindlist", Key_Bindlist_f);
     Cmd_AddCommand("altbindlist", Key_AltBindlist_f);
-    Cmd_AddCommand("ctrlbindlist", Key_AltBindlist_f);
+    Cmd_AddCommand("ctrlbindlist", Key_CtrlBindlist_f);
 
     memset(menubound, 0, sizeof(menubound));
 
