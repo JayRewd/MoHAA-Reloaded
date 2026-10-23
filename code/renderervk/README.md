@@ -7689,7 +7689,8 @@ Done:
     speed (the sounds play in real time, so each stays playing 4 to 30
     times longer in a match played back faster): at real speed its
     obstruction traces take 1.5 to 1.7 µs a frame, 0.05 to 0.14 ms in the
-    slowest 0.1 % (the pull request's author had less than a quarter); the same stream chunks, seeks and PCM as the pull request (its
+    slowest 0.1 % (the pull request's author had less than a quarter);
+    the same stream chunks, seeks and PCM as the pull request (its
     loops' 30 ms loss fixed), ThreadSanitizer clean but RADV's own report,
     GL1 plays with the new engine.
 
