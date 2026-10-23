@@ -33,6 +33,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // polyphase filter (24 taps, 128 phases with the coefficients interpolated between them, all in 16-bit integers
 // with 32-bit sums); a voice read faster than the device rate (a step above 1) gets a stretched kernel, its cutoff
 // at the output's Nyquist frequency. Linear interpolation, Miles' resampler, is the A/B.
+//
+// Headphone 3D (Phase 9f): Apple's AUSpatialMixer renders the voices the game gives a direction, inside the same
+// callback; it is made the first time headphone 3D is turned on, never in stereo. A fixed EQ on its output gives it
+// the stereo pans' timbre on average (session 72).
 
 #include "macos_snd.h"
 
@@ -65,6 +69,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define SND_BLOCK			512					// the mix buffer; longer callbacks are mixed in blocks
 #define SND_CEILING			0.966051f			// the limiter's: -0.3 dBFS
 #define SND_RELEASE			0.050				// the limiter's recovery, seconds
+#define SND_SPATIAL_FLUSH	0.010				// seconds of silence an input gets after its last frame (its response
+												// is 3.3 ms long) before it is disabled
+#define SND_SPATIAL_EQS		3					// the spatial mixer's EQ: biquads (snd_spatialEQ)
+#define SND_SPATIAL_DB		1.01f				// ... and its gain in dB
+#define SND_CENTRE			0.70710678f			// a voice with a direction without headphone 3D: -3 dB a side
 #define SND_GENBITS			30
 #define SND_GENMASK			( ( 1u << SND_GENBITS ) - 1 )
 
@@ -88,17 +97,19 @@ typedef struct {
 	uint8_t		op;
 	uint8_t		paused;
 	uint16_t	voice;
+	uint16_t	spatial;		// a voice with a direction
 	int32_t		sound;			// a slot
 	int32_t		frame;
 	int32_t		loopStart, loopEnd, loopCount;
-	float		gainL, gainR, rate;
+	float		gainL, gainR, rate, azimuth, elevation;
 	uint32_t	seq, gen;
 } sndCmd_t;
 
-// the game's gains and rate for a voice, newest wins: a sequence lock, even when complete
+// the game's gains, rate and direction for a voice, newest wins: a sequence lock, even when complete
 typedef struct {
 	_Atomic uint32_t	seq;
-	_Atomic uint32_t	gainL, gainR, rate;		// float bits
+	_Atomic uint32_t	gainL, gainR, rate, azimuth, elevation;		// float bits
+	_Atomic uint32_t	spatial;
 } sndMailbox_t;
 
 typedef struct {
@@ -139,6 +150,9 @@ typedef struct {
 	float		target[2];		// at the end of this callback
 	int			fadeIn, fadeLen;	// a fade-in's frames left, its length
 	int			fadeOut;		// a tail's frames left
+	int			spatial;		// it has a direction (both gains are its level)
+	int			input;			// its spatial input, -1 when none (a tail: the one it plays out on)
+	float		azimuth, elevation;
 	uint32_t	seen;			// the mailbox's sequence applied
 	uint32_t	gen;
 	int			state;			// MACSND_*
@@ -155,11 +169,41 @@ typedef struct {
 	int			frame;			// the start or seek offset: the position until the IO thread took it
 } sndGameVoice_t;
 
+// an input of the spatial mixer, the IO thread's (the unit pulls data through SND_SpatialInput)
+typedef struct {
+	float		*data;			// SND_BLOCK frames: this block's
+	int			owner;			// the voice it's given to, -1 when free (a free input is disabled: rested)
+	int			used;			// a voice or tail wrote this block
+	int			enabled;		// as set on the unit
+	int			idle;			// frames since its last data
+	float		azimuth, elevation;	// as set on the unit (NaN: not yet)
+	float		wantAzimuth, wantElevation;
+} sndInput_t;
+
+/*
+Headphone 3D's EQ (session 72): a gain and three biquads on the spatial mixer's output, the same on both ears (the
+interaural cues untouched), fitted to the inverse of Apple's HRTF's mean timbre against the stereo pans over the
+horizon (every azimuth, elevations -30 to 30; both ears' power from 40 Hz to 15 kHz, smoothed to a third of an
+octave; build.noindex/s72/probes). Without it the front half was thin and bright against stereo, the game's gunfire
+ahead -2.6 dB below 2 kHz, +0.3 at 2.5-5 kHz and +5.9 at 12.5-16 kHz: the HRTF's resonance at 11-14 kHz (+6 to +10 dB
+ahead), and session 62's -1.3 dB on its output, matched with white noise, whose power is mostly in that resonance.
+*/
+static const struct {
+	int			shelf;			// a high shelf, else a peak
+	float		hz, db, q;
+} snd_spatialEQ[SND_SPATIAL_EQS] = {
+	{ 1, 659.0f, -1.15f, 0.67f }, { 0, 7393.0f, -2.57f, 3.72f }, { 0, 12672.0f, -4.25f, 1.90f },
+};
+
+typedef struct {
+	float		b0, b1, b2, a1, a2;
+} sndBiquad_t;
+
 static struct {
 	int				initialized;
 	int				offline;
 	double			rate;
-	int				maxVoices, maxTails, maxSounds;
+	int				maxVoices, maxTails, maxSounds, maxSpatial;
 	int				wantFrames;
 	char			wantDevice[256];
 	void			( *print )( const char *msg );
@@ -194,9 +238,10 @@ static struct {
 	uint64_t		frameCount;
 	uint64_t		renderTicks, maxTicks;
 	float			mix[SND_BLOCK * 2];
+	float			scratch[SND_BLOCK * 2];	// a voice with a direction, before its fold into its input
 
 	// stats
-	_Atomic uint32_t	callbacks, overloads, ringDrops, reopens, voicesMixed, underruns;
+	_Atomic uint32_t	callbacks, overloads, ringDrops, reopens, voicesMixed, underruns, spatialInputs, spatialErrors;
 	_Atomic uint64_t	pubRenderTicks, pubMaxTicks;
 	_Atomic uint32_t	cpu[16];
 
@@ -214,6 +259,20 @@ static struct {
 	double			latency;
 	char			deviceName[128];
 	_Atomic int		reopen;
+
+	// headphone 3D: the game thread makes the unit (spatialMade published), the IO thread renders it
+	AudioUnit		spatialUnit;
+	sndInput_t		*inputs;
+	float			*inputData;
+	float			*spatialOut;	// [2][SND_BLOCK]
+	double			spatialRate;
+	int				spatialFlush;	// frames
+	int				personalized;
+	double			spatialLatency;
+	_Atomic uint32_t	spatialMade, spatialOn;
+	sndBiquad_t		eq[SND_SPATIAL_EQS];			// at the mix rate
+	float			eqState[2][SND_SPATIAL_EQS][2];	// the IO thread's, per ear
+	int				eqRunning;		// its state isn't clear
 } snd;
 
 static sndKernel_t	snd_kernels[SND_KERNELS];
@@ -679,11 +738,47 @@ static void SND_Activate( sndVoice_t *v )
 	}
 }
 
+/*
+===============
+SND_TakeInput
+
+A free input of the spatial mixer for a voice with a direction (-1 when there's no unit or none is free: the voice
+plays at the centre). A free input is disabled, so it had at least SND_SPATIAL_FLUSH of silence: the unit puts a
+sound on it in its new direction at once (on an input with sound in its last ~5 ms it glides there over ~2.7 ms).
+A new start takes a new input; the old one plays out the tail.
+===============
+*/
+static int SND_TakeInput( int voice )
+{
+	int		i;
+
+	if( !atomic_load_explicit( &snd.spatialMade, memory_order_acquire ) )
+		return -1;
+	for( i = 0; i < snd.maxSpatial; i++ ) {
+		sndInput_t	*in = &snd.inputs[i];
+
+		if( in->owner < 0 && !in->enabled ) {
+			in->owner = voice;
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void SND_ReleaseInput( sndVoice_t *v )
+{
+	if( v->input >= 0 ) {
+		snd.inputs[v->input].owner = -1;		// enabled until it played out (SND_SpatialRender)
+		v->input = -1;
+	}
+}
+
 static void SND_Deactivate( sndVoice_t *v )
 {
 	const int	voice = (int)( v - snd.voices );
 
 	v->state = MACSND_STOPPED;
+	SND_ReleaseInput( v );
 	if( v->active >= 0 ) {
 		const int	last = snd.active[--snd.numActive];
 
@@ -740,7 +835,8 @@ static void SND_StartVoice( sndVoice_t *v, const sndCmd_t *c, uint64_t now, int 
 	const sndSound_t	*s = &snd.sounds[c->sound];
 	const int			voice = (int)( v - snd.voices );
 
-	SND_Tail( v, fade );
+	SND_Tail( v, fade );		// on its old input, if it had one
+	SND_ReleaseInput( v );
 	v->data = s->alloc + SND_GUARD * s->channels;
 	v->frames = s->frames;
 	v->channels = s->channels;
@@ -766,6 +862,11 @@ static void SND_StartVoice( sndVoice_t *v, const sndCmd_t *c, uint64_t now, int 
 	}
 	v->gain[0] = v->target[0] = c->gainL * SND_SCALE;
 	v->gain[1] = v->target[1] = c->gainR * SND_SCALE;
+	v->spatial = c->spatial;
+	v->azimuth = c->azimuth;
+	v->elevation = c->elevation;
+	if( v->spatial )
+		v->input = SND_TakeInput( voice );
 	v->fadeLen = fade;
 	v->seen = c->seq;
 	v->gen = c->gen;
@@ -867,18 +968,22 @@ static void SND_TakeCommands( uint64_t now, int fade )
 	atomic_store_explicit( &snd.ringTail, tail, memory_order_release );
 }
 
-// the game's newest gains and rate (skipped this callback while the game is writing them)
+// the game's newest gains, rate and direction (skipped this callback while the game is writing them)
 static void SND_TakeParams( sndVoice_t *v, int voice )
 {
 	sndMailbox_t	*m = &snd.mail[voice];
 	const uint32_t	s = atomic_load_explicit( &m->seq, memory_order_acquire );
-	float			gl, gr, rate;
+	float			gl, gr, rate, azimuth, elevation;
+	uint32_t		spatial;
 
 	if( s == v->seen || ( s & 1 ) )
 		return;
 	gl = SND_BitsFloat( atomic_load_explicit( &m->gainL, memory_order_relaxed ) );
 	gr = SND_BitsFloat( atomic_load_explicit( &m->gainR, memory_order_relaxed ) );
 	rate = SND_BitsFloat( atomic_load_explicit( &m->rate, memory_order_relaxed ) );
+	azimuth = SND_BitsFloat( atomic_load_explicit( &m->azimuth, memory_order_relaxed ) );
+	elevation = SND_BitsFloat( atomic_load_explicit( &m->elevation, memory_order_relaxed ) );
+	spatial = atomic_load_explicit( &m->spatial, memory_order_relaxed );
 	atomic_thread_fence( memory_order_acquire );
 	if( atomic_load_explicit( &m->seq, memory_order_relaxed ) != s )
 		return;
@@ -887,6 +992,13 @@ static void SND_TakeParams( sndVoice_t *v, int voice )
 	v->target[1] = gr * SND_SCALE;
 	v->rate = rate > 0.0f ? rate : v->soundRate;
 	v->step = SND_Step( v->rate );
+	v->spatial = spatial != 0;
+	v->azimuth = azimuth;
+	v->elevation = elevation;
+	if( !v->spatial )
+		SND_ReleaseInput( v );
+	else if( v->input < 0 )
+		v->input = SND_TakeInput( voice );
 }
 
 static void SND_MixVoice( sndVoice_t *v, const sndKernel_t *k, int n, float *mix )
@@ -996,6 +1108,169 @@ static int SND_MixTail( sndVoice_t *t, const sndKernel_t *k, int n, float *mix )
 }
 
 /*
+==============================================================================
+
+HEADPHONE 3D
+
+Apple's AUSpatialMixer, made the first time headphone 3D is turned on (never in stereo): an input per voice with a
+direction, mono at the mix rate; its HRTF the listener's personalized one when they have one, else Apple's HRTFHQ;
+its own distance attenuation and reverb off (the game's distance gain is in the level). The IO thread renders it in
+its callback: a voice with a direction mixes its block into the scratch, folded to mono into its input; the inputs'
+directions and enables are set when they change; an input gets silence for SND_SPATIAL_FLUSH after its last data
+(its response plays out) and is then disabled, so a silent voice costs nothing and the unit isn't rendered while no
+input is enabled. Its output joins the mix before the master gain and the limiter. 5 frames of its own latency
+(0.10 ms at 48 kHz: the HRTF's peak), its response 157 frames.
+
+==============================================================================
+*/
+
+// where a voice mixes this block: the stereo mix, or the scratch for an audible voice with a direction (SND_Fold)
+static float *SND_Target( const sndVoice_t *v, int n )
+{
+	if( !v->spatial || ( v->gain[0] == 0.0f && v->gain[1] == 0.0f && v->target[0] == 0.0f && v->target[1] == 0.0f ) )
+		return snd.mix;
+	memset( snd.scratch, 0, sizeof( float ) * 2 * n );
+	return snd.scratch;
+}
+
+// the scratch's block, mono, into the voice's input (the first in a block sets its direction: the voices come
+// before the tails); at the centre of the mix without headphone 3D or an input
+static void SND_Fold( const sndVoice_t *v, int n, int on )
+{
+	const float	*s = snd.scratch;
+	int			i;
+
+	if( on && v->input >= 0 ) {
+		sndInput_t	*in = &snd.inputs[v->input];
+		float		*d = in->data;
+
+		if( !in->used ) {
+			for( i = 0; i < n; i++ )
+				d[i] = ( s[2 * i] + s[2 * i + 1] ) * 0.5f;
+			in->used = 1;
+			in->wantAzimuth = v->azimuth;
+			in->wantElevation = v->elevation;
+		} else {
+			for( i = 0; i < n; i++ )
+				d[i] += ( s[2 * i] + s[2 * i + 1] ) * 0.5f;
+		}
+		return;
+	}
+	for( i = 0; i < n; i++ ) {
+		const float	c = ( s[2 * i] + s[2 * i + 1] ) * ( 0.5f * SND_CENTRE );
+
+		snd.mix[2 * i] += c;
+		snd.mix[2 * i + 1] += c;
+	}
+}
+
+// the unit pulls an enabled input's block
+static OSStatus SND_SpatialInput( void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus,
+	UInt32 frames, AudioBufferList *io )
+{
+	if( bus >= (UInt32)snd.maxSpatial || frames > SND_BLOCK || io->mNumberBuffers < 1 )
+		return kAudioUnitErr_InvalidParameter;
+	if( io->mBuffers[0].mData )
+		memcpy( io->mBuffers[0].mData, snd.inputs[bus].data, sizeof( float ) * frames );
+	else
+		io->mBuffers[0].mData = snd.inputs[bus].data;
+	return noErr;
+}
+
+// one ear of the unit's block through the EQ (transposed direct form II), added to the interleaved mix
+static void SND_SpatialEQ( float ( *z )[2], const float *in, float *mix, int n )
+{
+	const sndBiquad_t	*bq = snd.eq;
+	int					i, k;
+
+	for( i = 0; i < n; i++ ) {
+		float	x = in[i];
+
+		for( k = 0; k < SND_SPATIAL_EQS; k++ ) {
+			const float	y = bq[k].b0 * x + z[k][0];
+
+			z[k][0] = bq[k].b1 * x - bq[k].a1 * y + z[k][1];
+			z[k][1] = bq[k].b2 * x - bq[k].a2 * y;
+			x = y;
+		}
+		mix[2 * i] += x;
+	}
+}
+
+// the inputs' directions and enables, then the unit's block into the mix
+static void SND_SpatialRender( int n )
+{
+	struct {
+		AudioBufferList	list;
+		AudioBuffer		right;
+	} out;
+	AudioUnitRenderActionFlags	flags = 0;
+	AudioTimeStamp				ts;
+	const float					*l, *r;
+	int							i, enabled = 0;
+
+	for( i = 0; i < snd.maxSpatial; i++ ) {
+		sndInput_t	*in = &snd.inputs[i];
+
+		if( in->used ) {
+			if( in->wantAzimuth != in->azimuth ) {
+				AudioUnitSetParameter( snd.spatialUnit, kSpatialMixerParam_Azimuth, kAudioUnitScope_Input, i,
+					in->wantAzimuth, 0 );
+				in->azimuth = in->wantAzimuth;
+			}
+			if( in->wantElevation != in->elevation ) {
+				AudioUnitSetParameter( snd.spatialUnit, kSpatialMixerParam_Elevation, kAudioUnitScope_Input, i,
+					in->wantElevation, 0 );
+				in->elevation = in->wantElevation;
+			}
+			if( !in->enabled ) {
+				AudioUnitSetParameter( snd.spatialUnit, kSpatialMixerParam_Enable, kAudioUnitScope_Input, i, 1.0f, 0 );
+				in->enabled = 1;
+			}
+			in->used = 0;
+			in->idle = 0;
+		} else if( in->enabled ) {
+			in->idle += n;
+			if( in->idle >= snd.spatialFlush ) {
+				AudioUnitSetParameter( snd.spatialUnit, kSpatialMixerParam_Enable, kAudioUnitScope_Input, i, 0.0f, 0 );
+				in->enabled = 0;
+				continue;
+			}
+			memset( in->data, 0, sizeof( float ) * n );
+		}
+		enabled += in->enabled;
+	}
+	atomic_store_explicit( &snd.spatialInputs, enabled, memory_order_relaxed );
+	if( !enabled ) {
+		if( snd.eqRunning ) {		// the unit's output is silent from here: the EQ's tail is over
+			memset( snd.eqState, 0, sizeof( snd.eqState ) );
+			snd.eqRunning = 0;
+		}
+		return;
+	}
+
+	memset( &ts, 0, sizeof( ts ) );
+	ts.mFlags = kAudioTimeStampSampleTimeValid;
+	ts.mSampleTime = (Float64)snd.frameCount;
+	out.list.mNumberBuffers = 2;
+	out.list.mBuffers[0].mNumberChannels = 1;
+	out.list.mBuffers[0].mDataByteSize = sizeof( float ) * n;
+	out.list.mBuffers[0].mData = snd.spatialOut;
+	out.list.mBuffers[1].mNumberChannels = 1;
+	out.list.mBuffers[1].mDataByteSize = sizeof( float ) * n;
+	out.list.mBuffers[1].mData = snd.spatialOut + SND_BLOCK;
+	if( AudioUnitRender( snd.spatialUnit, &flags, &ts, 0, n, &out.list ) != noErr ) {
+		atomic_fetch_add_explicit( &snd.spatialErrors, 1, memory_order_relaxed );
+		return;
+	}
+	l = out.list.mBuffers[0].mData;
+	r = out.list.mBuffers[1].mData;
+	SND_SpatialEQ( snd.eqState[0], l, snd.mix, n );
+	SND_SpatialEQ( snd.eqState[1], r, snd.mix + 1, n );
+	snd.eqRunning = 1;
+}
+
+/*
 ===============
 SND_Output
 
@@ -1075,6 +1350,8 @@ static void SND_Render( float *out, int frames, uint64_t now )
 	const float		fadeMs = SND_BitsFloat( atomic_load_explicit( &snd.fadeBits, memory_order_relaxed ) );
 	const int		fade = (int)lrintf( fadeMs * (float)snd.rate * 0.001f );
 	const sndKernel_t	*k = linear ? NULL : &snd_kernels[0];
+	const int		spatialMade = atomic_load_explicit( &snd.spatialMade, memory_order_acquire ) != 0;
+	const int		spatialOn = spatialMade && atomic_load_explicit( &snd.spatialOn, memory_order_relaxed );
 	uint64_t		ticks;
 	size_t			cpu = 0;
 	int				i, mixed;
@@ -1095,10 +1372,14 @@ static void SND_Render( float *out, int frames, uint64_t now )
 			sndVoice_t	*v = &snd.voices[snd.active[i]];
 
 			if( v->state == MACSND_PLAYING ) {
+				float	*dst = SND_Target( v, n );
+
 				if( v->stream )
-					SND_MixStream( v, k, n, snd.mix );
+					SND_MixStream( v, k, n, dst );
 				else
-					SND_MixVoice( v, k, n, snd.mix );
+					SND_MixVoice( v, k, n, dst );
+				if( dst != snd.mix )
+					SND_Fold( v, n, spatialOn );
 				if( v->state == MACSND_STOPPED ) {
 					SND_Deactivate( v );	// ended: moves the last active voice to i
 					continue;
@@ -1107,11 +1388,19 @@ static void SND_Render( float *out, int frames, uint64_t now )
 			i++;
 		}
 		for( i = 0; i < snd.numTails; ) {
-			if( !SND_MixTail( &snd.tails[i], k, n, snd.mix ) )
+			sndVoice_t	*t = &snd.tails[i];
+			float		*dst = SND_Target( t, n );
+			const int	more = SND_MixTail( t, k, n, dst );
+
+			if( dst != snd.mix )
+				SND_Fold( t, n, spatialOn );
+			if( !more )
 				snd.tails[i] = snd.tails[--snd.numTails];
 			else
 				i++;
 		}
+		if( spatialMade )
+			SND_SpatialRender( n );
 		SND_Output( out, snd.mix, n, master );
 		if( atomic_load_explicit( &snd.captureOn, memory_order_relaxed ) )
 			SND_Capture( out, n );
@@ -1260,7 +1549,221 @@ static void SND_CloseDevice( void )
 	snd.deviceName[0] = 0;
 }
 
-// a new mix rate: every voice's step again (the IO thread isn't running)
+static void SND_SpatialFormat( AudioStreamBasicDescription *f, int channels )
+{
+	memset( f, 0, sizeof( *f ) );
+	f->mSampleRate = snd.rate;
+	f->mFormatID = kAudioFormatLinearPCM;
+	f->mFormatFlags = kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved;
+	f->mChannelsPerFrame = channels;
+	f->mBitsPerChannel = 32;
+	f->mBytesPerFrame = 4;
+	f->mFramesPerPacket = 1;
+	f->mBytesPerPacket = 4;
+}
+
+/*
+===============
+SND_SpatialEQInit
+
+The EQ's biquads at the mix rate (RBJ's cookbook; its gain in the first stage's numerator; a stage at 0.45 of the rate
+or above passes, at a Bluetooth headset's 16 or 24 kHz), its state cleared (the IO thread isn't rendering the unit)
+===============
+*/
+static void SND_SpatialEQInit( void )
+{
+	int		k;
+
+	for( k = 0; k < SND_SPATIAL_EQS; k++ ) {
+		const double	a = pow( 10.0, snd_spatialEQ[k].db / 40.0 ), w = 2.0 * M_PI * snd_spatialEQ[k].hz / snd.rate;
+		const double	c = cos( w ), alpha = sin( w ) / ( 2.0 * snd_spatialEQ[k].q ), s = 2.0 * sqrt( a ) * alpha;
+		double			b0, b1, b2, a0, a1, a2;
+
+		if( snd_spatialEQ[k].hz >= 0.45 * snd.rate ) {
+			b0 = a0 = 1.0;
+			b1 = b2 = a1 = a2 = 0.0;
+		} else if( snd_spatialEQ[k].shelf ) {
+			b0 = a * ( ( a + 1.0 ) + ( a - 1.0 ) * c + s );
+			b1 = -2.0 * a * ( ( a - 1.0 ) + ( a + 1.0 ) * c );
+			b2 = a * ( ( a + 1.0 ) + ( a - 1.0 ) * c - s );
+			a0 = ( a + 1.0 ) - ( a - 1.0 ) * c + s;
+			a1 = 2.0 * ( ( a - 1.0 ) - ( a + 1.0 ) * c );
+			a2 = ( a + 1.0 ) - ( a - 1.0 ) * c - s;
+		} else {
+			b0 = 1.0 + alpha * a;
+			b1 = -2.0 * c;
+			b2 = 1.0 - alpha * a;
+			a0 = 1.0 + alpha / a;
+			a1 = -2.0 * c;
+			a2 = 1.0 - alpha / a;
+		}
+		if( !k ) {
+			const double	g = pow( 10.0, SND_SPATIAL_DB / 20.0 );
+
+			b0 *= g;
+			b1 *= g;
+			b2 *= g;
+		}
+		snd.eq[k].b0 = (float)( b0 / a0 );
+		snd.eq[k].b1 = (float)( b1 / a0 );
+		snd.eq[k].b2 = (float)( b2 / a0 );
+		snd.eq[k].a1 = (float)( a1 / a0 );
+		snd.eq[k].a2 = (float)( a2 / a0 );
+	}
+	memset( snd.eqState, 0, sizeof( snd.eqState ) );
+	snd.eqRunning = 0;
+}
+
+// the spatial mixer's formats at the mix rate, initialized, every input disabled (the IO thread isn't rendering it)
+static OSStatus SND_SpatialInit( void )
+{
+	AudioStreamBasicDescription	f;
+	OSStatus					err;
+	int							i;
+
+	SND_SpatialFormat( &f, 2 );
+	err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &f,
+		sizeof( f ) );
+	SND_SpatialFormat( &f, 1 );
+	for( i = 0; !err && i < snd.maxSpatial; i++ )
+		err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &f,
+			sizeof( f ) );
+	if( !err )
+		err = AudioUnitInitialize( snd.spatialUnit );
+	for( i = 0; !err && i < snd.maxSpatial; i++ ) {
+		sndInput_t	*in = &snd.inputs[i];
+
+		// at the reference distance: no attenuation (and none in its rendering flags), never in the head
+		AudioUnitSetParameter( snd.spatialUnit, kSpatialMixerParam_Distance, kAudioUnitScope_Input, i, 1.0f, 0 );
+		AudioUnitSetParameter( snd.spatialUnit, kSpatialMixerParam_Enable, kAudioUnitScope_Input, i, 0.0f, 0 );
+		in->used = in->enabled = in->idle = 0;
+		in->azimuth = in->elevation = NAN;		// the voices that own one keep it
+	}
+	snd.spatialRate = snd.rate;
+	snd.spatialFlush = (int)( snd.rate * SND_SPATIAL_FLUSH );
+	SND_SpatialEQInit();
+	return err;
+}
+
+static void SND_FreeSpatial( void )
+{
+	int		i;
+
+	for( i = 0; snd.voices && i < snd.maxVoices; i++ )
+		snd.voices[i].input = -1;
+	for( i = 0; snd.tails && i < snd.numTails; i++ )
+		snd.tails[i].input = -1;
+	if( snd.spatialUnit ) {
+		AudioUnitUninitialize( snd.spatialUnit );
+		AudioComponentInstanceDispose( snd.spatialUnit );
+		snd.spatialUnit = NULL;
+	}
+	free( snd.inputs );
+	free( snd.inputData );
+	free( snd.spatialOut );
+	snd.inputs = NULL;
+	snd.inputData = NULL;
+	snd.spatialOut = NULL;
+	atomic_store_explicit( &snd.spatialMade, 0, memory_order_relaxed );
+	atomic_store_explicit( &snd.spatialOn, 0, memory_order_relaxed );
+}
+
+/*
+===============
+SND_MakeSpatial
+
+The spatial mixer, on the game thread: an input per voice with a direction, Apple's best rendering for headphones
+(the listener's personalized HRTF when they have one, else HRTFHQ), no reverb, no attenuation of its own. Published
+to the IO thread when ready.
+===============
+*/
+static int SND_MakeSpatial( void )
+{
+	AudioComponentDescription	desc = { kAudioUnitType_Mixer, kAudioUnitSubType_SpatialMixer,
+		kAudioUnitManufacturer_Apple, 0, 0 };
+	AURenderCallbackStruct		callback = { SND_SpatialInput, NULL };
+	MixerDistanceParams			distance = { 1.0f, 100000.0f, 0.0f };
+	AudioComponent				component = AudioComponentFindNext( NULL, &desc );
+	UInt32						u, size, maxSlice = SND_BLOCK;
+	Float64						latency = 0;
+	OSStatus					err = 0;
+	int							i;
+
+	snd.inputs = calloc( snd.maxSpatial, sizeof( *snd.inputs ) );
+	snd.inputData = calloc( (size_t)snd.maxSpatial * SND_BLOCK, sizeof( float ) );
+	snd.spatialOut = calloc( 2 * SND_BLOCK, sizeof( float ) );
+	if( !component || !snd.inputs || !snd.inputData || !snd.spatialOut
+		|| AudioComponentInstanceNew( component, &snd.spatialUnit ) != noErr ) {
+		snd.spatialUnit = NULL;
+		SND_FreeSpatial();
+		SND_Printf( "sound: no spatial mixer, headphone 3D off\n" );
+		return 0;
+	}
+	for( i = 0; i < snd.maxSpatial; i++ ) {
+		snd.inputs[i].data = snd.inputData + (size_t)i * SND_BLOCK;
+		snd.inputs[i].owner = -1;
+	}
+
+	u = snd.maxSpatial;
+	err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_ElementCount, kAudioUnitScope_Input, 0, &u,
+		sizeof( u ) );
+	for( i = 0; !err && i < snd.maxSpatial; i++ ) {
+		err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, i,
+			&callback, sizeof( callback ) );
+		u = kSpatializationAlgorithm_UseOutputType;
+		if( !err )
+			err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SpatializationAlgorithm,
+				kAudioUnitScope_Input, i, &u, sizeof( u ) );
+		u = kSpatialMixerSourceMode_PointSource;
+		if( !err )
+			err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SpatialMixerSourceMode,
+				kAudioUnitScope_Input, i, &u, sizeof( u ) );
+		u = kSpatialMixerRenderingFlags_InterAuralDelay;
+		if( !err )
+			err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SpatialMixerRenderingFlags,
+				kAudioUnitScope_Input, i, &u, sizeof( u ) );
+		if( !err )
+			err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SpatialMixerDistanceParams,
+				kAudioUnitScope_Input, i, &distance, sizeof( distance ) );
+	}
+	u = 0;
+	if( !err )
+		err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_UsesInternalReverb, kAudioUnitScope_Global, 0,
+			&u, sizeof( u ) );
+	u = kSpatialMixerOutputType_Headphones;
+	if( !err )
+		err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SpatialMixerOutputType,
+			kAudioUnitScope_Global, 0, &u, sizeof( u ) );
+	u = kSpatialMixerPersonalizedHRTFMode_Auto;
+	if( !err )
+		err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_SpatialMixerPersonalizedHRTFMode,
+			kAudioUnitScope_Global, 0, &u, sizeof( u ) );
+	if( !err )
+		err = AudioUnitSetProperty( snd.spatialUnit, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global,
+			0, &maxSlice, sizeof( maxSlice ) );
+	if( !err )
+		err = SND_SpatialInit();
+	if( err ) {
+		SND_FreeSpatial();
+		SND_Printf( "sound: the spatial mixer failed (%d), headphone 3D off\n", (int)err );
+		return 0;
+	}
+
+	size = sizeof( latency );
+	AudioUnitGetProperty( snd.spatialUnit, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0, &latency, &size );
+	u = 0;
+	size = sizeof( u );
+	AudioUnitGetProperty( snd.spatialUnit, kAudioUnitProperty_SpatialMixerAnyInputIsUsingPersonalizedHRTF,
+		kAudioUnitScope_Global, 0, &u, &size );
+	snd.spatialLatency = latency;
+	snd.personalized = u != 0;
+	SND_Printf( "sound: headphone 3D, Apple's spatial mixer (%s HRTF), latency %.2f ms\n",
+		snd.personalized ? "the listener's personalized" : "its", latency * 1000.0 );
+	atomic_store_explicit( &snd.spatialMade, 1, memory_order_release );
+	return 1;
+}
+
+// a new mix rate: every voice's step again, the spatial mixer at the new rate (the IO thread isn't running)
 static void SND_SetRate( double rate )
 {
 	int		i;
@@ -1272,6 +1775,16 @@ static void SND_SetRate( double rate )
 		snd.voices[i].step = SND_Step( snd.voices[i].rate );
 	for( i = 0; i < snd.numTails; i++ )
 		snd.tails[i].step = SND_Step( snd.tails[i].rate );
+	if( snd.spatialUnit && snd.spatialRate != rate ) {
+		OSStatus	err;
+
+		AudioUnitUninitialize( snd.spatialUnit );
+		err = SND_SpatialInit();
+		if( err ) {
+			SND_FreeSpatial();
+			SND_Printf( "sound: the spatial mixer failed at %.0f Hz (%d), headphone 3D off\n", rate, (int)err );
+		}
+	}
 }
 
 static int SND_OpenDevice( void )
@@ -1411,6 +1924,7 @@ int MacSnd_Init( const macSndConfig_t *config )
 	snd.maxVoices = config->maxVoices > 0 && config->maxVoices <= 65535 ? config->maxVoices : 128;
 	snd.maxTails = config->maxTails > 0 ? config->maxTails : 32;
 	snd.maxSounds = config->maxSounds > 0 && config->maxSounds <= 65535 ? config->maxSounds : 2048;
+	snd.maxSpatial = config->maxSpatial > 0 && config->maxSpatial <= 1024 ? config->maxSpatial : 128;
 	if( config->device )
 		snprintf( snd.wantDevice, sizeof( snd.wantDevice ), "%s", config->device );
 
@@ -1436,6 +1950,7 @@ int MacSnd_Init( const macSndConfig_t *config )
 	}
 	for( i = 0; i < snd.maxVoices; i++ ) {
 		snd.voices[i].active = -1;
+		snd.voices[i].input = -1;
 		snd.game[i].stopped = 1;
 	}
 	for( i = 0; i < snd.maxSounds; i++ ) {
@@ -1475,6 +1990,7 @@ void MacSnd_Shutdown( void )
 	if( !snd.initialized )
 		return;
 	SND_CloseDevice();
+	SND_FreeSpatial();
 	if( snd.sounds ) {
 		for( i = 0; i < snd.maxSounds; i++ )
 			free( snd.sounds[i].alloc );
@@ -1772,7 +2288,8 @@ unsigned long long MacSnd_StreamPlayed( int sound )
 	return s && s->stream ? atomic_load_explicit( &s->played, memory_order_acquire ) : 0;
 }
 
-static void SND_PostParams( int voice, float gainL, float gainR, float rate )
+static void SND_PostParams( int voice, float gainL, float gainR, float rate, int spatial, float azimuth,
+	float elevation )
 {
 	sndMailbox_t	*m = &snd.mail[voice];
 	const uint32_t	s = snd.game[voice].seq;
@@ -1782,8 +2299,29 @@ static void SND_PostParams( int voice, float gainL, float gainR, float rate )
 	atomic_store_explicit( &m->gainL, SND_FloatBits( gainL ), memory_order_relaxed );
 	atomic_store_explicit( &m->gainR, SND_FloatBits( gainR ), memory_order_relaxed );
 	atomic_store_explicit( &m->rate, SND_FloatBits( rate ), memory_order_relaxed );
+	atomic_store_explicit( &m->azimuth, SND_FloatBits( azimuth ), memory_order_relaxed );
+	atomic_store_explicit( &m->elevation, SND_FloatBits( elevation ), memory_order_relaxed );
+	atomic_store_explicit( &m->spatial, (uint32_t)spatial, memory_order_relaxed );
 	atomic_store_explicit( &m->seq, s + 2, memory_order_release );
 	snd.game[voice].seq = s + 2;
+}
+
+// a direction for the unit: azimuth -180..180, elevation -90..90
+static float SND_Azimuth( float a )
+{
+	if( !isfinite( a ) )
+		return 0.0f;
+	a = fmodf( a, 360.0f );
+	if( a > 180.0f )
+		a -= 360.0f;
+	else if( a < -180.0f )
+		a += 360.0f;
+	return a;
+}
+
+static float SND_Elevation( float e )
+{
+	return !isfinite( e ) ? 0.0f : e > 90.0f ? 90.0f : e < -90.0f ? -90.0f : e;
 }
 
 /*
@@ -1814,9 +2352,14 @@ void MacSnd_Start( int voice, const macSndStart_t *start )
 	c.loopEnd = start->loopEnd;
 	c.loopCount = start->loopCount;
 	c.gainL = SND_Sane( start->gainL );
-	c.gainR = SND_Sane( start->gainR );
+	c.gainR = start->spatial ? c.gainL : SND_Sane( start->gainR );
 	c.rate = SND_Sane( start->rate );
-	SND_PostParams( voice, c.gainL, c.gainR, c.rate );
+	if( start->spatial ) {
+		c.spatial = 1;
+		c.azimuth = SND_Azimuth( start->azimuth );
+		c.elevation = SND_Elevation( start->elevation );
+	}
+	SND_PostParams( voice, c.gainL, c.gainR, c.rate, c.spatial, c.azimuth, c.elevation );
 	c.seq = g->seq;
 	c.gen = ( g->gen + 1 ) & SND_GENMASK;
 	atomic_store_explicit( &snd.startTime[voice], 0, memory_order_relaxed );
@@ -1840,7 +2383,15 @@ void MacSnd_Start( int voice, const macSndStart_t *start )
 void MacSnd_SetParams( int voice, float gainL, float gainR, float rate )
 {
 	if( SND_GameVoice( voice ) )
-		SND_PostParams( voice, SND_Sane( gainL ), SND_Sane( gainR ), SND_Sane( rate ) );
+		SND_PostParams( voice, SND_Sane( gainL ), SND_Sane( gainR ), SND_Sane( rate ), 0, 0.0f, 0.0f );
+}
+
+void MacSnd_SetParams3D( int voice, float gain, float azimuth, float elevation, float rate )
+{
+	if( SND_GameVoice( voice ) ) {
+		gain = SND_Sane( gain );
+		SND_PostParams( voice, gain, gain, SND_Sane( rate ), 1, SND_Azimuth( azimuth ), SND_Elevation( elevation ) );
+	}
 }
 
 void MacSnd_Stop( int voice )
@@ -1970,6 +2521,26 @@ void MacSnd_SetStopFade( float ms )
 		memory_order_relaxed );
 }
 
+/*
+===============
+MacSnd_SetSpatial
+
+Headphone 3D on or off; the spatial mixer is made the first time it's turned on (a few ms on the game thread) and
+kept. Off, the voices with a direction play at the centre until the game posts their pans again, and the spatial
+inputs still playing out their response finish.
+===============
+*/
+int MacSnd_SetSpatial( int mode )
+{
+	if( !snd.initialized )
+		return MACSND_STEREO;
+	mode = mode == MACSND_HEADPHONES ? MACSND_HEADPHONES : MACSND_STEREO;
+	if( mode == MACSND_HEADPHONES && !snd.spatialUnit && !SND_MakeSpatial() )
+		mode = MACSND_STEREO;
+	atomic_store_explicit( &snd.spatialOn, mode == MACSND_HEADPHONES, memory_order_relaxed );
+	return mode;
+}
+
 void MacSnd_GetStats( macSndStats_t *stats )
 {
 	const double	tick = snd.initialized ? (double)snd.timebase.numer / snd.timebase.denom * 1e-9 : 0.0;
@@ -1996,6 +2567,12 @@ void MacSnd_GetStats( macSndStats_t *stats )
 		stats->cpuCallbacks[i] = atomic_load_explicit( &snd.cpu[i], memory_order_relaxed );
 	stats->captureDrops = atomic_load_explicit( &snd.captureDrops, memory_order_relaxed );
 	stats->underruns = atomic_load_explicit( &snd.underruns, memory_order_relaxed );
+	stats->spatial = atomic_load_explicit( &snd.spatialOn, memory_order_relaxed ) ? MACSND_HEADPHONES : MACSND_STEREO;
+	stats->spatialMade = snd.spatialUnit != NULL;
+	stats->personalized = snd.personalized;
+	stats->spatialLatency = snd.spatialLatency;
+	stats->spatialInputs = (int)atomic_load_explicit( &snd.spatialInputs, memory_order_relaxed );
+	stats->spatialErrors = atomic_load_explicit( &snd.spatialErrors, memory_order_relaxed );
 }
 
 /*

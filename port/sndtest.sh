@@ -4,10 +4,12 @@
 # under AddressSanitizer and UBSan), sndtest-tsan (the stress test under ThreadSanitizer). The native driver's math
 # (code/client/snd_native_math.h, Phase 9c) is checked here too: test math ima.
 #   port/sndtest.sh                     the offline tests and 10 s of stress
-#   port/sndtest.sh test [name ...]     the offline tests (resample loop offset pause ramp limiter free misc capture stream math ima)
+#   port/sndtest.sh test [name ...]     the offline tests (resample loop offset pause ramp limiter free misc capture stream spatial math ima)
 #   port/sndtest.sh stress [seconds]
 #   port/sndtest.sh device [frames ...] start -> output, CPU at 0/16/40/96 voices, a restart (silent; 64 and 32)
-#   port/sndtest.sh load frames seconds [busy threads]   overloads under load (run port/bench.sh beside it)
+#   port/sndtest.sh device3d [frames ...]  the same with headphone 3D (Apple's spatial mixer), 0/16/40/64 voices
+#   port/sndtest.sh load frames seconds [busy threads]   overloads under load (run port/bench.sh beside it;
+#                                       SNDTEST_SPATIAL=1: 64 of the voices with a direction)
 #   port/sndtest.sh devices
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
@@ -43,12 +45,12 @@ case "$mode" in
 		build sndtest-tsan -O1 -g -fsanitize=thread
 		"$OUT/sndtest-tsan" stress "$@"
 		;;
-	device|load|devices)
+	device|device3d|load|devices)
 		build sndtest -O3
 		"$OUT/sndtest" "$mode" "$@"
 		;;
 	*)
-		echo "usage: port/sndtest.sh [test [name ...] | stress [s] | device [frames ...] | load frames s [busy] | devices]" >&2
+		echo "usage: port/sndtest.sh [test [name ...] | stress [s] | device[3d] [frames ...] | load frames s [busy] | devices]" >&2
 		exit 2
 		;;
 esac

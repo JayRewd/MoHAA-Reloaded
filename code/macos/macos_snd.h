@@ -26,6 +26,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // the game's commands from a lock-free ring at the start of each callback and the voices' gains and rates from a
 // mailbox per voice (the newest wins), mixes, and publishes each voice's state and position with atomics. Nothing
 // here waits for the IO thread.
+//
+// Headphone 3D (MacSnd_SetSpatial, Phase 9f): the voices the game gives a direction (MacSnd_SetParams3D) go through
+// Apple's AUSpatialMixer, its HRTF (the listener's personalized one when they have one), inside the same render; the
+// unit is made only when headphone 3D is first turned on.
 
 #ifndef __MACOS_SND_H__
 #define __MACOS_SND_H__
@@ -45,12 +49,17 @@ extern "C" {
 #define MACSND_SINC			0	// windowed-sinc polyphase (the default)
 #define MACSND_LINEAR		1	// linear interpolation, as Miles resampled (the A/B)
 
+// MacSnd_SetSpatial
+#define MACSND_STEREO		0	// the game's own pans (the default): Apple's spatial mixer isn't made
+#define MACSND_HEADPHONES	1	// headphone 3D: the voices with a direction through Apple's HRTF
+
 typedef struct {
 	const char	*device;		// an output device's name or UID; NULL or "" = the system's default output, followed
 	int			bufferFrames;	// the IO buffer in frames, 32-512 (s_bufferFrames; 0 = 64)
 	int			maxVoices;		// voice numbers 0 .. maxVoices-1 (0 = 128)
 	int			maxTails;		// stopped voices still fading out (0 = 32)
 	int			maxSounds;		// (0 = 2048)
+	int			maxSpatial;		// the spatial mixer's inputs: voices with a direction, those playing out (0 = 128)
 	double		offlineRate;	// > 0: no device; MacSnd_Render mixes at this rate (port/sndtest.c)
 	void		( *print )( const char *msg );	// init, device changes and errors (NULL = quiet)
 } macSndConfig_t;
@@ -64,6 +73,9 @@ typedef struct {
 	int			loopEnd;
 	int			loopCount;		// Miles' loop count: 0 = forever, 1 = once, n = the block played n times
 	int			paused;			// start paused (MacSnd_Pause resumes it)
+	int			spatial;		// a direction (MacSnd_SetParams3D's): gainL is the level, gainR unused
+	float		azimuth;		// degrees, 0 ahead, positive to the right
+	float		elevation;		// degrees, positive up
 } macSndStart_t;
 
 typedef struct {
@@ -84,6 +96,12 @@ typedef struct {
 	unsigned	cpuCallbacks[16];	// callbacks per CPU number (here 0-5 efficiency, 6-9 performance cores)
 	unsigned	captureDrops;	// captured frames lost to a full capture ring
 	unsigned	underruns;		// callbacks in which a stream's voice ran out of committed frames
+	int			spatial;		// MACSND_HEADPHONES in effect
+	int			spatialMade;	// the spatial mixer exists (it's made at the first MACSND_HEADPHONES)
+	int			personalized;	// it renders with the listener's personalized HRTF
+	double		spatialLatency;	// its own latency (seconds), on top of the device's
+	int			spatialInputs;	// its inputs rendered in the last callback
+	unsigned	spatialErrors;	// its renders that failed (their block without the 3D voices)
 } macSndStats_t;
 
 int			MacSnd_Init( const macSndConfig_t *config );	// 0 on failure
@@ -108,6 +126,9 @@ unsigned long long	MacSnd_StreamPlayed( int sound );		// where its voice is (or 
 
 void		MacSnd_Start( int voice, const macSndStart_t *start );	// replaces what the voice played
 void		MacSnd_SetParams( int voice, float gainL, float gainR, float rate );	// ramped across the next callback
+// a voice with a direction (headphone 3D): its level and where it is (azimuth 0 ahead, positive to the right;
+// elevation positive up, degrees); in MACSND_STEREO it plays at the centre
+void		MacSnd_SetParams3D( int voice, float gain, float azimuth, float elevation, float rate );
 void		MacSnd_Stop( int voice );
 void		MacSnd_Pause( int voice, int paused );
 void		MacSnd_SetLoop( int voice, int loopStart, int loopEnd, int loopCount );	// the loop count restarts
@@ -121,6 +142,7 @@ unsigned long long	MacSnd_StartTime( int voice );	// the host time at which its 
 void		MacSnd_SetMaster( float gain );
 void		MacSnd_SetResampler( int mode );
 void		MacSnd_SetStopFade( float ms );		// stops, pauses, seeks; 0 = cut at once, as Miles did
+int			MacSnd_SetSpatial( int mode );		// MACSND_*: the mode in effect (stereo if the unit can't be made)
 void		MacSnd_Restart( void );				// re-creates the output unit (what a device change does)
 void		MacSnd_GetStats( macSndStats_t *stats );
 
