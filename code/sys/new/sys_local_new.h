@@ -33,7 +33,6 @@ extern "C" {
 //#define DEFAULT_BASEDIR ""
 
 void Sys_InitEx();
-void Sys_ShutdownEx();
 
 void Sys_PrepareBackTrace();
 void Sys_PrintBackTrace();

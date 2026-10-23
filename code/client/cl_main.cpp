@@ -105,7 +105,6 @@ cvar_t	*cl_motdString;
 cvar_t	*cl_allowDownload;
 cvar_t	*cg_gametype;
 cvar_t	*cl_conXOffset;
-cvar_t	*cl_inGameVideo;
 
 cvar_t	*cl_serverStatusResendTime;
 cvar_t	*cl_trn;
@@ -1840,7 +1839,6 @@ A download completed or failed
 void CL_NextDownload(void) {
 	char *s;
 	char *remoteName, *localName;
-	qboolean useCURL = qfalse;
 
 	// We are looking to start a download here
 	if (*clc.downloadList) {
@@ -1864,17 +1862,15 @@ void CL_NextDownload(void) {
 			*s++ = 0;
 		else
 			s = localName + strlen(localName); // point at the nul byte
-		if(!useCURL) {
-			if((cl_allowDownload->integer & DLF_NO_UDP)) {
-				Com_Error(ERR_DROP, "UDP Downloads are "
-					"disabled on your client. "
-					"(cl_allowDownload is %d)",
-					cl_allowDownload->integer);
-				return;
-			}
-			else {
-				CL_BeginDownload( localName, remoteName );
-			}
+		if((cl_allowDownload->integer & DLF_NO_UDP)) {
+			Com_Error(ERR_DROP, "UDP Downloads are "
+				"disabled on your client. "
+				"(cl_allowDownload is %d)",
+				cl_allowDownload->integer);
+			return;
+		}
+		else {
+			CL_BeginDownload( localName, remoteName );
 		}
 		clc.downloadRestart = qtrue;
 
@@ -3474,12 +3470,6 @@ void CL_Init( void ) {
 	cl_ctrlbindings = Cvar_Get( "cl_ctrlbindings", "0", CVAR_ARCHIVE );
 
 	cl_conXOffset = Cvar_Get ("cl_conXOffset", "0", 0);
-#ifdef MACOS_X
-        // In game video is REALLY slow in Mac OS X right now due to driver slowness
-	cl_inGameVideo = Cvar_Get ("r_inGameVideo", "0", CVAR_ARCHIVE);
-#else
-	cl_inGameVideo = Cvar_Get ("r_inGameVideo", "1", CVAR_ARCHIVE);
-#endif
 
 	cl_serverStatusResendTime = Cvar_Get ("cl_serverStatusResendTime", "750", 0);
 

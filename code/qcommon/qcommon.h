@@ -1075,9 +1075,6 @@ extern	cvar_t* com_target_version;
 extern	cvar_t* com_target_extension;
 extern	cvar_t* com_target_demo;
 
-extern	cvar_t* com_updatecheck_enabled;
-extern	cvar_t* com_updatecheck_interval;
-
 extern	int		protocol_version_demo;
 extern	int		protocol_version_full;
 
@@ -1492,8 +1489,6 @@ typedef enum
 
 dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *title );
 qboolean Sys_OpenFolderInFileManager( const char *path, qboolean create );
-
-void Sys_ProcessBackgroundTasks();
 
 #ifdef __APPLE__
 // cl_latencyStats: OS timestamps (microseconds, mach_absolute_time clock) of the mouse movement that

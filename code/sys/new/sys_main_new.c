@@ -304,10 +304,3 @@ void Sys_InitEx()
     Sys_InitLocalization();
 }
 
-void Sys_ShutdownEx()
-{
-}
-
-void Sys_ProcessBackgroundTasks()
-{
-}

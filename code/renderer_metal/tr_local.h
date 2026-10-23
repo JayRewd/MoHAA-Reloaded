@@ -1471,7 +1471,6 @@ extern cvar_t	*r_primitives;			// "0" = based on compiled vertex array existance
 										// "-1" = no drawing
 
 extern cvar_t	*r_largemap;
-extern cvar_t	*r_inGameVideo;				// controls whether in game video should be draw
 extern cvar_t	*r_fastsky;				// controls whether sky should be cleared or drawn
 extern cvar_t	*r_fastdlights;
 extern cvar_t	*r_drawSun;				// controls drawing of sun quad
@@ -1492,7 +1491,6 @@ extern	cvar_t	*r_metalSkinning;
 extern	cvar_t	*r_metalStaticWorld;
 extern	cvar_t	*r_drawworld;			// disable/enable world rendering
 extern	cvar_t	*r_speeds;				// various levels of information display
-extern  cvar_t	*r_detailTextures;		// enables/disables detail texturing stages
 extern	cvar_t	*r_novis;				// disable/enable usage of PVS
 extern	cvar_t	*r_nocull;
 extern	cvar_t	*r_showcull;
@@ -1512,7 +1510,6 @@ extern cvar_t	*r_ignorehwgamma;		// overrides hardware gamma capabilities
 extern cvar_t	*r_allowExtensions;				// global enable/disable of the r_ext_* features
 extern cvar_t	*r_ext_compressed_textures;		// these control use of specific extensions
 extern cvar_t	*r_ext_gamma_control;
-extern cvar_t	*r_ext_texenv_op;
 extern cvar_t	*r_ext_multitexture;
 extern cvar_t	*r_ext_compiled_vertex_array;
 extern cvar_t	*r_ext_texture_env_add;
@@ -1583,7 +1580,6 @@ extern	cvar_t	*r_showstaticlod;
 extern	cvar_t	*r_debugSort;
 
 extern	cvar_t	*r_printShaders;
-extern	cvar_t	*r_saveFontData;
 
 extern	cvar_t* r_staticlod;
 extern	cvar_t* r_lodscale;
@@ -1659,7 +1655,6 @@ extern	cvar_t* r_alpha_foliage1;
 extern	cvar_t* r_alpha_foliage2;
 extern	cvar_t* r_blendtrees;
 extern	cvar_t* r_blendbushes;
-extern	cvar_t* r_bumpmap;
 extern	cvar_t* r_loadjpg;
 extern	cvar_t* r_loadftx;
 
