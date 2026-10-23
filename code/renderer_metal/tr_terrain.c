@@ -83,14 +83,34 @@ static int          g_terWindowCautious;
 //  Two more per patch, in the patches' order (past TERRAIN_WINDOW_MAX every walk is done):
 //  - g_terVertRecalc: a lower bound of the uiDistRecalc of the patch's vertexes. A vertex is recalculated only
 //    once g_uiTerDist reaches its uiDistRecalc, so a drawn patch whose bound is above g_uiTerDist has none due and
-//    its geomorph walk is skipped. The walk sets it to the smallest value it leaves; a new vertex
-//    (R_AllocateVert) and the wrap of g_uiTerDist set it to 0.
+//    its geomorph walk is skipped, but for the vertexes made since its last walk (g_terNewVerts). The walk sets it
+//    to the smallest value it leaves; the wrap of g_uiTerDist, and a new vertex past TERRAIN_NEWVERTS, set it to 0.
 //  - g_terMergeQuiet: set after a cautious merge walk of the patch that merged nothing, cleared by anything that walk
 //    reads: a height of one of its vertexes, a split or a merge in the patch, a link of one of its tris set by a
 //    neighbour, nSplit of one of its tris or of their bases (a tri in the merge list and its base split and merge
 //    together, each the other's base). While it is set the walk would merge nothing again and is skipped.
 static unsigned int g_terVertRecalc[TERRAIN_WINDOW_MAX];
 static unsigned int g_terMergeQuiet[TERRAIN_WINDOW_MAX / 32];
+
+// Added in the Metal port
+//  The vertexes made in each patch since its last geomorph walk, in the patches' order (up to TERRAIN_NEWVERTS; past
+//  that the patch's g_terVertRecalc is set to 0 and every vertex is walked). A new vertex is due at once, but the
+//  patch's older vertexes keep their uiDistRecalc: when g_terVertRecalc says none of them is due, the walk needs to
+//  see only these. A vertex leaves the list when it is released.
+#define TERRAIN_NEWVERTS 8
+
+static terraInt g_terNewVerts[TERRAIN_WINDOW_MAX][TERRAIN_NEWVERTS];
+static byte     g_terNumNewVerts[TERRAIN_WINDOW_MAX];
+
+// Added in the Metal port
+//  The split walk (R_DoTriSplitting) goes over a second list per patch: the tris of its tri list whose
+//  (byConstChecks & 3) != 2, in the tri list's order (drawinfo.iLiveHead / iLiveTail, the tris' iLivePrev /
+//  iLiveNext). A tri with (byConstChecks & 3) == 2 never splits and never lowers the patch's uiDistRecalc: the walk
+//  did nothing with it. byConstChecks is set once, when the tri is made (R_SplitTri, R_PreTessellateTerrain): a tri
+//  joins the list when it joins the tri list (R_AllocateTri, R_ForceMerge), leaves it as soon as it turns out never
+//  to split, and when it leaves the tri list (R_ReleaseTri, R_DemoteInAncestry). g_terLiveCur is the walk's tri, as
+//  g_tri.iCur is for the tri list.
+static terraInt g_terLiveCur;
 
 static int modeTable[8];
 
@@ -171,6 +191,59 @@ static void R_TerrainMarkSplitCount(terraInt iTri)
 
 /*
 ================
+R_TerrainLiveAppend
+
+Added in the Metal port: the tri, just appended to its patch's tri list, goes at the end of the patch's live list
+================
+*/
+static void R_TerrainLiveAppend(cTerraPatchUnpacked_t *patch, terraInt iTri)
+{
+    terraTri_t *pTri = &g_pTris[iTri];
+
+    pTri->iLivePrev = patch->drawinfo.iLiveTail;
+    pTri->iLiveNext = 0;
+    if (patch->drawinfo.iLiveTail) {
+        g_pTris[patch->drawinfo.iLiveTail].iLiveNext = iTri;
+    } else {
+        patch->drawinfo.iLiveHead = iTri;
+    }
+    patch->drawinfo.iLiveTail = iTri;
+}
+
+/*
+================
+R_TerrainLiveUnlink
+
+Added in the Metal port: the tri leaves its patch's live list
+================
+*/
+static void R_TerrainLiveUnlink(cTerraPatchUnpacked_t *patch, terraInt iTri)
+{
+    terraTri_t *pTri  = &g_pTris[iTri];
+    terraInt    iPrev = pTri->iLivePrev;
+    terraInt    iNext = pTri->iLiveNext;
+
+    if (iPrev) {
+        g_pTris[iPrev].iLiveNext = iNext;
+    } else {
+        patch->drawinfo.iLiveHead = iNext;
+    }
+    if (iNext) {
+        g_pTris[iNext].iLivePrev = iPrev;
+    } else {
+        patch->drawinfo.iLiveTail = iPrev;
+    }
+
+    if (g_terLiveCur == iTri) {
+        g_terLiveCur = iNext;
+    }
+
+    pTri->iLivePrev = 0;
+    pTri->iLiveNext = 0;
+}
+
+/*
+================
 R_ValidateHeightmapForVertex
 ================
 */
@@ -210,12 +283,16 @@ static terraInt R_AllocateVert(cTerraPatchUnpacked_t *patch)
     g_pVert[iVert].uiDistRecalc = 0;
 
     // Added in the Metal port
-    //  The patch's walk has a vertex due
+    //  The patch's walk has a vertex due: this one
     {
         int n = R_TerrainPatchNum(patch);
 
         if (n >= 0) {
-            g_terVertRecalc[n] = 0;
+            if (g_terNumNewVerts[n] < TERRAIN_NEWVERTS) {
+                g_terNewVerts[n][g_terNumNewVerts[n]++] = iVert;
+            } else {
+                g_terVertRecalc[n] = 0;
+            }
         }
     }
 
@@ -280,6 +357,21 @@ static void R_ReleaseVert(cTerraPatchUnpacked_t *patch, int iVert)
         patch->drawinfo.iVertHead = iNext;
     }
 
+    // Added in the Metal port
+    //  Out of the patch's new vertexes
+    {
+        int n = R_TerrainPatchNum(patch);
+
+        if (n >= 0) {
+            for (int i = 0; i < g_terNumNewVerts[n]; i++) {
+                if (g_terNewVerts[n][i] == iVert) {
+                    g_terNewVerts[n][i] = g_terNewVerts[n][--g_terNumNewVerts[n]];
+                    break;
+                }
+            }
+        }
+    }
+
     pVert->iPrev                    = 0;
     pVert->iNext                    = g_vert.iFreeHead;
     g_pVert[g_vert.iFreeHead].iPrev = iVert;
@@ -307,6 +399,10 @@ terraInt R_AllocateTri(cTerraPatchUnpacked_t *patch, qboolean check)
     if (!patch->drawinfo.iTriHead) {
         patch->drawinfo.iTriHead = iTri;
     }
+
+    // Added in the Metal port
+    //  In the live list until it turns out never to split (R_SplitTri, R_PreTessellateTerrain)
+    R_TerrainLiveAppend(patch, iTri);
 
     patch->drawinfo.nTris++;
     assert(g_tri.nFree > 0);
@@ -348,6 +444,11 @@ static void R_ReleaseTri(cTerraPatchUnpacked_t *patch, terraInt iTri)
 
     if (patch->drawinfo.iTriTail == iTri) {
         patch->drawinfo.iTriTail = iPrev;
+    }
+
+    // Added in the Metal port
+    if ((pTri->byConstChecks & 3) != 2) {
+        R_TerrainLiveUnlink(patch, iTri);
     }
 
     pTri->iPrev                    = 0;
@@ -422,6 +523,11 @@ static void R_DemoteInAncestry(cTerraPatchUnpacked_t *patch, terraInt iTri)
         patch->drawinfo.iTriTail = iPrev;
     }
 
+    // Added in the Metal port
+    if ((g_pTris[iTri].byConstChecks & 3) != 2) {
+        R_TerrainLiveUnlink(patch, iTri);
+    }
+
     g_pTris[iTri].iPrev                       = 0;
     g_pTris[iTri].iNext                       = patch->drawinfo.iMergeHead;
     g_pTris[patch->drawinfo.iMergeHead].iPrev = iTri;
@@ -472,6 +578,8 @@ static void R_TerrainPatchesInit()
         patch->drawinfo.iTriTail     = 0;
         patch->drawinfo.iMergeHead   = 0;
         patch->drawinfo.iVertHead    = 0;
+        patch->drawinfo.iLiveHead    = 0;
+        patch->drawinfo.iLiveTail    = 0;
         patch->drawinfo.nTris        = 0;
         patch->drawinfo.nVerts       = 0;
     }
@@ -529,6 +637,10 @@ void R_SplitTri(
 
         R_ValidateHeightmapForVertex(pLeft);
         pLeft->byConstChecks |= R_ConstChecksForTri(pLeft);
+        // Added in the Metal port
+        if ((pLeft->byConstChecks & 3) == 2) {
+            R_TerrainLiveUnlink(pLeft->patch, iLeft);
+        }
 
         g_pVert[pLeft->iPt[0]].nRef++;
         g_pVert[pLeft->iPt[1]].nRef++;
@@ -559,6 +671,10 @@ void R_SplitTri(
 
         R_ValidateHeightmapForVertex(pRight);
         pRight->byConstChecks |= R_ConstChecksForTri(pRight);
+        // Added in the Metal port
+        if ((pRight->byConstChecks & 3) == 2) {
+            R_TerrainLiveUnlink(pRight->patch, iRight);
+        }
 
         g_pVert[pRight->iPt[0]].nRef++;
         g_pVert[pRight->iPt[1]].nRef++;
@@ -748,6 +864,11 @@ static void R_ForceMerge(terraInt iTri)
     if (!patch->drawinfo.iTriHead) {
         patch->drawinfo.iTriHead = iTri;
     }
+
+    // Added in the Metal port
+    if ((pTri->byConstChecks & 3) != 2) {
+        R_TerrainLiveAppend(patch, iTri);
+    }
 }
 
 /*
@@ -830,6 +951,8 @@ static void R_PreTessellateTerrain()
         patch->drawinfo.iTriHead    = 0;
         patch->drawinfo.iTriTail    = 0;
         patch->drawinfo.iVertHead   = 0;
+        patch->drawinfo.iLiveHead   = 0;
+        patch->drawinfo.iLiveTail   = 0;
 
         float sMin, tMin;
 
@@ -963,6 +1086,10 @@ static void R_PreTessellateTerrain()
         pTri->index      = 1;
         pTri->lod        = 0;
         pTri->byConstChecks |= R_ConstChecksForTri(pTri);
+        // Added in the Metal port
+        if ((pTri->byConstChecks & 3) == 2) {
+            R_TerrainLiveUnlink(patch, iTri0);
+        }
 
         pTri->iBase = iTri1;
         if ((patch->flags & TERPATCH_NEIGHBOR) == 0) {
@@ -997,6 +1124,10 @@ static void R_PreTessellateTerrain()
         pTri->index   = 1;
         pTri->lod     = 0;
         pTri->byConstChecks |= R_ConstChecksForTri(pTri);
+        // Added in the Metal port
+        if ((pTri->byConstChecks & 3) == 2) {
+            R_TerrainLiveUnlink(patch, iTri1);
+        }
 
         pTri->iBase = iTri0;
         if ((patch->flags & TERPATCH_NEIGHBOR) == 0) {
@@ -1032,6 +1163,8 @@ static void R_PreTessellateTerrain()
     g_terWindowCautious = ter_cautiousframes->integer;
     memset(g_terVertRecalc, 0, sizeof(g_terVertRecalc));
     memset(g_terMergeQuiet, 0, sizeof(g_terMergeQuiet));
+    memset(g_terNumNewVerts, 0, sizeof(g_terNumNewVerts));
+    g_terLiveCur = 0;
 }
 
 /*
@@ -1118,9 +1251,11 @@ static void R_DoTriSplitting()
         }
 
         patch->uiDistRecalc = -1;
-        g_tri.iCur          = patch->drawinfo.iTriHead;
-        while (g_tri.iCur != 0) {
-            terraTri_t *pTri = &g_pTris[g_tri.iCur];
+        // Modified in the Metal port
+        //  Over the live list: the tris of the tri list the walk can act on, in its order
+        g_terLiveCur        = patch->drawinfo.iLiveHead;
+        while (g_terLiveCur != 0) {
+            terraTri_t *pTri = &g_pTris[g_terLiveCur];
 
             if (R_NeedSplitTri(pTri)) {
                 //
@@ -1134,10 +1269,10 @@ static void R_DoTriSplitting()
                 }
 
                 patch->uiDistRecalc = 0;
-                R_ForceSplit(g_tri.iCur);
+                R_ForceSplit(g_terLiveCur);
 
-                if (&g_pTris[g_tri.iCur] == pTri) {
-                    g_tri.iCur = g_pTris[g_tri.iCur].iNext;
+                if (&g_pTris[g_terLiveCur] == pTri) {
+                    g_terLiveCur = pTri->iLiveNext;
                 }
             } else {
                 if ((pTri->byConstChecks & 3) != 2) {
@@ -1146,7 +1281,7 @@ static void R_DoTriSplitting()
                     }
                 }
 
-                g_tri.iCur = g_pTris[g_tri.iCur].iNext;
+                g_terLiveCur = pTri->iLiveNext;
             }
         }
     }
@@ -1182,9 +1317,24 @@ static void R_DoGeomorphsPatch(cTerraPatchUnpacked_t *patch)
             bMoved         = qtrue;
         } else if (n >= 0 && g_terVertRecalc[n] > g_uiTerDist) {
             // Added in the Metal port
-            //  No vertex due: the walk would change nothing
+            //  None of the older vertexes is due: the walk would change only the new ones, each on its own
             g_vert.iCur = 0;
-            return;
+            if (!g_terNumNewVerts[n]) {
+                return;
+            }
+
+            uiMin = g_terVertRecalc[n];
+            for (int i = 0; i < g_terNumNewVerts[n]; i++) {
+                terrainVert_t *pVert = &g_pVert[g_terNewVerts[n][i]];
+                float          z     = pVert->xyz[2];
+                R_UpdateVertMorphHeight(pVert);
+                if (pVert->xyz[2] != z) {
+                    bMoved = qtrue;
+                }
+                if (uiMin > pVert->uiDistRecalc) {
+                    uiMin = pVert->uiDistRecalc;
+                }
+            }
         } else {
             while (g_vert.iCur) {
                 terrainVert_t *pVert = &g_pVert[g_vert.iCur];
@@ -1201,7 +1351,8 @@ static void R_DoGeomorphsPatch(cTerraPatchUnpacked_t *patch)
         }
 
         if (n >= 0) {
-            g_terVertRecalc[n] = uiMin;
+            g_terVertRecalc[n]  = uiMin;
+            g_terNumNewVerts[n] = 0;
         }
     } else {
         if (!patch->byDirty) {
@@ -1212,6 +1363,12 @@ static void R_DoGeomorphsPatch(cTerraPatchUnpacked_t *patch)
                 pVert->xyz[2]        = pVert->fHgtAvg;
                 g_vert.iCur          = pVert->iNext;
             }
+        }
+
+        // Added in the Metal port
+        //  Dirty now: its next walk with it drawn computes every vertex
+        if (n >= 0) {
+            g_terNumNewVerts[n] = 0;
         }
     }
 
