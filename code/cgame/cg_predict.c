@@ -665,6 +665,11 @@ void CG_PredictPlayerState(void)
         cg.predicted_player_state.groundPlane = cg_newestGroundPlane;
         cg.predicted_player_state.groundTrace = cg_newestGroundTrace;
         VectorCopy(cg_newestFalldir, cg.predicted_player_state.falldir);
+    } else if (live && !moved) {
+        // the same, but no frame predicted the newest usercmd (prediction was
+        // off: a ladder, a turret): pmove leaves walking set exactly when it
+        // found a ground entity, which the snapshot carries
+        cg.predicted_player_state.walking = cg.predicted_player_state.groundEntityNum != ENTITYNUM_NONE;
     }
     if (live) {
         if (!cg_pmove.pmove_fixed && liveCmd.serverTime > cg.predicted_player_state.commandTime) {
