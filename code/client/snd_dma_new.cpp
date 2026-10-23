@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "snd_local.h"
 #include "snd_openal_new.h"
+#include "snd_native_new.h"
 #include "client.h"
 #include "cl_ui.h"
 
@@ -399,6 +400,10 @@ sfxHandle_t S_RegisterSound(const char *name, int streamed, qboolean force_load)
                 break;
             }
         }
+
+        // Added in the Metal port
+        //  The native driver's copy of the sound, made now rather than at its first start
+        S_NATIVE_SfxLoaded(sfx);
     }
 
     return sfx - s_knownSfx;
@@ -435,6 +440,9 @@ void S_EndRegistration()
         }
 
         if (sfx->registration_sequence && sfx->registration_sequence != s_registrationSequence) {
+            // Added in the Metal port
+            //  The native driver's copy goes too (OpenAL's buffers leaked)
+            S_NATIVE_FreeSfx(sfx);
             if (sfx->data) {
                 Z_Free(sfx->data);
             }

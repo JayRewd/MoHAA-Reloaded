@@ -196,8 +196,9 @@ extern int        s_numSfx;
 extern s_entity_t s_entity[];
 
 // The current sound driver.
-// Currently OPENAL
-#define SOUND_DRIVER OPENAL
+// Changed in the Metal port
+//  The native driver (snd_native_new.cpp); s_native 0 hands its calls to OpenAL's until 9g
+#define SOUND_DRIVER NATIVE
 
 //
 // snd_info.cpp

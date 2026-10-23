@@ -82,6 +82,7 @@ typedef struct {
 	double		maxRender;		// the longest callback's render (seconds)
 	double		wallSeconds;	// since MacSnd_Init
 	unsigned	cpuCallbacks[16];	// callbacks per CPU number (here 0-5 efficiency, 6-9 performance cores)
+	unsigned	captureDrops;	// captured frames lost to a full capture ring
 } macSndStats_t;
 
 int			MacSnd_Init( const macSndConfig_t *config );	// 0 on failure
@@ -111,6 +112,12 @@ void		MacSnd_SetResampler( int mode );
 void		MacSnd_SetStopFade( float ms );		// stops, pauses, seeks; 0 = cut at once, as Miles did
 void		MacSnd_Restart( void );				// re-creates the output unit (what a device change does)
 void		MacSnd_GetStats( macSndStats_t *stats );
+
+// A capture of the final mix (after the master gain, the limiter and the clip), for tests: a ring of frames (0 stops
+// it; the first capture's size is kept until MacSnd_Shutdown); mute: the device plays silence meanwhile. The game
+// thread drains it often enough (the ring's length of audio), or the frames are lost (stats: captureDrops).
+int			MacSnd_Capture( int frames, int mute );		// 0 on failure
+int			MacSnd_ReadCapture( float *out, int maxFrames );	// interleaved stereo: the frames read
 
 void		MacSnd_Render( float *out, int frames );	// offline only: interleaved stereo, the IO thread's code
 

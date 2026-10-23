@@ -261,10 +261,16 @@ wavinfo_t GetWavinfo(const char *name, byte *wav, int wavlength)
         }
 
         data_p += 4;
+        iff_chunk_len = GetLittleLong();
+        // Added in the Metal port
+        //  Not past the end of the file (a cut file's data chunk claims more)
+        if (iff_chunk_len > iff_end - data_p) {
+            iff_chunk_len = iff_end - data_p;
+        }
         if (info.width >= 1.0) {
-            samples = (int)((float)GetLittleLong() / info.width);
+            samples = (int)((float)iff_chunk_len / info.width);
         } else {
-            samples = (int)((float)GetLittleLong() * info.width);
+            samples = (int)((float)iff_chunk_len * info.width);
         }
 
         if (!info.samples) {
@@ -291,7 +297,13 @@ wavinfo_t GetWavinfo(const char *name, byte *wav, int wavlength)
         }
 
         data_p += 4;
-        samples = (float)GetLittleLong() / info.width;
+        iff_chunk_len = GetLittleLong();
+        // Added in the Metal port
+        //  Not past the end of the file (a cut file's data chunk claims more)
+        if (iff_chunk_len > iff_end - data_p) {
+            iff_chunk_len = iff_end - data_p;
+        }
+        samples = (float)iff_chunk_len / info.width;
 
         if (!info.samples) {
             info.samples = samples;

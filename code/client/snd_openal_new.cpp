@@ -26,6 +26,50 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../server/server.h"
 #include "snd_codec.h"
 
+// Added in the Metal port
+//  The front end's names are the native driver's (snd_native_new.cpp), which hands its calls to these while
+//  s_native is 0 (snd_openal_new.h). Until 9g removes this driver (docs/METAL_PORT_PLAN.md Phase 9)
+#define S_FadeSound                     S_OPENAL_FadeSound
+#define S_NeedFullRestart               S_OPENAL_NeedFullRestart
+#define S_PrintInfo                     S_OPENAL_PrintInfo
+#define S_DumpInfo                      S_OPENAL_DumpInfo
+#define S_IsSoundPlaying                S_OPENAL_IsSoundPlaying
+#define S_SaveData                      S_OPENAL_SaveData
+#define S_ReLoad                        S_OPENAL_ReLoad
+#define S_LoadData                      S_OPENAL_LoadData
+#define MUSIC_LoadSoundtrackFile        S_OPENAL_MUSIC_LoadSoundtrackFile
+#define MUSIC_SongValid                 S_OPENAL_MUSIC_SongValid
+#define MUSIC_Loaded                    S_OPENAL_MUSIC_Loaded
+#define Music_Update                    S_OPENAL_Music_Update
+#define MUSIC_SongEnded                 S_OPENAL_MUSIC_SongEnded
+#define MUSIC_NewSoundtrack             S_OPENAL_MUSIC_NewSoundtrack
+#define MUSIC_UpdateMood                S_OPENAL_MUSIC_UpdateMood
+#define MUSIC_UpdateVolume              S_OPENAL_MUSIC_UpdateVolume
+#define MUSIC_StopAllSongs              S_OPENAL_MUSIC_StopAllSongs
+#define MUSIC_FreeAllSongs              S_OPENAL_MUSIC_FreeAllSongs
+#define MUSIC_Playing                   S_OPENAL_MUSIC_Playing
+#define MUSIC_FindSong                  S_OPENAL_MUSIC_FindSong
+#define S_loadsoundtrack                S_OPENAL_loadsoundtrack
+#define S_CurrentSoundtrack             S_OPENAL_CurrentSoundtrack
+#define S_PlaySong                      S_OPENAL_PlaySong
+#define MUSIC_CurrentSongChannel        S_OPENAL_MUSIC_CurrentSongChannel
+#define MUSIC_StopChannel               S_OPENAL_MUSIC_StopChannel
+#define MUSIC_PlaySong                  S_OPENAL_MUSIC_PlaySong
+#define MUSIC_UpdateMusicVolumes        S_OPENAL_MUSIC_UpdateMusicVolumes
+#define MUSIC_CheckForStoppedSongs      S_OPENAL_MUSIC_CheckForStoppedSongs
+#define S_TriggeredMusic_SetupHandle    S_OPENAL_TriggeredMusic_SetupHandle
+#define S_TriggeredMusic_Start          S_OPENAL_TriggeredMusic_Start
+#define S_TriggeredMusic_StartLoop      S_OPENAL_TriggeredMusic_StartLoop
+#define S_TriggeredMusic_Stop           S_OPENAL_TriggeredMusic_Stop
+#define S_TriggeredMusic_Volume         S_OPENAL_TriggeredMusic_Volume
+#define S_TriggeredMusic_Pause          S_OPENAL_TriggeredMusic_Pause
+#define S_TriggeredMusic_Unpause        S_OPENAL_TriggeredMusic_Unpause
+#define S_TriggeredMusic_PlayIntroMusic S_OPENAL_TriggeredMusic_PlayIntroMusic
+#define S_StopMovieAudio                S_OPENAL_StopMovieAudio
+#define S_SetupMovieAudio               S_OPENAL_SetupMovieAudio
+#define S_CurrentMoviePosition          S_OPENAL_CurrentMoviePosition
+#define s_show_sounds                   s_openal_show_sounds
+
 typedef struct {
     const char *funcname;
     void      **funcptr;

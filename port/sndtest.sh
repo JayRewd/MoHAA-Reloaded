@@ -1,9 +1,10 @@
 #!/bin/bash
 # The native sound engine's mixer alone (code/macos/macos_snd.c, docs/METAL_PORT_PLAN.md Phase 9b): port/sndtest.c
 # built three ways into build.noindex/sndtest/: sndtest (-O3, the device modes), sndtest-asan (the offline tests
-# under AddressSanitizer and UBSan), sndtest-tsan (the stress test under ThreadSanitizer).
+# under AddressSanitizer and UBSan), sndtest-tsan (the stress test under ThreadSanitizer). The native driver's math
+# (code/client/snd_native_math.h, Phase 9c) is checked here too: test math ima.
 #   port/sndtest.sh                     the offline tests and 10 s of stress
-#   port/sndtest.sh test [name ...]     the offline tests (resample loop offset pause ramp limiter free misc)
+#   port/sndtest.sh test [name ...]     the offline tests (resample loop offset pause ramp limiter free misc capture math ima)
 #   port/sndtest.sh stress [seconds]
 #   port/sndtest.sh device [frames ...] start -> output, CPU at 0/16/40/96 voices, a restart (silent; 64 and 32)
 #   port/sndtest.sh load frames seconds [busy threads]   overloads under load (run port/bench.sh beside it)
@@ -19,7 +20,8 @@ FLAGS=(-std=gnu11 -Wall -Wextra -Wno-unused-parameter -framework AudioToolbox -f
 build() {	# name, flags
 	local name=$1
 	shift
-	if [ ! -x "$OUT/$name" ] || [ -n "$(find "${SRC[@]}" "$OMM_ROOT/code/macos/macos_snd.h" "$0" -newer "$OUT/$name")" ]; then
+	if [ ! -x "$OUT/$name" ] || [ -n "$(find "${SRC[@]}" "$OMM_ROOT/code/macos/macos_snd.h" \
+		"$OMM_ROOT/code/client/snd_native_math.h" "$0" -newer "$OUT/$name")" ]; then
 		clang "${FLAGS[@]}" "$@" "${SRC[@]}" -o "$OUT/$name"
 	fi
 }

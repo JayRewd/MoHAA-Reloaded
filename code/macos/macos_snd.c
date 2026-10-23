@@ -191,6 +191,12 @@ static struct {
 	_Atomic uint64_t	pubRenderTicks, pubMaxTicks;
 	_Atomic uint32_t	cpu[16];
 
+	// the capture of the final mix (tests): the IO thread writes at captureHead, the game thread reads at
+	// captureTail (frames, wrapping)
+	float			*capture;
+	uint32_t		captureFrames;
+	_Atomic uint32_t	captureHead, captureTail, captureOn, captureMute, captureDrops;
+
 	// the device
 	AudioUnit		unit;
 	AudioDeviceID	device;
@@ -951,6 +957,28 @@ static void SND_Output( float *out, const float *mix, int n, float master )
 	snd.master = master;
 }
 
+// the capture: the block as it goes out, then silence for the device when muted
+static void SND_Capture( float *out, int n )
+{
+	const uint32_t	head = atomic_load_explicit( &snd.captureHead, memory_order_relaxed );
+	const uint32_t	tail = atomic_load_explicit( &snd.captureTail, memory_order_acquire );
+	uint32_t		i;
+
+	if( snd.captureFrames - ( head - tail ) < (uint32_t)n )
+		atomic_fetch_add_explicit( &snd.captureDrops, n, memory_order_relaxed );
+	else {
+		for( i = 0; i < (uint32_t)n; i++ ) {
+			const uint32_t	k = ( head + i ) % snd.captureFrames;
+
+			snd.capture[2 * k] = out[2 * i];
+			snd.capture[2 * k + 1] = out[2 * i + 1];
+		}
+		atomic_store_explicit( &snd.captureHead, head + n, memory_order_release );
+	}
+	if( atomic_load_explicit( &snd.captureMute, memory_order_relaxed ) )
+		memset( out, 0, sizeof( float ) * 2 * n );
+}
+
 /*
 ===============
 SND_Render
@@ -1003,6 +1031,8 @@ static void SND_Render( float *out, int frames, uint64_t now )
 				i++;
 		}
 		SND_Output( out, snd.mix, n, master );
+		if( atomic_load_explicit( &snd.captureOn, memory_order_relaxed ) )
+			SND_Capture( out, n );
 		out += 2 * n;
 		frames -= n;
 		snd.frameCount += n;
@@ -1379,6 +1409,7 @@ void MacSnd_Shutdown( void )
 	free( snd.active );
 	free( snd.tails );
 	free( snd.dying );
+	free( snd.capture );
 	memset( &snd, 0, sizeof( snd ) );
 }
 
@@ -1798,6 +1829,55 @@ void MacSnd_GetStats( macSndStats_t *stats )
 	stats->wallSeconds = ( mach_absolute_time() - snd.initTime ) * tick;
 	for( i = 0; i < 16; i++ )
 		stats->cpuCallbacks[i] = atomic_load_explicit( &snd.cpu[i], memory_order_relaxed );
+	stats->captureDrops = atomic_load_explicit( &snd.captureDrops, memory_order_relaxed );
+}
+
+/*
+===============
+MacSnd_Capture
+
+The ring is allocated once (the IO thread may still be writing a block into it when a capture stops); a new capture
+starts after what is in it.
+===============
+*/
+int MacSnd_Capture( int frames, int mute )
+{
+	if( !snd.initialized )
+		return 0;
+	atomic_store_explicit( &snd.captureOn, 0, memory_order_relaxed );
+	atomic_store_explicit( &snd.captureMute, 0, memory_order_relaxed );
+	if( frames <= 0 )
+		return 1;
+	if( !snd.capture ) {
+		snd.capture = calloc( (size_t)frames * 2, sizeof( float ) );
+		if( !snd.capture )
+			return 0;
+		snd.captureFrames = (uint32_t)frames;
+	}
+	atomic_store_explicit( &snd.captureTail, atomic_load_explicit( &snd.captureHead, memory_order_acquire ),
+		memory_order_release );
+	atomic_store_explicit( &snd.captureMute, mute != 0, memory_order_relaxed );
+	atomic_store_explicit( &snd.captureOn, 1, memory_order_relaxed );
+	return 1;
+}
+
+int MacSnd_ReadCapture( float *out, int maxFrames )
+{
+	const uint32_t	head = snd.capture ? atomic_load_explicit( &snd.captureHead, memory_order_acquire ) : 0;
+	uint32_t		tail, i, n;
+
+	if( !snd.capture || maxFrames <= 0 )
+		return 0;
+	tail = atomic_load_explicit( &snd.captureTail, memory_order_relaxed );
+	n = head - tail < (uint32_t)maxFrames ? head - tail : (uint32_t)maxFrames;
+	for( i = 0; i < n; i++ ) {
+		const uint32_t	k = ( tail + i ) % snd.captureFrames;
+
+		out[2 * i] = snd.capture[2 * k];
+		out[2 * i + 1] = snd.capture[2 * k + 1];
+	}
+	atomic_store_explicit( &snd.captureTail, tail + n, memory_order_release );
+	return (int)n;
 }
 
 void MacSnd_Render( float *out, int frames )

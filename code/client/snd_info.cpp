@@ -66,24 +66,29 @@ void load_sfx_info()
                     number_of_sfx_infos++;
                 }
             } else if (!Q_stricmp(token, "loopstart")) {
-                if (!tiki.TokenAvailable(qtrue)) {
+                // Fixed in the Metal port
+                //  The values were never read (the test was inverted), so no loop block, maxnumber or maxfactor
+                //  ever applied (retail data has none of them)
+                if (tiki.TokenAvailable(qtrue)) {
                     token                                         = tiki.GetToken(qtrue);
                     sfx_infos[number_of_sfx_infos - 1].loop_start = atoi(token);
                 }
             } else if (!Q_stricmp(token, "loopend")) {
-                if (!tiki.TokenAvailable(qtrue)) {
+                if (tiki.TokenAvailable(qtrue)) {
                     token                                       = tiki.GetToken(qtrue);
                     sfx_infos[number_of_sfx_infos - 1].loop_end = atoi(token);
                 }
             } else if (!Q_stricmp(token, "maxnumber")) {
-                if (!tiki.TokenAvailable(qtrue)) {
+                if (tiki.TokenAvailable(qtrue)) {
                     token                                                 = tiki.GetToken(qtrue);
                     sfx_infos[number_of_sfx_infos - 1].max_number_playing = atoi(token);
                 }
             } else if (!Q_stricmp(token, "maxfactor")) {
-                if (!tiki.TokenAvailable(qtrue)) {
+                if (tiki.TokenAvailable(qtrue)) {
                     token                                         = tiki.GetToken(qtrue);
-                    sfx_infos[number_of_sfx_infos - 1].max_factor = atoi(token);
+                    // Fixed in the Metal port
+                    //  A float
+                    sfx_infos[number_of_sfx_infos - 1].max_factor = atof(token);
                 }
             }
         }

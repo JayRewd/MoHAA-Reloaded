@@ -233,6 +233,49 @@ extern "C" {
     int          S_OPENAL_GetMusicLoopCount();
     unsigned int S_OPENAL_GetMusicOffset();
 
+    // Added in the Metal port
+    //  The front end's names are the native driver's (snd_native_new.cpp), which hands its calls to these while
+    //  s_native is 0; snd_openal_new.cpp renames its own. Until 9g removes this driver (docs/METAL_PORT_PLAN.md)
+    void         S_OPENAL_FadeSound(float fTime);
+    qboolean     S_OPENAL_NeedFullRestart();
+    void         S_OPENAL_PrintInfo();
+    void         S_OPENAL_DumpInfo();
+    qboolean     S_OPENAL_IsSoundPlaying(int channel_number, const char *sfxName);
+    void         S_OPENAL_SaveData(soundsystemsavegame_t *pSave);
+    void         S_OPENAL_ReLoad(soundsystemsavegame_t *pSave);
+    void         S_OPENAL_LoadData(soundsystemsavegame_t *pSave);
+    qboolean     S_OPENAL_MUSIC_LoadSoundtrackFile(const char *filename);
+    qboolean     S_OPENAL_MUSIC_SongValid(const char *mood);
+    qboolean     S_OPENAL_MUSIC_Loaded();
+    void         S_OPENAL_Music_Update();
+    void         S_OPENAL_MUSIC_SongEnded();
+    void         S_OPENAL_MUSIC_NewSoundtrack(const char *name);
+    void         S_OPENAL_MUSIC_UpdateMood(int current, int fallback);
+    void         S_OPENAL_MUSIC_UpdateVolume(float volume, float fade_time);
+    void         S_OPENAL_MUSIC_StopAllSongs();
+    void         S_OPENAL_MUSIC_FreeAllSongs();
+    qboolean     S_OPENAL_MUSIC_Playing();
+    int          S_OPENAL_MUSIC_FindSong(const char *name);
+    void         S_OPENAL_loadsoundtrack();
+    const char  *S_OPENAL_CurrentSoundtrack();
+    void         S_OPENAL_PlaySong();
+    int          S_OPENAL_MUSIC_CurrentSongChannel();
+    void         S_OPENAL_MUSIC_StopChannel(int channel_number);
+    qboolean     S_OPENAL_MUSIC_PlaySong(const char *alias);
+    void         S_OPENAL_MUSIC_UpdateMusicVolumes();
+    void         S_OPENAL_MUSIC_CheckForStoppedSongs();
+    void         S_OPENAL_TriggeredMusic_SetupHandle(const char *pszName, int iLoopCount, int iOffset, qboolean autostart);
+    void         S_OPENAL_TriggeredMusic_Start();
+    void         S_OPENAL_TriggeredMusic_StartLoop();
+    void         S_OPENAL_TriggeredMusic_Stop();
+    void         S_OPENAL_TriggeredMusic_Volume();
+    void         S_OPENAL_TriggeredMusic_Pause();
+    void         S_OPENAL_TriggeredMusic_Unpause();
+    void         S_OPENAL_TriggeredMusic_PlayIntroMusic();
+    void         S_OPENAL_StopMovieAudio();
+    void         S_OPENAL_SetupMovieAudio(const char *pszMovieName);
+    int          S_OPENAL_CurrentMoviePosition();
+
 #ifdef __cplusplus
 }
 #endif

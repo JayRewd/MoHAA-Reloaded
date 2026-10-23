@@ -18,6 +18,10 @@ set_source_files_properties(${CLIENT_INPUT_SOURCES} PROPERTIES COMPILE_OPTIONS "
 # GameController: GCMouse, the mouse's raw movement (in_mouseRaw)
 list(APPEND CLIENT_LIBRARIES "-framework Carbon" "-framework GameController")
 
+# The native sound engine's mixer (docs/METAL_PORT_PLAN.md Phase 9): our render callback on Core Audio's output unit
+set(CLIENT_SOUND_SOURCES ${SOURCE_DIR}/macos/macos_snd.c)
+list(APPEND CLIENT_LIBRARIES "-framework AudioToolbox" "-framework CoreAudio")
+
 set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/cl_avi.cpp
     ${SOURCE_DIR}/client/cl_cgame.cpp
@@ -62,9 +66,11 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/snd_info.cpp
     ${SOURCE_DIR}/client/snd_mem_new.cpp
     ${SOURCE_DIR}/client/snd_miles_new.cpp
+    ${SOURCE_DIR}/client/snd_native_new.cpp
     ${SOURCE_DIR}/client/snd_openal_new.cpp
     ${SOURCE_DIR}/client/usignal.cpp
     ${CLIENT_INPUT_SOURCES}
+    ${CLIENT_SOUND_SOURCES}
     ${CLIENT_PLATFORM_SOURCES}
 )
 

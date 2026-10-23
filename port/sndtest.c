@@ -3,7 +3,8 @@
 // stress test renders on a second thread, as the IO thread does, while this one posts at random (built with
 // ThreadSanitizer); the device modes play silence on the real output: start -> output, CPU, overloads.
 //
-//   sndtest [test ...]                    offline: resample loop offset pause ramp limiter free misc (all by default)
+//   sndtest [test ...]                    offline: resample loop offset pause ramp limiter free misc capture math ima (all by
+//                                         default); math and ima are the native driver's (snd_native_math.h)
 //   sndtest stress [seconds]              the threaded stress test
 //   sndtest device [frames ...]           start -> output at random phases, CPU at 0/16/40/96 voices, a restart
 //   sndtest load frames seconds [busy] [voices]   96 voices for a while, overloads counted; busy = spinning threads
@@ -12,6 +13,7 @@
 // Every device mode is silent: the sounds are zeros and the master gain is 0. SNDTEST_DEVICE names another output.
 
 #include "../code/macos/macos_snd.h"
+#include "../code/client/snd_native_math.h"
 
 #include <CoreAudio/CoreAudio.h>
 #include <libproc.h>
@@ -822,6 +824,285 @@ stress: a second thread renders while this one posts at random
 ==============================================================================
 */
 
+// the capture of the final mix (the 9c WAV files): what went out, then silence for the device when muted
+static void test_capture( void )
+{
+	static float out[2 * 4096], got[2 * 8192];
+	macSndStats_t stats;
+	int snd, n, i, ok;
+
+	printf( "capture\n" );
+	offline();
+	snd = sound_sine( 48000, 48000, 1000, 0.5, 1 );
+	MacSnd_Start( 0, &( macSndStart_t ){ .sound = snd, .gainL = 1, .gainR = 0.5f } );
+	render( out, 256 );
+	check( MacSnd_Capture( 1000, 0 ) && MacSnd_ReadCapture( got, 8192 ) == 0, "nothing captured before it starts" );
+	render( out, 512 );
+	n = MacSnd_ReadCapture( got, 8192 );
+	for ( ok = n == 512, i = 0; i < 2 * 512 && ok; i++ )
+		ok = got[i] == out[i];
+	check( ok, "512 frames out, the same 512 captured" );
+	render( out, 600 );
+	render( out + 2 * 600, 600 );
+	MacSnd_GetStats( &stats );
+	n = MacSnd_ReadCapture( got, 8192 );
+	check( n <= 1000 && n > 900 && n + stats.captureDrops == 1200, "a full ring (1000 frames): the callbacks that "
+		"didn't fit are lost and counted (%d read, %u dropped)", n, stats.captureDrops );
+	MacSnd_Capture( 1000, 1 );
+	render( out, 300 );
+	n = MacSnd_ReadCapture( got, 8192 );
+	for ( ok = n == 300, i = 0; i < 2 * 300 && ok; i++ )
+		ok = out[i] == 0;
+	check( ok && got[2 * 100] != 0, "muted: the device gets silence, the capture the mix" );
+	MacSnd_Capture( 0, 0 );
+	render( out, 300 );
+	check( MacSnd_ReadCapture( got, 8192 ) == 0 && out[2 * 100] != 0, "stopped: nothing captured, the device hears it "
+		"again" );
+	MacSnd_Shutdown();
+}
+
+/*
+The native driver's math (code/client/snd_native_math.h) against the plan's numbers (Phase 9, the parity checklist):
+the original's Fast 2D model, its pan laws, the volume scales and s_volume's law. OpenAL's levels for the same cases
+(openal-soft 1.25.2's stereo decoder, alc/panning.cpp: 0.5 +- 0.5 x left + 0.0957 x front a side) are printed beside
+them: the expected differences of the 9c comparison.
+*/
+static int near( double a, double b, double eps ) { return fabs( a - b ) <= eps; }
+
+static void openal_pan( double front, double left, double *l, double *r )
+{
+	*l = 0.5 + 0.288675135 * sqrt( 3.0 ) * left + 0.0552305643 * sqrt( 3.0 ) * front;
+	*r = 0.5 - 0.288675135 * sqrt( 3.0 ) * left + 0.0552305643 * sqrt( 3.0 ) * front;
+}
+
+static void test_math( void )
+{
+	float l, r, l3, r3;
+	double ol, or_;
+	int p, ok;
+
+	printf( "math\n" );
+
+	// A2: the content volume up to Miles' ceiling (127/84), negative = 1
+	check( SNM_Volume( 1.5f ) == 1.5f && SNM_Volume( 0.25f ) == 0.25f && SNM_Volume( -1 ) == 1.0f
+		&& near( SNM_Volume( 2.0f ), 127.0 / 84.0, 1e-6 ), "A2: volume 1.5 and 0.25 kept, 2.0 -> %.4f (127/84), -1 -> 1",
+		SNM_Volume( 2.0f ) );
+
+	// A4: s_volume^3 x fade on the master (OpenAL: listener s^2 x each voice's s)
+	check( near( SNM_Master( 0.9f, 1 ), 0.729, 1e-6 ) && near( SNM_Master( 0.4f, 1 ), 0.064, 1e-7 )
+		&& near( SNM_Master( 1, 0.5f ), 0.5, 1e-7 ) && SNM_Master( 1.2f, 1 ) == 1.0f && SNM_Master( 0, 1 ) == 0
+		&& SNM_Master( 0.9f, -1 ) == 0, "A4: master 0.9 -> 0.729, 0.4 -> 0.064 (the user's: %.1f dB), fade 0.5 -> 0.5, "
+		"clamped to 0..1", 20 * log10( 0.064 ) );
+
+	// B1: min / d, silent beyond max, the last 5%% a fade (160/1600: footsteps; 1000/8000: weapons)
+	check( SNM_Distance( 80, 160, 1600 ) == 1 && SNM_Distance( 160, 160, 1600 ) == 1
+		&& near( SNM_Distance( 320, 160, 1600 ), 0.5, 1e-7 ) && near( SNM_Distance( 1520, 160, 1600 ), 160.0 / 1520, 1e-6 )
+		&& near( SNM_Distance( 1560, 160, 1600 ), 160.0 / 1560 * 0.5, 1e-6 ) && SNM_Distance( 1600, 160, 1600 ) == 0
+		&& SNM_Distance( 2000, 160, 1600 ) == 0, "B1: 160/1600 at 80, 160, 320, 1520, 1560, 1600, 2000: 1, 1, 0.5, "
+		"%.4f (%.1f dB), %.4f, 0, 0 (OpenAL held %.1f dB beyond)", SNM_Distance( 1520, 160, 1600 ),
+		db( SNM_Distance( 1520, 160, 1600 ) ), SNM_Distance( 1560, 160, 1600 ), db( 0.1 ) );
+	check( near( SNM_Distance( 4000, 1000, 8000 ), 0.25, 1e-7 ) && near( SNM_Distance( 7600, 1000, 8000 ), 1000.0 / 7600, 1e-6 )
+		&& near( SNM_Distance( 7800, 1000, 8000 ), 1000.0 / 7800 * 0.5, 1e-6 ), "B1: 1000/8000 at 4000, 7600, 7800: "
+		"-12.04 dB, %.2f dB, %.2f dB", db( SNM_Distance( 7600, 1000, 8000 ) ), db( SNM_Distance( 7800, 1000, 8000 ) ) );
+	for ( ok = 1, p = 0; p <= 1700; p++ ) {	// never rising with the distance
+		ok &= SNM_Distance( (float)p + 1, 160, 1600 ) <= SNM_Distance( (float)p, 160, 1600 );
+	}
+	check( ok, "B1: never rising with the distance, 0..1700" );
+
+	// C1: Miles' 2D pan, GM2's power law: 64 the exact centre, 0 and 1 hard left, 127 hard right, power constant
+	SNM_Pan2D( 64, &l, &r );
+	check( near( l, M_SQRT1_2, 1e-6 ) && near( r, M_SQRT1_2, 1e-6 ), "C1: pan 64 -> %.5f / %.5f (-3.01 dB a side)", l, r );
+	SNM_Pan2D( 0, &l, &r );
+	ok = l == 1 && r == 0;
+	SNM_Pan2D( 1, &l, &r );
+	ok &= l == 1 && r == 0;
+	SNM_Pan2D( 127, &l, &r );
+	check( ok && fabs( l ) < 1e-7 && r == 1, "C1: pan 0 and 1 hard left, 127 hard right" );
+	for ( ok = 1, p = 0; p <= 127; p++ ) {
+		float pl, pr;
+
+		SNM_Pan2D( p, &l, &r );
+		SNM_Pan2D( p + 1, &pl, &pr );
+		ok &= near( l * l + r * r, 1, 1e-6 ) && ( p >= 127 || ( pl <= l && pr >= r ) );
+	}
+	SNM_Pan2D( 96, &l, &r );
+	openal_pan( -sqrt( 1 - ( 32 / 127.0 ) * ( 32 / 127.0 ) ), -32 / 127.0, &ol, &or_ );
+	check( ok, "C1: power constant and monotonic over 0..127; pan 96 -> %.4f / %.4f (OpenAL: %.4f / %.4f, behind)",
+		l, r, ol, or_ );
+
+	// C1 for a stereo sound: the pan a balance, both channels at their level at the centre
+	SNM_Balance2D( 64, &l, &r );
+	ok = l == 1 && r == 1;
+	SNM_Balance2D( 0, &l, &r );
+	ok &= l == 1 && r == 0;
+	SNM_Balance2D( 127, &l, &r );
+	ok &= fabs( l ) < 1e-6 && r == 1;
+	SNM_Balance2D( 96, &l, &r );
+	check( ok && near( l, sqrt( 2.0 ) * cos( 95 / 126.0 * M_PI_2 ), 1e-6 ) && r == 1, "C1 stereo: a balance, 64 both "
+		"at 1, 0 and 127 one side, 96 -> %.4f / %.4f", l, r );
+
+	// C6: Fast 2D's 3D pan: front -3 dB a side, a side all on it, straight behind -3 dB more, nothing steps
+	SNM_Pan3D( 1, 0, &l, &r );
+	openal_pan( 1, 0, &ol, &or_ );
+	check( near( l, M_SQRT1_2, 1e-6 ) && near( r, M_SQRT1_2, 1e-6 ), "C6: in front %.5f / %.5f (OpenAL %.4f, %.2f dB)",
+		l, r, ol, db( ol ) );
+	SNM_Pan3D( 0, 1, &l, &r );
+	ok = l == 1 && fabs( r ) < 1e-7;
+	SNM_Pan3D( 0, -1, &l, &r );
+	check( ok && fabs( l ) < 1e-7 && r == 1, "C6: fully left 1 / 0, fully right 0 / 1" );
+	SNM_Pan3D( -1, 0, &l, &r );
+	openal_pan( -1, 0, &ol, &or_ );
+	check( near( l, M_SQRT1_2 * SNM_BEHIND, 1e-6 ) && near( r, l, 1e-7 ), "C6: straight behind %.5f a side (%.2f dB; "
+		"OpenAL %.2f dB)", l, db( l ), db( ol ) );
+	SNM_Pan3D( -M_SQRT1_2, M_SQRT1_2, &l, &r );
+	check( near( l, cos( ( 1 - M_SQRT1_2 ) * 0.5 * M_PI_2 ) * ( 1 - ( 1 - SNM_BEHIND ) * M_SQRT1_2 ), 1e-6 )
+		&& near( r, sin( ( 1 - M_SQRT1_2 ) * 0.5 * M_PI_2 ) * ( 1 - ( 1 - SNM_BEHIND ) * M_SQRT1_2 ), 1e-6 ),
+		"C6: behind left at 45 degrees %.4f / %.4f", l, r );
+	for ( ok = 1, p = 0; p < 3600; p++ ) {	// around the listener: no step anywhere
+		const double a = p * M_PI / 1800, b = ( p + 1 ) * M_PI / 1800;
+		float bl, br;
+
+		SNM_Pan3D( (float)cos( a ), (float)sin( a ), &l, &r );
+		SNM_Pan3D( (float)cos( b ), (float)sin( b ), &bl, &br );
+		ok &= fabs( bl - l ) < 0.002 && fabs( br - r ) < 0.002;
+	}
+	SNM_Pan3D( 0, 0, &l, &r );
+	check( ok && near( l, M_SQRT1_2, 1e-6 ) && near( r, M_SQRT1_2, 1e-6 ), "C6: no step around the listener (0.1 "
+		"degree steps); overhead or on the listener the centre" );
+
+	// A3: 2D voices x 84/127 against 3D ones: at volume 1, the 2D centre against the 3D front
+	SNM_Pan2D( 64, &l, &r );
+	SNM_Pan3D( 1, 0, &l3, &r3 );
+	check( near( db( l * SNM_SCALE_2D ) - db( l3 ), 20 * log10( 84.0 / 127 ), 1e-4 ), "A3: a 2D voice %.2f dB, a 3D one "
+		"%.2f dB a side: %.2f dB apart (OpenAL's 2D at pan 64 sat behind: %.2f dB)", db( l * SNM_SCALE_2D ), db( l3 ),
+		db( l * SNM_SCALE_2D ) - db( l3 ), db( 0.5 - 0.0552305643 * sqrt( 3.0 ) ) );
+
+	// B4, B5: the decompiled curves
+	check( SNM_Linear2D( 160, 160, 1600 ) == 1 && near( SNM_Linear2D( 880, 160, 1600 ), 0.5, 1e-6 )
+		&& SNM_Linear2D( 1600, 160, 1600 ) == 0, "B4: 2D linear falloff 160/1600 at 160, 880, 1600: 1, 0.5, 0" );
+	check( SNM_LoopLevel( 100, 160, 1600 ) == 1 && near( SNM_LoopLevel( 320, 160, 1600 ), 0.25, 1e-7 )
+		&& SNM_LoopLevel( 1600, 160, 1600 ) == 0, "B5: loops' inverse square 160/1600 at 100, 320, 1600: 1, 0.25, 0" );
+}
+
+/*
+IMA ADPCM, Microsoft's block layout (WAVE format 17): a reference encoder here, the driver's decoder there
+*/
+static const int ima_index[16] = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+static const int ima_step[89] = { 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50,
+	55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494,
+	544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+	3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
+	20350, 22385, 24623, 27086, 29794, 32767 };
+
+static int ima_code( int sample, int *pred, int *index, short *decoded )
+{
+	const int step = ima_step[*index];
+	int diff = sample - *pred, code = 0, d;
+
+	if ( diff < 0 ) {
+		code = 8;
+		diff = -diff;
+	}
+	if ( diff >= step ) { code |= 4; diff -= step; }
+	if ( diff >= step >> 1 ) { code |= 2; diff -= step >> 1; }
+	if ( diff >= step >> 2 ) { code |= 1; }
+	d = step >> 3;
+	if ( code & 1 ) d += step >> 2;
+	if ( code & 2 ) d += step >> 1;
+	if ( code & 4 ) d += step;
+	*pred += code & 8 ? -d : d;
+	*pred = *pred < -32768 ? -32768 : *pred > 32767 ? 32767 : *pred;
+	*index += ima_index[code];
+	*index = *index < 0 ? 0 : *index > 88 ? 88 : *index;
+	*decoded = (short)*pred;
+	return code;
+}
+
+// frames of channels into blocks of blockAlign bytes; ref gets what a decoder must give back
+static int ima_encode( const short *in, int frames, int channels, int blockAlign, unsigned char *out, short *ref )
+{
+	const int per = ( blockAlign - 4 * channels ) / ( 4 * channels ) * 8 + 1;
+	int pred[2] = { 0, 0 }, index[2] = { 0, 0 }, f = 0, bytes = 0, c, g, k;
+
+	while ( f < frames ) {
+		unsigned char *b = out + bytes;
+		const int n = frames - f < per ? frames - f : per;
+
+		memset( b, 0, blockAlign );
+		for ( c = 0; c < channels; c++ ) {
+			pred[c] = in[f * channels + c];
+			b[4 * c] = (unsigned char)( pred[c] & 255 );
+			b[4 * c + 1] = (unsigned char)( ( pred[c] >> 8 ) & 255 );
+			b[4 * c + 2] = (unsigned char)index[c];
+			ref[f * channels + c] = (short)pred[c];
+		}
+		for ( g = 0; 1 + g * 8 < n; g++ ) {
+			for ( c = 0; c < channels; c++ ) {
+				for ( k = 0; k < 8; k++ ) {
+					const int fr = f + 1 + g * 8 + k;
+					const int code = fr < frames ? ima_code( in[fr * channels + c], &pred[c], &index[c], &ref[fr * channels + c] ) : 0;
+
+					b[4 * channels + ( g * channels + c ) * 4 + ( k >> 1 )] |= (unsigned char)( code << ( ( k & 1 ) * 4 ) );
+				}
+			}
+		}
+		// a cut last block: the header and the whole groups its frames need
+		bytes += n == per ? blockAlign : 4 * channels + ( n - 1 + 7 ) / 8 * 4 * channels;
+		f += n;
+	}
+	return bytes;
+}
+
+static void test_ima( void )
+{
+	enum { FRAMES = 5000, ALIGN = 1024 };
+	static short in[2 * FRAMES], ref[2 * FRAMES + 16], dec[2 * FRAMES + 16];
+	static unsigned char data[4 * FRAMES];
+	const unsigned char hand[12] = { 0, 0, 0, 0, 0x07, 0x00, 0, 0, 0, 0, 0, 0 };
+	double err, sig;
+	int ch, i, bytes, frames, ok;
+
+	printf( "ima\n" );
+
+	// by hand: first sample 0, index 0; codes 7 then 0: 0 + (0 + 1 + 3 + 7) = 11, then step 16: 11 + 2 = 13 (16 codes)
+	frames = SNM_DecodeIMA( hand, 12, 12, 1, dec, 100 );
+	check( frames == 17 && dec[0] == 0 && dec[1] == 11 && dec[2] == 13, "a block by hand: %d frames, %d %d %d (0 11 13)",
+		frames, dec[0], dec[1], dec[2] );
+
+	for ( ch = 1; ch <= 2; ch++ ) {
+		for ( i = 0; i < FRAMES * ch; i++ )
+			in[i] = (short)( 12000 * sin( 2 * M_PI * 441.0 * ( i / ch ) / 44100 + ( i % ch ) ) );
+		bytes = ima_encode( in, FRAMES, ch, ALIGN, data, ref );
+		memset( dec, 0x55, sizeof( dec ) );
+		frames = SNM_DecodeIMA( data, bytes, ALIGN, ch, dec, FRAMES );
+		for ( ok = 1, i = 0; i < FRAMES * ch; i++ )
+			ok &= dec[i] == ref[i];
+		for ( err = sig = 0, i = 0; i < FRAMES * ch; i++ ) {
+			err += ( dec[i] - in[i] ) * (double)( dec[i] - in[i] );
+			sig += in[i] * (double)in[i];
+		}
+		{
+			// without a fact chunk the cut block's frames count in whole groups of 8
+			const int per = ( ALIGN - 4 * ch ) / ( 4 * ch ) * 8 + 1, rest = FRAMES % per;
+			const int whole = FRAMES / per * per + ( rest ? 1 + ( rest - 1 + 7 ) / 8 * 8 : 0 );
+
+			check( ok && frames == FRAMES && SNM_IMAFrames( bytes, ALIGN, ch ) == whole && dec[FRAMES * ch] == 0x5555,
+				"%s: %d frames in %d bytes (blocks of %d frames and a cut one; %d without the fact chunk's count), the "
+				"reference encoder's samples exactly, %.1f dB SNR against the input, nothing written past them",
+				ch == 1 ? "mono" : "stereo", frames, bytes, per, whole, 10 * log10( sig / err ) );
+		}
+		memset( dec, 0x55, sizeof( dec ) );
+		frames = SNM_DecodeIMA( data, bytes, ALIGN, ch, dec, 1234 );
+		for ( ok = 1, i = 0; i < 1234 * ch; i++ )
+			ok &= dec[i] == ref[i];
+		check( ok && frames == 1234 && dec[1234 * ch] == 0x5555, "%s: stops at the fact chunk's count (1234)",
+			ch == 1 ? "mono" : "stereo" );
+	}
+	check( SNM_DecodeIMA( data, 3, ALIGN, 1, dec, 10 ) == 0 && SNM_IMAFrames( 3, ALIGN, 1 ) == 0
+		&& SNM_DecodeIMA( data, 100, 2, 1, dec, 10 ) == 0, "a block shorter than its header, a block size too small: "
+		"nothing" );
+}
+
 static _Atomic int stress_run;
 
 static void *stress_io( void *arg )
@@ -1191,7 +1472,8 @@ int main( int argc, char **argv )
 	} else {
 		static const struct { const char *name; void ( *fn )( void ); } tests[] = {
 			{ "resample", test_resample }, { "loop", test_loop }, { "offset", test_offset }, { "pause", test_pause },
-			{ "ramp", test_ramp }, { "limiter", test_limiter }, { "free", test_free }, { "misc", test_misc } };
+			{ "ramp", test_ramp }, { "limiter", test_limiter }, { "free", test_free }, { "misc", test_misc },
+			{ "capture", test_capture }, { "math", test_math }, { "ima", test_ima } };
 		int t;
 
 		for ( t = 0; t < (int)( sizeof( tests ) / sizeof( tests[0] ) ); t++ ) {
