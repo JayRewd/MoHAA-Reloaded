@@ -6798,7 +6798,8 @@ Remaining:
      them for the load now: (b) a faster inflate for the pk3 reads
      (zlib-ng's or libdeflate's decompression, the same bytes, reported
      about twice as fast as stock zlib, 48 % of the registration's time;
-     a new dependency, the user's call), (d) the mipmaps on the GPU (a
+     a new dependency: the user skipped it 2026-10-23, map loads are
+     fine), (d) the mipmaps on the GPU (a
      compute shader doing `R_MipMap`'s integer box filter, 10 %), (e) a
      cache of decoded images (disk space). The registration's time,
      measured 2026-10-18 (see Performance, Pipelines and skin data at
