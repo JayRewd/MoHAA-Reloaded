@@ -141,9 +141,11 @@ static constexpr int OM_OBSTRUCT_CAL_MS = 100;
  * others that are due wait for the next frames; an answer holds while both
  * ends moved OM_OBSTRUCT_REUSE_DIST or less (else only for the same points);
  * a new sound takes the answer of one from the same spot in the last interval.
- * It changes when the muffling follows a move, so it is the user's to turn on:
- * o2match had up to 108 thousand traces in 15000 frames and 1 ms frames of
- * them (the loops started at the load fell due in the same frames).
+ * It changes when the muffling follows a move, so it is the user's to turn on.
+ * Not needed at real speed: o2match whole at 250 fps had 8.5 thousand traces,
+ * 0.14 ms in the slowest 0.1 % of frames (the 108 thousand and 1 ms frames it
+ * was made for came from playing the demo 30 times faster than real time,
+ * where every sound stays playing 30 times longer in the match).
  */
 static cvar_t         *s_obstructionBudget;
 static constexpr float OM_OBSTRUCT_REUSE_DIST = 8.f;

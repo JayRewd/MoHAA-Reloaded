@@ -428,14 +428,17 @@ below are done.
   its own check, and filters designed from the measurements are made on a
   thread of their own, no longer on the mixer's;
   its obstruction traces (every playing world sound, every 100 ms) are left
-  as they are, a budget for them is an option (`s_obstructionBudget`).
-  Against OpenAL the pull request costs `o2match` 0.06 ms of mean frame time
-  and 0.2 to 0.3 ms at the 99th and 99.9th percentiles uncapped (its
-  obstruction traces); Plan 31 takes 0.05 to 0.12 ms off the 99.9th
-  percentiles, and with `s_obstructionBudget 2` `o2match` is back at
-  OpenAL's level; input to present at 250 frames a second within the runs'
-  spread (see Implementation notes, Sound system, and Performance, Sound
-  system)
+  as they are. Played back faster than real time, as the timings are, the
+  pull request costs `o2match` 0.06 ms of mean frame time and 0.2 to 0.3 ms
+  at the 99th and 99.9th percentiles uncapped against OpenAL, mostly those
+  traces, and Plan 31 takes 0.05 to 0.12 ms off the 99.9th percentiles;
+  but the device plays the sounds in real time, so every sound stays
+  playing 4 to 30 times longer in a match played back 4 to 30 times
+  faster: at real speed (250 frames a second, two whole matches) the
+  traces take 1.5 to 1.7 µs a frame on average and 0.05 to 0.14 ms in the
+  slowest 0.1 % of frames, and a budget for them (`s_obstructionBudget`,
+  off) isn't needed; input to present at 250 within the runs' spread (see
+  Implementation notes, Sound system, and Performance, Sound system)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -5440,10 +5443,32 @@ merge's Plan 29 thread, decodes (0.3 to 0.55 ms at a start or a loop).
 After Plan 31: the first plays' walk 3 to 9 µs, a song's start 3 to 41 µs,
 no wait; the obstruction traces as they were (the pull request's rule), an
 option for them (`s_obstructionBudget`, off: it changes when the muffling
-follows a move). Played back at `fixedtime 16` the 100 ms between a
-sound's traces come every 6 frames: at a real 250 frames a second every 25,
-so a frame's mean is about a quarter of these in a real match, its clusters
-(the loops started at a load come due together) as large but rarer.
+follows a move).
+
+These numbers overstate the obstruction traces by far (found 2026-10-23,
+when the pull request's author asked; Plan 31 had them at a quarter in a
+real match): the device plays the sounds in real time while a match is
+played back faster (30 times at `fixedtime 16` uncapped, 4 times at 250
+frames a second), so every sound stays playing that many times longer in
+the match, and every playing world sound is traced every 100 ms of it. The
+same matches whole at real speed (250 frames a second with `fixedtime 4`,
+`perf.py --caps 250 --exec 'set fixedtime 4'` and a quarter of the frames
+in the demo list: 60000 frames, 240 s; the trace build of the final code,
+µs):
+
+| at real speed, in a frame | mean | p99 | p99.9 | max |
+| --- | --- | --- | --- | --- |
+| `o2match`: obstruction traces (8477; 111 thousand at `fixedtime 16`) | 1.7 | 51 | 142 | 369 |
+| `o4match`: obstruction traces (13197; 101 thousand) | 1.5 | 25 | 48 | 118 |
+| `S_Update` | 7.0 to 7.7 | 31 to 32 | 70 to 76 | 824 to 1367 |
+
+A trace's 3 rays take 5 to 7 µs (the median), up to 0.37 ms where they
+cross much of the map. Played back faster, the many sounds left playing
+made the slow frames: up to 26 traces a frame of 40 µs each in one part of
+`o2match`. Spreading the second checks of the sounds started in the same
+frame over the 100 ms (tried) took the slowest 0.1 % from 0.73 to 0.68 ms
+there, so it was left out. `S_Update`'s slowest frames at real speed: a
+stream's update (1.3 ms once in `o2match`) and others not broken down.
 
 Results (idle machine: other processes at most 0.7 CPUs, no Plex
 transcoding; `base` (a5120199, OpenAL), `raw` (the merge commit: the pull
@@ -5480,10 +5505,12 @@ builds' windows leave out); ms):
   present the same, against OpenAL; `o4match` 0.02 ms and 0.07 ms. Most of
   it is the obstruction traces (above), which Plan 31 leaves as they are:
   `new` takes 0.05 ms off `o2match`'s 99.9th percentile and 0.12 off
-  `o4match`'s (the waits and walks), the rest of `raw`'s cost stays.
+  `o4match`'s (the waits and walks), the rest of `raw`'s cost stays. Most
+  of that is the playback's speed: at real speed the traces cost 1.5 to
+  1.7 µs a frame (above).
 - With `s_obstructionBudget 2` `o2match` is back at OpenAL's level (99.9th
   percentile 1.296 against 1.305, mean 0.484 against 0.479), and so is
-  `o4match`.
+  `o4match`; at real speed there is little to take off.
 - At 250 frames a second every build fits its 4 ms; input to present
   within the runs' spread of OpenAL's (the 99.9th percentile of 15000
   frames is the 15th slowest; `o4match`'s 1.71 to 1.86 ms over the four
@@ -6915,7 +6942,8 @@ selects the sample count (see Implementation notes).
     for the next frames, an answer holds while both ends moved 8 units or
     less (else only for the same points), and a new sound takes the answer
     of one from the same spot in the last 100 ms. Off: it changes when the
-    muffling follows a move (see Remaining).
+    muffling follows a move, and at real speed the traces cost 1.5 to 1.7
+    µs a frame (see Performance, Sound system).
   - Fixes: `playmp3` crashed (GCC 15 devirtualized `chan->stop()` of an
     `omaha_channel *` pointing at the stream member `omaha.chan_mp3` to no
     target and dropped `S_OMAHA_LoadMP3`'s body, a recursion until the
@@ -7657,7 +7685,11 @@ Done:
     the 99th and 99.9th percentiles uncapped, `o4match` 0.02 and 0.07 ms;
     Plan 31 takes 0.05 and 0.12 ms off their 99.9th percentiles, the budget
     the rest of `o2match`'s; input to present at 250 within the runs'
-    spread; the same stream chunks, seeks and PCM as the pull request (its
+    spread. Most of the pull request's cost there came from the playback's
+    speed (the sounds play in real time, so each stays playing 4 to 30
+    times longer in a match played back faster): at real speed its
+    obstruction traces take 1.5 to 1.7 µs a frame, 0.05 to 0.14 ms in the
+    slowest 0.1 % (the pull request's author had less than a quarter); the same stream chunks, seeks and PCM as the pull request (its
     loops' 30 ms loss fixed), ThreadSanitizer clean but RADV's own report,
     GL1 plays with the new engine.
 
@@ -7758,23 +7790,16 @@ Remaining:
      compression item below.
 
 - The sound system (Plan 31, see Implementation notes and Performance,
-  Sound system). A proposal that changes what the player hears, left for
-  the user to decide (the pull request's tuning is kept as it came): the
-  obstruction traces, now the sound system's largest main-thread
-  cost (every playing world sound traces 3 rays every 100 ms, and the
-  loops started at a load come due in the same frames: in `o2match` 109
-  thousand traces, 57 µs a frame on average and 0.68 ms in its slowest
-  0.1 % of frames, up to 0.93 ms, played back at `fixedtime 16`, where the
-  100 ms come due every 6 frames; at 250 frames a second in a real match
-  every 25): `s_obstructionBudget 2` (in the build, off) traces at most 2
-  sounds again per frame, keeps an answer while both ends moved 8 units or
-  less and gives a new sound the answer of one from the same spot in the
-  last 100 ms: 17.6 thousand traces, 11 µs a frame, 0.16 ms in the slowest
-  0.1 % (see Performance, Sound system); the muffling then follows a move
-  a few frames later when many sounds are due at once (the mixer smooths
-  it over 80 ms anyway), and is up to 8 units stale. A spread of the
-  loops' first checks after a load would take the clusters off without
-  the budget (each sound still every 100 ms, at another moment); not done.
+  Sound system). The obstruction traces (every playing world sound traces
+  3 rays every 100 ms) looked like its largest main-thread cost in the
+  matches played back faster than real time (`o2match`: 109 thousand
+  traces, 0.68 ms in the slowest 0.1 % of frames), where every sound stays
+  playing 4 to 30 times longer; at real speed they take 1.5 to 1.7 µs a
+  frame and 0.05 to 0.14 ms in the slowest 0.1 % (see Performance, Sound
+  system), so `s_obstructionBudget` (in the build, off; it changes when
+  the muffling follows a move) isn't needed. Sound-system costs in a frame
+  are to be timed at real speed (`--caps 250 --exec 'set fixedtime 4'`, a
+  quarter of the frames in the demo list).
   Not done (no change to the sound): a lost device is closed and opened
   again on the main thread (an `ma_context_init` and a device start, tens
   of ms, once a second while it stays lost); the null device that a start
