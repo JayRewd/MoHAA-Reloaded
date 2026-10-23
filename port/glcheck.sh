@@ -1,11 +1,14 @@
 #!/bin/bash
-# Phase 4 check: no OpenGL left in the tree or in the installed binary (docs/METAL_PORT_PLAN.md, Phase 4).
+# Phase 4 check: no OpenGL left in the tree or in the installed binary (docs/METAL_PORT_PLAN.md, Phase 4); since
+# Phase 9g also no OpenAL in the installed app.
 #   port/glcheck.sh [flavor]     (default metal)
 # 1. The plan's grep over code/ and cmake/. Each hit has the documented exceptions removed from its line first
 #    (cvar values and shader keywords kept for old configs and retail data, false positives, upstream code kept
 #    for small diffs); whatever still matches is printed.
 # 2. otool -L and nm -u of the installed game binary: no OpenGL framework, no GL/CGL/NSOpenGL imports.
-# Exit status 0 = clean. Run it after upstream merges too: a merge can bring GL code back.
+# 3. The app's binaries (the game, game.dylib, cgame.dylib): no OpenAL library or framework linked, no al*/alc*
+#    import or definition; no openal-soft in the bundle.
+# Exit status 0 = clean. Run it after upstream merges too: a merge can bring GL or OpenAL code back.
 set -uo pipefail
 source "$(dirname "$0")/env.sh"
 
@@ -21,11 +24,8 @@ pattern = re.compile(sys.argv[1], re.I)
 allowed = [
 	# vendored CI files of recastnavigation (they installed GL for the RecastDemo app, deleted in Phase 4)
 	(r"^code/thirdparty/recastnavigation/\.github/", r".*"),
-	# false positives in vendored code: the Qt qglobal.h guard; in openal-soft, a comment comparing coordinate
-	# systems (al.h, al.cppm, al.xml), the OpenGL registry and tooling in its registry notes, and a glGetString
-	# example in the old changelog of its copy of fmt
+	# a false positive in vendored code: the Qt qglobal.h guard
 	(r"^code/thirdparty/jpeg-[^/]*/jmorecfg\.h$", r"QGLOBAL_H|qglobal\.h"),
-	(r"^code/thirdparty/openal-soft-[^/]*/", r"like OpenGL|The OpenGL registry|OpenCL/OpenGL tooling|glGetString\(GL_VERSION\)"),
 	# shader script keywords (blendFunc GL_ONE GL_ZERO ... in the retail .shader files)
 	(r"^code/renderer_metal/tr_shader\.c$", r"\"GL_[A-Z_]+\"|substituting GL_ONE"),
 	# cvar values kept for old configs: r_textureMode GL_LINEAR_MIPMAP_NEAREST ..., r_drawBuffer GL_BACK/GL_FRONT
@@ -75,4 +75,24 @@ if nm -u "$BIN" | grep -E '^_(gl[A-Z]|CGL|OBJC_CLASS_\$_NSOpenGL)'; then
 fi
 ls "$(dirname "$BIN")" | grep -i 'renderer_' && { echo "glcheck: a renderer dylib is installed"; status=1; }
 [ $status = 0 ] && echo "glcheck: binary clean (otool -L: no OpenGL; nm -u: no GL imports; no renderer dylibs)"
+
+# OpenAL (Phase 9g): the native sound engine is the only one
+APP="${BIN%/Contents/MacOS/openmohaa}"
+al=0
+for f in "$APP"/Contents/MacOS/*; do
+	if otool -L "$f" | grep -iE 'openal'; then
+		echo "glcheck: $(basename "$f") links OpenAL"
+		al=1
+	fi
+	if nm "$f" | grep -E ' [UTt] _alc?[A-Z]'; then
+		echo "glcheck: $(basename "$f") imports or defines al*/alc* symbols"
+		al=1
+	fi
+done
+if find "$APP" -iname '*openal*' | grep .; then
+	echo "glcheck: openal-soft is in the bundle"
+	al=1
+fi
+[ $al = 0 ] && echo "glcheck: app clean of OpenAL (otool -L, nm: no al*/alc* symbols; no openal-soft in the bundle)"
+[ $al = 0 ] || status=1
 exit $status

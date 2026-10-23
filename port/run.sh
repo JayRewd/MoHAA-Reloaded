@@ -25,8 +25,9 @@ done
 # installed app binaries only).
 pgrep -f "build.noindex/.*/openmohaa.app/Contents/MacOS/openmohaa" >/dev/null || rm -f "$OMM_HOME"/main*/*.pid
 
-# Builds since Phase 7c link the app's own openal-soft (Contents/Frameworks) and never load this link. It stays
-# for the flavors that still dlopen libopenal.1.dylib: the gl reference and metalref of commits before 7c.
+# Builds since Phase 7c never load this link (until 9g they link the app's own openal-soft, in Contents/Frameworks;
+# since 9g there is no OpenAL). It stays for the flavors that still dlopen libopenal.1.dylib: the gl reference and
+# metalref of commits before 7c.
 # openal-soft from Homebrew: Sys_LoadDll tries the executable's folder, then fs_basepath. The link goes into
 # fs_basepath, so the bundle's ad-hoc seal (Phase 7b) stays intact: a file added to the signed bundle breaks it
 # (and `codesign` refuses to sign a link pointing out of the bundle).

@@ -14,8 +14,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL="${1:-$ROOT/build.noindex/metal-install/lib/openmohaa}"
 OUT="${2:-$ROOT/build.noindex/release}"
 APP="$INSTALL/openmohaa.app"
-# The libraries built into the binaries and their license texts in code/thirdparty (openal-soft's are inside the app,
-# Contents/Resources/openal-soft): <name in the zip>:<file>
+# The libraries built into the binaries and their license texts in code/thirdparty: <name in the zip>:<file>
 LICENSES=(
 	libmad:libmad/COPYING libmad:libmad/COPYRIGHT
 	jpeg:jpeg-9f/README

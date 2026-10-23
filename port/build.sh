@@ -80,9 +80,10 @@ if [ -f "$BUILD_DIR/CMakeCache.txt" ] && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTER
 	rm -rf "$BUILD_DIR"
 fi
 
-# CMAKE_DISABLE_FIND_PACKAGE_OpenAL: CMake otherwise picks Apple's OpenAL.framework headers, which lack alext.h.
-# The internal openal-soft is used instead: since Phase 7c it is built from code/thirdparty and linked directly
-# (inside the .app). Older trees (gl, metalref before 7c) take only its headers and dlopen libopenal.1.dylib.
+# CMAKE_DISABLE_FIND_PACKAGE_OpenAL, for the trees that still have OpenAL (sndref, sdlref, gl, a metalref before
+# Phase 9g): CMake otherwise picks Apple's OpenAL.framework headers, which lack alext.h, over the internal openal-soft
+# (built from code/thirdparty and linked inside the .app since Phase 7c; older trees take only its headers and dlopen
+# libopenal.1.dylib). Trees since 9g have no OpenAL: nothing reads it.
 "$OMM_CMAKE" -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
 	-DCMAKE_MAKE_PROGRAM="$OMM_NINJA" \
 	-DBISON_EXECUTABLE="$OMM_BISON" \

@@ -122,6 +122,7 @@ cvar_t *cg_cheats;
 // Added in the Metal port
 //
 cvar_t *cg_cmNoCurves;
+cvar_t *cg_tauntsounds;
 
 /*
 =================
@@ -225,6 +226,8 @@ void CG_RegisterCvars(void)
 
     // the collision model's (cm_load.c), read by the blob shadow's kept trace
     cg_cmNoCurves = cgi.Cvar_Get("cm_noCurves", "0", CVAR_CHEAT);
+    // 0: other players' taunts (the instant messages' voices) aren't played; their radar icon and text stay
+    cg_tauntsounds = cgi.Cvar_Get("cg_tauntsounds", "1", CVAR_ARCHIVE);
 }
 /*
 ===============

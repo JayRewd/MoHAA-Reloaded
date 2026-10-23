@@ -60,9 +60,8 @@ Licenses and source
 
 OpenMoHAA is free software under the GNU General Public License, version 2 (COPYING.txt). The libraries
 built into it keep their own licenses, in licenses/ (libmad, the IJG JPEG library, libogg, libvorbis,
-opus, opusfile, zlib, Recast & Detour); openal-soft's are inside the app, in
-openmohaa.app/Contents/Resources/openal-soft/. This software is based in part on the work of the
-Independent JPEG Group.
+opus, opusfile, zlib, Recast & Detour). This software is based in part on the work of the Independent
+JPEG Group.
 
 Built from commit @COMMIT@ of
 https://github.com/pstngh/openmohaa-metal (the full source code of this build).

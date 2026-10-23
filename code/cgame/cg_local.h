@@ -526,6 +526,7 @@ extern "C" {
     // Added in the Metal port
     //
     extern cvar_t *cg_cmNoCurves;
+    extern cvar_t *cg_tauntsounds;
 
     //
     // cg_main.c

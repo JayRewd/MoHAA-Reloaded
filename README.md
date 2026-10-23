@@ -7,7 +7,8 @@ This fork runs OpenMoHAA (Medal of Honor: Allied Assault, Spearhead and Breakthr
 
 - **Metal only.** The renderer is upstream's GL1 renderer with its drawing rewritten for Metal: hand-written Metal shaders, compiled when you build and embedded in the binary. OpenGL is gone from the source and the binary. No translation layers (no MoltenVK, ANGLE or similar).
 - **No SDL.** The window, keyboard, mouse and display modes are native AppKit code (`code/macos`), with raw mouse input through GCMouse.
-- **arm64, macOS 26 or later only.** Windows, Linux, Intel, the GL renderers, the update checker and curl are removed from this branch. One `openmohaa.app`, ad-hoc signed, with its own [openal-soft](https://github.com/kcat/openal-soft) 1.25.2 and the game libraries inside. No dedicated server.
+- **No OpenAL.** The sound is the port's own mixer on Core Audio (`code/macos/macos_snd.c`), playing MOHAA's sound as the PC original did on the Miles Sound System: each sound at its own volume (upstream's OpenAL played every positional one-shot at one level), loud ones neither flattened nor clipped, sounds behind you 3 dB quieter and silent beyond their maximum distance, and a sound at the headphone jack ~5 ms after it starts instead of ~19. Headphone 3D is a setting (`s_speaker_type`, below).
+- **arm64, macOS 26 or later only.** Windows, Linux, Intel, the GL renderers, OpenAL, the update checker and curl are removed from this branch. One `openmohaa.app`, ad-hoc signed, with the game libraries inside. No dedicated server.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's. It plays on existing MOHAA and OpenMoHAA servers with your retail game data (see [Online](#online)).
 - **Built for low input latency and low overhead.** Frame pacing, the command clock, presenting and input were measured and reworked for the shortest time from your mouse to the screen (see [Speed](#speed)).
 
@@ -27,10 +28,10 @@ You need:
   brew install cmake ninja bison
   ```
 
-Then configure, build and install. CMake finds the Metal compiler by itself, in the folder of `xcrun -f metallib`. `CMAKE_DISABLE_FIND_PACKAGE_OpenAL` keeps CMake from picking Apple's OpenAL framework, which lacks headers the game needs (it uses the bundled openal-soft). If CMake doesn't find Homebrew's Bison by itself, add `-DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"`.
+Then configure, build and install. CMake finds the Metal compiler by itself, in the folder of `xcrun -f metallib`. If CMake doesn't find Homebrew's Bison by itself, add `-DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"`.
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install"
 ```
 
 Only if the build stops with "Metal shader compiler not found" (for example because the Metal Toolchain component was installed after the first configure), pass the folder that holds `metal` and `metallib` yourself: add `-DMETAL_TOOLCHAIN_BIN="$(dirname "$(xcrun -f metallib)")"` to the configure command. (CI builds with exactly these commands on every push, without that flag: a clean macOS 26 runner, Xcode 26.6, the component installed with the command above; `.github/workflows/macos-metal.yml`.)
@@ -112,8 +113,9 @@ seta in_mouseRaw 1
 | `ui_console` | `1` (upstream's is `0`) | The console key opens the console. The game still starts at the main menu with the console closed (except with `developer 1`). |
 | `r_uselod` | `0` (upstream's is `1`) | `0` draws soldiers and weapons at full detail at any distance. `1` lowers their detail with distance, tuned by `r_lodscale`, `r_lodcap` and `r_lodviewmodelcap`. Not saved in configs: set it at launch or in an `autoexec.cfg`. |
 | `cl_playintro` | `0` (upstream's is `1`) | The intro videos at startup. `1` plays them: at launch (`--args +set cl_playintro 1`) or with `seta cl_playintro 1` in a config. |
-| `s_native` | `1` | **The native sound engine** (new, not in 1.0.0): our own mixer on Core Audio plays MOHAA's sound as the PC original did on the Miles Sound System. Each sound plays at its own volume (OpenAL played every positional one-shot at one level), loud ones aren't flattened or clipped, sounds behind you are 3 dB quieter and silent beyond their maximum distance, and a sound reaches the headphone jack ~5 ms after it starts instead of ~19. `0` and `snd_restart` switch back to OpenAL until it is removed. Not saved in configs. |
-| `s_speaker_type` | `0` | The original game's speaker setting. On the native engine, **`1` is headphone 3D**: positional sounds go through Apple's HRTF (your personalized one when macOS has it), so a sound behind, above or below you sounds there, not only quieter or to one side. It adds 0.1 ms of delay and some CPU on the audio thread (about 1–2% of a core with 16 sounds playing), none on the game's. It switches at once, without `snd_restart`. `0` is stereo, as the original's pans; `2` and `3` (4 speakers, 5.1) play stereo. |
+| `s_speaker_type` | `0` | The original game's speaker setting. **`1` is headphone 3D**: positional sounds go through Apple's HRTF (your personalized one when macOS has it), so a sound behind, above or below you sounds there, not only quieter or to one side. It adds 0.1 ms of delay and some CPU on the audio thread (about 1–2% of a core with 16 sounds playing), none on the game's. It switches at once, without `snd_restart`. `0` is stereo, as the original's pans; `2` and `3` (4 speakers, 5.1) play stereo. |
+| `s_ambientvolume` | `1` | The original game's volume of the soundtrack: the mood music and the stereo ambiences behind a level. **`0` turns it off entirely**: no song is opened, decoded or mixed (upstream kept playing them, silently). Raised again, the current mood's song starts. |
+| `cg_tauntsounds` | `1` | New. **`0` mutes other players' taunts**, the voice lines of their instant messages: they aren't played and their files aren't opened. The chat text and the radar icon of who spoke stay, your own taunts still play, and pain and death voices aren't taunts. |
 
 The display modes. Every fullscreen mode goes direct to the display, bypassing macOS's compositor:
 

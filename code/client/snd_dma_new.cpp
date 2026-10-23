@@ -21,7 +21,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "snd_local.h"
-#include "snd_openal_new.h"
 #include "snd_native_new.h"
 #include "client.h"
 #include "cl_ui.h"
@@ -61,7 +60,6 @@ s_entity_t s_entity[MAX_GENTITIES];
 static int      s_registrationSequence;
 static qboolean s_inRegistration;
 
-cvar_t *s_mixPreStep;
 cvar_t *s_dialogscale;
 
 int         numLoopSounds;
@@ -107,7 +105,6 @@ void S_Init(qboolean full_startup)
     s_separation     = Cvar_Get("s_separation", "0.5", CVAR_ARCHIVE);
     s_khz            = Cvar_Get("s_khz", "44", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_loadas8bit     = Cvar_Get("s_loadas8bit", "0", CVAR_ARCHIVE | CVAR_LATCH);
-    s_mixPreStep     = Cvar_Get("s_mixPreStep", "0.05", CVAR_ARCHIVE);
     s_show           = Cvar_Get("s_show", "0", CVAR_CHEAT);
     s_testsound      = Cvar_Get("s_testsound", "0", CVAR_CHEAT);
     s_dialogscale    = Cvar_Get("s_dialogscale", "1", CVAR_ARCHIVE);

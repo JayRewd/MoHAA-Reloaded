@@ -50,7 +50,7 @@ jobs:
 
     # README.md's three commands, as written (no -DMETAL_TOOLCHAIN_BIN: CMake finds the compiler by itself)
     - name: Configure
-      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install" -DCMAKE_DISABLE_FIND_PACKAGE_OpenAL=ON
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/install"
 
     - name: Build
       run: cmake --build build
@@ -66,14 +66,23 @@ jobs:
         diff <(cd install && find . -mindepth 1 -not -path './lib/openmohaa/openmohaa.app/*' | sort) \
              <(printf '%s\n' ./lib ./lib/openmohaa ./lib/openmohaa/openmohaa.app)
         diff <(ls "$D/openmohaa.app/Contents/MacOS") <(printf '%s\n' cgame.dylib game.dylib openmohaa)
+        # The whole bundle: no openal-soft since Phase 9g (no Frameworks, no license folder in Resources)
+        diff <(cd "$D/openmohaa.app" && find . -type f | sort) \
+             <(printf '%s\n' ./Contents/Info.plist ./Contents/MacOS/cgame.dylib ./Contents/MacOS/game.dylib \
+                 ./Contents/MacOS/openmohaa ./Contents/Resources/openmohaa-metal.icns \
+                 ./Contents/_CodeSignature/CodeResources | sort)
         codesign --verify --deep --strict --verbose=2 "$D/openmohaa.app"
         codesign -dv "$D/openmohaa.app" 2>&1 | grep -E '^(Identifier|Format|Signature)='
         /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' -c 'Print CFBundleShortVersionString' "$D/openmohaa.app/Contents/Info.plist"
         # arm64 only, and nothing loaded from outside the system or the app (no Homebrew paths)
-        for f in "$D"/openmohaa.app/Contents/MacOS/* "$D/openmohaa.app/Contents/Frameworks/libopenal.1.dylib"; do
+        for f in "$D"/openmohaa.app/Contents/MacOS/*; do
           [ "$(lipo -archs "$f")" = arm64 ]
           if otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/)'; then
             echo "$f loads a library from outside the system or the app" >&2; exit 1
+          fi
+          # No OpenAL (Phase 9g): the native sound engine is the only one
+          if nm "$f" | grep -E ' [UTt] _alc?[A-Z]'; then
+            echo "$f imports or defines al*/alc* symbols" >&2; exit 1
           fi
         done
 

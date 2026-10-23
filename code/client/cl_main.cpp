@@ -798,10 +798,6 @@ CL_ShutdownAll
 */
 void CL_ShutdownAll(qboolean shutdownRef) {
 
-	// clear sounds
-#if defined(NO_MODERN_DMA) && NO_MODERN_DMA
-	S_DisableSounds();
-#endif
 	// shutdown CGame
 	CL_ShutdownCGame();
 	// shutdown UI
@@ -1618,12 +1614,8 @@ void CL_Vid_Restart_f( void ) {
 
 	CL_StartHunkUsers(qfalse);
 
-#if !defined(NO_MODERN_DMA) || !NO_MODERN_DMA
     s_bSoundPaused = true;
     S_LoadData(&save);
-#else
-    S_Init();
-#endif
 
 	SV_FinishSvsTimeFixups();
 
@@ -1655,11 +1647,6 @@ handles will be invalid
 =================
 */
 void CL_Snd_Restart_f( void ) {
-#if defined(NO_MODERN_DMA) && NO_MODERN_DMA
-	S_Shutdown();
-	S_Init();
-    CL_Vid_Restart_f();
-#else
 	qboolean full;
 	soundsystemsavegame_t save;
     char tm_filename[MAX_RES_NAME];
@@ -1700,7 +1687,6 @@ void CL_Snd_Restart_f( void ) {
 	if (full) {
 		CL_Vid_Restart_f();
 	}
-#endif
 }
 
 
@@ -3608,11 +3594,7 @@ void CL_Init( void ) {
 
 	Cvar_Set( "cl_running", "1" );
 
-#if defined(NO_MODERN_DMA) && NO_MODERN_DMA
-	S_Init2();
-#else
 	S_Init(qtrue);
-#endif
 
 	CL_StartHunkUsers(qfalse);
 
@@ -3654,11 +3636,7 @@ void CL_Shutdown(const char* finalmsg, qboolean disconnect, qboolean quit) {
 	if(disconnect)
 		CL_Disconnect();
 
-#if defined(NO_MODERN_DMA) && NO_MODERN_DMA
-	S_Shutdown();
-#else
 	S_Shutdown(qtrue);
-#endif
 	CL_LatencyShutdown();
 	CL_ShutdownRef();
 
