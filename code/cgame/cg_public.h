@@ -458,6 +458,9 @@ functions exported to the main executable
         // the entity lump of the map CM_LoadMap loaded
         char *(*CM_EntityString)(void);
 
+        // one configstring of the client's gamestate
+        const char *(*GetConfigString)(int index);
+
     } clientGameImport_t;
 
     /*

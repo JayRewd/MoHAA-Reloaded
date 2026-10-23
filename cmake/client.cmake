@@ -54,6 +54,7 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/snd_mem_new.cpp
     ${SOURCE_DIR}/client/snd_miles_new.cpp
     ${SOURCE_DIR}/client/snd_openal_new.cpp
+    ${SOURCE_DIR}/client/snd_stream_thread.cpp
     ${SOURCE_DIR}/client/usignal.cpp
     ${SOURCE_DIR}/sdl/sdl_input.c
     ${SOURCE_DIR}/sdl/sdl_mouse.c

@@ -104,6 +104,9 @@ openal_internal_t openal;
 static float      s_fFadeStartTime;
 static float      s_fFadeStopTime;
 static char       current_soundtrack[128];
+// the text of the last soundtrack file (s_soundtrackCache, MUSIC_SoundtrackText)
+static char       music_textName[MAX_RES_NAME];
+static char      *music_text;
 
 static void S_OPENAL_PlayMP3();
 static void S_OPENAL_StopMP3();
@@ -757,6 +760,7 @@ void S_OPENAL_Shutdown()
     Cmd_RemoveCommand("tmvolume");
 
     S_OPENAL_NukeContext();
+    S_StreamThread_Shutdown();
 
     s_bProvidersEmunerated = false;
     al_initialized         = false;
@@ -3420,6 +3424,62 @@ U32 openal_channel::sample_status()
 
 /*
 ==============
+MUSIC_SoundtrackText
+
+The text of a soundtrack file, NULL when there is none. A round restart sets
+the soundtrack again (CS_MUSIC "none", then the same file) and its frame read
+the file from the pk3 (40 to 70 us): with s_soundtrackCache 1 the last file's
+text is kept until the next map load (MUSIC_FlushCaches). *data is what to
+free with FS_FreeFile.
+==============
+*/
+static const char *MUSIC_SoundtrackText(const char *path, byte **data)
+{
+    size_t length;
+
+    *data = NULL;
+    if (s_soundtrackCache->integer && music_text && !Q_stricmp(music_textName, path)) {
+        return music_text;
+    }
+
+    FS_ReadFile(path, (void **)data);
+    if (!*data) {
+        return NULL;
+    }
+
+    if (s_soundtrackCache->integer) {
+        length = strlen((char *)*data) + 1;
+        if (music_text) {
+            Z_Free(music_text);
+        }
+        music_text = (char *)Z_Malloc(length);
+        memcpy(music_text, *data, length);
+        Q_strncpyz(music_textName, path, sizeof(music_textName));
+    }
+
+    return (const char *)*data;
+}
+
+/*
+==============
+MUSIC_FlushCaches
+
+A map loads: the soundtrack is read again (S_BeginRegistration).
+==============
+*/
+void MUSIC_FlushCaches()
+{
+    if (music_text) {
+        Z_Free(music_text);
+        music_text = NULL;
+    }
+    music_textName[0] = 0;
+
+    S_StreamThread_Flush();
+}
+
+/*
+==============
 MUSIC_LoadSoundtrackFile
 ==============
 */
@@ -3445,8 +3505,9 @@ qboolean MUSIC_LoadSoundtrackFile(const char *filename)
 
     music_numsongs = 0;
 
-    FS_ReadFile(path, (void **)&data);
-    if (!data) {
+    // COM_GetToken only reads the text
+    buffer = (char *)MUSIC_SoundtrackText(path, &data);
+    if (!buffer) {
         Com_DPrintf("OpenAL: Couldn't load %s\n", path);
         return false;
     }
@@ -3454,7 +3515,6 @@ qboolean MUSIC_LoadSoundtrackFile(const char *filename)
 
     MUSIC_StopAllSongs();
 
-    buffer       = (char *)data;
     load_path[0] = 0;
 
     while (1) {
@@ -3553,17 +3613,24 @@ qboolean MUSIC_LoadSoundtrackFile(const char *filename)
             music_songs[music_numsongs].current_pos = 0;
             music_songs[music_numsongs].mood_num    = MusicMood_NameToNum(alias);
             music_numsongs++;
+
+            // decoded on the stream thread from now on
+            S_StreamThread_Prefetch(psong->path);
         }
     }
 
     if (!music_numsongs) {
         Com_Printf("MUSIC_LoadSoundtrackFile: could not load %s, no songs defined.\n", path);
-        FS_FreeFile(data);
+        if (data) {
+            FS_FreeFile(data);
+        }
         return false;
     }
 
     music_currentsong = -1;
-    FS_FreeFile(data);
+    if (data) {
+        FS_FreeFile(data);
+    }
 
     if (music_current_mood == mood_none) {
         MUSIC_UpdateMood(mood_normal, mood_normal);
@@ -4614,6 +4681,12 @@ void openal_channel_two_d_stream::update()
     }
 
     bytesToRead = Q_min(MAX_BUFFER_SAMPLES * stream->info.width * stream->info.channels, sizeof(rawData));
+
+    if (!S_CodecStreamReady(stream, bytesToRead)) {
+        // the stream thread hasn't decoded this read yet (snd_stream_thread.cpp):
+        // queued in a later frame instead of waiting for it
+        return;
+    }
 
     format = S_OPENAL_Format(stream->info.width, stream->info.channels);
 

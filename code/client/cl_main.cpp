@@ -61,6 +61,7 @@ cvar_t	*cl_master;
 cvar_t	*cl_timeNudge;
 cvar_t	*cl_showTimeDelta;
 cvar_t	*cl_freezeDemo;
+cvar_t	*cl_csAppend;
 
 cvar_t	*cl_shownet;
 cvar_t	*cl_netprofile;
@@ -3592,6 +3593,8 @@ void CL_Init( void ) {
 	cl_showSend = Cvar_Get ("cl_showSend", "0", CVAR_TEMP );
 	cl_showTimeDelta = Cvar_Get ("cl_showTimeDelta", "0", CVAR_TEMP );
 	cl_freezeDemo = Cvar_Get ("cl_freezeDemo", "0", CVAR_TEMP );
+	// changed configstrings appended to the gamestate (CL_ConfigstringModified)
+	cl_csAppend = Cvar_Get ("cl_csAppend", "1", 0 );
 	rcon_client_password = Cvar_Get ("rconPassword", "", CVAR_TEMP );
 	cl_activeAction = Cvar_Get( "activeAction", "", CVAR_TEMP );
 

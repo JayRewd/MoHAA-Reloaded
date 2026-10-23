@@ -374,13 +374,29 @@ below are done.
   real matches the 61 frames that loaded something (0.3 to 24 ms of it, up
   to 7 a match) and the 78 ms of the first frames after the loads are down
   to 7 frames, one of them a load (9.4 ms: named in a map script that this
-  machine's mod pk3 replaces); in the two
+  machine's mod pk3 replaced; it loads with the map since the mod's removal,
+  2026-10-23); in the two
   measured matches the maximum frame time goes from 21.4 and 27.9 ms to 2.9
   and 5.4 ms uncapped (4.4 and 5.4 ms at 250 frames a second), the 99.9th
   percentile the same or lower, the share of registration in the slowest
   1 % of the frames from 18 to 27 % to 2 %; the map load 0.01 to 0.11 s
   shorter, 2 to 4 MB more texture memory in the same device memory (see
   Performance, Registration in the match)
+- round changes (2026-10-23, an engine and cgame change, for both
+  renderers): a round restart started the soundtrack again, whose mp3 the
+  sound system scanned and decoded on the main thread, and changed 60 to 70
+  configstrings, each copying the whole gamestate; a playing song decoded
+  8 buffers in 8 frames in a row every few seconds. The soundtrack's mp3s
+  are now read into memory when it loads and decoded ahead on a thread of
+  the sound system, the same PCM (`s_streamThread`), the soundtrack file is
+  kept (`s_soundtrackCache`), and a changed configstring goes after the
+  others in the client's and cgame's gamestates (`cl_csAppend`,
+  `cg_csAppend`). The round changes' frames take 1.0 to 1.4 ms less
+  uncapped in two matches (`o4match` 3.1 to 3.8 ms to 1.9 to 2.4; 2.6 to
+  3.0 ms less with a 3 minute song), their input to present 0.5 to 0.7 ms
+  less at 250 frames a second, the 99.9th percentile the same or lower, and
+  a match's first frames no longer decode the song's first buffers; the
+  same frames, and the same PCM queued (see Performance, Round changes)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -453,7 +469,18 @@ Performance, cgame caches), and the registration at load
 (`code/cgame/cg_main.c`: `CG_PrecacheMatch`, `cg_precache`;
 `code/cgame/cg_public.h` and `code/client/cl_cgame.cpp`: the cgame import
 `CM_EntityString`; `code/qcommon/files.cpp`: `FS_DirMayHave`,
-`fs_listDirs`; see Implementation notes, Registration at load).
+`fs_listDirs`; see Implementation notes, Registration at load), and the
+round changes (`code/client/snd_stream_thread.cpp`, new: the stream thread,
+`s_streamThread`; `code/client/snd_codec_mp3.c`: memory streams and their
+own dithering, `S_MP3_OpenMemoryStream`; `code/client/snd_codec.c`/`.h`:
+`S_CodecLoad` opens the thread's streams, `S_CodecStreamReady`;
+`code/client/snd_openal_new.cpp`: the soundtrack's songs handed to the
+thread, `MUSIC_SoundtrackText`, `s_soundtrackCache`, a stream channel's
+update that doesn't wait; `code/client/snd_dma_new.cpp`: the cvars,
+`MUSIC_FlushCaches` at each load; `code/client/cl_cgame.cpp`:
+`CL_ConfigstringModified`, `cl_csAppend`, the cgame import
+`GetConfigString`; `code/cgame/cg_servercmds.c`: `CG_ConfigStringModified`,
+`cg_csAppend`; see Implementation notes, Round changes).
 
 ## Build and run
 
@@ -1668,6 +1695,53 @@ engine and cgame as with the old ones in the team match lists (but
 and plays `o2match` without a frame that registers. `renderer_vulkan.so`
 is the same code (`.text`) as the build before.
 
+The round changes (2026-10-23, see Performance, Round changes; the engine
+and cgame, the renderer the same), the engine and cgame of the build before
+against the new ones (`run.sh` through wrappers, `tgadiff.py`, 640x480,
+`r_vkValidation 1`): on 18 view lists (`menus`, `hud`, `dm/mohdm1`,
+`dm/mohdm3`, `dm/mohdm6`, `dm/mohdm7`, `obj/obj_team1` to `obj/obj_team4`,
+three soldier lists, `team_obj_team2`, `fx_mohdm1`, `mohdm1_dlight`,
+`smoke`, `m2l3`; 88 views) 84 give the same frames to the bit, the other 4
+are `mohdm7`'s two views with their run-to-run noise (pixels off by 1) and
+`smoke`'s, whose debris lands elsewhere in every run. GL1 gives the same
+frames with the new engine and cgame as with the old ones in `hud`,
+`obj_team4`, `mp_obj_team4` and `team_obj_team2` (18 views). No validation
+message in these runs, nor with synchronization validation
+(`r_vkValidation 2`) through 5000 frames of `o4match` (a round change).
+With temporary test builds (not kept):
+
+- The sound: every buffer a stream channel queued (hashed) and the PCM of
+  the first streams, `s_streamThread 1` against the codec's file streams
+  given a dithering sequence of their own, in real time at `com_maxfps 250`
+  with the volume up and OpenAL Soft's wave backend as the device (a file
+  instead of the speakers): `o4match` and `o2match` with test mp3s in the
+  home path as their maps' songs (a 3 minute one for `obj/obj_team4`, a
+  1.5 s one that loops for `obj/obj_team2`), and a local game script that
+  switches soundtracks (`loadsoundtrack`), changes `s_ambientvolume` and
+  `s_volume`, runs `snd_restart`, `restart` and a `devmap` (with a mono
+  22 kHz mp3 as `dm/mohdm1`'s song): 274 buffers of the songs compared,
+  none different, and no underrun (a song's source stopped for want of a
+  queued buffer) with either. The recorded output of the script has the
+  same songs at the same levels with the stream thread, the file streams
+  and the file streams' shared dithering; against that sequence the
+  stream thread's dithering differs by at most 2 in a sample (mean 0.46).
+- ThreadSanitizer (the engine and cgame built with `-fsanitize=thread`):
+  `o4match` with the 3 minute song (its round changes), `o2match` with the
+  looping one and the game script (soundtrack switches, `snd_restart`, a
+  map change): no report but one in RADV's disk cache thread (a barrier),
+  in each run.
+- The configstrings: a shadow of the client's gamestate changed the old way
+  and compared with the new one, string by string, after every change, and
+  cgame's copy compared with the client's after every change, over the 21
+  matches played whole (at least 4240 changes in the client, 5200 in
+  cgame): no difference; nor with the appends limited so that the old copy
+  runs every few changes (both paths in turn, `o2match` and `o4match`).
+  The 21 matches played with the stream thread and the 3 minute song as
+  `obj/obj_team4`'s: no crash.
+- `obj/obj_team1`'s flak wreck (see Plan, Remaining 1), one run of that
+  match with the registration trace of Plan 28: the wreck and its
+  explosion load with the map since `z_forteffa.pk3` left the game data.
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -2563,7 +2637,8 @@ the 3840x2160 ones are as measured, their `load` share a little high.)
 - `engine` in `o4match`'s round changes (frames 4451, 7055, 11008, 13483:
   +1.2 ms, with +1.4 ms of cgame): a new soundtrack is loaded and decoded
   on the main thread (`MUSIC_NewSoundtrack`, `S_CodecLoad`, MP3 decoding,
-  even with the music volume at 0) along with large configstrings.
+  even with the music volume at 0) along with large configstrings (since
+  2026-10-23 on a thread and in place, see Round changes).
 - Pipelines: with warm caches the same ones are created in every run (a
   process creates its pipelines on first use, the caches make that cheap):
   19 or 38 in the first frames after the load and 11 or 20 in 10 or 11
@@ -4843,7 +4918,9 @@ What is left with `new`: `obj/obj_team1`'s flak wreck and its explosion
 destroyed: their names are in the stock map script, which a mod pk3 on this
 machine (`z_forteffa.pk3`) replaces for the client (with the stock script
 installed in the home path both load with the map, and that match has no
-frame of 0.3 ms of registration left); the water sounds of the body (0.2 to
+frame of 0.3 ms of registration left; the mod was removed from this
+machine's game data on 2026-10-23, and a traced run of that match confirms
+it, see Plan, Remaining 1); the water sounds of the body (0.2 to
 0.3 ms), a projectile the server's weapon file names and the client's
 doesn't (0.15 ms); the frames of 1.7 and 2.0 ms are many crate debris
 effects spawned at once (cgame's init commands, 0.1 ms each).
@@ -4879,7 +4956,8 @@ the medians of the runs' percentiles, in parentheses the "content" ones
   frame lasts 4 ms). What is at the top now is the first frame after the
   load (0.9 ms of registration in `o4match`'s that doesn't come from
   cgame: the engine's UI, which draws the HUD) and `o4match`'s
-  round changes (3.7 ms, the soundtrack decoded on the main thread, Remaining 1).
+  round changes (3.7 ms, the soundtrack decoded on the main thread, Remaining 1;
+  since Plan 29 1.9 to 2.4 ms, see Round changes).
 - The slowest 1 % of the frames: the registration was 26 to 27 % of their
   excess over the median frame in `o2match` and 18 to 19.5 % in `o4match`
   (`framelog.py`, each run), 2 % now; their average excess 0.98 to 0.70 ms
@@ -4925,6 +5003,122 @@ resident memory 0.4 to 1.0 MB more. A load against an OpenMoHAA dedicated
 server (`obj/obj_team2`, 8 bots joining from 20 s on): 1.324 to 1.235 s,
 the same memory, no registration in a frame of the match (the build before:
 one, a head icon).
+
+Round changes (2026-10-23, Plan 29; see Implementation notes, Round
+changes; the engine and cgame, both renderers). After Plan 28 the slowest
+frames of `o4match` were its round changes (frames 4451, 7055, 11008 and
+13483, and frame 30: the server restarted once more right after the load),
+3.2 to 3.9 ms against a median frame of 0.94 ms, with about 1.1 ms more
+engine time and 1.0 ms more cgame time than a median frame. What they did,
+from temporary builds that timed the sound system's calls and the
+configstring changes in each frame (not kept), `o4match` at 1920x1080
+uncapped, `fixedtime 16`, one run of each build, the 4 round changes (µs):
+
+| in a round change's frame | the build before | this one |
+| --- | --- | --- |
+| the sound system's update (`S_Update`) | 1010 to 1113 | 98 to 142 |
+| of which the soundtrack started (`MUSIC_PlaySong`): its mp3 opened (a scan of the whole file), its first read decoded | 552 to 662 | 54 to 94 (the head copied) |
+| and the stream's update: the end of the 0.24 s file, opened and decoded again | 433 to 445 | 25 to 41 |
+| the update with a 3 minute mp3 as the song (one run each) | 2669 to 2751 | 132 to 144 |
+| the soundtrack file read (`MUSIC_NewSoundtrack`) | 41 to 71 | 7 to 9 |
+| 64 configstring changes in the client (`CL_ConfigstringModified`) | 508 to 519 | 11 to 15 |
+| cgame's copies of the gamestate (64) | 66 to 70 | 0 (one of 16 when the buffer was full) |
+| cgame's 84 configstrings (`CG_ProcessConfigString`) | 142 to 185 | 114 to 127 |
+| cgame's server commands (`CG_ExecuteNewServerCommands`, twice) | 822 to 882 | 234 to 254 |
+| the frame | 3155 to 3885 | 1852 to 2444 |
+
+This machine's game data has a 0.24 s mp3 (3.7 KB, the same file) for
+every song of the soundtracks, so a song loops every 0.24 s; a 3 minute
+mp3 in the home path (a generated test tone, 2.9 MB at 128 kbit/s) shows
+what a full soundtrack costs. Besides the round changes, a playing song
+queues 8 buffers in 8 frames in a row whenever half of its 16 have played:
+in `o2match`, whose song plays from the load to its first round change,
+three times (frames 3064 to 3071, 5879 to 5886, 8439 to 8446), 0.39 to
+0.52 ms each with the 0.24 s file (a reopen and a decode each time), 0.85
+to 0.92 ms a buffer with the 3 minute one (every 3 s while it plays); now
+those frames copy PCM. What is left in a round change's frame: cgame's
+server restart (`CG_ServerRestarted`, twice: the server info parsed again
+and the HUD set, the marks cleared; 143 to 161 µs), the 84 configstrings'
+processing, and the first view at the new spawn (the renderer's front end
+and cgame's entities). Not done: the first frame after a load (now the
+largest of `o4match`, 4.6 ms: cgame's first frame and 0.9 ms of the
+engine UI's registrations) and the body's water sounds (part (b) of the
+item, optional).
+
+Results (idle machine: other processes at most 0.8 CPUs, no Plex
+transcoding; `base` (912599f4: its engine and cgame, the same renderer) and
+`new`, interleaved, 5 runs of 15000 frames of `o2match` and `o4match` at
+1920x1080 in a window, `perf.py --caps 0` and `--caps 250`, `--preload
+libinlat.so --framelog`, with this machine's game data and, uncapped, with
+the 3 minute test mp3 in the home path as both maps' song (`mp3`); the
+medians of the runs' percentiles, in parentheses the "content" ones (each
+frame's median over the runs, see Frame spikes); ms):
+
+| demo | `com_maxfps` | build | frame time p99.9 | max | p99 | mean | input to present p99.9 | max | p99 | median |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | `base` | 1.397 (1.239) | 2.92 (2.92) | 1.046 (1.003) | 0.495 | 1.298 | 2.63 | 0.978 | 0.414 |
+| | | `new` | 1.375 (1.257) | 2.18 (1.90) | 1.037 (0.996) | 0.493 | 1.325 | 2.52 | 0.984 | 0.415 |
+| | 250 | `base` | 4.208 (4.217) | 4.42 | 4.044 (4.040) | 4.000 | 1.439 | 2.66 | 1.000 | 0.474 |
+| | | `new` | 4.212 (4.205) | 4.42 | 4.044 (4.041) | 3.999 | 1.337 | 2.22 | 0.974 | 0.471 |
+| | 0, `mp3` | `base` | 1.502 (1.413) | 4.52 (4.52) | 1.042 (1.009) | 0.493 | 1.273 | 1.87 | 0.982 | 0.416 |
+| | | `new` | 1.300 (1.246) | 1.95 (1.95) | 1.026 (0.993) | 0.493 | 1.262 | 2.55 | 0.971 | 0.419 |
+| `o4match` | 0 | `base` | 1.912 (1.824) | 5.37 (5.37) | 1.459 (1.407) | 0.910 | 1.867 | 5.29 | 1.400 | 0.853 |
+| | | `new` | 1.891 (1.794) | 4.74 (4.63) | 1.453 (1.404) | 0.919 | 1.899 | 5.47 | 1.414 | 0.866 |
+| | 250 | `base` | 4.194 (4.195) | 5.37 | 4.041 (4.033) | 4.000 | 2.305 | 5.29 | 1.613 | 0.918 |
+| | | `new` | 4.179 (4.184) | 4.66 | 4.040 (4.033) | 4.000 | 2.128 | 5.40 | 1.619 | 0.923 |
+| | 0, `mp3` | `base` | 2.127 (1.982) | 6.99 (6.99) | 1.509 (1.431) | 0.920 | 1.995 | 5.28 | 1.454 | 0.858 |
+| | | `new` | 1.891 (1.830) | 4.70 (4.70) | 1.462 (1.405) | 0.918 | 1.856 | 2.42 | 1.409 | 0.866 |
+
+The round changes' frames (`o4match`: frames 30, 4451, 7055, 11008 and
+13483; `o2match`: 10233 and 10961), the medians of the 5 runs; uncapped
+the largest frame within 2 of each, at 250 (where every frame lasts 4 ms)
+the input to present of the frame that runs the commands (ms):
+
+| demo | | `base` | `new` |
+| --- | --- | --- | --- |
+| `o4match` | frame time, uncapped | 3.09 to 3.80 | 1.86 to 2.42 |
+| | with `mp3` | 4.85 to 5.35 | 1.87 to 2.48 |
+| | input to present at 250 | 1.73 to 2.58 | 1.08 to 1.92 |
+| `o2match` | frame time, uncapped | 2.25, 2.64 | 1.09, 1.39 |
+| | with `mp3` | 3.81, 4.16 | 1.18, 1.28 |
+| | input to present at 250 | 1.24, 1.60 | 0.71, 0.94 |
+
+- The round changes' frames are 1.0 to 1.4 ms shorter uncapped (2.6 to
+  3.0 ms with the 3 minute song); at 250 they fit in their 4 ms either way
+  and their input to present is 0.5 to 0.7 ms shorter: cgame's work comes
+  before the present (0.4 ms of cgame left against 1.0 to 1.2), the
+  sound's after it, where the frame limiter's wait absorbs it.
+- The 99.9th percentile is lower or the same within the runs' spread in
+  every row (a match has 2 to 5 round changes in 15000 frames), 0.2 ms
+  lower with the 3 minute song; the round changes are gone from the top
+  of the frame times: what is left at
+  the top is the first frame after the load (`o4match` 4.5 to 4.8 ms; its
+  0.9 ms of the engine UI's registrations, part (b), not done), and in
+  `o2match` the first frames are 0.4 ms (0.9 ms with the 3 minute song)
+  shorter each until the song has queued its 16 buffers. The 99th
+  percentile, the mean and the medians the same within the runs' spread
+  (the runs' medians 0.90 to 0.94 ms of both builds in `o4match`; the
+  build with all four switches off has `new`'s 0.926, the 3 minute song's
+  runs the mean the other way).
+- Input to present: the 99.9th percentile lower at 250 (`o2match` 1.439 to
+  1.337, `o4match` 2.305 to 2.128), uncapped the same within the spread
+  (1.298 to 1.325, 1.867 to 1.899: one run of `new` at 9.7 ms in its first
+  frame); its maximum is the first frame after the load in both builds
+  (in the `mp3` rows of `base` it fell outside the matched frames in 4 of 5
+  runs); the median within 0.013 ms (the runs 0.84 to 0.88 of both).
+  Nothing happens between a frame's input read and its present that
+  didn't before; less does at a round change.
+
+Each part alone (one change switched off, 2 runs of `o4match` uncapped
+each, the round changes' frames, ms): `new` 1.85 to 2.38; without the
+stream thread (`s_streamThread 0`) 2.68 to 3.45 (its engine time back to
+0.95 to 1.26 ms); without the client's appends (`cl_csAppend 0`) 2.20 to
+2.81 (cgame 0.35 to 0.45 ms more); without cgame's (`cg_csAppend 0`) 2.09
+to 2.56 (0.05 to 0.1 ms more); without the soundtrack cache
+(`s_soundtrackCache 0`) 1.85 to 2.45 (the 40 to 70 µs within the runs'
+spread); with all four off 3.21 to 3.88, `base`'s 3.14 to 3.79. GL1 with
+the new engine and cgame (`cl_renderer opengl1`, one run of each, `o4match`
+uncapped): the round changes' frames 3.25 to 4.09 ms to 2.22 to 2.98 ms.
 
 `vk.h` documents each call. The points below are what OpenGL used to provide
 implicitly and the Vulkan implementation reproduces.
@@ -6131,6 +6325,69 @@ selects the sample count (see Implementation notes).
   the timestamps' granularity could keep the same time), nor one of more
   than 65536 names; a search directory whose own path doesn't exist as
   named goes the old way (`FS_CorrectCase` may find it under another case).
+- **Round changes** (the engine's sound system and client, and cgame;
+  both renderers; see Performance, Round changes). A round of an objective
+  match ends with a server restart: the server sends 60 to 70 configstring
+  changes at once (the soundtrack's set to `none` and back, models, the
+  server info, each change twice in the same frame since
+  `CG_ExecuteNewServerCommands` runs the commands once for the models and
+  once for the rest), and cgame starts the soundtrack again (in the
+  recorded matches the client's `CL_ServerRestarted`, which stops the music
+  since OpenMoHAA's fix, comes a frame later and frees it again; in a local
+  game the restart comes first and the song plays on; unchanged). Three
+  parts, each with its own switch:
+  - `s_streamThread` (`snd_stream_thread.cpp`): a song of the soundtrack
+    is an mp3 that a stream channel (`openal_channel_two_d_stream`) decoded
+    on the main thread, 16384 samples each time it queued a buffer (64 KB
+    for 16-bit stereo, 0.4 to 0.9 ms), after scanning the whole file's
+    headers to open it (0.05 ms for this data's 0.24 s files, 0.7 to 0.9 ms
+    for a 3 minute song); a round restart opened and decoded twice in one
+    frame, and a playing song queued 8 buffers in 8 frames in a row every
+    few seconds (every 1.9 s with the 0.24 s files, which loop). With the
+    switch on, `MUSIC_LoadSoundtrackFile` hands each song's file to the
+    stream thread when the soundtrack loads (`S_StreamThread_Prefetch`:
+    the main thread reads the file into memory, during the map load for
+    the first soundtrack and from memory at each round restart), the
+    thread scans it and decodes its first read (the head), and a stream of
+    it (`S_CodecLoad(name, NULL)`, which every stream channel opens) starts
+    from the head while the thread decodes the head again, to get past it,
+    and then the following reads, up to 4 ahead, into slots of one read
+    each. The main thread copies PCM; the channel's update asks
+    `S_CodecStreamReady` before a read and queues it a frame later when the
+    thread hasn't decoded it yet (a song keeps 16 buffers, about 6 s,
+    queued); the other reads (a stream's first, a seek in
+    `set_sample_offset`) wait for the thread, and a song whose file is
+    still being prepared (a soundtrack loaded in that frame) waits for the
+    preparation. The memory streams (`S_MP3_OpenMemoryStream`) feed libmad
+    the same blocks as the file streams and use the codec's functions, with
+    the C library's memory instead of the zone and a dithering sequence of
+    their own (the codec's file streams share one sequence, whose state
+    depends on every mp3 decoded before), so the thread makes no file
+    system, zone or OpenAL call, and the PCM of a stream is the same each
+    time (the head and the thread's decode of it are the same bytes). The
+    buffers a song queues are the same bytes as with the file streams
+    given the same sequence (checked below); against the shared sequence
+    the dithering differs by 1 or 2 in a sample (mean 0.46), inaudible. The
+    files stay in memory until the next map load (`S_BeginRegistration`,
+    `MUSIC_FlushCaches`; those a stream still uses stay), at most 64 MB of
+    them; one thread, started with the first soundtrack and joined when the
+    sound system shuts down (`snd_restart` too).
+  - `s_soundtrackCache` (`MUSIC_SoundtrackText`): the soundtrack file's
+    text (`music/<map>.mus`) is kept from its load to the next map load,
+    instead of reading it from the pk3 again when the restart sets the
+    same soundtrack (40 to 70 µs).
+  - `cl_csAppend` (`CL_ConfigstringModified`) and `cg_csAppend`
+    (`CG_ConfigStringModified`): a changed configstring went into the
+    client's gamestate by copying the whole gamestate (53 KB) aside and
+    every string back into it, about 8 µs, and cgame then copied the whole
+    gamestate (`GetGameState`), about 1 µs. Now the new text goes after the
+    others' (an empty one at offset 0, as before) and the old text stays
+    unused until the buffer is full, when the copy runs as before and
+    compacts it; cgame copies only the changed string the same way, read
+    with a new cgame import, `GetConfigString` (`CL_ConfigString`), and the
+    whole gamestate when it doesn't fit. The client changes only that one
+    configstring for each `cs` command cgame runs, so both keep the same
+    string for every index as before (checked with shadow copies below).
 - **Counters** (`vkinfo`, `vkStats_t`; `staticDraws` counts the draws from
   the static geometry, `effectsDraws` those of them with the effects
   shader). Every `vkAllocateMemory` goes
@@ -6779,6 +7036,28 @@ Done:
     this step) were not done: what they would speed up now happens at the
     load.
 
+29. Round changes (2026-10-23, see Performance, Round changes, and
+    Implementation notes, Round changes; the engine and cgame, both
+    renderers): measured first with temporary builds that timed the sound
+    system's calls and the configstring changes in each frame: a round
+    restart started the soundtrack again (its mp3 opened by scanning the
+    whole file, two reads of 16384 samples decoded: 1.0 to 1.1 ms with this
+    machine's 0.24 s songs, 2.7 ms with a 3 minute one) and changed 60 to
+    70 configstrings, each copying the client's whole gamestate twice and
+    cgame's once (0.6 ms), and a playing song decoded 8 buffers in 8 frames
+    in a row every few seconds. Now the soundtrack's mp3s are read into
+    memory when it loads and decoded ahead on a thread of the sound system
+    (`s_streamThread`; the same PCM, checked buffer by buffer), the
+    soundtrack file's text is kept (`s_soundtrackCache`), and a changed
+    configstring goes after the others' text in the client's gamestate and
+    in cgame's (`cl_csAppend`, `cg_csAppend`, with a new cgame import):
+    the round changes' frames 3.1 to 3.8 ms to 1.9 to 2.4 ms in `o4match`
+    uncapped (4.9 to 5.4 to 1.9 to 2.5 with a 3 minute test song), their
+    input to present 0.5 to 0.7 ms shorter at 250 frames a second, the
+    99.9th percentile the same or lower; the same frames. Part (b) of the
+    item (the first frame's HUD registrations, the body's water sounds)
+    was not done.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -6786,15 +7065,19 @@ Remaining:
   1. Registration in the middle of a match: done (2026-10-22, Plan 28):
      cgame registers at the load what a multiplayer match announces or
      draws later, and the file system's lookups in the search directories
-     use listings. Left in 21 real matches: one load of 9.4 ms (`obj/obj_team1`'s
-     flak wreck and its explosion, named in the stock map script, which a
-     mod pk3 on this machine replaces for the client; what a server's own
-     scripts or mods spawn that the client's files don't name stays a
-     load in the match), the water sounds of the body (0.2 to 0.3 ms), and
+     use listings. Left in 21 real matches: the water sounds of the body
+     (0.2 to 0.3 ms), and
      cgame's init commands of each new effect (0.1 ms each, 2 ms in a frame
      with many crate debris). The first frame after a load still has 0.9
-     ms of registration from the engine's UI (the HUD), and `o4match`'s
-     round changes are now its slowest frames (item 5). Not done, all of
+     ms of registration from the engine's UI (the HUD). The one load of
+     9.4 ms that was left (`obj/obj_team1`'s flak wreck and its explosion,
+     named in the stock map script, which a mod pk3 on this machine,
+     `z_forteffa.pk3`, replaced for the client) is gone: the mod was
+     removed from this machine's game data on 2026-10-23, and in one traced
+     run of that match the wreck (6.9 ms) and the explosion (1.4 ms) load
+     with the map and no frame has 0.3 ms or more of registration. What a
+     server's own scripts or mods spawn that the client's files don't name
+     stays a load in the match. Not done, all of
      them for the load now: (b) a faster inflate for the pk3 reads
      (zlib-ng's or libdeflate's decompression, the same bytes, reported
      about twice as fast as stock zlib, 48 % of the registration's time;
@@ -6860,11 +7143,18 @@ Remaining:
      frees its slot): to be tried and measured, with the input to present
      time checked. Tools that report frame times from the CPU's side
      (present to present) see this spread; what is displayed is even.
-  5. The engine: at round changes a soundtrack is loaded and decoded on
-     the main thread (`MUSIC_NewSoundtrack`, `S_CodecLoad`, MP3 decoding,
-     with the music volume at 0 too) with large configstrings: 1.2 ms
-     more engine and 1.4 ms more cgame time in each of 4 frames of
-     `o4match`; outside the renderer.
+  5. Round changes: done (2026-10-23, Plan 29): the soundtrack's mp3s are
+     decoded on a thread of the sound system and the configstrings change
+     in place. Their frames take 1.0 to 1.4 ms less uncapped (`o4match`
+     1.9 to 2.4 ms, below the first frame after the load; 2.6 to 3.0 ms
+     less with a 3 minute song) and their input to present 0.5 to 0.7 ms
+     less at 250. What is left in those frames is cgame's
+     server restart (`CG_ServerRestarted`, 0.15 ms: the server info parsed
+     twice, the marks cleared), its 84 configstrings (0.12 ms) and the
+     first view at the new spawn; the first frame after a load (4.6 ms in
+     `o4match`, the 0.9 ms of the engine UI's HUD registrations in it) and
+     the body's water sounds (0.2 to 0.3 ms, in 2 of 21 matches) were not
+     done (optional).
   6. Where the GPU limits, the GPU-heavy moments (the fence wait is 37 to
      53 % of the slow frames at 3840x2160): GPU time, see the texture
      compression item below.

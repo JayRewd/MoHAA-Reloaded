@@ -120,6 +120,7 @@ cvar_t *ui_timemessage;
 cvar_t *cg_fov;
 cvar_t *cg_cheats;
 cvar_t *cg_precache;
+cvar_t *cg_csAppend;
 
 /*
 =================
@@ -218,6 +219,8 @@ void CG_RegisterCvars(void)
     cg_fov = cgi.Cvar_Get("cg_fov", "80", CVAR_ARCHIVE);
     cg_cheats = cgi.Cvar_Get("cheats", "0", CVAR_USERINFO | CVAR_SERVERINFO | CVAR_LATCH);
     cg_precache = cgi.Cvar_Get("cg_precache", "7", CVAR_ARCHIVE);
+    // changed configstrings copied one by one (CG_ConfigStringModified)
+    cg_csAppend = cgi.Cvar_Get("cg_csAppend", "1", 0);
 }
 /*
 ===============

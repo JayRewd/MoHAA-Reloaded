@@ -35,6 +35,8 @@ extern cvar_t *s_loadas8bit;
 extern cvar_t *s_separation;
 extern cvar_t *s_musicVolume;
 extern cvar_t *s_ambientVolume;
+extern cvar_t *s_streamThread;
+extern cvar_t *s_soundtrackCache;
 
 #define MAX_SOUNDSYSTEM_CHANNELS_3D        32
 #define MAX_SOUNDSYSTEM_CHANNELS_2D        32

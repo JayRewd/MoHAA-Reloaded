@@ -49,6 +49,8 @@ cvar_t *s_testsound;
 cvar_t *s_separation;
 cvar_t *s_musicVolume;
 cvar_t *s_ambientVolume;
+cvar_t *s_streamThread;
+cvar_t *s_soundtrackCache;
 
 sfx_info_t sfx_infos[MAX_SFX_INFOS];
 
@@ -103,6 +105,10 @@ void S_Init(qboolean full_startup)
     s_volume         = Cvar_Get("s_volume", "0.9", CVAR_ARCHIVE);
     s_musicVolume    = Cvar_Get("s_musicvolume", "0.9", CVAR_ARCHIVE);
     s_ambientVolume  = Cvar_Get("s_ambientvolume", "1.00", CVAR_ARCHIVE);
+    // the soundtrack's mp3 files decoded on a thread (snd_stream_thread.cpp)
+    s_streamThread   = Cvar_Get("s_streamThread", "1", 0);
+    // the soundtrack file's text kept until the next map load (MUSIC_LoadSoundtrackFile)
+    s_soundtrackCache = Cvar_Get("s_soundtrackCache", "1", 0);
     s_separation     = Cvar_Get("s_separation", "0.5", CVAR_ARCHIVE);
     s_khz            = Cvar_Get("s_khz", "44", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_loadas8bit     = Cvar_Get("s_loadas8bit", "0", CVAR_ARCHIVE | CVAR_LATCH);
@@ -285,6 +291,7 @@ void S_BeginRegistration()
     Com_Printf("------- Sound Begin Registration -------\n");
 
     S_StopAllSounds(true);
+    MUSIC_FlushCaches();
 
     s_registrationSequence++;
     s_inRegistration                    = true;
