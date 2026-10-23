@@ -8,7 +8,7 @@
 
 Standing requirement, added by the user on 2026-10-16: "can we also optimize for lowest input lag/delay possible? like lowest overhead". Judge every design choice on input-to-photon latency and overhead as well as fps. Rules in the plan, §4b.
 
-**Status: all phases (0–8) are done** (session 44, 2026-10-20). `docs/METAL_PORT_PLAN.md` holds the closing summary (at the top), every decision (§3), the measurements (§2) and, in §6, what is optional, parked or needs the user. `README.md`'s first section is the user-facing description. Release 1 is out: [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0) (session 46, ad-hoc signed, `io.github.pstngh.openmohaa-metal`); §6 "Release 1, what is left" has what follows. New work starts only when the user brings it up: read the plan's closing summary and §6 first. **Phase 9 is in progress** (the user's choice of 2026-10-22, §3.1 #36): a native sound engine, our own mixer on Core Audio playing the PC original's Miles behavior, openal-soft out at the end; the plan's Phase 9 is its spec (9a, the survey and design, done in session 57; 9b, the mixer alone (`code/macos/macos_snd.c`), in session 58; 9c, the sound effects on the native driver (`code/client/snd_native_new.cpp`, behind the latched `s_native`, 1 by default since 9e, 0 = OpenAL until 9g), in session 59; 9d, its streams, music, dialogue, movies and saves, in session 60; 9e, the user's listening checkpoint, in session 61 (every default kept); 9f, Apple's headphone 3D as `s_speaker_type 1` (off by default, the user's call), in session 62; 9g, openal-soft out (`sndref` first), next).
+**Status: all phases (0–8) are done** (session 44, 2026-10-20). `docs/METAL_PORT_PLAN.md` holds the closing summary (at the top), every decision (§3), the measurements (§2) and, in §6, what is optional, parked or needs the user. `README.md`'s first section is the user-facing description. Release 1 is out: [v1.0.0](https://github.com/pstngh/openmohaa-metal/releases/tag/v1.0.0) (session 46, ad-hoc signed, `io.github.pstngh.openmohaa-metal`); §6 "Release 1, what is left" has what follows. New work starts only when the user brings it up: read the plan's closing summary and §6 first. **Phase 9 is in progress** (the user's choice of 2026-10-22, §3.1 #36): a native sound engine, our own mixer on Core Audio playing the PC original's Miles behavior, openal-soft out at the end; the plan's Phase 9 is its spec (9a, the survey and design, done in session 57; 9b, the mixer alone (`code/macos/macos_snd.c`), in session 58; 9c, the sound effects on the native driver (`code/client/snd_native_new.cpp`), in session 59; 9d, its streams, music, dialogue, movies and saves, in session 60; 9e, the user's listening checkpoint, in session 61 (every default kept); 9f, Apple's headphone 3D as `s_speaker_type 1` (off by default, the user's call), in session 62; 9g, openal-soft out (the `sndref` flavor keeps the last OpenAL commit) with `s_ambientvolume 0` and `cg_tauntsounds`, in session 63, its online test with the user next: see §6).
 
 ## Repo layout
 
@@ -32,23 +32,24 @@ Standing requirement, added by the user on 2026-10-16: "can we also optimize for
 
 ```bash
 source port/env.sh                 # every shell, first
-port/build.sh metal                # the game (~40 s; mounts the Metal Toolchain) -> build.noindex/metal-install/lib/openmohaa: the sealed, ad-hoc-signed arm64 openmohaa.app (openal-soft and the game/cgame dylibs inside; no omohaaded unless configured with -DBUILD_SERVER=ON)
+port/build.sh metal                # the game (~40 s; mounts the Metal Toolchain) -> build.noindex/metal-install/lib/openmohaa: the sealed, ad-hoc-signed arm64 openmohaa.app (the game/cgame dylibs inside; no omohaaded unless configured with -DBUILD_SERVER=ON)
 port/build.sh metalref             # the game at HEAD (METAL_REF=<ref> for another): the "before" of an A/B bench; rebuild it at HEAD before each one
 port/build.sh gl                   # the GL1 reference (c9dddadd, the last commit with GL1, plus the client's work log)
 port/build.sh sdlref               # the last commit with SDL2 (fd94160b): the input layer's reference
+port/build.sh sndref               # the last commit with openal-soft (846287f5): the sound's reference (+set s_native 0 = OpenAL's driver)
 port/run.sh metal +map dm/mohdm6   # run against the retail data; extra args are engine args
-port/bench.sh run metal 3          # timedemo, 1280x720 window, 3 runs: work ms/frame and the per-frame work p50/p95/p99/p99.9/max µs (also: metalref, gl, sdlref)
+port/bench.sh run metal 3          # timedemo, 1280x720 window, 3 runs: work ms/frame and the per-frame work p50/p95/p99/p99.9/max µs (also: metalref, gl, sdlref, sndref)
 port/bench.sh trace metal          # one traced timedemo: GPU utilization and GPU ms per frame
 port/prof.sh metal base 20         # `sample` of the looping timedemo; then port/sample_tree.py build.noindex/prof/base.txt callees <function>
 port/shot.sh regress base-s35      # the six fixed views on Metal: vs GL1 and vs the saved baseline (base-s35 since the alpha-tested draw order; port/shot.sh savebase <dir> after a deliberate change)
 port/shot.sh pair dm6 shot_dm6.cfg # fixed 3D views, GL1 + Metal, per-view diffs (also: port/shot.sh metal <name> <cfg>, port/shot.sh diff <name>)
 port/latency.sh metal win-250 20   # cl_latencyStats with 20 s of synthetic mouse (takes the mouse: the user's OK first); MOUSE=0 LATSTATS=0 TRACE=1 = only what the display showed (needs nobody)
-port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary
+port/glcheck.sh                    # no GL names in code/ and cmake/ beyond the documented exceptions, no OpenGL in the binary, no OpenAL in the app (no al*/alc* symbol)
 port/skinab.sh                     # GPU-skinning A/B flavor, then port/bench.sh run metalab 1; grep SKINAB build.noindex/bench/metalab-1.log | tail -1 (every "differ" 0)
 port/release.sh                    # the release zip from metal-install (clean tree, a build of HEAD) -> build.noindex/release/
 port/kbreplay.sh build             # then port/kbreplay.sh run | mouse win|full|hidpi | dialog win|full|full720|space: SDL against native, streams must be identical
 port/sndtest.sh                    # the sound mixer (code/macos/macos_snd.c) and the native driver's math: offline tests + stress; device[3d] [frames] | load frames s | devices: silent, the output idle first
-port/run.sh metal +set s_native 0 +map dm/mohdm6   # OpenAL's sound driver until 9g; native is the default since 9e (s_eventLog 1, s_capture <name>)
+port/run.sh metal +set s_eventLog 1 +map dm/mohdm6   # the sound's tools: s_eventLog 1 (each start), s_capture <name> + s_captureMute 1 (the mix to a WAV, silent)
 ```
 
 `bench.sh` and `shot.sh` pin `r_uselod 1` (the game's default is 0 since session 46), so their numbers stay comparable with earlier runs and GL1. Compare renderers on the **`work` ms/frame** figure: the stock mode pads every frame to at least 1 ms, so fps saturates near 1000. The GL reference is `r_primitives 2` (the user's setting), which `bench.sh` passes. A 5 µs change needs an A/B inside one binary (the plan's §6 tool notes: the old path behind a cvar, blocks of four frames A B B A, a check mode comparing outputs); whole bench runs spread by 20–40 µs within one sitting. New flavors are cases in `port/build.sh`; put every number in the plan.
@@ -57,7 +58,7 @@ port/run.sh metal +set s_native 0 +map dm/mohdm6   # OpenAL's sound driver until
 
 - The tool shell is zsh, which doesn't split an unquoted `$args`: the engine then gets one quoted `+set a 1 +set b 2` argument and silently ignores it. Build engine arguments as arrays in a bash script. Never `cd` in a Bash call (absolute paths, or `git -C`).
 - In OpenMoHAA, `wait N` counts **milliseconds**, and `wait 1` is exactly one frame.
-- The game keeps no PID file since session 46 (no "Abnormal Exit" dialog after a killed run); builds of older commits (`gl`, `sdlref`, `ci`) still do, and `run.sh` removes their stale PID files.
+- The game keeps no PID file since session 46 (no "Abnormal Exit" dialog after a killed run); builds of older commits (`gl`, `sdlref`, `ci`; not `sndref`) still do, and `run.sh` removes their stale PID files.
 - Don't use `s_initsound 0` (upstream crashes on the first footstep); mute with `s_volume 0`.
 - Spearhead/Breakthrough: `+set com_target_game 1`/`2` (the upstream launchers are deleted); run the .app's binary directly or `open openmohaa.app --args …`.
 - Never put files inside the installed `openmohaa.app`: the install signs it and checks the seal (`codesign --verify --deep --strict`), so a file added afterwards breaks it, and a link out of the bundle makes the next install fail. `run.sh`'s Homebrew openal link in fs_basepath serves only the flavors that dlopen it (`gl`).
