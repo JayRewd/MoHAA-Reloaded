@@ -165,8 +165,6 @@ Single exit point (regular exit or in case of error)
 */
 static Q_NO_RETURN void Sys_Exit( int exitCode )
 {
-    Sys_ShutdownEx();
-
 	CON_Shutdown( );
 
 	NET_Shutdown( );
@@ -572,10 +570,6 @@ int main( int argc, char **argv )
 {
 	int   i;
 	char  commandLine[ MAX_STRING_CHARS ] = { 0 };
-
-#ifdef USE_AUTOUPDATER
-	Sys_LaunchAutoupdater(argc, argv);
-#endif
 
 	Sys_PlatformInit( );
 	Sys_SetMaxFileLimit( );

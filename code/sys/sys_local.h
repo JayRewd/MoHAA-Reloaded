@@ -66,10 +66,6 @@ qboolean Sys_OpenFolderInPlatformFileManager( const char *path );
 
 qboolean Sys_SetMaxFileLimit( void );
 
-#ifdef USE_AUTOUPDATER
-void Sys_LaunchAutoupdater(int argc, char **argv);
-#endif
-
 #include "new/sys_local_new.h"
 
 #ifdef __cplusplus

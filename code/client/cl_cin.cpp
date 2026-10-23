@@ -126,7 +126,6 @@ typedef struct {
 	long				roqF1;
 	long				t[2];
 	long				roqFPS;
-	int					playonwalls;
 	byte*				buf;
 	long				drawX, drawY;
 
@@ -1378,11 +1377,6 @@ e_status CIN_RunCinematic (int handle)
 		RoQReset();
 	}
 
-	if (cinTable[handle].playonwalls < -1)
-	{
-		return cinTable[handle].status;
-	}
-
 	currentHandle = handle;
 
 	if (cinTable[currentHandle].alterGameState) {
@@ -1500,16 +1494,8 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 	cinTable[currentHandle].CIN_WIDTH  =  DEFAULT_CIN_WIDTH;
 	cinTable[currentHandle].holdAtEnd = (systemBits & CIN_hold) != 0;
 	cinTable[currentHandle].alterGameState = (systemBits & CIN_system) != 0;
-	cinTable[currentHandle].playonwalls = 1;
 	cinTable[currentHandle].silent = (systemBits & CIN_silent) != 0;
 	cinTable[currentHandle].shader = (systemBits & CIN_shader) != 0;
-
-	if (cinTable[currentHandle].alterGameState) {
-		// close the menu
-		//uie.SetActiveMenu( UIMENU_NONE );
-	} else {
-		cinTable[currentHandle].playonwalls = cl_inGameVideo->integer;
-	}
 
 	initRoQ();
 					

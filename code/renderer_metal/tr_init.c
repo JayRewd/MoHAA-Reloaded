@@ -50,7 +50,6 @@ cvar_t	*r_skipBackEnd;
 cvar_t	*r_ignorehwgamma;
 cvar_t	*r_measureOverdraw;
 
-cvar_t	*r_inGameVideo;
 cvar_t	*r_fastsky;
 cvar_t	*r_fastdlights;
 cvar_t	*r_drawSun;
@@ -170,7 +169,6 @@ cvar_t	*r_ambientScale;
 cvar_t	*r_directedScale;
 cvar_t	*r_debugSort;
 cvar_t	*r_printShaders;
-cvar_t	*r_saveFontData;
 
 cvar_t	*r_maxpolys;
 int		max_polys;
@@ -256,7 +254,6 @@ cvar_t* r_alpha_foliage1;
 cvar_t* r_alpha_foliage2;
 cvar_t* r_blendtrees;
 cvar_t* r_blendbushes;
-cvar_t* r_bumpmap;
 cvar_t* r_loadjpg;
 cvar_t* r_loadftx;
 
