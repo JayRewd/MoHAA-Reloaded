@@ -4024,4 +4024,7 @@ void R_SetupShaders()
     // ProjectDlightTexture's passes (models lit by dynamic lights, first seen in play)
     R_PrecacheState(GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, 1, qfalse);
     R_PrecacheState(GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE, 1, qfalse);
+    // the untextured 2D boxes (AddBox, DrawBox: the console and the menus)
+    R_PrecacheState(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, 0, qfalse);
+    R_PrecacheState(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA, 0, qfalse);
 }

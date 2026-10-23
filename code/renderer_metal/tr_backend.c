@@ -540,7 +540,7 @@ void R_State( unsigned long stateBits )
 ** R_PrecacheState
 **
 ** Has the backend create, ahead of the first draw, the pipeline that R_State( stateBits ) draws with when numUnits
-** texture units are bound (skin: with GPU skinning, RB_SkinBegin).
+** texture units are bound (0: untextured; skin: with GPU skinning, RB_SkinBegin).
 */
 void R_PrecacheState( unsigned long stateBits, int numUnits, qboolean skin )
 {
