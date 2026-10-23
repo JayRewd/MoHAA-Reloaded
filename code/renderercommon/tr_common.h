@@ -98,11 +98,8 @@ extern qboolean  haveClampToEdge;
 //
 // cvars
 //
-extern cvar_t *r_stencilbits;			// number of desired stencil bits
-extern cvar_t *r_depthbits;			// number of desired depth bits
 extern cvar_t *r_colorbits;			// number of desired color bits, only relevant for fullscreen
 extern cvar_t *r_texturebits;			// number of desired texture bits
-extern cvar_t *r_ext_multisample;
 										// 0 = use framebuffer depth
 										// 16 = use 16-bit textures
 										// 32 = use 32-bit textures
@@ -115,16 +112,12 @@ extern cvar_t *r_ignorehwgamma;		// overrides hardware gamma capabilities
 extern cvar_t *r_drawBuffer;
 extern cvar_t *r_swapInterval;
 
-extern cvar_t *r_allowExtensions;				// global enable/disable of the r_ext_* features
 extern cvar_t *r_ext_compressed_textures;		// these control use of specific extensions
 extern cvar_t *r_ext_multitexture;
-extern cvar_t *r_ext_compiled_vertex_array;
 extern cvar_t *r_ext_texture_env_add;
 
 extern cvar_t *r_ext_texture_filter_anisotropic;
 extern cvar_t *r_ext_max_anisotropy;
-
-extern cvar_t *r_stereoEnabled;
 
 extern	cvar_t	*r_saveFontData;
 

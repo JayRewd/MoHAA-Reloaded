@@ -1450,10 +1450,7 @@ extern cvar_t	*r_ignoreFastPath;		// allows us to ignore our Tess fast paths
 
 extern cvar_t	*r_znear;				// near Z clip plane
 
-extern cvar_t	*r_stencilbits;			// number of desired stencil bits
-extern cvar_t	*r_depthbits;			// number of desired depth bits
 extern cvar_t	*r_colorbits;			// number of desired color bits, only relevant for fullscreen
-extern cvar_t	*r_stereo;				// desired pixelformat stereo flag
 extern cvar_t	*r_textureDetails;
 extern cvar_t	*r_texturebits;			// number of desired texture bits
 										// 0 = use framebuffer depth
@@ -1507,17 +1504,11 @@ extern cvar_t	*r_gamma;
 extern cvar_t	*r_displayRefresh;		// optional display refresh option
 extern cvar_t	*r_ignorehwgamma;		// overrides hardware gamma capabilities
 
-extern cvar_t	*r_allowExtensions;				// global enable/disable of the r_ext_* features
 extern cvar_t	*r_ext_compressed_textures;		// these control use of specific extensions
-extern cvar_t	*r_ext_gamma_control;
 extern cvar_t	*r_ext_multitexture;
-extern cvar_t	*r_ext_compiled_vertex_array;
 extern cvar_t	*r_ext_texture_env_add;
-extern cvar_t	*r_ext_texture_env_combine;
-extern cvar_t	*r_ext_aniso_filter;
 extern cvar_t	*r_ext_max_anisotropy;
 extern cvar_t	*r_forceClampToEdge;
-extern cvar_t	*r_geForce3WorkAround;
 extern cvar_t	*r_reset_tc_array;
 
 extern	cvar_t	*r_nobind;						// turns off binding to appropriate textures
@@ -1617,7 +1608,6 @@ extern  cvar_t* lod_position;
 extern  cvar_t* lod_save;
 extern  cvar_t* lod_tool;
 extern	cvar_t* sys_cpuid;
-extern	cvar_t* r_sse;
 extern	cvar_t* r_static_shaderdata0;
 extern	cvar_t* r_static_shaderdata1;
 extern	cvar_t* r_static_shaderdata2;
@@ -1632,7 +1622,6 @@ extern  cvar_t* r_numdebuglines;
 extern	cvar_t* r_stipplelines;
 extern	cvar_t* r_light_lines;
 extern	cvar_t* r_light_sun_line;
-extern	cvar_t* r_light_int_scale;
 extern	cvar_t* r_light_nolight;
 extern	cvar_t* r_light_showgrid;
 extern	cvar_t* r_skyportal;
@@ -1650,7 +1639,6 @@ extern	cvar_t* r_debuglines_depthmask;
 extern	cvar_t* r_smoothsmokelight;
 extern	cvar_t* r_showportal;
 extern	cvar_t* ter_minMarkRadius;
-extern	cvar_t* ter_fastMarks;
 extern	cvar_t* r_alpha_foliage1;
 extern	cvar_t* r_alpha_foliage2;
 extern	cvar_t* r_blendtrees;
