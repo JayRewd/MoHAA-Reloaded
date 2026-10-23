@@ -112,6 +112,7 @@ seta in_mouseRaw 1
 | `ui_console` | `1` (upstream's is `0`) | The console key opens the console. The game still starts at the main menu with the console closed (except with `developer 1`). |
 | `r_uselod` | `0` (upstream's is `1`) | `0` draws soldiers and weapons at full detail at any distance. `1` lowers their detail with distance, tuned by `r_lodscale`, `r_lodcap` and `r_lodviewmodelcap`. Not saved in configs: set it at launch or in an `autoexec.cfg`. |
 | `cl_playintro` | `0` (upstream's is `1`) | The intro videos at startup. `1` plays them: at launch (`--args +set cl_playintro 1`) or with `seta cl_playintro 1` in a config. |
+| `s_native` | `1` | **The native sound engine** (new, not in 1.0.0): our own mixer on Core Audio plays MOHAA's sound as the PC original did on the Miles Sound System. Each sound plays at its own volume (OpenAL played every positional one-shot at one level), loud ones aren't flattened or clipped, sounds behind you are 3 dB quieter and silent beyond their maximum distance, and a sound reaches the headphone jack ~5 ms after it starts instead of ~19. `0` and `snd_restart` switch back to OpenAL until it is removed. Not saved in configs. |
 
 The display modes. Every fullscreen mode goes direct to the display, bypassing macOS's compositor:
 
@@ -169,7 +170,7 @@ Tried and not taken: per-pixel dynamic lights (as some Vulkan ports do). They sa
 ## Not done, parked and known issues
 
 - **Parked:** a still black window over the other displays in exclusive fullscreen, so that mode would match the Space's latency.
-- **Not done:** low-latency vsync (frame pacing for a tear-free mode without vsync's extra refresh), a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off and of audio latency, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
+- **Not done:** low-latency vsync (frame pacing for a tear-free mode without vsync's extra refresh), a frame-cap suggestion from frame-time percentiles, measurements of macOS Game Mode on and off, a Developer ID signature and notarization (the release zip is signed ad hoc, hence the quarantine step above).
 - **Removed on purpose:** gamepads and joysticks, the `openmohaa://` link handler, the update checker.
 - **Optional:** smaller CPU savings that were measured but not worth taking yet (2D text batching, the terrain's own per-vertex work). They're listed in [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
 

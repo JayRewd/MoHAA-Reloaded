@@ -23,8 +23,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // snd_native_math.h -- the native sound driver's pure functions (docs/METAL_PORT_PLAN.md Phase 9): the original's
 // sound math as the PC game played it on Miles' "Fast 2D Positional Audio" (the 3D model, the 2D pan law, the volume
 // scales, s_volume's law), the decompiled driver's own curves, and the loader's IMA ADPCM decoder. C and no engine
-// header: port/sndtest.c checks every function against the plan's numbers. Each of 9e's open decisions is one
-// constant or one function here.
+// header: port/sndtest.c checks every function against the plan's numbers. 9e's open decisions are each one constant
+// or one function here; the user's listening kept every default (session 61).
 
 #pragma once
 
@@ -35,8 +35,8 @@ extern "C" {
 #endif
 
 #define SNM_CEILING  (127.f / 84.f) // A2: Miles' sample volume is 0-127 and the game's 1.0 is 84: the loudest a voice gets
-#define SNM_SCALE_2D (84.f / 127.f) // A3: 2D voices against 3D ones, the decompiled scales (9e decides)
-#define SNM_BEHIND   0.70794578f    // C6: Fast 2D's -3 dB straight behind the listener (9e decides)
+#define SNM_SCALE_2D (84.f / 127.f) // A3: 2D voices against 3D ones, the decompiled scales (kept at 9e)
+#define SNM_BEHIND   0.70794578f    // C6: Fast 2D's -3 dB straight behind the listener (kept at 9e)
 #define SNM_EDGE     0.05f          // B1: the fade to silence before the max distance, as a part of it
 
 /*
@@ -61,7 +61,7 @@ SNM_Master
 
 A4: s_volume's law, applied once on the master gain: s_volume cubed times the fade, the loudness OpenAL played
 (its listener gain s_volume squared times each voice's s_volume), so nobody's game gets louder or quieter at the
-switch, and the slider and the fades now reach the voices already playing (9e decides the law)
+switch, and the slider and the fades now reach the voices already playing (the law kept at 9e)
 ==============
 */
 static inline float SNM_Master(float volume, float fade)

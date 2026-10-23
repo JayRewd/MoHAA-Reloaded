@@ -27,8 +27,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // fixes (the plan's Phase 9 "Session 57 result"; the ids in the comments are its items). The original's math is in
 // snd_native_math.h: the voices' levels without s_volume, which is the master gain's.
 //
-// Until 9g both drivers are in the binary: the latched s_native picks this one (snd_restart switches), and at 0 every
-// entry point hands its call to OpenAL's (the S_OPENAL_ names, snd_openal_new.h). The sound effects are 9c's; the
+// Until 9g both drivers are in the binary: the latched s_native (1 by default since 9e) picks this one (snd_restart
+// switches), and at 0 every entry point hands its call to OpenAL's (the S_OPENAL_ names, snd_openal_new.h). The sound effects are 9c's; the
 // streamed sounds, the music (moods, crossfades), the triggered music, the movies' audio and playmp3 9d's: a stream
 // is read ahead into a mixer ring a little each frame, a short one decoded whole and looped by the mixer.
 //
@@ -551,7 +551,7 @@ qboolean S_NATIVE_Init()
     macSndConfig_t mixer;
     int            i;
 
-    s_native       = Cvar_Get("s_native", "0", CVAR_SOUND_LATCH);
+    s_native       = Cvar_Get("s_native", "1", CVAR_SOUND_LATCH);
     s_device       = Cvar_Get("s_device", "", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_bufferFrames = Cvar_Get("s_bufferFrames", "64", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
     s_show_sounds  = Cvar_Get("s_show_sounds", "0", 0);
