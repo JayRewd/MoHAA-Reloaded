@@ -849,6 +849,7 @@ void CL_InitCGameDLL( clientGameImport_t *cgi, clientGameExport_t **cge ) {
 	cgi->stopWatch					= &cls.stopwatch;
 	cgi->GetLiveUserCmd				= CL_GetLiveUserCmd;
 	cgi->GetRenderTimeFraction		= CL_RenderTimeFraction;
+	cgi->R_DrawBoxes				= re.DrawBoxes;
 	// FIXME
 	//cgi->pUnknownVar				= NULL;
 

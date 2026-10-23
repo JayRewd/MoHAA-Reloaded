@@ -375,6 +375,40 @@ void AddBox(float x, float y, float w, float h) {
 
 /*
 ================
+DrawBoxes
+
+DrawBox for count boxes in one draw, after the stretch pics before it (the Metal port's crosshair)
+================
+*/
+void DrawBoxes(const float (*boxes)[4], int count, const float *color) {
+	int i;
+
+	R_IssuePendingRenderCommands();
+	if (tess.numIndexes) {
+		RB_EndSurface();	// the stretch pics before it, in the 2D color of now
+	}
+
+	mbColor4f(color[0], color[1], color[2], color[3]);
+	mbDisable(MB_TEXTURE_2D);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
+
+	mbBegin(MB_QUADS);
+	for (i = 0; i < count; i++) {
+		const float *b = boxes[i];
+
+		mbVertex2f(b[0], b[1]);
+		mbVertex2f(b[0] + b[2], b[1]);
+		mbVertex2f(b[0] + b[2], b[1] + b[3]);
+		mbVertex2f(b[0], b[1] + b[3]);
+	}
+	mbEnd();
+
+	mbColor4ubv(backEnd.color2D);	// as DrawBox leaves it
+	mbEnable(MB_TEXTURE_2D);
+}
+
+/*
+================
 DrawBox
 ================
 */
