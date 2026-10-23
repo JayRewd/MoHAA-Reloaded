@@ -7,6 +7,9 @@
 #                           `git archive` export in build.noindex/sdlref-src: the SDL baseline of Phase 6f (the
 #                           user's feel test and their mouse against SDL), kept apart from metalref so a before/after
 #                           bench never overwrites it.
+#   port/build.sh sndref    the Metal game with openal-soft and its sound driver as it was in the last commit that had
+#                           them (SND_REF below), from an export in build.noindex/sndref-src like sdlref: the sound
+#                           baseline of Phase 9 (`+set s_native 0` plays OpenAL's driver, 1 the native one).
 #   port/build.sh gl        the GL1 reference: upstream's GL1 renderer as it was in the last commit that had it
 #                           (GL1_REF below), built from a `git archive` export in build.noindex/gl-src, plus the client
 #                           hunks of GL1_PATCHES (benchmark logging only). OpenGL is gone from the tree (Phase 4); the
@@ -30,6 +33,8 @@ GL1_REF=c9dddadd22cf775766b34c118e9ce414290efbb6
 GL1_PATCHES=(ae894bcf)
 # The last commit with SDL2 (Phase 6g removed it after this one): its code is db88239d's, the 6f baseline.
 SDL_REF=fd94160b617a8afa34e4acac8faa3ca8fc306eed
+# The last commit with openal-soft (Phase 9g removed it after this one): 9f's tree, both sound drivers.
+SND_REF=846287f5c8f6d66fdc17e8d4cf961be01a635c2b
 
 case "$FLAVOR" in
 	gl)
@@ -49,11 +54,15 @@ case "$FLAVOR" in
 		export GIT_CEILING_DIRECTORIES="$OMM_BUILD"
 		FLAVOR_ARGS=() ;;
 	metal) omm_mount_metal; FLAVOR_ARGS=() ;;
-	metalref|sdlref)
+	metalref|sdlref|sndref)
 		# The Metal game at a commit, from a `git archive` export like gl: metalref at METAL_REF (default HEAD: the
 		# last commit without the work tree's changes), for before/after benchmarks in one sitting (bench.sh run
-		# metalref); sdlref at SDL_REF, always.
-		if [ "$FLAVOR" = sdlref ]; then REF="$SDL_REF"; else REF="$(git -C "$OMM_ROOT" rev-parse "${METAL_REF:-HEAD}")"; fi
+		# metalref); sdlref at SDL_REF and sndref at SND_REF, always.
+		case "$FLAVOR" in
+			sdlref) REF="$SDL_REF" ;;
+			sndref) REF="$SND_REF" ;;
+			*) REF="$(git -C "$OMM_ROOT" rev-parse "${METAL_REF:-HEAD}")" ;;
+		esac
 		SRC_DIR="$OMM_BUILD/$FLAVOR-src"
 		if [ "$(cat "$SRC_DIR/.metal-ref" 2>/dev/null)" != "$REF" ]; then
 			rm -rf "$SRC_DIR"
