@@ -926,6 +926,9 @@ typedef struct terraTri_s {
     terraInt iParent;
     terraInt iPrev;
     terraInt iNext;
+    // Added in the Metal port: the tri's place in its patch's list of the tris the split walk visits (tr_terrain.c)
+    terraInt iLivePrev;
+    terraInt iLiveNext;
 } terraTri_t;
 
 typedef struct srfTerrain_s {
@@ -934,6 +937,9 @@ typedef struct srfTerrain_s {
     terraInt iTriHead;
     terraInt iTriTail;
     terraInt iMergeHead;
+    // Added in the Metal port (tr_terrain.c)
+    terraInt iLiveHead;
+    terraInt iLiveTail;
     int nVerts;
     int nTris;
     int lmapSize;
