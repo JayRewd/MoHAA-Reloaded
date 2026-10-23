@@ -73,6 +73,7 @@ class MenuManager : public Listener
     Stack<Menu *>     m_showmenustack;
     Stack<Menu *>     m_menustack;
     bool              m_lock;
+    int               m_generation; // changes with the list and the menus' names
 
 public:
     CLASS_PROTOTYPE(MenuManager);
@@ -85,6 +86,8 @@ public:
     void  DeleteMenu(Menu *m);
     void  DeleteAllMenus(void);
     Menu *FindMenu(str name);
+    int   Generation(void);
+    void  MenusChanged(void);
     bool  PushMenu(str name);
     bool  ShowMenu(str name);
     void  PushMenu(Event *ev);

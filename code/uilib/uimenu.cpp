@@ -111,6 +111,7 @@ void Menu::DeleteMenuItem(UIWidget *item)
 void Menu::setName(str name)
 {
     m_name = name;
+    menuManager.MenusChanged();
 }
 
 void Menu::ShowMenu(Event *ev)
@@ -451,7 +452,8 @@ CLASS_DECLARATION(Listener, MenuManager, NULL) {
 
 MenuManager::MenuManager()
 {
-    m_lock = false;
+    m_lock       = false;
+    m_generation = 0;
 }
 
 void MenuManager::RealignMenus(void)
@@ -468,11 +470,13 @@ void MenuManager::RealignMenus(void)
 void MenuManager::AddMenu(Menu *m)
 {
     m_menulist.AddObject(m);
+    m_generation++;
 }
 
 void MenuManager::DeleteMenu(Menu *m)
 {
     m_menulist.RemoveObject(m);
+    m_generation++;
 }
 
 void MenuManager::DeleteAllMenus(void)
@@ -486,9 +490,23 @@ void MenuManager::DeleteAllMenus(void)
     // Added in OPM
     //  Make sure to clear the menu list and stack
     m_menulist.FreeObjectList();
+    m_generation++;
 
     m_menustack.Clear();
     m_showmenustack.Clear();
+}
+
+/*
+Changes whenever FindMenu's answers can: a menu added, deleted or renamed
+*/
+int MenuManager::Generation(void)
+{
+    return m_generation;
+}
+
+void MenuManager::MenusChanged(void)
+{
+    m_generation++;
 }
 
 Menu *MenuManager::FindMenu(str name)
