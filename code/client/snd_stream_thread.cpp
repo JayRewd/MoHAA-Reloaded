@@ -51,10 +51,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <condition_variable>
 #include <atomic>
 
-// one read of a stream channel: MAX_BUFFER_SAMPLES (snd_openal_new.h)
-// samples, at most the 64 KB of its buffer
-#define ST_READ_SAMPLES 16384
-#define ST_READ_MAX     65536
+// one read of a stream channel: MAX_BUFFER_SAMPLES (omaha/snd_omaha.h)
+// samples, at most the 8 KB of its buffer
+#define ST_READ_SAMPLES 2048
+#define ST_READ_MAX     8192
 // reads decoded ahead per stream
 #define ST_SLOTS        4
 // soundtrack files kept in memory beyond those in use

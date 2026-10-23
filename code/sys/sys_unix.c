@@ -104,7 +104,7 @@ static int Sys_Exec( void )
 	{
 		// Child: nothing but exec and _exit. exit() would run the parent's
 		// atexit handlers and destructors here, and some wait forever on
-		// threads the child doesn't have (OpenAL joining PipeWire's thread)
+		// threads the child doesn't have (the mixer joining its device and HRTF threads)
 		execvp( execArgv[ 0 ], execArgv );
 
 		// Failed to execute
