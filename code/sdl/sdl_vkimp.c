@@ -24,13 +24,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //
 // The window, video modes and fullscreen handling of ioquake3's SDL layer,
 // with the window created for Vulkan: the backend (renderervk/vk.c) creates
-// its surface from SDL_window.
+// its surface from SDL_window. SDL 3: a fullscreen window takes the display
+// mode closest to its size (SDL 2's exclusive fullscreen), found when it
+// goes fullscreen.
 
-#ifdef USE_INTERNAL_SDL_HEADERS
-#	include "SDL.h"
-#else
-#	include <SDL.h>
-#endif
+#include <SDL3/SDL.h>
 
 #include "../renderervk/tr_local.h"
 #include "sdl_icon.h"
@@ -62,11 +60,39 @@ void VKimp_Shutdown( void )
 
 	if( SDL_window != NULL )
 	{
+		VKimp_RestoreGamma( );
 		SDL_DestroyWindow( SDL_window );
 		SDL_window = NULL;
 	}
 
 	SDL_QuitSubSystem( SDL_INIT_VIDEO );
+}
+
+/*
+===============
+VKimp_SetFullscreenMode
+
+The display mode a fullscreen window takes: the closest to the video size
+and r_displayRefresh (0: the desktop's rate), as SDL 2 picked the mode of
+SDL_SetWindowDisplayMode; the desktop's if there is none
+===============
+*/
+static void VKimp_SetFullscreenMode( void )
+{
+	SDL_DisplayMode closest;
+	SDL_DisplayID display = SDL_GetDisplayForWindow( SDL_window );
+
+	if( display && SDL_GetClosestFullscreenDisplayMode( display, glConfig.vidWidth, glConfig.vidHeight,
+			glConfig.displayFrequency, false, &closest ) )
+	{
+		if( !SDL_SetWindowFullscreenMode( SDL_window, &closest ) )
+			ri.Printf( PRINT_DEVELOPER, "SDL_SetWindowFullscreenMode failed: %s\n", SDL_GetError( ) );
+	}
+	else
+	{
+		ri.Printf( PRINT_DEVELOPER, "No display mode for %dx%d: %s\n", glConfig.vidWidth, glConfig.vidHeight, SDL_GetError( ) );
+		SDL_SetWindowFullscreenMode( SDL_window, NULL );
+	}
 }
 
 /*
@@ -105,22 +131,26 @@ static void VKimp_DetectAvailableModes(void)
 {
 	int i, j;
 	char buf[ MAX_STRING_CHARS ] = { 0 };
-	int numSDLModes;
+	int numSDLModes = 0;
+	SDL_DisplayMode **sdlModes;
+	const SDL_DisplayMode *desktopMode;
 	SDL_Rect *modes;
 	int numModes = 0;
 
-	SDL_DisplayMode windowMode;
-	int display = SDL_GetWindowDisplayIndex( SDL_window );
-	if( display < 0 )
+	SDL_DisplayID display = SDL_GetDisplayForWindow( SDL_window );
+	if( !display )
 	{
-		ri.Printf( PRINT_WARNING, "Couldn't get window display index, no resolutions detected: %s\n", SDL_GetError() );
+		ri.Printf( PRINT_WARNING, "Couldn't get window display, no resolutions detected: %s\n", SDL_GetError() );
 		return;
 	}
-	numSDLModes = SDL_GetNumDisplayModes( display );
 
-	if( SDL_GetWindowDisplayMode( SDL_window, &windowMode ) < 0 || numSDLModes <= 0 )
+	// the desktop's format (SDL 2 compared the window's display mode)
+	desktopMode = SDL_GetDesktopDisplayMode( display );
+	sdlModes = SDL_GetFullscreenDisplayModes( display, &numSDLModes );
+	if( !desktopMode || !sdlModes || numSDLModes <= 0 )
 	{
 		ri.Printf( PRINT_WARNING, "Couldn't get window display mode, no resolutions detected: %s\n", SDL_GetError() );
+		SDL_free( sdlModes );
 		return;
 	}
 
@@ -132,19 +162,9 @@ static void VKimp_DetectAvailableModes(void)
 
 	for( i = 0; i < numSDLModes; i++ )
 	{
-		SDL_DisplayMode mode;
+		const SDL_DisplayMode mode = *sdlModes[ i ];
 
-		if( SDL_GetDisplayMode( display, i, &mode ) < 0 )
-			continue;
-
-		if( !mode.w || !mode.h )
-		{
-			ri.Printf( PRINT_ALL, "Display supports any resolution\n" );
-			SDL_free( modes );
-			return;
-		}
-
-		if( windowMode.format != mode.format )
+		if( desktopMode->format != mode.format )
 			continue;
 
 		// SDL can give the same resolution with different refresh rates.
@@ -183,6 +203,7 @@ static void VKimp_DetectAvailableModes(void)
 		ri.Cvar_Set( "r_availableModes", buf );
 	}
 	SDL_free( modes );
+	SDL_free( sdlModes );
 }
 
 /*
@@ -193,44 +214,39 @@ VKimp_SetMode
 static int VKimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 {
 	SDL_Surface *icon = NULL;
-	Uint32 flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_VULKAN;
+	SDL_PropertiesID props;
 	SDL_DisplayMode desktopMode;
-	int display = 0;
+	const SDL_DisplayMode *displayMode;
+	SDL_DisplayID display = 0;
 	int x = SDL_WINDOWPOS_UNDEFINED, y = SDL_WINDOWPOS_UNDEFINED;
 
 	ri.Printf( PRINT_ALL, "Initializing display\n");
 
-	if ( r_allowResize->integer )
-		flags |= SDL_WINDOW_RESIZABLE;
-
 #ifdef USE_ICON
-	icon = SDL_CreateRGBSurfaceFrom(
-			(void *)CLIENT_WINDOW_ICON.pixel_data,
+	// RGBA bytes
+	icon = SDL_CreateSurfaceFrom(
 			CLIENT_WINDOW_ICON.width,
 			CLIENT_WINDOW_ICON.height,
-			CLIENT_WINDOW_ICON.bytes_per_pixel * 8,
-			CLIENT_WINDOW_ICON.bytes_per_pixel * CLIENT_WINDOW_ICON.width,
-#ifdef Q3_LITTLE_ENDIAN
-			0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000
-#else
-			0xFF000000, 0x00FF0000, 0x0000FF00, 0x000000FF
-#endif
-			);
+			SDL_PIXELFORMAT_RGBA32,
+			(void *)CLIENT_WINDOW_ICON.pixel_data,
+			CLIENT_WINDOW_ICON.bytes_per_pixel * CLIENT_WINDOW_ICON.width );
 #endif
 
-	// If a window exists, note its display index
+	// If a window exists, note its display
 	if( SDL_window != NULL )
 	{
-		display = SDL_GetWindowDisplayIndex( SDL_window );
-		if( display < 0 )
+		display = SDL_GetDisplayForWindow( SDL_window );
+		if( !display )
 		{
-			ri.Printf( PRINT_DEVELOPER, "SDL_GetWindowDisplayIndex() failed: %s\n", SDL_GetError() );
-			display = 0;
+			ri.Printf( PRINT_DEVELOPER, "SDL_GetDisplayForWindow() failed: %s\n", SDL_GetError() );
 		}
 	}
+	if( !display )
+		display = SDL_GetPrimaryDisplay( );
 
-	if( SDL_GetDesktopDisplayMode( display, &desktopMode ) == 0 )
+	if( ( displayMode = SDL_GetDesktopDisplayMode( display ) ) != NULL )
 	{
+		desktopMode = *displayMode;
 		displayAspect = (float)desktopMode.w / (float)desktopMode.h;
 
 		ri.Printf( PRINT_ALL, "Display aspect: %.3f\n", displayAspect );
@@ -266,7 +282,7 @@ static int VKimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	else if ( !R_GetModeInfo( &glConfig.vidWidth, &glConfig.vidHeight, &glConfig.windowAspect, mode ) )
 	{
 		ri.Printf( PRINT_ALL, " invalid mode\n" );
-		SDL_FreeSurface( icon );
+		SDL_DestroySurface( icon );
 		return RSERR_INVALID_MODE;
 	}
 	ri.Printf( PRINT_ALL, " %d %d\n", glConfig.vidWidth, glConfig.vidHeight);
@@ -287,24 +303,26 @@ static int VKimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		SDL_window = NULL;
 	}
 
-	if( fullscreen )
-	{
-		flags |= SDL_WINDOW_FULLSCREEN;
-		glConfig.isFullscreen = qtrue;
-	}
-	else
-	{
-		if( noborder )
-			flags |= SDL_WINDOW_BORDERLESS;
+	glConfig.isFullscreen = fullscreen;
 
-		glConfig.isFullscreen = qfalse;
-	}
+	props = SDL_CreateProperties( );
+	SDL_SetStringProperty( props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, CLIENT_WINDOW_TITLE );
+	SDL_SetNumberProperty( props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x );
+	SDL_SetNumberProperty( props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y );
+	SDL_SetNumberProperty( props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, glConfig.vidWidth );
+	SDL_SetNumberProperty( props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, glConfig.vidHeight );
+	SDL_SetBooleanProperty( props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true );
+	SDL_SetBooleanProperty( props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true );
+	SDL_SetBooleanProperty( props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, r_allowResize->integer != 0 );
+	SDL_SetBooleanProperty( props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen );
+	SDL_SetBooleanProperty( props, SDL_PROP_WINDOW_CREATE_BORDERLESS_BOOLEAN, !fullscreen && noborder );
 
-	if( ( SDL_window = SDL_CreateWindow( CLIENT_WINDOW_TITLE, x, y,
-			glConfig.vidWidth, glConfig.vidHeight, flags ) ) == NULL )
+	SDL_window = SDL_CreateWindowWithProperties( props );
+	SDL_DestroyProperties( props );
+	if( SDL_window == NULL )
 	{
-		ri.Printf( PRINT_ALL, "SDL_CreateWindow failed: %s\n", SDL_GetError( ) );
-		SDL_FreeSurface( icon );
+		ri.Printf( PRINT_ALL, "SDL_CreateWindowWithProperties failed: %s\n", SDL_GetError( ) );
+		SDL_DestroySurface( icon );
 		return RSERR_INVALID_MODE;
 	}
 
@@ -320,28 +338,21 @@ static int VKimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		ri.Printf( PRINT_ALL, "Stereo rendering is not supported by this renderer\n" );
 	glConfig.stereoEnabled = qfalse;
 
+	// keep the fullscreen window when the exact display mode can't be set
+	// (as ioquake3 did)
 	if( fullscreen )
 	{
-		SDL_DisplayMode desiredMode;
-
-		desiredMode.format = glConfig.colorBits == 16 ? SDL_PIXELFORMAT_RGB565 : SDL_PIXELFORMAT_RGB24;
-		desiredMode.w = glConfig.vidWidth;
-		desiredMode.h = glConfig.vidHeight;
-		desiredMode.refresh_rate = glConfig.displayFrequency = ri.Cvar_VariableIntegerValue( "r_displayRefresh" );
-		desiredMode.driverdata = NULL;
-
-		// keep the fullscreen window when the exact display mode can't be
-		// set (as ioquake3 did)
-		if( SDL_SetWindowDisplayMode( SDL_window, &desiredMode ) < 0 )
-		{
-			ri.Printf( PRINT_DEVELOPER, "SDL_SetWindowDisplayMode failed: %s\n", SDL_GetError( ) );
-		}
+		glConfig.displayFrequency = ri.Cvar_VariableIntegerValue( "r_displayRefresh" );
+		VKimp_SetFullscreenMode( );
 	}
 
 	SDL_SetWindowIcon( SDL_window, icon );
-	SDL_FreeSurface( icon );
+	SDL_DestroySurface( icon );
 
+	// shown with the mode set before the swapchain is made for it (SDL 2's
+	// SDL_ShowWindow waited for the window system)
 	SDL_ShowWindow( SDL_window );
+	SDL_SyncWindow( SDL_window );
 
 	VKimp_DetectAvailableModes();
 
@@ -361,7 +372,7 @@ static qboolean VKimp_StartDriverAndSetMode(int mode, qboolean fullscreen, qbool
 	{
 		const char *driverName;
 
-		if (SDL_Init(SDL_INIT_VIDEO) != 0)
+		if (!SDL_Init(SDL_INIT_VIDEO))
 		{
 			ri.Printf( PRINT_ALL, "SDL_Init( SDL_INIT_VIDEO ) FAILED (%s)\n", SDL_GetError());
 			return qfalse;
@@ -448,9 +459,9 @@ success:
 	glConfig.driverType = GLDRV_ICD;
 	glConfig.hardwareType = GLHW_GENERIC;
 
-	// Only using SDL_SetWindowBrightness to determine if hardware gamma is supported
-	glConfig.deviceSupportsGamma = !r_ignorehwgamma->integer &&
-		SDL_SetWindowBrightness( SDL_window, 1.0f ) >= 0;
+	// a linear ramp set to see if hardware gamma is supported (Windows only,
+	// see sdl_gamma.c)
+	glConfig.deviceSupportsGamma = !r_ignorehwgamma->integer && VKimp_InitGamma( );
 
 	ri.Cvar_Get( "r_availableModes", "", CVAR_ROM );
 
@@ -468,6 +479,8 @@ Handles fullscreen toggling once the frame has been presented
 */
 void VKimp_EndFrame( void )
 {
+	VKimp_GammaFocus( );
+
 	if( r_fullscreen->modified )
 	{
 		int         fullscreen;
@@ -489,7 +502,13 @@ void VKimp_EndFrame( void )
 
 		if( needToToggle )
 		{
-			sdlToggled = SDL_SetWindowFullscreen( SDL_window, r_fullscreen->integer ) >= 0;
+			// the closest display mode, as when the window is made
+			// fullscreen, and the change waited for, as SDL 2 did
+			if( r_fullscreen->integer )
+				VKimp_SetFullscreenMode( );
+			sdlToggled = SDL_SetWindowFullscreen( SDL_window, r_fullscreen->integer != 0 );
+			if( sdlToggled )
+				SDL_SyncWindow( SDL_window );
 
 			// SDL_WM_ToggleFullScreen didn't work, so do it the slow way
 			if( !sdlToggled )

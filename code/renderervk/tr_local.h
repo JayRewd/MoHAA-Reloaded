@@ -2015,7 +2015,7 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 
 // the window functions are declared in vk.h
 
-// hardware gamma ramp, implemented with SDL in sdl/sdl_gamma.c
+// hardware gamma ramp, in sdl/sdl_gamma.c (Windows only)
 void		VKimp_SetGamma( unsigned char red[256], 
 						    unsigned char green[256],
 							unsigned char blue[256] );

@@ -58,7 +58,7 @@ jobs:
       id: sdl
       uses: libsdl-org/setup-sdl@main
       with:
-        version: sdl2-latest
+        version: 3.4.18
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL

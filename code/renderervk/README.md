@@ -517,8 +517,30 @@ below are done.
   tests of the shared engine and the libraries stay, and so does the
   instance's `VK_KHR_portability_enumeration` (generic Vulkan, MoltenVK's
   way in)
+- SDL 3 (2026-10-24, Plan 35, the user's request: "a migration from the
+  current SDL version to SDL 3.4.18 using the lowest latency APIs where
+  applicable"): the window, input, events, threads and library loading
+  use SDL 3 (3.2.0 or later; the downloads, CI and the vendored Windows
+  headers and libraries are 3.4.18). On a Wayland desktop the game is now
+  a native Wayland client (SDL 3's choice when the compositor has fifo-v1,
+  as KWin does; SDL 2 ran it under Xwayland; `SDL_VIDEODRIVER=x11` still
+  does). Relative mouse motion comes as floats and keeps its fractions
+  (the same whole counts from a mouse and no motion lost, checked with
+  injected motion), fullscreen takes the display mode closest
+  to the video size as SDL 2's exclusive fullscreen did, and SDL 3 has no
+  gamma ramps: `r_gamma` now brightens the textures on Linux (under
+  Xwayland SDL 2's ramp had no effect: Xwayland ignores ramps), Windows
+  sets the ramp itself as SDL 2 did. Fullscreen at 1920x1080 the input to
+  display is 0.01 to 0.03 ms lower uncapped and the same at 250 within
+  0.02 ms up to the 99th percentile; the event pump reads the Wayland
+  socket 6 µs later in each frame (SDL 3's D-Bus check and the flush of
+  its frame callback come first), so input to present at 250 is 0.005 ms
+  longer on the median while the time from that read to the present is
+  the same; without Xwayland the input reaches the game up to 0.04 ms
+  sooner. The same frames as the build before, no validation message
+  (see Performance, Present timing, and Implementation notes, SDL 3)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
-  only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
+  only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
 - GL1 was the visual reference until 2026-10-19; since then the look may
   change where that buys performance, and comparisons with the build before
@@ -550,8 +572,8 @@ below are done.
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
 | `tr_backend.c` | renderer-side state tracking (`R_State`, `R_Bind`, `R_Cull`, `R_TexEnv`, matrices, vertex arrays, current color) |
 | `tr_*.c`, `tr_*.cpp` | upstream's GL1 renderer with its GL calls replaced, otherwise unchanged but for the performance work (see Performance) and the static geometry hooks of the surface functions and stage iterators |
-| `../sdl/sdl_vkimp.c` | SDL window for Vulkan, video modes and fullscreen (`VKimp_*`) |
-| `../sdl/sdl_gamma.c` | the hardware gamma ramp through SDL (`VKimp_SetGamma`) |
+| `../sdl/sdl_vkimp.c` | SDL 3 window for Vulkan, video modes and fullscreen (`VKimp_*`) |
+| `../sdl/sdl_gamma.c` | the hardware gamma ramp on Windows (`VKimp_SetGamma`; SDL 3 has none) |
 | `../../cmake/renderer_vulkan.cmake` | build target `renderer_vulkan` (only `GetRefAPI` is exported: hidden symbol visibility) |
 
 The state helpers had GL1's names until 2026-10-23 (`GL_State`, `GL_Bind`,
@@ -2048,6 +2070,25 @@ mailbox only with `r_fastSync 1` and `SDL_VIDEODRIVER=wayland`; the final
 build, mailbox with `r_fastSync 1` under both. `glcheck.sh` clean;
 `renderer_vulkan.so` imports no GL or Vulkan symbol.
 
+SDL 3 (2026-10-24, Plan 35; engine, renderer and tools) against the build
+before (9d872203, SDL 2.32.10, in a bin dir of its own, run through a
+wrapper `exec <its bin dir>/openmohaa "$@"`; `cmplists.sh`, 640x480,
+`r_vkValidation 1`): the 26 views of `menus`, `hud`, `mp_mohdm1`,
+`mohdm1_dlight` and `dm/mohdm1` give the same frames to the bit with SDL 3
+as a native Wayland client and with `SDL_VIDEODRIVER=x11` (Xwayland). No
+validation message at `r_vkValidation 2` in `menus`, `hud` and
+`dm/mohdm1` under both, nor through `r_fullscreen` switched on and off
+with `vid_restart` in between and `r_mode` changed (both drivers, and the
+build before for comparison: the same swapchains). With the defaults the
+renderer reports `GAMMA: software` (SDL 2: `hardware`, a ramp that
+Xwayland ignored); at `r_gamma 1` the frames are the same either way.
+`glcheck.sh` clean on the source (SDL 3's vendored headers are its
+exception now) and the build; `renderer_vulkan.so` imports SDL 3, libm,
+libstdc++, libgcc_s and libc only, and an installed build finds the
+`libSDL3.so.0` beside it (`RUNPATH $ORIGIN`). The mouse and the latency
+checks are in Implementation notes, SDL 3, and Performance, Present
+timing.
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -3364,7 +3405,9 @@ RADV (Mesa 26.0.8), SDL 2.32.10, the display 1920x1080 on HDMI at 59.975
 Hz (the mean interval of the kernel's vblank timestamps, 16.6735 ms), no
 VRR. The game runs under Xwayland (SDL's default video driver, x11) and,
 with `SDL_VIDEODRIVER=wayland`, as a native Wayland client: this build
-works both ways. A 240 Hz display isn't available here, so these numbers
+works both ways. (SDL 2 then; since Plan 35 the game uses SDL 3, whose
+default here is native Wayland, `SDL_VIDEODRIVER=x11` for Xwayland: see
+SDL 3 below.) A 240 Hz display isn't available here, so these numbers
 show the mechanisms (what the compositor costs, what each present mode
 queues, latency against the cap), not a 240 Hz player's numbers.
 
@@ -3636,6 +3679,59 @@ the runs' percentiles, ms:
   at a cap of 1000 with the same frame rate, 0.24 ms more (6.17 to 6.41;
   99th percentile 8.94 to 9.62). Not traced further: KWin scanned out the
   same 5 to 6 framebuffers, nothing imported again.
+
+SDL 3 (2026-10-24, Plan 35): the build before (9d872203, SDL 2.32.10, its
+default video driver x11, so Xwayland) against the SDL 3.4.18 build (its
+default here, native Wayland), fullscreen immediate (tearing), the
+defaults' path for a player, in `o2match` at 1920x1080 (`perf.py ...
+--binaries b_x,n_w --caps 0,250 --seconds 10 --preload libinlat.so
+--framelog DIR` with `INLAT_DISPLAY=1`; `b_x` a wrapper that runs the old
+build from its own bin dir, `INLAT_FBPOLL_US=250 exec <old bin
+dir>/openmohaa "$@" +set r_fullscreen 1 +set in_nograb 0`), three batches
+on the idle machine, interleaved runs: 15 runs each uncapped, 25 at 250.
+The medians of the runs' percentiles, ms (pooled over all frames within
+0.02 of these, but at the 99.9th percentile at 250, where one run of each
+build held a burst of 4 to 9 ms frames, the machine's; without those two
+runs the pooled 99.9th percentiles are 1.19 and 1.20 ms input to present,
+3.48 and 3.22 ms to display):
+
+| `com_maxfps` | build | input to present: median, p90, p99, p99.9 | input to display: median, p90, p99, p99.9 |
+| --- | --- | --- | --- |
+| 0 | SDL 2, Xwayland | 0.586, 0.933, 1.297, 1.684 | 1.534, 2.233, 3.080, 3.401 |
+| 0 | SDL 3, Wayland | 0.585, 0.930, 1.287, 1.695 | 1.510, 2.213, 3.048, 3.391 |
+| 250 | SDL 2, Xwayland | 0.483, 0.658, 0.885, 1.132 | 1.905, 2.314, 2.727, 3.428 |
+| 250 | SDL 3, Wayland | 0.488, 0.662, 0.878, 1.154 | 1.909, 2.325, 2.745, 3.060 |
+
+- Uncapped, input to display is lower at every percentile (by 0.01 to
+  0.03 ms; a bootstrap over the runs puts the median's difference at
+  -0.028 to -0.017 ms), input to present the same within 0.01 ms.
+- At 250 input to present is 0.005 ms longer on the median (95 % interval
+  of the pooled difference +0.001 to +0.010 ms), +0.004, -0.007 and +0.022
+  ms at the 90th, 99th and 99.9th percentiles (intervals around 0); input
+  to display +0.004 to +0.018 ms up to the 99th percentile (intervals
+  around 0) and 0.37 ms lower at the 99.9th. The 5 µs is where the input is read, not time
+  added after it: libinlat counts from the first `SDL_PollEvent`, and SDL
+  3's pump (timed per frame with a preload around `SDL_PollEvent` and the
+  system calls on the display socket) spends 13.6 to 14.4 µs a frame
+  against SDL 2's 7.7 to 8.4 µs, but 10.5 to 11.6 µs of it before it
+  checks the Wayland socket (its D-Bus connection's check and the flush
+  of the frame callback it asks for every frame; SDL 2 under Xwayland 4.5
+  to 4.6 µs) and 3.9 µs after (SDL 2 3.7 to 3.8; 99th percentile 4.7 to
+  5.1 against 5.7 to 6.3). The input is read 6 µs later, and the time
+  from that read to the present is the same. SDL 3 under Xwayland pumps
+  for 10.4 to 12.0 µs (its D-Bus check), SDL 2 as a native Wayland client
+  for 12.9 to 14.1.
+- Before the read: motion injected through uinput (`ydotoold`'s socket,
+  bursts of 2000 moves at 1 and 8 kHz, in the main menu) reached the
+  game's event loop 0.22 to 0.24 ms after it was sent on the median
+  uncapped as a native Wayland client, 0.26 to 0.28 ms under Xwayland
+  (the 99th percentile 0.39 to 0.44 against 0.43 to 0.46; part of it is
+  the Wayland build's higher frame rate in the menu, 2600 against 1900 to
+  2500 frames a second); at 250, where the wait for the next frame's read
+  (0 to 4 ms) is most of it, 2.10 to 2.13 against 2.08 to 2.15 ms (8
+  kHz).
+- SDL 3's pump never took more than 87 µs in 10 runs at 250 (SDL 2's
+  went to 3.6 ms once, in the run with the machine's burst).
 
 World culling (2026-10-17): the world's traversal (`R_RecursiveWorldNode`,
 `R_AddWorldSurfaces`) led the CPU causes of `o4match`'s slow frames (Plan,
@@ -6215,7 +6311,8 @@ selects the sample count (see Implementation notes).
   grep (`qgl|opengl|SDL_GL_|GL_[A-Z0-9_]+|glimp`, any case) over `code/`,
   `cmake/`, `.github/`, `misc/` and `CMakeLists.txt`, Markdown files left
   out, and prints whatever is not one of its documented exceptions:
-  SDL2's own API headers (vendored), comments of miniaudio and a Qt guard
+  SDL's own API headers (vendored: SDL 3's since 2026-10-24, without its
+  GL, GLES and EGL headers), comments of miniaudio and a Qt guard
   of libjpeg, recastnavigation's own CI files, the shader script keywords
   of the retail `.shader` files (`blendFunc GL_ONE GL_ZERO`), the cvar
   values configs hold (`r_textureMode GL_LINEAR_MIPMAP_NEAREST`,
@@ -6225,10 +6322,103 @@ selects the sample count (see Implementation notes).
   the binaries of a bin dir: no OpenGL renderer, no GL, GLX, EGL or GLES
   library needed and no `gl*`, `glX*`, `egl*`, `wgl*` or `SDL_GL_*` import
   (the build before: `renderer_opengl1.so` and its `SDL_GL_*` imports).
-  SDL2 itself, a library the game ships, still has its own OpenGL support,
-  which loads OpenGL only for a GL window; the game asks for a Vulkan one.
+  SDL itself (SDL 3 since 2026-10-24), a library the game ships, still has
+  its own OpenGL support, which loads OpenGL only for a GL window; the
+  game asks for a Vulkan one.
   Frames: the same as 53d8f9d7 (but in the lists that differ between two
   runs of one build).
+- **SDL 3** (2026-10-24, Plan 35; SDL 2.32 before). The code includes
+  `<SDL3/SDL.h>` with the vendored headers (`code/thirdparty/SDL3-3.4.18`,
+  without SDL's GL, GLES and EGL headers) and with an SDL 3 package alike;
+  CMake takes the shared library (`SDL3::SDL3-shared`, 3.2.0 or later: the
+  client and the renderer share one SDL), or on Windows with
+  `USE_INTERNAL_SDL` the release's `SDL3.dll`, `SDL3.lib` and
+  `libSDL3.dll.a` (`code/thirdparty/libs/win32`, `win64`). SDL 3 has no
+  SDLmain: `SDL_main.h` in `sys_main.c` gives the client its `WinMain`.
+  Installed Linux binaries look for libraries in their own folder first
+  (`RUNPATH $ORIGIN`): the package ships `libSDL3.so.0` beside them, as
+  Ubuntu 22.04 and 24.04 have no SDL 3. CI builds SDL 3.4.18 from its tag,
+  the Linux job on an x86-64 runner with the X11 and Wayland development
+  files and a check that both video drivers are in (the ARM runner's cross
+  build had none: the `libSDL2-2.0.so.0` of the 1.0.0 download has only
+  the offscreen and dummy drivers, and the game ran on the system's SDL 2),
+  the unit tests without video. What changed, and what each lower-latency
+  API of SDL 3 does here:
+  - The window: `SDL_CreateWindowWithProperties` (the position kept across
+    `vid_restart`), a fullscreen window takes the display mode closest to
+    the video size and `r_displayRefresh` (`SDL_GetClosestFullscreenDisplayMode`,
+    `SDL_SetWindowFullscreenMode`: SDL 2's exclusive fullscreen), also when
+    `r_fullscreen` toggles, and `SDL_SyncWindow` waits for the window
+    system after showing and toggling (SDL 2 did that inside). The modes
+    listed come from `SDL_GetFullscreenDisplayModes`: under Wayland the
+    output's own and SDL's emulated ones, fewer than Xwayland's list. The
+    swapchain size is `SDL_GetWindowSizeInPixels`.
+  - Native Wayland: SDL 3 picks it on a Wayland desktop whose compositor
+    has fifo-v1 (KWin 6.6 has); the mouse's relative motion then comes
+    straight from KWin's relative pointer (`dx_unaccel`), without
+    Xwayland in between: injected motion reached the game up to 0.04 ms
+    sooner on the median uncapped (0.22 to 0.24 against 0.26 to 0.28 ms,
+    partly the higher frame rate; the same at 250, see Performance,
+    Present timing). Kept: input to display isn't longer at any cap.
+  - The event pump: SDL 3 reads the window system at the first
+    `SDL_PollEvent` of a loop (a sentinel ends the loop), SDL 2 at every
+    call. Kept: a read per call only catches what arrives during the loop,
+    microseconds, and pays its system calls each time. Each pump also
+    checks SDL's D-Bus connection and, under Wayland, flushes the frame
+    callback SDL asks for (SDL internals, before the socket is read): 6 µs
+    more per frame at 250, all before the read (see Performance, Present
+    timing).
+  - Relative mouse motion: `SDL_SetWindowRelativeMouseMode` and
+    `SDL_SetWindowMouseGrab`; unaccelerated, as before
+    (`SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE` stays off): XInput 2 raw motion
+    on X11, the relative pointer on Wayland, and on Windows raw input read
+    by SDL 3's own time-critical thread (`GetRawInputBuffer`) as it
+    arrives, so the events are queued before the pump (SDL 2 read the same
+    messages in it). SDL 3 gives floats: whole counts go to the engine and
+    the rest is carried to the next event (SDL 2 truncated every event
+    under X11, so a touchpad lost its fractions; a mouse's counts are
+    whole and the same). Injected motion (bursts of 2000 random moves at 1
+    and 8 kHz through uinput, 10 per variant) reached the engine with the
+    sums injected in every variant and no fractions; SDL 3 under Wayland
+    got 1999 or 2000 events of a burst (at most one pair merged on the
+    way), SDL 2 under Xwayland 1991 to 2000 (up to 10 merged at a burst's
+    start).
+  - Keys: SDL 3's key events carry the unshifted keycode, as SDL 2's
+    (binds unchanged); letters of non-Latin layouts now give Latin keys
+    (SDL 3's default). Windows' raw keyboard (`SDL_HINT_WINDOWS_RAW_KEYBOARD`)
+    stays off: its events are queued like the window messages before the
+    pump, so it reads nothing sooner here, and with text input on (the
+    console and the UI) it changes how keys and text come.
+  - Event timestamps (SDL 3's are nanoseconds): not used. The engine gives
+    an event the time of the previous input read on purpose (a key counts
+    as held from the earliest moment it could have been pressed,
+    `CL_KeyState`); the real time would shorten a key's share of a command,
+    a movement change and no latency. The frame limiter (`Com_FrameWait`,
+    `Sys_Microseconds`) doesn't use SDL, so `SDL_GetTicksNS` and
+    `SDL_DelayPrecise` don't apply; `VK_Microseconds` keeps
+    `SDL_GetPerformanceCounter`.
+  - The wheel: whole notches as SDL 2's `y`, the parts of a
+    high-resolution wheel or a touchpad carried. Gamepads: the
+    `SDL_Gamepad` functions, SDL 2's buttons (SDL 3's extra `MISC2` to
+    `MISC6` aren't bound), `in_joystickNo` indexes `SDL_GetJoysticks`.
+  - Gamma: SDL 3 has no gamma ramps. On Linux the renderer applies
+    `r_gamma` to the textures (its software path; a change shows after
+    `vid_restart` or a map load); under Xwayland SDL 2's ramp did nothing
+    (Xwayland 24.1's `xwl_randr_crtc_set_gamma` returns without doing
+    anything), so `r_gamma` above 1 brightens the game there now. On
+    Windows `sdl_gamma.c` sets the ramp as SDL 2 did (`SetDeviceGammaRamp`
+    on the window's monitor, the desktop's ramp saved and put back while
+    unfocused and at the end; not run on Windows yet).
+  - The submit thread's lock and conditions and the HRTF design thread's
+    semaphore are SDL 3's (`SDL_Mutex`, `SDL_Condition`, `SDL_Semaphore`:
+    the same pthread and POSIX primitives underneath). `sdl_snd.c` (SDL's
+    audio, never built: the Omaha mixer uses miniaudio) is deleted, and so
+    are `SDL_HasRDTSC` and `SDL_Has3DNow`, gone in SDL 3 (only `CF_ALTIVEC`
+    is read).
+  - `tools/rtimer/inlat.c` works with SDL 3 and SDL 2 builds: its
+    `SDL_PollEvent` takes SDL 3's `bool` and SDL 2's `int`, its
+    `SDL_CreateWindow` both signatures, and it wraps
+    `SDL_CreateWindowWithProperties`.
 - **Loading.** `SDL_Vulkan_GetVkGetInstanceProcAddr` gives
   `vkGetInstanceProcAddr`; every other function is loaded into a `qvk*`
   pointer (lists in `vk_local.h`), device functions through
@@ -8210,6 +8400,29 @@ Done:
     second and more, so it was left out. The same frames as the build
     before, no validation message.
 
+35. SDL 3 (2026-10-24, the user's request; see Status, Implementation
+    notes, SDL 3, Performance, Present timing, and Testing): the client's
+    window, input and events (`code/sdl`), the system layer (`code/sys`:
+    version check, `WinMain` from `SDL_main.h`, library loading, CPU
+    features), the renderer's Vulkan loading, surface, drawable size and
+    submit thread, the Omaha mixer's HRTF semaphore, CMake (the shared
+    `SDL3::SDL3`, `RUNPATH $ORIGIN` for the package's `libSDL3.so.0`), the
+    vendored headers and Windows libraries (SDL 3.4.18), CI (SDL 3.4.18
+    from its tag; the Linux build on an x86-64 runner so that SDL has its
+    X11 and Wayland drivers, checked), the Windows installer, `update-libs.sh`
+    and `libinlat.so` moved from SDL 2.32 to SDL 3; the same day macOS left
+    this branch at the user's word (the `metal` branch is the macOS port).
+    Each lower-latency API of SDL 3 weighed: native Wayland (taken: no
+    Xwayland between KWin and the game), the event pump's sentinel and
+    Windows' raw input thread (SDL's defaults, taken), raw keyboard on
+    Windows and event timestamps (not taken: nothing read sooner, and
+    timestamps would change movement), `SDL_GetTicksNS` and precise delays
+    (no SDL timing in the frame limiter). SDL 3 has no gamma ramps:
+    `r_gamma` goes to the textures on Linux, Windows keeps the ramp. The
+    same frames as the build before, no validation message; input to
+    display not longer uncapped or at 250, input to present at 250 0.005
+    ms longer on the median from the later read inside SDL 3's pump.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -8535,6 +8748,16 @@ left of them:
   forced with `r_vkFallbacks 4`, the same frames on RADV, line pixels
   moved here and there on llvmpipe (strict lines), no stipple (see
   Fragment pipeline). Debug drawing only.
+- SDL 3 (Plan 35): `r_gamma` as a pass of the renderer (on the final
+  image, or in the copy to the swapchain image when there is one) would
+  apply it at once and the same on every platform and window system
+  (Wayland has no gamma ramps, SDL 3 none at all; on Linux it goes to the
+  textures now and a change shows after `vid_restart`); not done. The
+  Windows parts (`WinMain` from `SDL_main.h`, the gamma ramp through
+  `SetDeviceGammaRamp`, SDL 3's raw input thread) are built by CI but not
+  run on Windows. SDL 3's pump checks its D-Bus connection and, under
+  Wayland, flushes its frame callback before it reads the socket (6 µs a
+  frame at 250); SDL's internals, no hint turns them off.
 
 Windows: the same code applies; the CI build fetches Khronos' Vulkan-Headers
 (see Build and run), so no Vulkan SDK is needed. The Vulkan-specific files

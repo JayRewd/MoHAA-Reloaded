@@ -173,10 +173,13 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 */
 
 // the window is renderervk/vk.h's (sdl/sdl_vkimp.c); the hardware gamma ramp
-// is sdl/sdl_gamma.c's
+// is sdl/sdl_gamma.c's (Windows only: SDL 3 has none)
 void		VKimp_SetGamma( unsigned char red[256],
 		unsigned char green[256],
 		unsigned char blue[256] );
+qboolean	VKimp_InitGamma( void );	// the display takes a ramp: saved, a linear one set
+void		VKimp_RestoreGamma( void );	// the display's own ramp back
+void		VKimp_GammaFocus( void );	// the game's ramp with the focus, the display's without
 
 
 #ifdef __cplusplus

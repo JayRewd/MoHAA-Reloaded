@@ -46,8 +46,8 @@
                     </Component>
 
                     <!-- Third-party -->
-                    <Component Id="SDL2.dll">
-                        <File Source="files/SDL2.dll" />
+                    <Component Id="SDL3.dll">
+                        <File Source="files/SDL3.dll" />
                     </Component>
                     <Component Id="libcurl.dll">
                         <File Source="files/libcurl.dll" />
@@ -124,7 +124,7 @@
         </ComponentGroup>
 
         <ComponentGroup Id="ThirdParty">
-            <ComponentRef Id="SDL2.dll" />
+            <ComponentRef Id="SDL3.dll" />
             <ComponentRef Id="libcurl.dll" />
         </ComponentGroup>
 

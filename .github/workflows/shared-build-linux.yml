@@ -4,7 +4,9 @@
 # Ubuntu 22.04
 #
 # Using this version instead of 24.04 to use a lower GLIBC version (2.34).
-# ARM is used for more efficiency, and x64 is used for legacy architectures like PowerPC.
+# Built on an x86-64 runner, not cross-compiled on ARM: the SDL 3 the package
+# ships needs the target's X11 and Wayland development files for its video
+# drivers (Ubuntu 22.04 and 24.04 have no SDL 3 of their own).
 ##########################
 name: "Linux Builds"
 
@@ -25,7 +27,7 @@ jobs:
     strategy:
       matrix:
         architecture: [
-          {name: 'amd64',   os: "ubuntu-22.04-arm", package: 'x86-64-linux-gnu',      triple: 'x86_64-linux-gnu',      arch_option: 'linux-x86_64'}
+          {name: 'amd64',   os: "ubuntu-22.04", package: 'x86-64-linux-gnu',      triple: 'x86_64-linux-gnu',      arch_option: 'linux-x86_64'}
         ]
 
     name: "Building for platform linux-${{matrix.architecture.name}}"
@@ -34,7 +36,7 @@ jobs:
     env:
         wolfssl-version: 'v5.7.6-stable'
         curl-version: '8_12_1'
-        sdl2-branch: 'release-2.32.8'
+        sdl3-branch: 'release-3.4.18'
         vulkan-headers-version: 'v1.4.341'
 
     steps:
@@ -45,8 +47,8 @@ jobs:
     - uses: awalsh128/cache-apt-pkgs-action@latest
       name: Install required packages
       with:
-        packages: flex bison ninja-build cmake clang libpulse-dev portaudio19-dev libasound2-dev libjack-dev libpipewire-0.3-dev qtbase5-dev libdbus-1-dev
-        version: "${{ runner.os }}-${{ runner.arch }}-v1"
+        packages: flex bison ninja-build cmake clang libpulse-dev portaudio19-dev libasound2-dev libjack-dev libpipewire-0.3-dev qtbase5-dev libdbus-1-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libegl1-mesa-dev libdrm-dev libgbm-dev libudev-dev
+        version: "${{ runner.os }}-${{ runner.arch }}-v2"
 
     - name: Settings
       working-directory: ${{github.workspace}}
@@ -74,28 +76,36 @@ jobs:
     ###
 
     # Cache SDL
-    - name: Cache SDL2
-      id: cache-sdl2
+    - name: Cache SDL3
+      id: cache-sdl3
       uses: actions/cache@v4
       with:
-        path: 'thirdparties/SDL2/install'
-        key: ${{ runner.os }}-${{ matrix.architecture.name }}-sdl2-${{ env.sdl2-branch }}-v1
+        path: 'thirdparties/SDL3/install'
+        key: ${{ runner.os }}-${{ matrix.architecture.name }}-sdl3-${{ env.sdl3-branch }}-v1
 
-    # SDL2 setup
-    - name: Checkout SDL2
-      if: steps.cache-sdl2.outputs.cache-hit != 'true'
+    # SDL3 setup
+    - name: Checkout SDL3
+      if: steps.cache-sdl3.outputs.cache-hit != 'true'
       uses: actions/checkout@v4
       with:
         repository: 'libsdl-org/SDL'
-        path: 'thirdparties/SDL2'
-        ref: '${{ env.sdl2-branch }}'
+        path: 'thirdparties/SDL3'
+        ref: '${{ env.sdl3-branch }}'
 
-    - name: Configure and install SDL2
-      if: steps.cache-sdl2.outputs.cache-hit != 'true'
-      working-directory: ${{github.workspace}}/thirdparties/SDL2
+    - name: Configure and install SDL3
+      if: steps.cache-sdl3.outputs.cache-hit != 'true'
+      working-directory: ${{github.workspace}}/thirdparties/SDL3
       run: |
         cmake -B ./build \
-        -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/thirdparties/SDL2/install'
+        -DCMAKE_BUILD_TYPE=Release \
+        -DSDL_TESTS=OFF \
+        -DSDL_EXAMPLES=OFF \
+        -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/thirdparties/SDL3/install'
+        # SDL leaves out a video driver whose development files are missing:
+        # the package's SDL must open windows under X11 and Wayland
+        for driver in X11 WAYLAND; do
+          grep -q "^#define SDL_VIDEO_DRIVER_$driver 1" ./build/include-config-release/build_config/SDL_build_config.h || { echo "SDL3 without its $driver video driver"; exit 1; }
+        done
         cmake --build ./build --config Release --parallel
         cmake --install ./build --config Release
 
@@ -207,7 +217,7 @@ jobs:
         echo "CMAKE_PARAM=--log-level=VERBOSE \
         -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/install' \
         -DUSE_INTERNAL_SDL=OFF \
-        -DSDL2_DIR='${{github.workspace}}/thirdparties/SDL2/install/lib/cmake/SDL2' \
+        -DSDL3_DIR='${{github.workspace}}/thirdparties/SDL3/install/lib/cmake/SDL3' \
         -DCURL_ROOT='${{github.workspace}}/thirdparties/curl/install' \
         -DBUILD_RENDERER_VULKAN=ON \
         -DVulkanHeaders_DIR='${{github.workspace}}/thirdparties/Vulkan-Headers/install/share/cmake/VulkanHeaders' \
@@ -231,7 +241,7 @@ jobs:
         cmake --install ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
         # Copy libraries
         mkdir ${{github.workspace}}/package
-        cp -l ${{github.workspace}}/thirdparties/SDL2/install/lib/libSDL2-2.0.so.0 '${{github.workspace}}/package/'
+        cp -l ${{github.workspace}}/thirdparties/SDL3/install/lib/libSDL3.so.0 '${{github.workspace}}/package/'
         cp -l ${{github.workspace}}/thirdparties/curl/install/lib*/libcurl.so.4 '${{github.workspace}}/package/'
         if [ -d ${{github.workspace}}/install/bin ]; then cp -r ${{github.workspace}}/install/bin/openmohaa/. '${{github.workspace}}/package'; fi
         if [ -d ${{github.workspace}}/install/lib ]; then cp -r ${{github.workspace}}/install/lib/openmohaa/. '${{github.workspace}}/package'; fi

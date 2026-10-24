@@ -24,13 +24,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "vk_local.h"
 
-#ifdef USE_INTERNAL_SDL_HEADERS
-#	include "SDL.h"
-#	include "SDL_vulkan.h"
-#else
-#	include <SDL.h>
-#	include <SDL_vulkan.h>
-#endif
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 
 extern SDL_Window *SDL_window;
 
@@ -191,9 +186,9 @@ static void VK_CreateInstance( void ) {
 	VkExtensionProperties *available, *layerExtensions;
 	uint32_t numAvailable, numLayerExtensions;
 	const char *extensions[VK_MAX_EXTENSIONS];
-	const char **sdlExtensions;
+	const char * const *sdlExtensions;
 	uint32_t numExtensions;
-	unsigned int numSdlExtensions;
+	Uint32 numSdlExtensions;
 	const char *layers[1];
 	uint32_t numLayers;
 	uint32_t apiVersion;
@@ -222,12 +217,9 @@ static void VK_CreateInstance( void ) {
 			VK_API_VERSION_MAJOR( apiVersion ), VK_API_VERSION_MINOR( apiVersion ) );
 	}
 
-	// extensions SDL needs for the window surface
-	if ( !SDL_Vulkan_GetInstanceExtensions( SDL_window, &numSdlExtensions, NULL ) ) {
-		ri.Error( ERR_FATAL, "Vulkan: SDL_Vulkan_GetInstanceExtensions failed: %s", SDL_GetError() );
-	}
-	sdlExtensions = ri.Hunk_AllocateTempMemory( sizeof( *sdlExtensions ) * ( numSdlExtensions + 1 ) );
-	if ( !SDL_Vulkan_GetInstanceExtensions( SDL_window, &numSdlExtensions, sdlExtensions ) ) {
+	// extensions SDL needs for the window surface (SDL's array)
+	sdlExtensions = SDL_Vulkan_GetInstanceExtensions( &numSdlExtensions );
+	if ( !sdlExtensions ) {
 		ri.Error( ERR_FATAL, "Vulkan: SDL_Vulkan_GetInstanceExtensions failed: %s", SDL_GetError() );
 	}
 
@@ -355,7 +347,6 @@ static void VK_CreateInstance( void ) {
 		ri.Hunk_FreeTempMemory( layerExtensions );
 	}
 	ri.Hunk_FreeTempMemory( available );
-	ri.Hunk_FreeTempMemory( sdlExtensions );
 
 #define VK_LOAD_INSTANCE( name ) \
 	q##name = (PFN_##name)qvkGetInstanceProcAddr( vk.instance, #name ); \
@@ -740,7 +731,7 @@ void VK_CreateDevice( void ) {
 
 	VK_CreateInstance();
 
-	if ( !SDL_Vulkan_CreateSurface( SDL_window, vk.instance, &vk.surface ) ) {
+	if ( !SDL_Vulkan_CreateSurface( SDL_window, vk.instance, NULL, &vk.surface ) ) {
 		ri.Error( ERR_FATAL, "Vulkan: SDL_Vulkan_CreateSurface failed: %s", SDL_GetError() );
 	}
 
@@ -1156,7 +1147,7 @@ void VK_CreateSwapchain( void ) {
 
 	VK_CHECK( qvkGetPhysicalDeviceSurfaceCapabilitiesKHR( vk.physicalDevice, vk.surface, &caps ) );
 
-	SDL_Vulkan_GetDrawableSize( SDL_window, &width, &height );
+	SDL_GetWindowSizeInPixels( SDL_window, &width, &height );
 	vk.swapchainDrawableWidth = width;
 	vk.swapchainDrawableHeight = height;
 	if ( caps.currentExtent.width != 0xFFFFFFFF ) {
@@ -1305,5 +1296,5 @@ VK_GetDrawableSize
 ===============
 */
 void VK_GetDrawableSize( int *width, int *height ) {
-	SDL_Vulkan_GetDrawableSize( SDL_window, width, height );
+	SDL_GetWindowSizeInPixels( SDL_window, width, height );
 }

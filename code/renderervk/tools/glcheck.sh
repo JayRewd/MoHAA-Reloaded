@@ -31,11 +31,13 @@ pattern = re.compile(sys.argv[1], re.I)
 allowed = [
 	# this check
 	(r"^code/renderervk/tools/glcheck\.sh$", r".*"),
-	# vendored code: SDL2s own API headers (SDL_video.h declares SDL_GL_*,
-	# SDL_syswm.h includes SDL_egl.h; its GL and GLES headers are deleted),
-	# miniaudio comments on coordinate systems, a Qt guard in libjpeg, the CI
-	# files of recastnavigation (they installed GL for its demo, deleted)
-	(r"^code/thirdparty/SDL2-[^/]*/include/", r".*"),
+	# vendored code: SDL 3s own API headers (SDL_video.h declares SDL_GL_*;
+	# its GL, GLES and EGL headers are left out), miniaudio comments on
+	# coordinate systems, a Qt guard in libjpeg, the CI files of
+	# recastnavigation (they installed GL for its demo, deleted)
+	(r"^code/thirdparty/SDL3-[^/]*/include/", r".*"),
+	# update-libs.sh leaves those GL headers out by name
+	(r"^misc/update-libs\.sh$", r"OpenGL( ES)?|opengl"),
 	(r"^code/thirdparty/miniaudio/miniaudio\.h$", r"OpenGL"),
 	(r"^code/thirdparty/jpeg-[^/]*/jmorecfg\.h$", r"QGLOBAL_H|qglobal\.h"),
 	(r"^code/thirdparty/recastnavigation/\.github/", r".*"),

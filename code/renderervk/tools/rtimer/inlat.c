@@ -3,9 +3,11 @@
  * optionally what the presentation engine and the display did with it
  *
  * Preloaded (LD_PRELOAD) into the game, with any renderer and engine
- * build. A frame reads input at its start (Com_Frame: the frame limiter's
- * wait, then IN_Frame, whose SDL_PollEvent loop takes the window system's
- * events) and reaches the display at its present: the Vulkan renderer's
+ * build, SDL 3 or SDL 2 (the builds before the SDL 3 port). A frame reads
+ * input at its start (Com_Frame: the frame limiter's wait, then IN_Frame,
+ * whose SDL_PollEvent loop takes the window system's events: SDL 3 at the
+ * first call of the loop, SDL 2 at every call) and reaches the display at
+ * its present: the Vulkan renderer's
  * vkQueuePresentKHR (its entry point comes from
  * SDL_Vulkan_GetVkGetInstanceProcAddr, then vkGetDeviceProcAddr, both
  * wrapped here). For every present it records
@@ -36,25 +38,28 @@
  * second file, $INLAT_FRAMES with .in.txt replaced by .pt.txt (see
  * code/renderervk/README.md, Performance, Present timing):
  *
- * - X11 (Xwayland): Mesa's WSI gets a PresentCompleteNotify event for
- *   every present (xcb_wait_for_special_event in its event thread, wrapped
- *   here): its serial (the present's number on its swapchain), its mode
- *   (copy, flip, skip, suboptimal copy), and the UST and MSC the X server
+ * - X11 (Xwayland: SDL 2's default; SDL 3 with SDL_VIDEODRIVER=x11):
+ *   Mesa's WSI gets a PresentCompleteNotify event for every present
+ *   (xcb_wait_for_special_event in its event thread, wrapped here): its
+ *   serial (the present's number on its swapchain), its mode (copy,
+ *   flip, skip, suboptimal copy), and the UST and MSC the X server
  *   gives it; vkWaitForPresentKHR returns once it has arrived and the
- *   frame's GPU work is done. Xwayland sends it for an asynchronous flip
- *   (immediate, mailbox, FIFO relaxed) once the compositor has the commit,
- *   with the UST of the last frame callback, and for a FIFO flip at the
- *   compositor's next frame callback, which KWin sends after compositing
- *   the frame, before its page flip: neither is the time the frame
- *   reaches the display.
- * - Wayland (SDL_VIDEODRIVER=wayland): Mesa's WSI asks for presentation
- *   feedback (wp_presentation) for presents that carry a present id; this
- *   library enables VK_KHR_present_id at vkCreateDevice and numbers every
- *   present, and wraps the feedback's listener (wl_proxy_add_listener): the
- *   compositor's time of the page flip that showed the frame (KWin: the
- *   kernel's timestamp, CLOCK_MONOTONIC; for a tearing flip the last
- *   vblank's) and its flags (vsync or not), or that it was discarded
- *   (replaced by a later present before any flip).
+ *   frame's GPU work is done. Xwayland sends it for an asynchronous
+ *   flip (immediate, mailbox, FIFO relaxed) once the compositor has the
+ *   commit, with the UST of the last frame callback, and for a FIFO
+ *   flip at the compositor's next frame callback, which KWin sends
+ *   after compositing the frame, before its page flip: neither is the
+ *   time the frame reaches the display.
+ * - Wayland (SDL 3's default on KWin; SDL 2 with
+ *   SDL_VIDEODRIVER=wayland): Mesa's WSI asks for presentation feedback
+ *   (wp_presentation) for presents that carry a present id; this
+ *   library enables VK_KHR_present_id at vkCreateDevice and numbers
+ *   every present, and wraps the feedback's listener
+ *   (wl_proxy_add_listener): the compositor's time of the page flip
+ *   that showed the frame (KWin: the kernel's timestamp,
+ *   CLOCK_MONOTONIC; for a tearing flip the last vblank's) and its
+ *   flags (vsync or not), or that it was discarded (replaced by a later
+ *   present before any flip).
  * - GPU completion: every vkQueueSubmit also signals a timeline semaphore
  *   of this library with the next value (VK_KHR_timeline_semaphore enabled
  *   at vkCreateDevice), and a thread waits for it: when the GPU finished
@@ -73,7 +78,8 @@
  *   every N us and records each change of framebuffer (KWin's commit: with
  *   tearing, the flip).
  * - Each swapchain: its present mode and whether the SDL window was
- *   fullscreen (SDL_CreateWindow wrapped).
+ *   fullscreen (SDL_CreateWindow and SDL 3's SDL_CreateWindowWithProperties
+ *   wrapped).
  * - INLAT_PRESENT_MODE=immediate|mailbox|fifo|fifo_relaxed replaces the
  *   present mode of every swapchain the game creates (whatever
  *   r_swapInterval asked for).
@@ -718,7 +724,7 @@ static VkResult VKAPI_CALL IN_CreateSwapchain( VkDevice device, const VkSwapchai
 	in_swapchains[n].width = ci.imageExtent.width;
 	in_swapchains[n].height = ci.imageExtent.height;
 	if ( in_window ) {
-		static uint32_t ( *getFlags )( void * );
+		static uint32_t ( *getFlags )( void * );	// SDL 3's are 64-bit, the same low ones
 
 		if ( !getFlags ) {
 			getFlags = (uint32_t ( * )( void * ))dlsym( RTLD_NEXT, "SDL_GetWindowFlags" );
@@ -1121,25 +1127,53 @@ the entry points the game calls
 ------------------------------------------------------------------------------
 */
 
+// SDL 3 (it has SDL_CreateWindowWithProperties) or SDL 2
+static int IN_SDL3( void ) {
+	static int sdl3 = -1;
+
+	if ( sdl3 < 0 ) {
+		sdl3 = dlsym( RTLD_NEXT, "SDL_CreateWindowWithProperties" ) != NULL;
+	}
+	return sdl3;
+}
+
+// SDL 3 returns a bool, SDL 2 an int that is 0 or 1: both in the low byte,
+// which is what an SDL 3 caller reads and an SDL 2 caller gets as 0 or 1
 int SDL_PollEvent( void *event ) {
-	static int ( *real )( void * );
+	static unsigned char ( *real )( void * );
 
 	if ( !real ) {
-		real = (int ( * )( void * ))dlsym( RTLD_NEXT, "SDL_PollEvent" );
+		real = (unsigned char ( * )( void * ))dlsym( RTLD_NEXT, "SDL_PollEvent" );
 	}
 	if ( !in_read ) {
 		in_read = IN_Now();
 	}
-	return real( event );
+	return real( event ) ? 1 : 0;
 }
 
-void *SDL_CreateWindow( const char *title, int x, int y, int w, int h, uint32_t flags ) {
-	static void *( *real )( const char *, int, int, int, int, uint32_t );
+// SDL 2: ( title, x, y, w, h, flags ), SDL 3: ( title, w, h, flags ) with
+// 64-bit flags, which land in the fourth argument's register (x86-64)
+void *SDL_CreateWindow( const char *title, int a, int b, uint64_t c, int d, uint32_t e ) {
+	static void *real;
 
 	if ( !real ) {
-		real = (void *( * )( const char *, int, int, int, int, uint32_t ))dlsym( RTLD_NEXT, "SDL_CreateWindow" );
+		real = dlsym( RTLD_NEXT, "SDL_CreateWindow" );
 	}
-	in_window = real( title, x, y, w, h, flags );
+	if ( IN_SDL3() ) {
+		in_window = ( (void *( * )( const char *, int, int, uint64_t ))real )( title, a, b, c );
+	} else {
+		in_window = ( (void *( * )( const char *, int, int, int, int, uint32_t ))real )( title, a, b, (int)c, d, e );
+	}
+	return in_window;
+}
+
+void *SDL_CreateWindowWithProperties( uint32_t props ) {
+	static void *( *real )( uint32_t );
+
+	if ( !real ) {
+		real = (void *( * )( uint32_t ))dlsym( RTLD_NEXT, "SDL_CreateWindowWithProperties" );
+	}
+	in_window = real( props );
 	return in_window;
 }
 

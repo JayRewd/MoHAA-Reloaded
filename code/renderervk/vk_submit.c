@@ -51,11 +51,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "vk_local.h"
 
-#ifdef USE_INTERNAL_SDL_HEADERS
-#	include "SDL.h"
-#else
-#	include <SDL.h>
-#endif
+#include <SDL3/SDL.h>
 
 cvar_t		*r_vkSubmitThread;
 
@@ -85,10 +81,10 @@ typedef struct {
 
 static struct {
 	SDL_Thread		*thread;
-	SDL_threadID	threadId;
-	SDL_mutex		*lock;
-	SDL_cond		*wake;			// the thread waits for a job or quit
-	SDL_cond		*done;			// the main thread waits for a job to be done
+	SDL_ThreadID	threadId;
+	SDL_Mutex		*lock;
+	SDL_Condition	*wake;			// the thread waits for a job or quit
+	SDL_Condition	*done;			// the main thread waits for a job to be done
 	qboolean		quit;
 	qboolean		stopping;		// vk_shutdown: errors of the last jobs are not raised again
 
@@ -107,7 +103,7 @@ static struct {
 	int				aheadSemaphore;	// in vk.acquireSemaphores
 	qboolean		alwaysCopy;		// r_vkSubmitThread 2: every frame drawn offscreen and copied, for tests
 
-	SDL_mutex		*messageLock;
+	SDL_Mutex		*messageLock;
 	char			messages[VK_THREAD_MESSAGES];
 	int				messagesLength;
 	int				messagesLost;
@@ -363,7 +359,7 @@ static int SDLCALL VK_SubmitThreadMain( void *data ) {
 		int slot;
 
 		while ( vk_submit.taken == vk_submit.queued && !vk_submit.quit ) {
-			SDL_CondWait( vk_submit.wake, vk_submit.lock );
+			SDL_WaitCondition( vk_submit.wake, vk_submit.lock );
 		}
 		if ( vk_submit.taken == vk_submit.queued ) {
 			break;	// quit, every job done
@@ -376,7 +372,7 @@ static int SDLCALL VK_SubmitThreadMain( void *data ) {
 		SDL_LockMutex( vk_submit.lock );
 		vk_submit.taken++;
 		vk_submit.finished[slot] = qtrue;
-		SDL_CondSignal( vk_submit.done );
+		SDL_SignalCondition( vk_submit.done );
 	}
 	SDL_UnlockMutex( vk_submit.lock );
 	return 0;
@@ -395,7 +391,7 @@ THE MAIN THREAD
 qboolean VK_DeferThreadMessage( const char *text ) {
 	int length;
 
-	if ( !vk_submit.thread || SDL_ThreadID() != vk_submit.threadId ) {
+	if ( !vk_submit.thread || SDL_GetCurrentThreadID() != vk_submit.threadId ) {
 		return qfalse;
 	}
 	length = (int)strlen( text );
@@ -495,7 +491,7 @@ void VK_JoinSubmitJob( int slot ) {
 	start = VK_Microseconds();
 	SDL_LockMutex( vk_submit.lock );
 	while ( !vk_submit.finished[slot] ) {
-		SDL_CondWait( vk_submit.done, vk_submit.lock );
+		SDL_WaitCondition( vk_submit.done, vk_submit.lock );
 	}
 	SDL_UnlockMutex( vk_submit.lock );
 	vk.stats.threadWaitUs += VK_Microseconds() - start;
@@ -619,7 +615,7 @@ void VK_QueueSubmitJob( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t 
 	vk_submit.finished[slot] = qfalse;
 	vk_submit.order[vk_submit.queued % VK_MAX_FRAMES] = slot;
 	vk_submit.queued++;
-	SDL_CondSignal( vk_submit.wake );
+	SDL_SignalCondition( vk_submit.wake );
 	SDL_UnlockMutex( vk_submit.lock );
 }
 
@@ -634,8 +630,8 @@ qboolean VK_StartSubmitThread( void ) {
 	Com_Memset( &vk_submit, 0, sizeof( vk_submit ) );
 	vk_submit.lock = SDL_CreateMutex();
 	vk_submit.messageLock = SDL_CreateMutex();
-	vk_submit.wake = SDL_CreateCond();
-	vk_submit.done = SDL_CreateCond();
+	vk_submit.wake = SDL_CreateCondition();
+	vk_submit.done = SDL_CreateCondition();
 	if ( vk_submit.lock && vk_submit.messageLock && vk_submit.wake && vk_submit.done ) {
 		vk_submit.thread = SDL_CreateThread( VK_SubmitThreadMain, "vksubmit", NULL );
 	}
@@ -650,7 +646,7 @@ qboolean VK_StartSubmitThread( void ) {
 #ifndef _WIN32
 	// tools/rtimer/inlat.c, when it is preloaded
 	{
-		void *game = SDL_LoadObject( NULL );
+		SDL_SharedObject *game = SDL_LoadObject( NULL );
 
 		if ( game ) {
 			vk_submit.inlatQueued = (void ( * )( unsigned long long ))SDL_LoadFunction( game, "inlat_frame_queued" );
@@ -681,7 +677,7 @@ void VK_StopSubmitThread( void ) {
 		VK_DrainSubmitThread();
 		SDL_LockMutex( vk_submit.lock );
 		vk_submit.quit = qtrue;
-		SDL_CondSignal( vk_submit.wake );
+		SDL_SignalCondition( vk_submit.wake );
 		SDL_UnlockMutex( vk_submit.lock );
 		SDL_WaitThread( vk_submit.thread, NULL );
 		vk_submit.thread = NULL;
@@ -690,10 +686,10 @@ void VK_StopSubmitThread( void ) {
 		VK_ReclaimSubmitThreadImage();
 	}
 	if ( vk_submit.wake ) {
-		SDL_DestroyCond( vk_submit.wake );
+		SDL_DestroyCondition( vk_submit.wake );
 	}
 	if ( vk_submit.done ) {
-		SDL_DestroyCond( vk_submit.done );
+		SDL_DestroyCondition( vk_submit.done );
 	}
 	if ( vk_submit.lock ) {
 		SDL_DestroyMutex( vk_submit.lock );

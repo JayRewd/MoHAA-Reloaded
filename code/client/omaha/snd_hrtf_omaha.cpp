@@ -37,11 +37,7 @@ source tree, or write to the Free Software Foundation, Inc.,
 #include <thread>
 #include <vector>
 
-#ifdef USE_INTERNAL_SDL_HEADERS
-#	include "SDL.h"
-#else
-#	include <SDL.h>
-#endif
+#include <SDL3/SDL.h>
 
 #include "mysofa.h"
 #include "pffft.h"
@@ -188,7 +184,7 @@ static struct {
 
 	/* Changed: the design thread, live SOFA only. */
 	std::thread           designThread;
-	SDL_sem              *designSem;
+	SDL_Semaphore        *designSem;
 	std::atomic<bool>     designQuit;
 	omHrtfVoice_t        *designRing[OM_DESIGN_RING];
 	std::atomic<unsigned> designHead;
@@ -1047,7 +1043,7 @@ static void Hrtf_DesignThread(void)
 		unsigned       head;
 		omHrtfVoice_t *hv;
 
-		SDL_SemWait(s_hrtf.designSem);
+		SDL_WaitSemaphore(s_hrtf.designSem);
 		if (s_hrtf.designQuit.load(std::memory_order_acquire)) {
 			return;
 		}
@@ -1075,7 +1071,7 @@ static void Hrtf_RequestDesign(omHrtfVoice_t *hv, const float dir[3])
 	hv->design.store(OM_DESIGN_QUEUED, std::memory_order_relaxed);
 	s_hrtf.designRing[tail & (OM_DESIGN_RING - 1)] = hv;
 	s_hrtf.designTail.store(tail + 1, std::memory_order_release);
-	SDL_SemPost(s_hrtf.designSem);
+	SDL_SignalSemaphore(s_hrtf.designSem);
 }
 
 /* Push a wet block through the per-ear fractional delay line and add to out. */
@@ -1849,7 +1845,7 @@ static void Hrtf_StopDesign(void)
 {
 	if (s_hrtf.designThread.joinable()) {
 		s_hrtf.designQuit.store(true, std::memory_order_release);
-		SDL_SemPost(s_hrtf.designSem);
+		SDL_SignalSemaphore(s_hrtf.designSem);
 		s_hrtf.designThread.join();
 	}
 	if (s_hrtf.designSem) {

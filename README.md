@@ -18,7 +18,7 @@
 - **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's.
 
-Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDIA's driver; on Windows any current AMD, NVIDIA or Intel driver). The Linux build needs glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 or later), the Windows build the [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe), which most PCs with games already have; SDL2 and libcurl come with both. Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
+Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDIA's driver; on Windows any current AMD, NVIDIA or Intel driver). The Linux build needs glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 or later), the Windows build the [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe), which most PCs with games already have; SDL 3 and libcurl come with both (the Linux build uses the SDL 3 next to it, so distributions without one, like Ubuntu 22.04 and 24.04, need nothing). On a Wayland desktop the game is a native Wayland client (`SDL_VIDEODRIVER=x11` runs it under Xwayland). Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
 
 ## Install
 
@@ -57,6 +57,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 |---|---|---|
 | `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too (1000 at `cl_movefps 0`). Movement doesn't depend on it (`cl_movefps`) unless `cl_movefps` is `0`. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
+| `r_gamma` | `1` | Brightness. On Linux it now works: it brightens the textures, so a change shows after `vid_restart` (SDL 3 has no hardware gamma, and under Xwayland the old one did nothing). Windows keeps the hardware ramp. |
 | `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened, decoded or played (the music that scripts trigger, `s_musicvolume`, plays on). Raised again, the song starts where it stopped. |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
 | `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
@@ -73,11 +74,22 @@ Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 8
 
 ## Building
 
-Linux needs CMake 3.25 or later, Ninja, Clang or GCC, Flex, Bison, SDL2, libcurl and the Vulkan headers 1.4 (Khronos' Vulkan-Headers; distributions' packages may be too old: Ubuntu 22.04's are):
+Linux needs CMake 3.25 or later, Ninja, Clang or GCC, Flex, Bison, SDL 3 (3.2.0 or later; the downloads and CI use 3.4.18), libcurl and the Vulkan headers 1.4 (Khronos' Vulkan-Headers; distributions' packages may be too old: Ubuntu 22.04's are):
 
 ```bash
-sudo apt-get install -y cmake ninja-build clang lld flex bison libsdl2-dev libcurl4-openssl-dev
+sudo apt-get install -y cmake ninja-build clang lld flex bison libcurl4-openssl-dev
 ```
+
+SDL 3 is `libsdl3-dev` on Ubuntu 25.04 and later and Debian 13 (`SDL3-devel` on Fedora). Ubuntu 22.04 and 24.04 have none: build SDL 3.4.18 as CI does, with the X11 and Wayland development files (without them SDL can't open a window):
+
+```bash
+sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libegl1-mesa-dev libdrm-dev libgbm-dev libudev-dev libpulse-dev libasound2-dev
+git clone --depth 1 -b release-3.4.18 https://github.com/libsdl-org/SDL.git
+cmake -S SDL -B SDL/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF -DCMAKE_INSTALL_PREFIX="$PWD/sdl3"
+cmake --build SDL/build && cmake --install SDL/build
+```
+
+and add `-DSDL3_DIR="$PWD/sdl3/lib/cmake/SDL3"` to the configure line below.
 
 ```bash
 git clone --depth 1 -b v1.4.341 https://github.com/KhronosGroup/Vulkan-Headers.git
@@ -90,7 +102,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVulkanHeaders_DIR="$PW
 cmake --build build
 ```
 
-Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /path/to/mohaa`, or install it into the game folder (`-DCMAKE_INSTALL_PREFIX=/path/to/mohaa`, then `cmake --install build`). `glslc` is only needed to change the shaders, the Vulkan validation layers only for `r_vkValidation`. CI builds Linux and Windows on every push (`.github/workflows/branches-build.yml`). This branch has no macOS build (the `metal` branch is the macOS port).
+Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /path/to/mohaa`, or install it into the game folder (`-DCMAKE_INSTALL_PREFIX=/path/to/mohaa`, then `cmake --install build`; the installed game looks for `libSDL3.so.0` in its own folder first, so with an SDL 3 built as above copy it there: `cp -L sdl3/lib/libSDL3.so.0 /path/to/mohaa/`). `glslc` is only needed to change the shaders, the Vulkan validation layers only for `r_vkValidation`. CI builds Linux and Windows on every push (`.github/workflows/branches-build.yml`). This branch has no macOS build (the `metal` branch is the macOS port).
 
 ## Looks and limits
 
