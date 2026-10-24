@@ -1,114 +1,98 @@
-# OpenMoHAA
+# MoHAA Reloaded: native Vulkan
 
-[![Build](https://github.com/openmoh/openmohaa/actions/workflows/branches-build.yml/badge.svg?branch=main)](https://github.com/openmoh/openmohaa/actions/workflows/branches-build.yml) [![Release](https://img.shields.io/github/v/release/openmoh/openmohaa)](https://github.com/openmoh/openmohaa/releases) [![Downloads](https://img.shields.io/github/downloads/openmoh/openmohaa/total)](https://github.com/openmoh/openmohaa/releases)
+**MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `vulkan` branch: OpenMoHAA with a Vulkan renderer of its own, for Linux (Windows builds, untested so far). It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
 
-![License](https://img.shields.io/github/license/openmoh/openmohaa) ![Commits](https://img.shields.io/github/commit-activity/t/openmoh/openmohaa)
+| Branch | Renderer | Status |
+|---|---|---|
+| `metal` | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
+| **`vulkan`** (this one) | Vulkan, Linux (Windows untested) | In development |
 
-![Discord](https://img.shields.io/discord/596049712579215361?logo=discord&logoColor=white&color=5865F2)
+> [!IMPORTANT]
+> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
 
-![logo](misc/openmohaa-text-sm.png)
+- **Vulkan, drawn its own way.** `renderer_vulkan` starts from upstream's GL1 renderer with every OpenGL call replaced, then redesigned: the world and the static models are uploaded once per map and drawn from GPU memory, soldiers are skinned and lit in the vertex shader, dynamic lights are per pixel, and a map's pipelines are built while it loads, so nothing stalls the first time it is drawn. Vulkan is loaded at run time; GL1 stays in the build (`cl_renderer opengl1`).
+- **Low input latency.** Frames are drawn straight into the swapchain image, with at most two frames in flight and nothing drawn from older input: from reading the input to the present takes 0.47 and 0.83 ms (medians) in two real matches at 1920x1080 uncapped, against GL1's 0.66 and 1.31.
+- **Movement apart from the frame rate.** The commands the server runs come from their own clock (`cl_cmdfps`, below), each exactly as long at any frame rate, and the view turns with every frame.
+- **Smooth matches.** What used to load in the middle of a match (models announced late, a sound's first play, the soundtrack at a round restart) now happens while the map loads.
+- **Fast.** In two real matches played back at 1920x1080 on an AMD Radeon 780M (an integrated GPU), the renderer's CPU time per frame is about half of GL1's (0.35 ms against 0.65, 0.68 against 1.26), frames take 35 to 40 % less time, and the 99th percentile is 1.2 ms against 1.9 and 1.4 against 2.4.
+- **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
+- **Same game online.** The network protocol, the server-side game code and the data formats are upstream's.
 
-## What is OpenMoHAA?
+Needs a GPU with a Vulkan 1.1 driver (on Linux: Mesa's RADV, ANV or NVK, or NVIDIA's driver) and SDL2. Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
 
-OpenMoHAA is an open-source project aimed at preserving and enhancing **Medal of Honor: Allied Assault** (including Spearhead and Breakthrough expansions) by providing more features and bugfixes, across modern platforms and architectures.
+## Install
 
-Powered by [ioquake3](https://github.com/ioquake/ioq3) and the [F.A.K.K SDK](https://code.idtech.space/ritual/fakk2-sdk), OpenMoHAA provides:
-- Full compatibility with the original game: assets, scripts and multiplayer
-- Better support for modern systems
-- Cross-platform support (Linux, Windows, macOS)
-- Support for both single-player and multiplayer modes
-- Includes all fixes from Spearhead 2.15 and Breakthrough 2.40b
-- More fixes and features, such as bots and a ban system
+There is no release yet. Take a build from CI or build it yourself (below):
 
-*OpenMoHAA is an independent project and is not affiliated with or endorsed by Electronic Arts.*
+1. **A CI build:** open the latest successful run of [Builds on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (needs a GitHub login) and download `out-linux-amd64` (Windows: `out-windows-x64`, or `out-windows-x64-installer`). CI keeps them for a few days only.
+2. **Your game data:** the folder with MOHAA's `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
+3. Extract the build into that folder, next to `main/`, and start `launch_openmohaa_base` (`launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`). Configs, saves and screenshots go where upstream's do.
 
-## Getting started
+## Settings that matter here
 
-- 📦 [Installing OpenMoHAA](docs/markdown/01-intro/01-installation.md)
-- ▶️ [How to play: Launching the game, expansions & file locations](docs/markdown/02-running/01-running.md)
-- ❓ [FAQ & Troubleshooting](docs/markdown/02-running/03-faq.md)
-- 🌐 [Setting up a game server](docs/markdown/02-running/02-running-server.md)
+Low input-to-screen time with even frames, as played on a 240 Hz display (tearing allowed):
 
-## Reporting Issues
+```
+seta com_maxfps 250
+seta r_swapInterval 0
+seta r_fullscreen 1
+```
 
-> [!NOTE]
-> OpenMoHAA hasn't hit version 1.0.0 yet. Think of it like a beta build from the golden age of LAN parties. Features are being added, bugs are getting squashed, and more things are being tweaked. Things might change, break, or get even better over time.
-> 
-> If that sounds like your kind of mission, gear up, frag some bots, and help level up OpenMoHAA!
+Change settings in the console (`seta name value`) or at launch (`+set name value`). Latched settings take effect after `vid_restart` (sound settings after `snd_restart`).
 
-If you encounter a bug or a problem, you can do one of the following:
-- Submit an [issue](https://github.com/openmoh/openmohaa/issues) on GitHub (use the template).
-- Join the [OpenMoHAA Discord](https://discord.gg/NYtH58R) for a quick help.
+**Added by this port:**
 
-## Additional documentation
+| Setting | Default | What it does |
+|---|---|---|
+| `cl_cmdfps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_cmdfps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). |
+| `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
+| `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, so the main thread never waits in the driver's present or acquire (which stalled up to 1.8 ms here, 1.3 ms every 341 frames on NVIDIA). Uncapped, 3 to 21 % more frames a second; at 250 the same frames, input to present 0.01 to 0.02 ms longer. 5 swapchain images (3 with vsync); latched. |
 
-- 📖 [Documentation](https://openmoh.github.io/openmohaa)
-- ⚙️ [Game settings & configuration](docs/markdown/03-configuration/01-configuration.md)
-- 📝 [Code & Scripting reference](docs/markdown/04-coding/02-coding.md)
-- 📜 [Contributing guidelines](CONTRIBUTING.md)
+**Upstream's, with new behavior:**
 
-## Current state
+| Setting | Default | What it does here |
+|---|---|---|
+| `cl_renderer` | `vulkan` | `opengl1` runs upstream's GL1 renderer from the same build. |
+| `com_maxfps` | `85` | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_cmdfps`). |
+| `r_swapInterval` | `0` | `0` shows each frame at once (it can tear; mailbox where immediate is missing). `1` is vsync (FIFO), `-1` vsync that tears when a frame is late (FIFO relaxed). Latched. |
+| `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
+| `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
 
-- 🧰 [List of differences](docs/markdown/01-intro/04-differences.md)
+## Online
 
-### Single-player
+- The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
+- A server receives `cl_cmdfps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate.
 
-The entire single-player campaign should work (Allied Assault, Spearhead and Breakthrough). If you encounter any bug, please create a new [GitHub issue](https://github.com/openmoh/openmohaa/issues) describing them.
+## Building
 
-### Multiplayer
+Linux needs CMake 3.25 or later, Ninja, Clang or GCC, Flex, Bison, SDL2, libcurl and the Vulkan headers 1.4 (Khronos' Vulkan-Headers; distributions' packages may be too old: Ubuntu 22.04's are):
 
-- Almost fully stable
-- All official game modes are supported, including those from Spearhead and Breakthrough:
-  - Free-For-All
-  - Team-Deathmatch
-  - Round-based match
-  - Objective match
-  - Tug-of-War (Spearhead)
-  - Liberation (Breakthrough)
-- Popular mods like **Freeze-Tag** are supported
-- Built-in bots for offline practice and for testing
-  - 🔧 [Setting up bots](docs/markdown/02-running/01-running.md#Playing-with-bots)
+```bash
+sudo apt-get install -y cmake ninja-build clang lld flex bison libsdl2-dev libcurl4-openssl-dev
+```
 
-You can host your own [OpenMoHAA server](docs/markdown/02-running/02-running-server.md#) or join others using OpenMoHAA.
+```bash
+git clone --depth 1 -b v1.4.341 https://github.com/KhronosGroup/Vulkan-Headers.git
+cmake -S Vulkan-Headers -B Vulkan-Headers/build -DCMAKE_INSTALL_PREFIX="$PWD/vulkan-headers"
+cmake --install Vulkan-Headers/build
+```
 
-## Screenshots
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_RENDERER_VULKAN=ON -DVulkanHeaders_DIR="$PWD/vulkan-headers/share/cmake/VulkanHeaders"
+cmake --build build
+```
 
-|                                                                                   |                                                                            |
-|-----------------------------------------------------------------------------------|----------------------------------------------------------------------------|
-| ![](docs/assets/images/v0.60.0-x86_64/mohdm1_1.png)                                      | ![](docs/assets/images/v0.60.0-x86_64/training_1.png)                               |
-| ![](docs/assets/images/v0.60.0-x86_64/flughafen_1.png)                                   | ![](docs/assets/images/v0.60.0-x86_64/flughafen_2.png)                            |
-| ![](docs/assets/images/v0.60.0-x86_64/mohdm2_1.png "Playing Freeze-Tag mode with bots")  | ![](docs/assets/images/v0.60.0-x86_64/training_3.png "Single-Player training")    |
+Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /path/to/mohaa`, or install it into the game folder (`-DCMAKE_INSTALL_PREFIX=/path/to/mohaa`, then `cmake --install build`). `glslc` is only needed to change the shaders, the Vulkan validation layers only for `r_vkValidation`. CI builds Linux and Windows on every push (`.github/workflows/branches-build.yml`); macOS isn't built for this branch.
 
-*More screenshots [here](docs/assets/images)*
+## Looks and limits
 
-## Development & Compiling
+- **Looks like GL1**, except where a change bought speed: dynamic lights per pixel (a smoother falloff than GL1's lightmap texels), up to 64 of them and on doors and lifts too, and a few pixels where the drivers rasterize differently.
+- **Tested on Linux only**, on AMD (Mesa) and NVIDIA. Windows builds but hasn't been played; macOS (MoltenVK) is untested. Reports are welcome.
+- **No release yet.**
 
-- 💻 [Building from source](docs/markdown/04-coding/01-compiling.md)
+## More
 
-## Third party librairies
-
-The following third party tools and libraries are used by the project
-
-- [Flex](https://github.com/westes/flex)
-- [Bison](https://savannah.gnu.org/projects/bison/)
-- [SDL](http://www.libsdl.org/)
-- [LibMAD](http://www.underbit.com/products/mad/)
-- [cURL](https://curl.se/)
-- [Libogg](https://github.com/gcp/libogg)
-- [Libvorbis](https://xiph.org/vorbis/)
-- [Libopus](https://opus-codec.org/)
-- [miniaudio](https://miniaud.io) (Unlicense or MIT No Attribution, David Reid). Device playback for the Omaha mixer. The license text is at the end of `code/thirdparty/miniaudio/miniaudio.h`.
-- [libmysofa](https://github.com/hoene/libmysofa) (BSD-3-Clause, Christian Hoene / Symonics GmbH). SOFA reader for headphone HRTF. The vendor tree also includes the Speex resampler (Jean-Marc Valin, Thorvald Natvig) and kdtree (John Tsiombikas).
-- [PFFFT](https://github.com/marton78/pffft) (BSD-like FFTPACK license: Julien Pommier, Hayati Ayguen, Dario Mambro, and UCAR/NCAR). HRTF convolution.
-- [SADIE II](https://www.york.ac.uk/sadie-project/) KU100 HRTF (Apache License 2.0, University of York). Citation and the license text ship with the data in `assets/main/sound/prom/hrtf/`.
-
-Binary builds install `OMAHA-SOUND-LICENSES.txt` next to the client. That file is the notice libmysofa, Speex, kdtree, and PFFFT require to travel with the program. The SADIE license is installed at `main/sound/prom/hrtf/SADIE_LICENSE.txt`.
-
-## Resources
-
-- 🔗 [GitHub Repository](https://github.com/openmoh/openmohaa/)
-- 🌐 [MOH-DB](https://www.moh-db.com/)
-- 🕹️ [333networks](https://333networks.com/)
-- 📂 [ModDB](https://www.moddb.com/games/medal-of-honor-allied-assault)
-- 📂 [GameBanana](https://gamebanana.com/games/720)
-- 💬 [Join us on Discord](https://discord.gg/NYtH58R)
+- The full record of the port (the plan, every measurement, how each part works, the tests): [`code/renderervk/README.md`](code/renderervk/README.md).
+- Upstream, its documentation and community: [openmoh/openmohaa](https://github.com/openmoh/openmohaa). Its guides in [`docs/markdown`](docs/markdown) apply here except for the renderer, the sound system and building.
+- Thanks to the OpenMoHAA team for the engine (built on [ioquake3](https://github.com/ioquake/ioq3) and the F.A.K.K SDK), to JayRewd for the Omaha sound mixer and the renderer work merged here and the ideas re-implemented, and to notuern for testing on NVIDIA.
+- OpenMoHAA is GPL-2.0 ([`COPYING.txt`](COPYING.txt)). It is an independent project, not affiliated with or endorsed by Electronic Arts.
