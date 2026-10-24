@@ -1271,7 +1271,20 @@ qboolean CL_ReadyToSendPacket( void ) {
 		return qtrue;
 	}
 
-	delta = cls.realtime -  cl.outPackets[ oldPacketNum ].p_realtime;
+	// cl_movefps: a new usercmd waits by the usercmds' own time, the grid's
+	// (as on the metal branch). Counted in real time, the time delta's
+	// corrections bring two of them closer than their step now and then, or
+	// the frames do (7 ms apart at 144 frames a second), and the packet
+	// waited a frame. A grid started again (the time went back) sends at
+	// once; a packet without a new usercmd counts real time as before
+	if ( clc.state == CA_ACTIVE && CL_MoveInterval() && cl.cmdNumber != cl.outPackets[ oldPacketNum ].p_cmdNumber ) {
+		delta = cl.cmds[ cl.cmdNumber & CMD_MASK ].serverTime - cl.outPackets[ oldPacketNum ].p_serverTime;
+		if ( delta < 0 ) {
+			return qtrue;
+		}
+	} else {
+		delta = cls.realtime - cl.outPackets[ oldPacketNum ].p_realtime;
+	}
 	if ( delta < 1000 / cl_maxpackets->integer ) {
 		// the accumulated commands will go out in the next packet
 		return qfalse;

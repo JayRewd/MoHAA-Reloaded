@@ -62,7 +62,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | `r_gamma` | `1` | Brightness. On Linux it now works: it brightens the textures, so a change shows after `vid_restart` (SDL 3 has no hardware gamma, and under Xwayland the old one did nothing). Windows keeps the hardware ramp. |
 | `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened, decoded or played (the music that scripts trigger, `s_musicvolume`, plays on). Raised again, the song starts where it stopped. |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
-| `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
+| `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet, sent by the frame that makes it (with `cl_movefps` on the rate counts the commands' own time; counted in real time, half of them waited a frame at 144 frames a second). |
 | `r_uselod` | `0` (upstream `1`) | `0`: soldiers and weapons at full detail at any distance. Not saved in configs: set it at launch or in `autoexec.cfg`. |
 | `ui_console` | `1` (upstream `0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (upstream `1`) | `1` plays the intro videos at startup. |

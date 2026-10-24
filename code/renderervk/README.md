@@ -603,6 +603,21 @@ below are done.
   are gone. The frames are the build before's but for the stock image's
   four half-dark pixels at the arms' inner ends; the renderer's API is
   version 15 (`DrawBoxes`). See Implementation notes, Crosshair
+- `cl_maxpackets` by the commands' own time (2026-10-24, Plan 40, the
+  engine, as on the `metal` branch; found with Plan 38, the user's go):
+  with `cl_movefps` on, a new command's packet waits only while its server
+  time is less than 1000 / `cl_maxpackets` past the last packet's (a
+  packet without a new command, and `cl_movefps 0`, count real time as
+  before). Counted in real time, a command less than 8 ms (the default
+  `cl_maxpackets 125`) after the packet before waited a frame: at 144
+  frames a second, whose frames are 6.9 ms apart, half of all commands at
+  the default `cl_movefps 100`, and at 250 with `cl_movefps 125` half to
+  five sixths of them, after the time delta's corrections. Against a local
+  server at 144 frames a second a forward press now reaches it 5.1 ms after
+  the press on average instead of 10.0 (95th percentile 12.3 instead of
+  17.5), a click 3.1 instead of 6.1; at 250 with `cl_movefps 125` forward
+  3.7 instead of 5.5; no command waits any more; at 250 with
+  `cl_movefps 100` nothing changes (see Performance, Command rate)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -4832,8 +4847,8 @@ commands for a frame (made to sent: median 3.98 ms, 11,040 of 21,939 held
 bring the grid's commands 4 ms apart in real time now and then, and from
 there every command waits a frame until a longer gap comes; with the
 sub-grid's own packets 3,770 were held, so forward is faster there too.
-At the default 100 (2 ms of margin) one command of 17,481 was held. Not
-changed here (see Remaining).
+At the default 100 (2 ms of margin) one command of 17,481 was held. Plan
+40 changed that (below).
 
 The cost is `metal`'s, measured again here with a temporary game (not
 kept) that ran the server's own move (`Player::ClientMove`) with made-up
@@ -4870,6 +4885,45 @@ in five), and where its two short steps land on the lip the run stops up
 to 10 to 14 points more often. No run of C7 stops with 10 ms steps, with
 or without a split.
 
+
+`cl_maxpackets` by the commands' own time (2026-10-24, Plan 40; the
+engine; `metal`'s b5112fb9 has the same rule, the user's go after Plan 38
+found the waits): with `cl_movefps` on, `CL_ReadyToSendPacket` holds a
+packet with a new command only while that command's server time is less
+than 1000 / `cl_maxpackets` past the server time of the last packet's
+newest command, and sends at once when it is earlier (the grid started
+again); a packet without a new command (reliable commands only) and
+`cl_movefps 0` count real time as before. The grid's commands are a whole
+step apart in server time, so at the defaults (`cl_maxpackets 125`, 8 ms;
+`cl_movefps` 85 to 125, 8 to 11 ms) each goes out in the frame that makes
+it. Counted in real time they didn't: a command made by a frame less than
+8 ms after the packet before waited for the next frame, and the next
+command then came less than 8 ms after that late packet, so the wait went
+on until a longer gap came. At 144 frames a second the frames are 6.9 ms
+apart, so with 10 ms steps every command whose frame came one frame after
+the last command's waited; at 250 with 8 ms steps the time delta's
+corrections now and then put two commands one frame (4 ms) apart. The
+press test of Plan 38 (the same temporary builds, the build before and
+this one interleaved), from the press to the server running its command,
+ms, mean / p95:
+
+| `com_maxfps`, `cl_movefps`, `cl_movesubgrid` | build | commands held for a frame | fire | jump | forward |
+| --- | --- | --- | --- | --- | --- |
+| 144, 100, 1 (2 runs) | before | 8,834 of 17,741 (7 ms) | 6.12 / 13.31 | 5.66 / 13.14 | 9.99 / 17.53 |
+| | Plan 40 | 0 of 17,376 | **3.10 / 6.62** | **3.44 / 6.67** | **5.08 / 12.33** |
+| 144, 100, 0 | before | 4,370 of 8,748 | 10.24 / 19.91 | 9.12 / 17.73 | 8.75 / 18.01 |
+| | Plan 40 | 0 of 8,705 | **6.30 / 12.89** | **6.13 / 12.51** | **5.85 / 12.85** |
+| 250, 125, 1 (2 runs) | before | 10,473 of 22,144 (4 ms) | 3.37 / 7.68 | 3.11 / 7.34 | 5.47 / 9.94 |
+| | Plan 40 | 0 of 22,041 | **2.00 / 3.95** | **2.13 / 3.90** | **3.74 / 7.54** |
+| 250, 125, 0 | before | 9,180 of 10,929 | 7.57 / 11.32 | 7.01 / 11.59 | 7.47 / 10.94 |
+| | Plan 40 | 0 of 10,863 | **3.84 / 7.70** | **4.66 / 7.66** | **4.08 / 7.87** |
+| 250, 100, 1 | Plan 40 | 0 of 8,908 | 2.96 / 7.54 | 3.42 / 7.59 | 5.24 / 10.11 |
+
+The last row is Plan 38's 250 / 100 again within the spread of 60
+presses (nothing was held there before either). Before, a held command
+went out with the next one in a packet of two (4,967 of 12,780 packets at
+144); now every packet has one new command, and the server ran every
+command in every run.
 
 Submit thread (2026-10-19, Plan 19; see Implementation notes, Submit
 thread). JayRewd's commit a5f5a54a drew every frame offscreen and handed
@@ -8873,17 +8927,17 @@ Done:
     before in the stock image's four half-dark pixels only; every size and
     setting tried gives the expected pixels, symmetric; frame times the
     same, cgame 0.2 to 0.3 µs less a frame.
+40. `cl_maxpackets` by the commands' own time (2026-10-24, the user's go
+    after Plan 38's press test found the waits; see Status and
+    Performance, Command rate): with `cl_movefps` on, a new command's
+    packet waits by the commands' server time, as `metal`'s b5112fb9 does;
+    unlike `metal`'s, a packet without a new command keeps counting real
+    time (by server time it would wait for the next command). At 144
+    frames a second half of all commands no longer wait 7 ms at the
+    defaults, at 250 with `cl_movefps 125` half or more no longer wait 4
+    ms; at 250 with `cl_movefps 100` nothing changes.
 
 Remaining:
-
-- `cl_maxpackets` at `cl_movefps 125` (found with Plan 38): it counts real
-  time, so at `cl_maxpackets 125` (the default) and `com_maxfps 250` half
-  of all commands waited a frame (4 ms) before their packet in a local
-  test, after the time delta's corrections brought two of the grid's
-  commands 4 ms apart in real time (at the default `cl_movefps 100` one
-  command of 17,481). `metal` counts the commands' own time in its
-  decoupled mode (b5112fb9: a command's packet waits only while its server
-  time is less than 1000 / `cl_maxpackets` past the last packet's).
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
   frame times in two matches played back, 1920x1080 unless named):
