@@ -38,7 +38,6 @@ jobs:
         target_os: [
           'linux-amd64',
           'windows-x64',
-          'windows-x64-pdb',
         ]
 
     runs-on: ubuntu-24.04
@@ -62,33 +61,3 @@ jobs:
       uses: softprops/action-gh-release@v2.3.2
       with:
         files: ${{github.workspace}}/${{ env.RELEASE_NAME }}.zip
-
-  deploy_installer_windows:
-    strategy:
-      matrix:
-        target_os: [
-          'windows-x64',
-        ]
-    
-    runs-on: ubuntu-24.04
-    environment: "release"
-    needs: [create-release]
-
-    env:
-      RELEASE_NAME: ${{ github.event.repository.name }}-${{github.ref_name}}-${{matrix.target_os}}
-
-    steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: 'out-${{matrix.target_os}}-installer'
-        path: ${{github.workspace}}/${{matrix.target_os}}
-
-    - name: Setup
-      working-directory: '${{github.workspace}}/${{matrix.target_os}}'
-      run:
-        cp Setup.msi ../${{ env.RELEASE_NAME }}.msi
-
-    - name: Release
-      uses: softprops/action-gh-release@v2.3.2
-      with:
-        files: ${{github.workspace}}/${{ env.RELEASE_NAME }}.msi

@@ -502,8 +502,10 @@ Shared files touched outside this directory: `CMakeLists.txt` (option),
 before), and the CI workflows (`.github/workflows`: Linux x64 and Windows x64
 only, with `USE_RENDERER_DLOPEN=ON` and `BUILD_RENDERER_VULKAN=ON`, the
 renderers then shipping as `renderer_opengl1` and `renderer_vulkan` libraries
-next to the executable; artifacts kept 3 days) and the Windows installer
-(`misc/setup/windows/app/Package.wxs` lists both renderer DLLs), and the
+next to the executable; artifacts kept 3 days; since 2026-10-23 the Windows
+job uploads only the game's files, no symbols or installer) and the Windows
+installer (`misc/setup/windows/app/Package.wxs` lists both renderer DLLs;
+CI no longer builds it), and the
 client's default `cl_renderer` (`vulkan` when `BUILD_RENDERER_VULKAN` is on:
 `cmake/client.cmake`, `code/client/cl_main.cpp`), and the frame limiter
 (`Com_Frame` and `Com_FrameWait` in `code/qcommon/common.c`,
