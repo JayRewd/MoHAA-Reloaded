@@ -18,7 +18,7 @@ There are two ports, each on its own branch. This branch, `main`, holds only thi
 | Branch | For | Renderer | Status |
 |---|---|---|---|
 | [**`metal`**](https://github.com/pstngh/MoHAA-Reloaded/tree/metal) | macOS on Apple Silicon (M1 or later, macOS 26 or later) | Metal | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| [**`vulkan`**](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | 64-bit Linux and Windows (Windows not played yet) | Vulkan | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
+| [**`vulkan`**](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | 64-bit Linux and Windows | Vulkan | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
 
 Each branch's README has its install steps, settings and limits: [`metal`](https://github.com/pstngh/MoHAA-Reloaded/blob/metal/README.md), [`vulkan`](https://github.com/pstngh/MoHAA-Reloaded/blob/vulkan/README.md).
 
