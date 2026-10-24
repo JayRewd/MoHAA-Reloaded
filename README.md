@@ -12,7 +12,7 @@
 
 - **Vulkan, drawn its own way.** `renderer_vulkan` starts from upstream's GL1 renderer with every OpenGL call replaced, then redesigned: the world and the static models are uploaded once per map and drawn from GPU memory, soldiers are skinned and lit in the vertex shader, dynamic lights are per pixel, and a map's pipelines are built while it loads, so nothing stalls the first time it is drawn. Vulkan is loaded at run time, and no OpenGL is left: upstream's GL1 and GL2 renderers are gone from the code, the build and the downloads.
 - **Low input latency.** Frames are drawn straight into the swapchain image, with at most two frames in flight and nothing drawn from older input: from reading the input to the present takes 0.47 and 0.83 ms (medians) in two real matches at 1920x1080 uncapped, against 0.66 and 1.31 with upstream's GL1 renderer.
-- **Movement apart from the frame rate.** The commands the server runs come from their own clock (`cl_cmdfps`, below), each exactly as long at any frame rate, and the view turns with every frame.
+- **Movement apart from the frame rate.** The commands the server runs come from their own clock (`cl_movefps`, below), each exactly as long at any frame rate, and the view turns with every frame.
 - **Smooth matches.** What used to load in the middle of a match (models announced late, a sound's first play, the soundtrack at a round restart) now happens while the map loads.
 - **Fast.** In two real matches played back at 1920x1080 on an AMD Radeon 780M (an integrated GPU), the renderer's CPU time per frame is about half of upstream's GL1 renderer's (0.35 ms against 0.65, 0.68 against 1.26), frames take 35 to 40 % less time, and the 99th percentile is 1.2 ms against 1.9 and 1.4 against 2.4.
 - **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
@@ -46,7 +46,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 
 | Setting | Default | What it does |
 |---|---|---|
-| `cl_cmdfps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_cmdfps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). |
+| `cl_movefps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_movefps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
 | `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, so the main thread never waits in the driver's present or acquire (which stalled up to 1.8 ms here, 1.3 ms every 341 frames on NVIDIA). Uncapped, 3 to 21 % more frames a second; at 250 the same frames, input to present 0.01 to 0.02 ms longer. 5 swapchain images (3 with vsync); latched. |
 
@@ -54,7 +54,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 
 | Setting | Default | What it does here |
 |---|---|---|
-| `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_cmdfps`). |
+| `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_movefps`). |
 | `r_swapInterval` | `0` | `0` shows each frame at once (it can tear; mailbox where immediate is missing). `1` is vsync (FIFO), `-1` vsync that tears when a frame is late (FIFO relaxed). Latched. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
@@ -64,12 +64,12 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | `ui_console` | `1` (upstream `0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (upstream `1`) | `1` plays the intro videos at startup. |
 
-Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 85`, `cl_maxpackets 30` or `ui_console 0` stays until you change it.
+Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 85`, `cl_maxpackets 30` or `ui_console 0` stays until you change it. `cl_cmdfps` of earlier builds is `cl_movefps` now, as on `metal`: set it again if you had changed it.
 
 ## Online
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
-- A server receives `cl_cmdfps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate.
+- A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate.
 
 ## Building
 

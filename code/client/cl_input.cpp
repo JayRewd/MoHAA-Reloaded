@@ -28,7 +28,7 @@ unsigned	frame_msec;
 int			old_com_frameTime;
 static int	old_look_frameTime;	// com_frameTime of the last CL_ApplyLook
 
-cvar_t		*cl_cmdfps;			// usercmds a second, whatever the frame rate
+cvar_t		*cl_movefps;			// usercmds a second, whatever the frame rate
 
 /*
 ===============================================================================
@@ -753,7 +753,7 @@ void CL_FinishMove( usercmd_t *cmd ) {
 CL_ApplyLook
 
 Turns the view with this frame's input: the keyboard, the mouse and the
-joystick, every frame. Usercmds come at cl_cmdfps (CL_CreateNewCommands) and
+joystick, every frame. Usercmds come at cl_movefps (CL_CreateNewCommands) and
 carry the angles of the frame that makes them; cgame turns the view of the
 frames between them (CL_GetViewUserCmd). The picture's step uses the keys
 held now (CL_GetLiveUserCmd). The usercmd still waits for the grid.
@@ -844,7 +844,7 @@ usercmd_t CL_CreateCmd( void ) {
 CL_CreateNewCommands
 
 Create the usercmds of this frame. In the game they come at a fixed rate,
-whatever the frame rate: one every 1000 / cl_cmdfps whole milliseconds of
+whatever the frame rate: one every 1000 / cl_movefps whole milliseconds of
 server time (85 to 125 a second; 1000 / 85 is 11 ms, 1000 / 125 is 8), so that
 every pmove step has that length, at 144 frames a second as at 250 or 2000,
 also when the server time drifts (CL_AdjustTimeDelta). A frame that passes
@@ -866,7 +866,7 @@ void CL_CreateNewCommands( void ) {
 	count = 1;
 	cmdTime = cl.serverTime;
 	if ( clc.state == CA_ACTIVE ) {
-		interval = 1000 / (int)Com_Clamp( 85, 125, cl_cmdfps->integer );
+		interval = 1000 / (int)Com_Clamp( 85, 125, cl_movefps->integer );
 		elapsed = cl.serverTime - cl.cmds[cl.cmdNumber & CMD_MASK].serverTime;
 		// else the first one, or the time went back (map_restart) or jumped
 		// (a hitch, or under 10 frames a second: one step of all of it, as
@@ -935,7 +935,7 @@ void CL_GetViewUserCmd( usercmd_t *ucmd ) {
 =================
 CL_LiveKeyFraction
 
-The share of this cl_cmdfps interval CL_KeyMove will store if the key stays
+The share of this cl_movefps interval CL_KeyMove will store if the key stays
 as it is until the command is sealed. Does not touch key->msec or downtime
 (CL_KeyState does, and the real command still needs them).
 
@@ -997,7 +997,7 @@ void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
 
 	*ucmd = cl.cmds[cl.cmdNumber & CMD_MASK];
 
-	interval = 1000 / (int)Com_Clamp( 85, 125, cl_cmdfps->integer );
+	interval = 1000 / (int)Com_Clamp( 85, 125, cl_movefps->integer );
 	elapsed = cl.serverTime - ucmd->serverTime;
 	if ( elapsed < 0 ) {
 		elapsed = 0;
@@ -1361,7 +1361,7 @@ void CL_SendCmd( void ) {
 		return;
 	}
 
-	// the view turns every frame, usercmds come at cl_cmdfps
+	// the view turns every frame, usercmds come at cl_movefps
 	if ( clc.state >= CA_PRIMED ) {
 		CL_ApplyLook();
 	}
@@ -1472,7 +1472,7 @@ void CL_InitInput( void ) {
 
 	cl_nodelta = Cvar_Get ("cl_nodelta", "0", 0);
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
-	cl_cmdfps = Cvar_Get ("cl_cmdfps", "100", CVAR_ARCHIVE);
+	cl_movefps = Cvar_Get ("cl_movefps", "100", CVAR_ARCHIVE);
 }
 
 /*

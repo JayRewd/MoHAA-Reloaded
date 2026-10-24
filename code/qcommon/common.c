@@ -1904,7 +1904,7 @@ void Com_Init( char *commandLine ) {
 	showLoad = Cvar_Get( "showLoad", "0", 0 );
 	convertAnims = Cvar_Get( "convertAnim", "0", 0 );
 	com_altivec = Cvar_Get ("com_altivec", "1", CVAR_ARCHIVE);
-	// MoHAA Reloaded's default (upstream's is 85), as on the metal branch; movement doesn't depend on it (cl_cmdfps)
+	// MoHAA Reloaded's default (upstream's is 85), as on the metal branch; movement doesn't depend on it (cl_movefps)
 	com_maxfps = Cvar_Get( "com_maxfps", "125", CVAR_ARCHIVE );
 	deathmatch = Cvar_Get( "deathmatch", "0", 0 );
 	paused = Cvar_Get( "paused", "0", 64 );
@@ -2421,7 +2421,7 @@ void Com_Frame( void ) {
     // cap above 1000 waits only for its deadline in microseconds and an
     // uncapped client not at all: its frames can last 0 ms of game time
     // (Com_ModifyMsec, which makes them 1 ms at other timescales), the
-    // commands to the server come at their own rate (cl_cmdfps)
+    // commands to the server come at their own rate (cl_movefps)
     minMsec = 1;
     periodUs = 0;
     periodMs = 0;

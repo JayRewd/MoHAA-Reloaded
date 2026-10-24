@@ -3615,7 +3615,7 @@ void CL_Init( void ) {
 	cl_pitchspeed = Cvar_Get ("cl_pitchspeed", "140", CVAR_ARCHIVE);
 	cl_anglespeedkey = Cvar_Get ("cl_anglespeedkey", "1.5", 0);
 
-	// every command of cl_cmdfps 100 in its own packet (MoHAA Reloaded's default, upstream's is 30)
+	// every command of cl_movefps 100 in its own packet (MoHAA Reloaded's default, upstream's is 30)
 	cl_maxpackets = Cvar_Get ("cl_maxpackets", "125", CVAR_ARCHIVE );
 	cl_packetdup = Cvar_Get ("cl_packetdup", "1", CVAR_ARCHIVE );
 

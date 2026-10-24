@@ -126,7 +126,7 @@ typedef struct {
 	int			mouseIndex;
 
 	// what the mouse look of each frame leaves for the next usercmd
-	// (commands come at cl_cmdfps, see CL_ApplyLook)
+	// (commands come at cl_movefps, see CL_ApplyLook)
 	int			lookButtons;		// BUTTON_ANY
 	float		lookMove[2];		// mouse strafe: rightmove, forwardmove
 

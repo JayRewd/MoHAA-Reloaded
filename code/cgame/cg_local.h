@@ -479,7 +479,7 @@ extern "C" {
     extern cvar_t *pmove_fixed;
     extern cvar_t *pmove_msec;
     extern cvar_t *cg_pmove_msec;
-    extern cvar_t *cl_cmdfps;
+    extern cvar_t *cl_movefps;
     extern cvar_t *dm_playermodel;
     extern cvar_t *dm_playergermanmodel;
     extern cvar_t *cg_forceModel;

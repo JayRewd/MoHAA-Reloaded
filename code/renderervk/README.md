@@ -228,10 +228,10 @@ below are done.
   the bit (see Performance, Skeletal culling)
 - command rate (2026-10-19, an engine, client and cgame change, for both
   renderers): the client makes its usercmds, the steps of the player's
-  movement, at a fixed rate (`cl_cmdfps`, 85 to 125 a second, default 100) instead of
+  movement, at a fixed rate (`cl_movefps`, `cl_cmdfps` until 2026-10-23, 85 to 125 a second, default 100) instead of
   one per frame, the same steps at every frame rate, and the frame rate is
   no longer held at 1000 a second (`com_maxfps` above 1000 or 0); the view
-  turns with every frame's mouse look. The server still receives `cl_cmdfps`
+  turns with every frame's mouse look. The server still receives `cl_movefps`
   steps. The client samples the current stock step with the keys held this
   frame, at `(milliseconds since the command + a sub-millisecond fraction) / interval`.
   The fraction is one monotonic read latched to `com_frameTime` (`Com_LatchRenderFraction`);
@@ -479,6 +479,9 @@ below are done.
   in this file were made with the GL1 renderer of the builds up to
   53d8f9d7. The same frames as 53d8f9d7 (but in the lists that differ
   between two runs of one build)
+- `cl_movefps` (2026-10-23): the command rate's cvar (`cl_cmdfps` until
+  then) has the `metal` branch's name, with the same behavior here (85 to
+  125, default 100, always on; see Performance, Command rate)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -545,7 +548,7 @@ the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
 in `code/qcommon/net_ip.c`, their declarations in `code/qcommon/qcommon.h`:
 `com_maxfps` caps in microseconds, those that divide 1000 on the
 millisecond tick, see Performance, Frame limiter), and the command rate
-(`code/client/cl_input.cpp`: `cl_cmdfps`, `CL_CreateNewCommands`,
+(`code/client/cl_input.cpp`: `cl_movefps`, `CL_CreateNewCommands`,
 `CL_ApplyLook`, `CL_GetViewUserCmd`, `CL_SendCmd`; `code/client/client.h`;
 `code/client/cl_cgame.cpp` and `code/cgame/cg_public.h`: the cgame import
 `GetViewUserCmd`; `code/cgame/cg_predict.c`; `code/cgame/cg_specialfx.cpp`;
@@ -4086,8 +4089,10 @@ rate from the frame rate, and his b26d8a67 let the frame rate pass 1000.
 What was taken, and how it differs:
 
 - Usercmds at a fixed rate whatever the frame rate (`CL_CreateNewCommands`):
-  `cl_cmdfps` (archived, 85 to 125 a second, default 100), a command every
-  1000 / `cl_cmdfps` whole milliseconds of server time (8 to 11 ms, 10 by
+  `cl_movefps` (archived, 85 to 125 a second, default 100; named `cl_cmdfps`
+  until 2026-10-23, when it took the `metal` branch's name, and so in the
+  measurements below), a command every 1000 / `cl_movefps` whole
+  milliseconds of server time (8 to 11 ms, 10 by
   default, the user's choice from the bump test below; 12 ms, 83 a second,
   is outside the range). JayRewd's waits until that much
   server time has passed since the last command and stamps it with the
@@ -4126,7 +4131,7 @@ What was taken, and how it differs:
   It now takes `walking`, `groundPlane` and `groundTrace` from its last
   pmove of the same command and the rest from the snapshot (JayRewd's keeps
   the whole predicted state, the server's position included).
-- The server still receives those `cl_cmdfps` steps. The client picture
+- The server still receives those `cl_movefps` steps. The client picture
   samples the current stock step: one `Pmove` of a full interval from the
   last sealed command, with the keys held this frame, then the origin and
   velocity at
@@ -8223,7 +8228,7 @@ Remaining:
   integer): above 1000 frames a second consecutive frames in the same
   millisecond show the same moment of the world (the view turns); a render
   time in microseconds for interpolation and animation was proposed, not
-  done. The client samples the current stock `cl_cmdfps` step with a
+  done. The client samples the current stock `cl_movefps` step with a
   sub-millisecond fraction latched to `com_frameTime`. That fraction is not
   a `Pmove` input. A button or movement key waits for the next command (5
   ms on average at 100 a second, 2 at 250 frames a second before): an

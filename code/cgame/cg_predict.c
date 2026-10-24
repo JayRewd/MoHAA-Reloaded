@@ -406,7 +406,7 @@ static void CG_InterpolatePlayerState(qboolean grabAngles)
     CG_InterpolatePlayerStateCamera();
 
     // if we are still allowing local input, short circuit the view angles
-    // (this frame's, the commands come at cl_cmdfps)
+    // (this frame's, the commands come at cl_movefps)
     if (grabAngles) {
         usercmd_t cmd;
 
@@ -627,7 +627,7 @@ void CG_PredictPlayerState(void)
         cgi.Printf("[%i : %i] ", cg_pmove.cmd.serverTime, cg.time);
     }
 
-    // The commands come at cl_cmdfps, the frames as often as they can: in the
+    // The commands come at cl_movefps, the frames as often as they can: in the
     // frames between commands the snapshot can have run all of them. Its
     // playerState then lacks what isn't networked, which the pmove of the same
     // command gave (walking: the view bob, the view model and the landing)
@@ -655,7 +655,7 @@ void CG_PredictPlayerState(void)
 
         commandTime = cg.predicted_player_state.commandTime;
         elapsed     = cg.time - commandTime;
-        interval    = 1000 / (int)Com_Clamp(85, 125, cl_cmdfps->integer);
+        interval    = 1000 / (int)Com_Clamp(85, 125, cl_movefps->integer);
         if (elapsed > 0 && interval > 0) {
             if (elapsed > interval) {
                 elapsed = interval;

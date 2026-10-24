@@ -73,7 +73,7 @@ cvar_t *cg_smoothClientsTime;
 cvar_t *pmove_fixed;
 cvar_t *pmove_msec;
 cvar_t *cg_pmove_msec;
-cvar_t *cl_cmdfps;
+cvar_t *cl_movefps;
 cvar_t *dm_playermodel;
 cvar_t *dm_playergermanmodel;
 cvar_t *cg_forceModel;
@@ -161,7 +161,7 @@ void CG_RegisterCvars(void)
     pmove_fixed                   = cgi.Cvar_Get("pmove_fixed", "0", 0);
     pmove_msec                    = cgi.Cvar_Get("pmove_msec", "8", 0);
     cg_pmove_msec                 = cgi.Cvar_Get("cg_pmove_msec", "8", 0);
-    cl_cmdfps                     = cgi.Cvar_Get("cl_cmdfps", "100", 0);
+    cl_movefps                    = cgi.Cvar_Get("cl_movefps", "100", 0);
     cg_shadows                    = cgi.Cvar_Get("cg_shadows", "0", CVAR_ARCHIVE);
     cg_shadowscount               = cgi.Cvar_Get("cg_shadowscount", "8", 0);
     cg_shadowdebug                = cgi.Cvar_Get("cg_shadowdebug", "0", 0);
