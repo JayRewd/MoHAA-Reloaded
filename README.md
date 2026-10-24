@@ -1,6 +1,10 @@
 # MoHAA Reloaded
 
 <p align="center">
+  <img src="icons/mohreloaded-banner.png" alt="MoHAA Reloaded" width="800">
+</p>
+
+<p align="center">
   <img src="icons/mohaa.svg" width="96" alt="Medal of Honor: Allied Assault">&nbsp;&nbsp;&nbsp;
   <img src="icons/mohaa-spearhead.svg" width="96" alt="Spearhead">&nbsp;&nbsp;&nbsp;
   <img src="icons/mohaa-breakthrough.svg" width="96" alt="Breakthrough">
