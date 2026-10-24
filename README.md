@@ -1,11 +1,11 @@
 # MoHAA Reloaded: native Vulkan
 
-**MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `vulkan` branch: OpenMoHAA with a Vulkan renderer of its own, for Linux (Windows builds, untested so far). It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
+**MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `vulkan` branch: OpenMoHAA with a Vulkan renderer of its own, for 64-bit Linux and Windows (Windows not played yet). It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
 
 | Branch | Renderer | Status |
 |---|---|---|
 | `metal` | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| **`vulkan`** (this one) | Vulkan, Linux (Windows untested) | In development |
+| **`vulkan`** (this one) | Vulkan, Linux and Windows | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) (Windows untested) |
 
 > [!IMPORTANT]
 > **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
@@ -18,15 +18,17 @@
 - **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's.
 
-Needs a GPU with a Vulkan 1.1 driver (on Linux: Mesa's RADV, ANV or NVK, or NVIDIA's driver) and SDL2. Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
+Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDIA's driver; on Windows any current AMD, NVIDIA or Intel driver). The Linux build needs glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 or later), the Windows build the [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe), which most PCs with games already have; SDL2 and libcurl come with both. Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
 
 ## Install
 
-There is no release yet. Take a build from CI or build it yourself (below):
+1. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` (64-bit Linux) or `openmohaa-vulkan-1.0.0-windows-x64.zip` (64-bit Windows) from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) and extract it (`tar xf openmohaa-vulkan-1.0.0-linux-amd64.tar.gz`; on Windows, right-click and Extract All). Nobody has played the Windows build on Windows yet: please report how it runs.
+2. Find your MOHAA game folder: the folder with `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
+3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows).
 
-1. **A CI build:** open the latest successful run of [Builds on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (needs a GitHub login) and download `out-linux-amd64` (Windows: `out-windows-x64`, or `out-windows-x64-installer`). CI keeps them for a few days only.
-2. **Your game data:** the folder with MOHAA's `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
-3. Extract the build into that folder, next to `main/`, and start `launch_openmohaa_base` (`launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`). Configs, saves and screenshots go where upstream's do.
+On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so: `+set cl_renderer opengl1` runs upstream's OpenGL renderer, which comes with it.
+
+Builds of newer commits come from [CI on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (`out-linux-amd64`, `out-windows-x64`; needs a GitHub login, kept for a few days), or build it yourself (below).
 
 ## Settings that matter here
 
@@ -88,7 +90,6 @@ Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /
 
 - **Looks like GL1**, except where a change bought speed: dynamic lights per pixel (a smoother falloff than GL1's lightmap texels), up to 64 of them and on doors and lifts too, and a few pixels where the drivers rasterize differently.
 - **Tested on Linux only**, on AMD (Mesa) and NVIDIA. Windows builds but hasn't been played; macOS (MoltenVK) is untested. Reports are welcome.
-- **No release yet.**
 
 ## More
 
