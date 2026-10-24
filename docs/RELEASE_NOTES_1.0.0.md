@@ -1,6 +1,6 @@
 # MoHAA Reloaded 1.0.0: native Metal for Apple Silicon
 
-> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from fb6008ea (first from 08f19e40, then bdce5ca9 the same day for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`, then the tag moved and the zip replaced again the same day for `m_filter 0`, `cl_ctrlbindings`, the config after a game-folder change, the HUD's per-frame work and the chat clear of the compass), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
+> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from the tagged commit (first from 08f19e40, then bdce5ca9 the same day for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`, then fb6008ea for `m_filter 0`, `cl_ctrlbindings`, the config after a game-folder change, the HUD's per-frame work and the chat clear of the compass, then the tag moved and the zip replaced again the same day for the crosshair drawn as boxes and 14 old GL settings no longer saved), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
 
 The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstngh/MoHAA-Reloaded) (its `metal` branch), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
@@ -21,14 +21,16 @@ The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstng
 
 ## Settings from an earlier build
 
-Your config keeps your settings. Two of them work differently here:
+Your config keeps your settings. A few work differently here:
 
 - **Set `m_filter 0`.** Configs saved by OpenMoHAA on a Mac, or by an earlier 1.0.0 zip of this port, hold `seta m_filter "1"`, which averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. The default is 0 now, but a saved 1 stays: change the line to `seta m_filter 0`.
 - **Ctrl bindings need `cl_ctrlbindings 1`.** It is a setting of its own now: `cl_altbindings 1` turns on only the Alt and Ins bindings (`altbind`), where upstream's turned on the Ctrl and Del ones (`ctrlbind`) too. If you use Ctrl or Del bindings, add `seta cl_ctrlbindings 1`. `ctrlbindlist` lists them (it listed the Alt ones).
+- **The crosshair** is set by `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness` and `cg_crosshair_color` (below); `cg_crosshair` (a custom crosshair image) and `cg_crosshair_friend` are gone.
+- Lines for settings this build doesn't have any more (`cg_crosshair`, `cg_crosshair_friend`, old GL renderer settings such as `r_allowExtensions` or `r_stencilbits`) do nothing: you can delete them.
 
 ## If you downloaded 1.0.0 earlier on 2026-10-23
 
-The zip was replaced twice that day (its SHA-256 was `9c2f8e97…`, then `fb61b8de…`; this one's is at the bottom). If you have one of those, replace `openmohaa.app` with this zip's, clear the new download's quarantine (step 2), and allow the folder access again if macOS asks. New in this one: `m_filter` 0 and `cl_ctrlbindings` (above), your config kept after a mod server (below), the HUD's per-frame work cut by more than half, and the chat and game messages kept clear of the compass.
+The zip was replaced three times that day (its SHA-256 was `9c2f8e97…`, then `fb61b8de…`, then `a0da44f0…`; this one's is at the bottom). If you have one of those, replace `openmohaa.app` with this zip's, clear the new download's quarantine (step 2), and allow the folder access again if macOS asks. New in this one: the crosshair drawn as boxes (below), and 14 old GL settings no longer saved. Since `9c2f8e97…` and `fb61b8de…` also: `m_filter` 0 and `cl_ctrlbindings` (above), your config kept after a mod server (below), the HUD's per-frame work cut by more than half, and the chat and game messages kept clear of the compass.
 
 ## If you installed the first 1.0.0
 
@@ -46,6 +48,7 @@ This 1.0.0 replaces the one published on 2026-10-20 (the same version number, a 
 - **No OpenAL: the original's sound.** The port's own mixer on Core Audio plays MOHAA's sound as the PC original did on the Miles Sound System: each sound at its own volume (upstream's OpenAL played every positional one-shot at one level), loud ones neither flattened nor clipped, sounds behind you 3 dB quieter and silent beyond their maximum distance. A sound reaches the headphone jack ~5 ms after it starts instead of ~19, and the mixing costs less CPU than OpenAL's. Music, dialogue, movies and saves play through it too: songs crossfade and resume where they stopped. JayRewd's review of where OpenMoHAA's sound differs from the original was the checklist (ideas only, re-implemented).
 - **Sound settings:** `s_speaker_type 1` is headphone 3D through Apple's HRTF (your personalized one when macOS has it): a sound behind, above or below you sounds there. It's off by default (stereo, as the original pans) and switches at once. `s_ambientvolume 0` turns the soundtrack off entirely (no song is opened, decoded or mixed), and the new `cg_tauntsounds 0` mutes other players' taunts (the chat text stays).
 - **Like the original, where it counts:** files go into the game folder, and the intro videos are off (`+set cl_playintro 1` brings them back). No PID file, so no "Abnormal Exit" prompt after a crash or a force-quit.
+- **The crosshair, drawn as boxes in one draw:** by default the stock crosshair's shape (white arms one pixel thick, four long, a gap of three), centered to the pixel at any size. `cg_crosshair_length`, `cg_crosshair_gap` (from the center) and `cg_crosshair_thickness`, in HUD pixels (the screen's up to 1920×1080, scaled with the height above), and `cg_crosshair_color` (`RRGGBB`) change it, at a map load or `vid_restart`. There is no teammate crosshair any more (Spearhead and Breakthrough had a green one), and no per-frame check for it.
 - **Your config survives a mod server.** Joining a server that runs its own game folder (`fs_game`), or a `game_restart`, keeps your settings and binds: upstream reset them to the defaults there and later saved those over your config. A mod's pk3 can't replace your config either. (If that happened to you before, the file holds the defaults now: set your settings again.)
 - **Lean.** arm64 and macOS 26 only: one sealed `openmohaa.app` with the game libraries inside, and no OpenGL, SDL or OpenAL in it.
 - **Faster than GL1** on the test Mac (the benchmark demo: a 2-minute 8-bot free-for-all on Stalingrad): the CPU's work per frame 0.89–0.95 → **0.205 ms** (4.5× less), the 99th percentile ~2.3 → **0.48 ms** (4.8× less). The HUD's own work each frame is less than half upstream's, for the same picture.
@@ -75,7 +78,7 @@ The network protocol, the server-side game code and the data formats are upstrea
 
 ## Looks
 
-On fixed test views across multiplayer, objective and single-player maps, it matches GL1 except for single edge and tie pixels. On purpose: foliage and fences are drawn after the opaque surfaces (a few tie pixels differ); with 32 dynamic lights in a scene the world is lit (MOHAA lit no wall at all on arm64); doors, lifts and other moving brushwork are lit by every dynamic light that reaches them (MOHAA let only a scene's first one in); models keep full detail at any distance (`r_uselod 0`); the chat and game messages are placed by the compass's real size, clear of it at every resolution (upstream's chat started under the compass below 1280 pixels wide); and `r_gamma` is applied in the final shader pass instead of the display's gamma table.
+On fixed test views across multiplayer, objective and single-player maps, it matches GL1 except for single edge and tie pixels. On purpose: foliage and fences are drawn after the opaque surfaces (a few tie pixels differ); with 32 dynamic lights in a scene the world is lit (MOHAA lit no wall at all on arm64); doors, lifts and other moving brushwork are lit by every dynamic light that reaches them (MOHAA let only a scene's first one in); models keep full detail at any distance (`r_uselod 0`); the chat and game messages are placed by the compass's real size, clear of it at every resolution (upstream's chat started under the compass below 1280 pixels wide); the crosshair is the stock image's white arms without its dark pixel at each arm's inner end, crisp above 1080p where the image was scaled, with no teammate or custom crosshair images; and `r_gamma` is applied in the final shader pass instead of the display's gamma table.
 
 ## Known issues and limits
 
@@ -94,4 +97,4 @@ Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose 
 
 | File | SHA-256 |
 |---|---|
-| `openmohaa-metal-1.0.0-macos-arm64.zip` | `a0da44f0f1a84b6ec4479e4da48eb40f28a1299e7bf921ed8ad2a7d643969e06` |
+| `openmohaa-metal-1.0.0-macos-arm64.zip` | (CI's zip of the tagged commit: filled in when it is attached) |
