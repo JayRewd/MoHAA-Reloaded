@@ -6,8 +6,8 @@ set(INTERNAL_SDL_DIR ${SOURCE_DIR}/thirdparty/SDL2-2.32.8)
 
 include(utils/arch)
 
-if(WIN32 OR APPLE)
-    # On Windows and macOS we have internal SDL binaries we can use
+if(WIN32)
+    # On Windows we have internal SDL binaries we can use
     set(HAVE_INTERNAL_SDL true)
 endif()
 
@@ -36,12 +36,6 @@ if(USE_INTERNAL_SDL AND HAVE_INTERNAL_SDL)
         endif()
 
         list(APPEND CLIENT_DEPLOY_LIBRARIES ${LIB_DIR}/SDL2.dll)
-    elseif(APPLE)
-        set(SDL2_LIBRARIES
-            ${SOURCE_DIR}/thirdparty/libs/macos/libSDL2main.a
-            ${SOURCE_DIR}/thirdparty/libs/macos/libSDL2-2.0.0.dylib)
-        list(APPEND CLIENT_DEPLOY_LIBRARIES
-            ${SOURCE_DIR}/thirdparty/libs/macos/libSDL2-2.0.0.dylib)
     else()
         message(FATAL_ERROR "HAVE_INTERNAL_SDL set incorrectly; file a bug")
     endif()

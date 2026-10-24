@@ -127,21 +127,17 @@ set_output_dirs(${CLIENT_BINARY})
 # Ship the headphone HRTF set next to the client binary (fs_basepath / main).
 # OMAHA-SOUND-LICENSES.txt is the binary-form notice required by libmysofa,
 # the Speex resampler, kdtree, and PFFFT. The SADIE Apache text goes with the data.
-# Not into a macOS .app's Contents/MacOS (data there breaks code signing): the
-# install puts them beside the .app.
-if(NOT BUILD_MACOS_APP)
-    add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:${CLIENT_BINARY}>/main/sound/prom
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/assets/main/sound
-            $<TARGET_FILE_DIR:${CLIENT_BINARY}>/main/sound
-        COMMAND ${CMAKE_COMMAND} -E copy
-            ${CMAKE_SOURCE_DIR}/code/thirdparty/OMAHA-SOUND-LICENSES.txt
-            $<TARGET_FILE_DIR:${CLIENT_BINARY}>/OMAHA-SOUND-LICENSES.txt
-        COMMENT "Copy sound assets and license notices"
-    )
-endif()
+add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:${CLIENT_BINARY}>/main/sound/prom
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets/main/sound
+        $<TARGET_FILE_DIR:${CLIENT_BINARY}>/main/sound
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${CMAKE_SOURCE_DIR}/code/thirdparty/OMAHA-SOUND-LICENSES.txt
+        $<TARGET_FILE_DIR:${CLIENT_BINARY}>/OMAHA-SOUND-LICENSES.txt
+    COMMENT "Copy sound assets and license notices"
+)
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/main/sound
     DESTINATION ${INSTALL_BINDIR_FULL}/main)

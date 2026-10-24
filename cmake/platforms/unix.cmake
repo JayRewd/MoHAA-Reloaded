@@ -1,4 +1,4 @@
-# Unix specific settings (this includes macOS)
+# Unix specific settings
 
 if(NOT UNIX)
     return()

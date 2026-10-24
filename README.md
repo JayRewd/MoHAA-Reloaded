@@ -90,12 +90,12 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVulkanHeaders_DIR="$PW
 cmake --build build
 ```
 
-Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /path/to/mohaa`, or install it into the game folder (`-DCMAKE_INSTALL_PREFIX=/path/to/mohaa`, then `cmake --install build`). `glslc` is only needed to change the shaders, the Vulkan validation layers only for `r_vkValidation`. CI builds Linux and Windows on every push (`.github/workflows/branches-build.yml`); macOS isn't built for this branch.
+Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /path/to/mohaa`, or install it into the game folder (`-DCMAKE_INSTALL_PREFIX=/path/to/mohaa`, then `cmake --install build`). `glslc` is only needed to change the shaders, the Vulkan validation layers only for `r_vkValidation`. CI builds Linux and Windows on every push (`.github/workflows/branches-build.yml`). This branch has no macOS build (the `metal` branch is the macOS port).
 
 ## Looks and limits
 
 - **Looks like upstream's GL1 renderer**, except where a change bought speed: dynamic lights per pixel (a smoother falloff than GL1's lightmap texels), up to 64 of them and on doors and lifts too, and a few pixels where the drivers rasterize differently.
-- **Tested on Linux only**, on AMD (Mesa) and NVIDIA. Windows builds but hasn't been played; macOS (MoltenVK) is untested. Reports are welcome.
+- **Tested on Linux only**, on AMD (Mesa) and NVIDIA. Windows builds but hasn't been played. Reports are welcome. On macOS, play the `metal` branch.
 
 ## More
 

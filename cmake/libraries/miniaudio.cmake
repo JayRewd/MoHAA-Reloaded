@@ -12,10 +12,8 @@ add_library(miniaudio STATIC
 
 target_include_directories(miniaudio PUBLIC ${MINIAUDIO_DIR})
 
-if(UNIX AND NOT APPLE)
+if(UNIX)
     target_link_libraries(miniaudio PUBLIC Threads::Threads m ${CMAKE_DL_LIBS})
-elseif(APPLE)
-    target_link_libraries(miniaudio PUBLIC Threads::Threads "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
 else()
     target_link_libraries(miniaudio PUBLIC Threads::Threads)
 endif()

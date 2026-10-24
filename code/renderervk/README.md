@@ -509,6 +509,14 @@ below are done.
   17 % of the frames (never with immediate; the stall of immediate that
   the pull request's author saw on NVIDIA isn't there). The same frames,
   no validation message (see Performance, Present timing)
+- no macOS (2026-10-24, the user's word: the `metal` branch is the macOS
+  port, this branch was never built there): the macOS build (the `.app`
+  bundle, code signing, the DMG, the AppleClang settings, Homebrew's Bison),
+  `code/sys/sys_osx.m`, the macOS paths of the platform layer (`code/sys`,
+  `code/sdl`) and the vendored macOS SDL are deleted. The portability
+  tests of the shared engine and the libraries stay, and so does the
+  instance's `VK_KHR_portability_enumeration` (generic Vulkan, MoltenVK's
+  way in)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -555,8 +563,8 @@ the UI share) and `glState` keep their names.
 
 Shared files touched outside this directory: `CMakeLists.txt`
 (`BUILD_RENDERER_VULKAN`, on by default, the only renderer option),
-`cmake/libraries/{freetype,jpeg}.cmake` and `cmake/platforms/macos.cmake`
-(the renderer's libraries and app bundle), `cmake/renderer_common.cmake`
+`cmake/libraries/{freetype,jpeg}.cmake` (the renderer's libraries),
+`cmake/renderer_common.cmake`
 and `cmake/client.cmake` (the renderer is always a library loaded at run
 time), `code/renderercommon/tr_common.h` and `tr_types.h` (no `qgl.h` and
 no GL declarations; `texnum` is `unsigned int`, same type as before), and

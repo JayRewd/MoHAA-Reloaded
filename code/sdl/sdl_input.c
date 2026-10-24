@@ -270,13 +270,8 @@ static keyNum_t IN_TranslateSDLToQ3Key( SDL_Keysym *keysym, qboolean down )
 			case SDLK_LCTRL:
 			case SDLK_RCTRL:        key = K_CTRL;          break;
 
-#ifdef __APPLE__
-			case SDLK_RGUI:
-			case SDLK_LGUI:         key = K_COMMAND;       break;
-#else
 			case SDLK_RGUI:
 			case SDLK_LGUI:         key = K_SUPER;         break;
-#endif
 
 			case SDLK_RALT:
 			case SDLK_LALT:         key = K_ALT;           break;
@@ -1211,28 +1206,6 @@ static void IN_ProcessEvents( void )
 				}
 				break;
 
-#if defined(PROTOCOL_HANDLER) && defined(__APPLE__)
-			case SDL_DROPFILE:
-				{
-					char *filename = e.drop.file;
-
-					// Handle macOS open URL event. URL protocol scheme must be set in Info.plist.
-					if( !Q_strncmp( filename, PROTOCOL_HANDLER ":", strlen( PROTOCOL_HANDLER ":" ) ) )
-					{
-						char *protocolCommand = Sys_ParseProtocolUri( filename );
-
-						if( protocolCommand )
-						{
-							Cbuf_ExecuteText( EXEC_APPEND, va( "%s\n", protocolCommand ) );
-							free( protocolCommand );
-						}
-					}
-
-					SDL_free( filename );
-				}
-				break;
-#endif
-
 			default:
 				break;
 		}
@@ -1314,10 +1287,6 @@ void IN_Init( void *windowData )
 
 	in_joystick = Cvar_Get( "in_joystick", "0", CVAR_ARCHIVE|CVAR_LATCH );
 	in_joystickThreshold = Cvar_Get( "joy_threshold", "0.15", CVAR_ARCHIVE );
-
-#if defined(PROTOCOL_HANDLER) && defined(__APPLE__)
-	SDL_EventState( SDL_DROPFILE, SDL_ENABLE );
-#endif
 
 	SDL_StartTextInput( );
 

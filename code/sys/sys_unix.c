@@ -125,41 +125,6 @@ static int Sys_Exec( void )
 	return WEXITSTATUS( status );
 }
 
-#ifdef __APPLE__
-
-/*
-==================
-Sys_DefaultHomePath
-==================
-*/
-static char *Sys_DefaultHomePath(void)
-{
-	static char homePath[ MAX_OSPATH ] = { 0 };
-	char *p;
-
-	if( !*homePath )
-	{
-		if( ( p = getenv( "HOME" ) ) != NULL )
-		{
-			Com_sprintf( homePath, sizeof(homePath), "%s%c%s",
-				p, PATH_SEP, "Library/Application Support/" );
-
-			if( com_homepath && com_homepath->string[0] )
-				Q_strcat(homePath, sizeof(homePath), com_homepath->string);
-			else
-				Q_strcat(homePath, sizeof(homePath), HOMEPATH_NAME);
-		}
-	}
-
-	return homePath;
-}
-
-char *Sys_DefaultHomeConfigPath(void) { return Sys_DefaultHomePath(); }
-char *Sys_DefaultHomeDataPath(void)   { return Sys_DefaultHomePath(); }
-char *Sys_DefaultHomeStatePath(void)  { return Sys_DefaultHomePath(); }
-
-#else // __APPLE__
-
 /*
 ==================
 Sys_HomeConfigPath
@@ -487,8 +452,6 @@ char *Sys_DefaultHomeStatePath(void)
 
 	return Sys_HomeStatePath( );
 }
-
-#endif
 
 /*
 ================
@@ -1049,7 +1012,6 @@ void Sys_ErrorDialog( const char *error )
 	close( f );
 }
 
-#ifndef __APPLE__
 /*
 ==============
 Sys_AppendOptionToExecBuffer
@@ -1216,7 +1178,6 @@ dialogResult_t Sys_Dialog( dialogType_t type, const char *message, const char *t
 	Com_DPrintf( S_COLOR_YELLOW "WARNING: failed to show a dialog\n" );
 	return DR_OK;
 }
-#endif
 
 /*
 ==============
@@ -1339,14 +1300,6 @@ qboolean Sys_DllExtension( const char *name ) {
 		return qtrue;
 	}
 
-#ifdef __APPLE__
-	// Allow system frameworks without dylib extensions
-	// i.e., /System/Library/Frameworks/OpenAL.framework/OpenAL
-	if ( strncmp( name, "/System/Library/Frameworks/", 27 ) == 0 ) {
-		return qtrue;
-	}
-#endif
-
 	// Check for format of filename.so.1.2.3
 	p = strstr( name, DLL_EXT "." );
 
@@ -1382,11 +1335,7 @@ qboolean Sys_OpenFolderInPlatformFileManager( const char *path )
 {
 	Sys_ClearExecBuffer( );
 
-#ifdef __APPLE__
-	Sys_AppendToExecBuffer( "open" );
-#else
 	Sys_AppendToExecBuffer( "xdg-open" );
-#endif
 
 	Sys_AppendToExecBuffer( path );
 

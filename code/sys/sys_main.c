@@ -723,8 +723,6 @@ char *Sys_ParseProtocolUri( const char *uri )
 #ifndef DEFAULT_BASEDIR
 #	if defined(DEFAULT_RELATIVE_BASEDIR)
 #		define DEFAULT_BASEDIR Sys_BinaryPathRelative(DEFAULT_RELATIVE_BASEDIR)
-#	elif defined(__APPLE__)
-#		define DEFAULT_BASEDIR Sys_StripAppBundle(Sys_BinaryPath())
 #	else
 #		define DEFAULT_BASEDIR Sys_BinaryPath()
 #	endif
@@ -824,12 +822,6 @@ int main( int argc, char **argv )
 
 	// Set the initial time base
 	Sys_Milliseconds( );
-
-#ifdef __APPLE__
-	// This is passed if we are launched by double-clicking
-	if ( argc >= 2 && Q_strncmp ( argv[1], "-psn", 4 ) == 0 )
-		argc = 1;
-#endif
 
 	Sys_ParseArgs( argc, argv );
 	Sys_SetBinaryPath( Sys_Dirname( argv[ 0 ] ) );
