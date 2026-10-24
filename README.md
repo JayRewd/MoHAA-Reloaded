@@ -7,7 +7,7 @@ There are two ports, each on its own branch. This branch, `main`, holds only thi
 | Branch | For | Renderer | Status |
 |---|---|---|---|
 | [**`metal`**](https://github.com/pstngh/MoHAA-Reloaded/tree/metal) | macOS on Apple Silicon (M1 or later, macOS 26 or later) | Metal | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| [**`vulkan`**](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | Linux (Windows builds, untested so far) | Vulkan | In development: build it, or take a build from CI |
+| [**`vulkan`**](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | 64-bit Linux and Windows (Windows not played yet) | Vulkan | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
 
 Each branch's README has its install steps, settings and limits: [`metal`](https://github.com/pstngh/MoHAA-Reloaded/blob/metal/README.md), [`vulkan`](https://github.com/pstngh/MoHAA-Reloaded/blob/vulkan/README.md).
 
@@ -17,8 +17,8 @@ Each branch's README has its install steps, settings and limits: [`metal`](https
 ## Which one
 
 - **A Mac with Apple Silicon:** `metal`. Download it from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases).
-- **A Linux PC:** `vulkan`. Any GPU with a Vulkan 1.1 driver; developed on AMD with Mesa's RADV driver, also played on NVIDIA.
-- **Windows:** `vulkan` builds for Windows (its CI makes an installer), but nobody has played it on Windows yet. Reports are welcome.
+- **A Linux PC:** `vulkan`. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases). Any GPU with a Vulkan 1.1 driver; developed on AMD with Mesa's RADV driver, also played on NVIDIA.
+- **Windows:** `vulkan`. Download `openmohaa-vulkan-1.0.0-windows-x64.zip` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases). It is built from the same code as the Linux build, but nobody has played it on Windows yet: reports are welcome.
 - **Intel Macs:** neither for now (`metal` needs Apple Silicon; `vulkan` isn't built or tested on macOS).
 
 ## What the two share
