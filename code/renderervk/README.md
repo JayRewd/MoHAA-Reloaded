@@ -532,13 +532,29 @@ below are done.
   Xwayland SDL 2's ramp had no effect: Xwayland ignores ramps), Windows
   sets the ramp itself as SDL 2 did. Fullscreen at 1920x1080 the input to
   display is 0.01 to 0.03 ms lower uncapped and the same at 250 within
-  0.02 ms up to the 99th percentile; the event pump reads the Wayland
+  0.02 ms up to the 99th percentile; the event pump read the Wayland
   socket 6 µs later in each frame (SDL 3's D-Bus check and the flush of
-  its frame callback come first), so input to present at 250 is 0.005 ms
-  longer on the median while the time from that read to the present is
-  the same; without Xwayland the input reaches the game up to 0.04 ms
-  sooner. The same frames as the build before, no validation message
-  (see Performance, Present timing, and Implementation notes, SDL 3)
+  its frame callback came first), so input to present at 250 was 0.005 ms
+  longer on the median while the time from that read to the present was
+  the same (Plan 36 took that back, see the next item); without Xwayland
+  the input reaches the game up to 0.04 ms sooner. The same frames as the
+  build before, no validation message (see Performance, Present timing,
+  and Implementation notes, SDL 3)
+- SDL 3's event pump (2026-10-24, Plan 36, the user's request: "check if
+  u can fix the SDL3 regression"): the frame's input read (the first
+  `SDL_PollEvent`) no longer answers KWin's frame callback or polls
+  joysticks. The frame limiter pumps SDL's events once when its polling of
+  the last millisecond starts after a sleep, so SDL handles the callback
+  (one per present, 1 ms after it) and sends its answer there, and
+  `in_joystick 0` shuts SDL's joystick subsystem down (it polled udev and
+  the devices in every pump). The frame's pump at 250 takes 3.1 µs on the
+  median (SDL 3 before 14.1 to 14.6, SDL 2 7.8 to 8.2) and 8 to 10 µs at
+  the 99th percentile (25 to 51, 14 to 24). Input to present at 250 is
+  0.007 ms shorter than with SDL 2 on the median, 0.014 ms shorter than
+  before, the same at the 99th and 99.9th percentiles within the noise;
+  uncapped and input to display the same or lower. Mouse sums exact, the
+  same frames, no validation message, no SDL patch (see Performance,
+  Present timing, and Implementation notes, SDL 3)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -2088,6 +2104,18 @@ libstdc++, libgcc_s and libc only, and an installed build finds the
 `libSDL3.so.0` beside it (`RUNPATH $ORIGIN`). The mouse and the latency
 checks are in Implementation notes, SDL 3, and Performance, Present
 timing.
+
+SDL 3's event pump (2026-10-24, Plan 36; engine only) against the build
+before (7c82547a, in the same bin dir through a wrapper): the same 26 views
+give the same frames to the bit (`cmplists.sh`, 640x480, `r_vkValidation
+1`, and the build before run twice for the noise: none). No validation
+message at `r_vkValidation 2` in `menus` and `hud`, nor at 1 and 2 on
+`dm/mohdm1` at `com_maxfps 250` through `r_fullscreen` switched on and off
+with `vid_restart`, as a native Wayland client and under Xwayland.
+`in_joystick 0` initializes the joystick subsystem for
+`in_availableJoysticks` and shuts it down again, `in_restart` with 1 keeps
+it up, back to 0 shuts it down (`developer 1`). `glcheck.sh` clean. The
+mouse and the latency checks are in Performance, Present timing.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -3732,6 +3760,70 @@ runs the pooled 99.9th percentiles are 1.19 and 1.20 ms input to present,
   kHz).
 - SDL 3's pump never took more than 87 µs in 10 runs at 250 (SDL 2's
   went to 3.6 ms once, in the run with the machine's burst).
+
+SDL 3's event pump (2026-10-24, Plan 36): where the 13.6 to 14.4 µs of the
+frame's first `SDL_PollEvent` went, timed inside a copy of SDL 3.4.18 with
+timestamps in `SDL_PumpEventsInternal` and `Wayland_PumpEvents` (medians at
+250, `o2match` fullscreen, native Wayland, from the pump's start): 0.6 µs
+SDL's housekeeping, 3.1 to 3.4 µs its D-Bus connection's check
+(`dbus_connection_read_write` with timeout 0 and a dispatch; SDL 2 had
+none), 0.4 µs input method and decoration checks, 2.2 to 2.7 µs dispatching
+what SDL's `wl_cursor_surface` thread had read from the socket (it waits
+on the socket and reads every event as it comes), 3.3 to 3.5 µs
+`wl_display_flush` sending SDL's answer to KWin's frame callback (damage
+and a new callback; `strace -k`: one `sendmsg` from the pump and one from
+the present per frame), 1.1 µs the poll of the socket (the read, nothing
+left to read mostly), then 1.4 µs `SDL_UDEV_Poll` and 2.4 µs
+`SDL_UpdateJoysticks` (the joystick subsystem was up with `in_joystick 0`)
+and 0.4 µs the sentinel. KWin sends a frame callback for every tearing
+flip, 0.82, 1.0 and 1.3 ms after the present (10th, 50th and 90th
+percentiles of the cursor thread's reads); `kwin_wayland` runs with a
+real-time priority here, and in some runs the pump's `sendmsg` cost 25 µs
+in more than 10 % of the frames (the compositor woken onto this core). The
+pump per frame (`pollcost.so`, the first `SDL_PollEvent`, two runs each),
+µs, median, 90th and 99th percentile:
+
+| build | the frame's pump at 250 |
+| --- | --- |
+| SDL 2, Xwayland | 7.8 to 8.2, 9.1 to 9.9, 14 to 24 |
+| SDL 3 (Plan 35) | 14.1 to 14.6, 16 to 35, 25 to 51 |
+| SDL 3, `in_joystick 0` shuts the subsystem down | 11.4 to 12.1, 14 to 38, 42 to 45 |
+| the same and SDL's D-Bus check every 100 ms (a patch of SDL, not taken) | 8.9 to 9.4, 13, 18 to 35 |
+| SDL 3, joystick and the limiter's pump (Plan 36) | 3.1 to 3.2, 3.5 to 3.6, 8 to 10 |
+| the same and the D-Bus patch (not taken) | 1.95, 2.26, 7.4 to 7.9 |
+
+Input to present and display with the same tools as the SDL 3 table above
+(`perf.py ... --binaries b_x,n_w,jw_w`, interleaved, three batches: 45 runs
+each of SDL 2 and Plan 36 at 250, 25 of Plan 35, 15 each uncapped; medians
+of the runs' percentiles, ms):
+
+| `com_maxfps` | build | input to present: median, p90, p99, p99.9 | input to display: median, p90, p99, p99.9 |
+| --- | --- | --- | --- |
+| 0 | SDL 2, Xwayland | 0.590, 0.940, 1.322, 1.718 | 1.517, 2.222, 3.039, 3.376 |
+| 0 | SDL 3 (Plan 35) | 0.589, 0.947, 1.307, 1.723 | 1.509, 2.230, 3.056, 3.417 |
+| 0 | SDL 3 (Plan 36) | 0.588, 0.943, 1.309, 1.697 | 1.510, 2.220, 3.054, 3.400 |
+| 250 | SDL 2, Xwayland | 0.485, 0.660, 0.875, 1.121 | 1.915, 2.322, 2.720, 3.296 |
+| 250 | SDL 3 (Plan 35) | 0.493, 0.667, 0.879, 1.136 | 1.909, 2.300, 2.709, 3.141 |
+| 250 | SDL 3 (Plan 36) | 0.479, 0.651, 0.856, 1.127 | 1.893, 2.318, 2.736, 3.089 |
+
+Pooled over all frames with a bootstrap over the runs, without the runs
+that held a burst of the machine (a frame interval over 4.5 ms at 250: 8 of
+SDL 2's 45 runs, 3 of Plan 36's), Plan 36 against SDL 2 at 250: input to
+present -0.007 ms on the median (95 % interval -0.009 to -0.004), -0.009
+at the 90th percentile (-0.015 to -0.005), -0.006 at the 99th (-0.024 to
++0.011), and at the 99.9th +0.110 with an interval from -0.025 to +0.344
+(the pooled 99.9th percentile follows single runs: one of Plan 36's held
+16 frames over 1.5 ms within 0.1 s, at no particular moment of the demo,
+without a late frame); input to display within intervals around 0.
+Against Plan 35 at 250: -0.014 ms on the median (-0.018 to -0.010), -0.015
+at the 90th percentile (-0.021 to -0.009). Uncapped against SDL 2: input
+to present -0.006 on the median (-0.011 to 0.000), to display -0.010
+(-0.020 to -0.002), the other percentiles within intervals around 0.
+Motion injected in the fullscreen main menu (10 bursts of 2000 moves at 1
+and 8 kHz per build, at 250 and uncapped): every sum exact with Plan 35
+and Plan 36, no fractions, the input to read the same (8 kHz at 250: 2.04
+to 2.10 ms against 2.03 to 2.17 on the median, the wait for the next
+frame; uncapped 0.24 ms both).
 
 World culling (2026-10-17): the world's traversal (`R_RecursiveWorldNode`,
 `R_AddWorldSurfaces`) led the CPU causes of `o4match`'s slow frames (Plan,
@@ -6364,10 +6456,23 @@ selects the sample count (see Implementation notes).
     `SDL_PollEvent` of a loop (a sentinel ends the loop), SDL 2 at every
     call. Kept: a read per call only catches what arrives during the loop,
     microseconds, and pays its system calls each time. Each pump also
-    checks SDL's D-Bus connection and, under Wayland, flushes the frame
-    callback SDL asks for (SDL internals, before the socket is read): 6 µs
-    more per frame at 250, all before the read (see Performance, Present
-    timing).
+    checks SDL's D-Bus connection and, under Wayland, dispatches what SDL's
+    cursor thread read from the socket and flushes the requests that
+    queues (SDL internals, before the socket is read; under Wayland mostly
+    SDL's answer to KWin's frame callback, which wakes the compositor),
+    and with the joystick subsystem up it polls udev and the joysticks
+    after the read: 6 µs more per frame than SDL 2 at 250 (Plan 35). Since
+    Plan 36 the frame limiter calls `IN_PumpEvents` (`SDL_PumpEvents`)
+    once when its polling of the last `COM_POLL_US` starts after a sleep:
+    KWin's frame callback has come by then (0.8 to 1.3 ms after the
+    present), so the frame's own pump has only what came after, and
+    `in_joystick 0` (the default) shuts the joystick subsystem down (its
+    hotplug events were ignored with 0 before; `in_restart` starts it
+    again). Uncapped, with a wait shorter than `COM_POLL_US` or with
+    `com_busyWait 1` nothing sleeps, so nothing more is pumped. Left: the
+    D-Bus check (1.2 µs at 250; no
+    hint skips it, SDL connects at every `SDL_Init`; checking every 100 ms
+    would need a patch of SDL). See Performance, Present timing.
   - Relative mouse motion: `SDL_SetWindowRelativeMouseMode` and
     `SDL_SetWindowMouseGrab`; unaccelerated, as before
     (`SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE` stays off): XInput 2 raw motion
@@ -8422,6 +8527,22 @@ Done:
     same frames as the build before, no validation message; input to
     display not longer uncapped or at 250, input to present at 250 0.005
     ms longer on the median from the later read inside SDL 3's pump.
+36. SDL 3's event pump (2026-10-24, the user's request: "check if u can fix
+    the SDL3 regression"; see Status, Implementation notes, SDL 3, and
+    Performance, Present timing): Plan 35's 5 µs more input to present at
+    250, taken apart inside a copy of SDL 3.4.18: SDL's D-Bus check, the
+    dispatch of what its cursor thread read (mostly KWin's frame callback)
+    and the flush of SDL's answer, all before the socket's read, and udev
+    and joystick polls after it. Engine only, stock SDL: the frame limiter
+    pumps SDL's events once when its polling starts after a sleep
+    (`IN_PumpEvents`, a stub for the dedicated server), and `in_joystick 0`
+    shuts SDL's joystick subsystem down. The frame's pump at 250: 3.1 µs
+    on the median against SDL 2's 7.8 to 8.2 and Plan 35's 14.1 to 14.6.
+    Input to present at 250 0.007 ms shorter than SDL 2's on the median
+    and 0.009 at the 90th percentile, the same at the 99th and 99.9th
+    within the noise; uncapped and input to display the same or lower.
+    Not taken: a patch of SDL that checks D-Bus every 100 ms (1.2 µs more;
+    CI builds SDL from its tag and would have to patch it).
 
 Remaining:
 
@@ -8755,9 +8876,9 @@ left of them:
   textures now and a change shows after `vid_restart`); not done. The
   Windows parts (`WinMain` from `SDL_main.h`, the gamma ramp through
   `SetDeviceGammaRamp`, SDL 3's raw input thread) are built by CI but not
-  run on Windows. SDL 3's pump checks its D-Bus connection and, under
-  Wayland, flushes its frame callback before it reads the socket (6 µs a
-  frame at 250); SDL's internals, no hint turns them off.
+  run on Windows. SDL 3's pump checks its D-Bus connection before it
+  reads the socket (1.2 µs a frame at 250 since Plan 36); no hint turns it
+  off, a patch of SDL could check every 100 ms.
 
 Windows: the same code applies; the CI build fetches Khronos' Vulkan-Headers
 (see Build and run), so no Vulkan SDK is needed. The Vulkan-specific files

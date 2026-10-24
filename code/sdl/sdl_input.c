@@ -513,7 +513,10 @@ static void IN_InitJoystick( void )
 	if( !in_joystick->integer ) {
 		Com_DPrintf( "Joystick is not active.\n" );
 		SDL_free(joysticks);
+		// SDL polls its joystick devices in every event pump (the frame's
+		// input read) while the subsystem is up
 		SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
 		return;
 	}
 
@@ -1218,6 +1221,23 @@ static void IN_ProcessEvents( void )
 				break;
 		}
 	}
+}
+
+/*
+===============
+IN_PumpEvents
+
+Called once while the frame limiter waits: what the window system sent
+since the present is handled now, not in the next frame's input read. On
+Wayland the compositor answers every present with a frame callback, and
+SDL's reply to it (a request sent, which can wake the compositor onto this
+core) then stays out of the time from the input read to the present.
+===============
+*/
+void IN_PumpEvents( void )
+{
+	if( SDL_WasInit( SDL_INIT_VIDEO ) )
+		SDL_PumpEvents( );
 }
 
 /*

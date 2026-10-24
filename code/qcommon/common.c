@@ -2292,6 +2292,10 @@ with onTick, from the last tick seen while polling: Sys_Milliseconds and
 Sys_Microseconds run at the same rate, so it ticks whole milliseconds after
 it, and its last COM_POLL_US are polled like the deadline's (not on
 Windows, where Sys_Milliseconds follows the timer interrupts).
+
+When the polling starts after a sleep, the window system's events are
+handled once (IN_PumpEvents), so the next frame's input read has only what
+came after.
 =================
 */
 #ifdef _WIN32
@@ -2306,6 +2310,7 @@ static void Com_FrameWait( int minMsec, int64_t deadlineUs, qboolean onTick )
 	static int64_t	tickUs;		// and when, 0: none
 	int64_t	sleepUs, msecUs;
 	int		timeVal, timeValSV;
+	qboolean	slept = qfalse, pumped = qfalse;
 
 	do {
 		sleepUs = deadlineUs - Sys_Microseconds() - COM_POLL_US;
@@ -2341,6 +2346,13 @@ static void Com_FrameWait( int minMsec, int64_t deadlineUs, qboolean onTick )
 
 		if ( com_busyWait->integer || sleepUs < 0 ) {
 			sleepUs = 0;
+		}
+		if ( slept && !sleepUs && !pumped ) {
+			IN_PumpEvents();
+			pumped = qtrue;
+		}
+		if ( sleepUs ) {
+			slept = qtrue;
 		}
 		NET_SleepUs( sleepUs );
 		if ( !sleepUs && timeVal && !Com_TimeVal( minMsec ) ) {

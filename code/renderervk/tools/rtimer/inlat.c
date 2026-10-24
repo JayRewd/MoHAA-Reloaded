@@ -6,7 +6,9 @@
  * build, SDL 3 or SDL 2 (the builds before the SDL 3 port). A frame reads
  * input at its start (Com_Frame: the frame limiter's wait, then IN_Frame,
  * whose SDL_PollEvent loop takes the window system's events: SDL 3 at the
- * first call of the loop, SDL 2 at every call) and reaches the display at
+ * first call of the loop, SDL 2 at every call; since Plan 36 the wait's
+ * IN_PumpEvents takes what came until its polling started, the loop what
+ * came after) and reaches the display at
  * its present: the Vulkan renderer's
  * vkQueuePresentKHR (its entry point comes from
  * SDL_Vulkan_GetVkGetInstanceProcAddr, then vkGetDeviceProcAddr, both
