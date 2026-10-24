@@ -838,8 +838,19 @@ static VkPresentModeKHR VK_ChoosePresentMode( void ) {
 	// always available
 	numWanted = 0;
 	if ( r_swapInterval->integer == 0 ) {
-		wanted[numWanted++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
-		wanted[numWanted++] = VK_PRESENT_MODE_MAILBOX_KHR;
+		const char *driver = SDL_GetCurrentVideoDriver();
+
+		// r_fastSync on Wayland: some WSI stacks (seen on Wayland+NVIDIA)
+		// delay IMMEDIATE acquire ~200µs/frame in fullscreen. Mailbox is
+		// Fast Sync-like (no tear; latest image wins) and returns images
+		// sooner. Off / non-Wayland: IMMEDIATE first (tearing uncapped).
+		if ( r_fastSync->integer && driver && !Q_stricmp( driver, "wayland" ) ) {
+			wanted[numWanted++] = VK_PRESENT_MODE_MAILBOX_KHR;
+			wanted[numWanted++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+		} else {
+			wanted[numWanted++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+			wanted[numWanted++] = VK_PRESENT_MODE_MAILBOX_KHR;
+		}
 	} else if ( r_swapInterval->integer < 0 ) {
 		wanted[numWanted++] = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 	}

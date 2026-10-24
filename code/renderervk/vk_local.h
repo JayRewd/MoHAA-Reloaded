@@ -725,4 +725,5 @@ extern const size_t		vk_spirv_effects_clip_vert_size;
 extern cvar_t	*r_vkValidation;
 extern cvar_t	*r_vkFallbacks;
 extern cvar_t	*r_vkSubmitThread;
+extern cvar_t	*r_fastSync;
 extern cvar_t	*r_ext_multisample;

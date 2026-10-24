@@ -67,6 +67,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 vkInstance_t	vk;
 cvar_t			*r_vkValidation;
 cvar_t			*r_vkFallbacks;
+cvar_t			*r_fastSync;
 
 // render state recorded by the vk_set_* functions
 typedef struct {
@@ -2073,6 +2074,8 @@ void vk_initialize( void ) {
 	r_vkFallbacks = ri.Cvar_Get( "r_vkFallbacks", "0", CVAR_LATCH );
 	r_vkSubmitThread = ri.Cvar_Get( "r_vkSubmitThread", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images (2: and copies every frame, for tests; see the renderer's README)" );
+	r_fastSync = ri.Cvar_Get( "r_fastSync", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	ri.Cvar_SetDescription( r_fastSync, "On Wayland, when uncapped (r_swapInterval 0), prefer mailbox present (like NVIDIA Fast Sync). Can fix slow exclusive fullscreen on some Wayland+NVIDIA setups; no tearing. Needs vid_restart." );
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
 	VK_ResetState();
