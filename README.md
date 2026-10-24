@@ -46,6 +46,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | Setting | Default | What it does |
 |---|---|---|
 | `cl_movefps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_movefps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). |
+| `cg_tauntsounds` | `1` | `0` turns other players' taunts off: they aren't played at all (their chat line and radar icon stay). Your own still play. |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
 | `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, so the main thread never waits in the driver's present or acquire (which stalled up to 1.8 ms here, 1.3 ms every 341 frames on NVIDIA). Uncapped, 3 to 21 % more frames a second; at 250 the same frames, input to present 0.01 to 0.02 ms longer. 5 swapchain images (3 with vsync); latched. |
 
@@ -55,6 +56,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 |---|---|---|
 | `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_movefps`). |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
+| `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened, decoded or played (the music that scripts trigger, `s_musicvolume`, plays on). Raised again, the song starts where it stopped. |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
 | `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
 | `r_uselod` | `0` (upstream `1`) | `0`: soldiers and weapons at full detail at any distance. Not saved in configs: set it at launch or in `autoexec.cfg`. |

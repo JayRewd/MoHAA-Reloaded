@@ -486,6 +486,10 @@ below are done.
 - `m_filter` (2026-10-23): removed, as the user asked; the mouse movement
   of each frame is used as it comes (what `m_filter 0` did), and a config
   or the Controls menu's box that sets `m_filter 1` changes nothing
+- the soundtrack off and taunts (2026-10-24, the user's, as on the `metal`
+  branch): `s_ambientvolume 0` opens, decodes and mixes no song of the
+  soundtrack (it only silenced them before), and `cg_tauntsounds 0` plays
+  no taunt of another player (see Implementation notes, Sound system)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -546,7 +550,9 @@ renderer) and the Windows installer
 longer builds it), and the client's `cl_renderer` (`vulkan`, the only
 renderer: `code/client/cl_main.cpp`), and the removal of OpenGL (see
 Implementation notes, No OpenGL), and `m_filter`'s removal
-(`code/client/cl_input.cpp`, `cl_main.cpp`, `client.h`), and the frame limiter
+(`code/client/cl_input.cpp`, `cl_main.cpp`, `client.h`), and the soundtrack
+off and taunts (`code/client/omaha/snd_omaha.cpp`, `code/cgame/cg_parsemsg.cpp`,
+`cg_main.c`, `cg_local.h`), and the frame limiter
 (`Com_Frame` and `Com_FrameWait` in `code/qcommon/common.c`,
 `Sys_Microseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
 the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
@@ -7258,6 +7264,24 @@ selects the sample count (see Implementation notes).
     played back faster than real time; at real speed the traces cost 1.5
     to 1.7 µs a frame (see Performance, Sound system), and it was removed
     (2026-10-23, the user).
+  - The soundtrack off and taunts (2026-10-24, the user's, as on the
+    `metal` branch): `s_ambientvolume 0` plays no song of the soundtrack
+    (the mood music and the `amb_stereo` ambiences): none is opened,
+    decoded or mixed. `S_OMAHA_MUSIC_AmbientOff` stops the songs playing,
+    fading or paused (their streams and voices freed) and drops the files
+    read into memory at the load, a load reads none while it is 0, and
+    `S_OMAHA_MUSIC_PlaySong` starts none; raised again, the mood's song
+    starts where it stopped. Before, `0` only silenced the songs, which
+    were still read, decoded and mixed. The music scripts trigger
+    (`s_musicvolume`) isn't the soundtrack and plays on. `cg_tauntsounds`
+    (cgame, archived, default 1): at 0 another player's taunt
+    (`CGM_VOICE_CHAT`, `CGM6_VOICE_CHAT` on protocol 6 to 8 servers) isn't
+    started, so its file isn't opened either; its chat line and radar icon
+    stay, one's own taunts still play. Checked with a 60 s test song in
+    `dm/mohdm4` (`strace`: the file opened only while the volume is above
+    0, closed when it went to 0) and with a cgame that printed each taunt's
+    decision (a match demo: another player's taunt skipped at 0, played at
+    1; a local match: one's own taunts played at 0).
   - Fixes: `playmp3` crashed (GCC 15 devirtualized `chan->stop()` of an
     `omaha_channel *` pointing at the stream member `omaha.chan_mp3` to no
     target and dropped `S_OMAHA_LoadMP3`'s body, a recursion until the

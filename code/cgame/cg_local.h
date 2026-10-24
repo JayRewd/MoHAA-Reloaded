@@ -526,6 +526,7 @@ extern "C" {
     extern cvar_t *cg_fov;
     extern cvar_t *cg_cheats;
     extern cvar_t *cg_precache;
+    extern cvar_t *cg_tauntsounds;
     extern cvar_t *cg_csAppend;
 
     //

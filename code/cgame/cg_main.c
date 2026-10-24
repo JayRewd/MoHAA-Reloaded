@@ -121,6 +121,7 @@ cvar_t *cg_fov;
 cvar_t *cg_cheats;
 cvar_t *cg_precache;
 cvar_t *cg_csAppend;
+cvar_t *cg_tauntsounds;
 
 /*
 =================
@@ -221,6 +222,9 @@ void CG_RegisterCvars(void)
     cg_precache = cgi.Cvar_Get("cg_precache", "7", CVAR_ARCHIVE);
     // changed configstrings copied one by one (CG_ConfigStringModified)
     cg_csAppend = cgi.Cvar_Get("cg_csAppend", "1", 0);
+    // 0: other players' taunts (the instant messages' voices) aren't played; their radar icon and text stay
+    // (MoHAA Reloaded, as on the metal branch)
+    cg_tauntsounds = cgi.Cvar_Get("cg_tauntsounds", "1", CVAR_ARCHIVE);
 }
 /*
 ===============

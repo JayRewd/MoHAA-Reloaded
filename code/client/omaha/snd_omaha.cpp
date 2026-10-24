@@ -184,6 +184,8 @@ static int      s_musicDuckTime         = 0;
 static int      music_loaded            = 0;
 static int      music_numsongs          = 0;
 static int      music_currentsong       = 0;
+// s_ambientvolume 0 stopped the soundtrack and dropped its files (S_OMAHA_MUSIC_AmbientOff)
+static qboolean music_ambientOff        = qfalse;
 
 static song_t           music_songs[MAX_MUSIC_SONGS];
 static omaha_internal_t omaha;
@@ -4583,8 +4585,11 @@ qboolean S_OMAHA_MUSIC_LoadSoundtrackFile(const char *filename)
             music_songs[music_numsongs].mood_num    = MusicMood_NameToNum(alias);
             music_numsongs++;
 
-            // read into memory and scanned (s_soundtrackCache)
-            S_StreamMemory_Prefetch(psong->path);
+            // read into memory and scanned (s_soundtrackCache); with
+            // s_ambientvolume 0 no song is opened (S_OMAHA_MUSIC_AmbientOff)
+            if (s_ambientVolume->value > 0) {
+                S_StreamMemory_Prefetch(psong->path);
+            }
         }
     }
 
@@ -4632,6 +4637,43 @@ static void  S_OMAHA_MUSIC_UpdateSongs(void);
 
 /*
 ==============
+S_OMAHA_MUSIC_AmbientOff
+
+Added in MoHAA Reloaded (the user's, as on the metal branch): s_ambientvolume 0
+plays no song of the soundtrack (the mood music and the amb_stereo ambiences):
+none is opened, decoded or mixed. The songs playing, fading or paused stop and
+free their streams, and the files read into memory at the load
+(s_soundtrackCache) are dropped. Raised again, the mood's song starts
+(music_currentsong -1: not playing) where it stopped; the triggered music
+(s_musicvolume) isn't the soundtrack and plays on.
+==============
+*/
+static qboolean S_OMAHA_MUSIC_AmbientOff(void)
+{
+    int i;
+
+    if (s_ambientVolume->value > 0) {
+        music_ambientOff = qfalse;
+        return qfalse;
+    }
+
+    for (i = 0; i < MAX_SOUNDSYSTEM_SONGS; i++) {
+        if (omaha.chan_song[i].is_playing() || omaha.chan_song[i].is_paused()) {
+            S_OMAHA_MUSIC_StopChannel(i);
+        }
+    }
+    music_currentsong = -1;
+
+    if (!music_ambientOff) {
+        S_StreamMemory_Flush();
+        music_ambientOff = qtrue;
+    }
+
+    return qtrue;
+}
+
+/*
+==============
 S_OMAHA_Music_Update
 ==============
 */
@@ -4675,6 +4717,10 @@ static void S_OMAHA_MUSIC_UpdateSongs(void)
     if (!S_OMAHA_MUSIC_Loaded() && music_active && strlen(current_soundtrack)) {
         S_OMAHA_MUSIC_LoadSoundtrackFile(current_soundtrack);
         music_loaded = true;
+    }
+
+    if (S_OMAHA_MUSIC_AmbientOff()) {
+        return;
     }
 
     if (music_currentsong >= 0) {
@@ -5042,6 +5088,12 @@ qboolean S_OMAHA_MUSIC_PlaySong(const char *alias)
     }
 
     song = &music_songs[songnum];
+
+    // Added in MoHAA Reloaded: s_ambientvolume 0, no song, and not taken as
+    // the current one (S_OMAHA_MUSIC_AmbientOff)
+    if (s_ambientVolume->value <= 0) {
+        return true;
+    }
 
     if (S_OMAHA_MUSIC_Playing() && songnum == music_currentsong) {
         return true;
