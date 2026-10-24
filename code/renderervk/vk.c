@@ -2075,7 +2075,7 @@ void vk_initialize( void ) {
 	r_vkSubmitThread = ri.Cvar_Get( "r_vkSubmitThread", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images (2: and copies every frame, for tests; see the renderer's README)" );
 	r_fastSync = ri.Cvar_Get( "r_fastSync", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	ri.Cvar_SetDescription( r_fastSync, "On Wayland, when uncapped (r_swapInterval 0), prefer mailbox present (like NVIDIA Fast Sync). Can fix slow exclusive fullscreen on some Wayland+NVIDIA setups; no tearing. Needs vid_restart." );
+	ri.Cvar_SetDescription( r_fastSync, "1: without vsync (r_swapInterval 0) the mailbox present mode instead of immediate: no tearing, every refresh shows the newest finished frame, for a few ms more input to display (immediate where there is no mailbox)" );
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
 	VK_ResetState();

@@ -495,6 +495,20 @@ below are done.
   branch): `s_ambientvolume 0` opens, decodes and mixes no song of the
   soundtrack (it only silenced them before), and `cg_tauntsounds 0` plays
   no taunt of another player (see Implementation notes, Sound system)
+- `r_fastSync` (2026-10-24, Plan 34, the renderer): JayRewd's pull request
+  #1 on MoHAA-Reloaded merged and reworked. `r_fastSync 1` (latched,
+  archived, default 0) presents with mailbox instead of immediate when
+  `r_swapInterval` is 0 (the default): no tearing, every refresh shows the
+  newest finished frame; immediate where there is no mailbox. The pull
+  request's test for a native Wayland window is gone: under SDL 2's
+  default on a Wayland desktop, Xwayland, it left `r_fastSync 1` without
+  effect, and mailbox works the same there, on X11 and on Windows.
+  Fullscreen at the 60 Hz display it costs 4 to 6 ms of input to display
+  (5.5 to 6.5 ms uncapped and 6.6 to 8.0 at 250, against tearing's 1.5 and
+  1.9), and on RADV the acquire after the present waits up to 1 ms in 5 to
+  17 % of the frames (never with immediate; the stall of immediate that
+  the pull request's author saw on NVIDIA isn't there). The same frames,
+  no validation message (see Performance, Present timing)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -635,6 +649,7 @@ Cvars of the backend:
 | --- | --- |
 | `r_vkValidation` (latched, default 0) | 1 enables `VK_LAYER_KHRONOS_validation` and prints its warnings and errors to the console; 2 also enables synchronization validation (slow) |
 | `r_swapInterval` (latched) | 0: immediate present mode (mailbox if unavailable), < 0: FIFO relaxed, > 0: FIFO; FIFO when the wanted mode is missing |
+| `r_fastSync` (latched, archived, default 0) | 1: with `r_swapInterval 0`, mailbox instead of immediate (immediate if unavailable): no tearing, every refresh shows the newest finished frame, for the wait for the compositor's latch (Plan 34, see Performance, Present timing) |
 | `r_ext_multisample` (latched) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
@@ -2010,6 +2025,21 @@ on the source and the build (on 53d8f9d7's build it reports
 no OpenGL, GLX or EGL library. `renderer_vulkan.so` of 53d8f9d7 still runs
 under the new engine (`perf.py` through `renderer_timed.so`).
 
+`r_fastSync` (2026-10-24, Plan 34; the renderer only) against the build
+before (30a12f80; `cmplists.sh`, 640x480, `r_vkValidation 1`): the 26
+views of `menus`, `hud`, `mp_mohdm1`, `mohdm1_dlight` and `dm/mohdm1` give
+the same frames to the bit with `r_fastSync` 0 and 1 (mailbox in these
+windowed runs under Xwayland) and in a second run of the build before. No
+validation message, and no synchronization validation message
+(`r_vkValidation 2`), through `r_fastSync` switched on, off and on again
+with `vid_restart` (the last one fullscreen), under Xwayland and as a
+native Wayland client, with `r_vkSubmitThread` 0 and 1 (5 swapchain
+images with mailbox too). The present mode chosen (the `Vulkan present
+mode` line): the build before, immediate always; the merged pull request,
+mailbox only with `r_fastSync 1` and `SDL_VIDEODRIVER=wayland`; the final
+build, mailbox with `r_fastSync 1` under both. `glcheck.sh` clean;
+`renderer_vulkan.so` imports no GL or Vulkan symbol.
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -3381,7 +3411,8 @@ by a thread), every vblank with the primary plane's framebuffer and its
 format, the framebuffer changes (polled every 250 µs with
 `INLAT_FBPOLL_US=250`, for the tearing variants), and whether the SDL
 window is fullscreen. `INLAT_PRESENT_MODE=mailbox` forces mailbox (the
-renderer asks for immediate with `r_swapInterval 0`, FIFO with `1`).
+renderer asks for immediate with `r_swapInterval 0`, FIFO with `1`; since
+Plan 34 `r_fastSync 1` asks for mailbox).
 `framelog.py --display DIR` (`--table`, `--json`) works out when each
 frame was shown, the start of the scanout that shows it or the tearing
 flip:
@@ -3546,6 +3577,57 @@ Pacing changes that could lower input to display without adding lag
    it costs here at 250, 4.6 to 5.4 ms over tearing (KWin's margins are
    times, not refreshes, and the frames come as often), and a full FIFO
    queue 12.5 ms (not measured).
+
+`r_fastSync` (2026-10-24, Plan 34): mailbox instead of immediate with
+`r_swapInterval 0`, measured on the same path (`o2match`, fullscreen,
+`perf.py --list <o2match> --sizes 1920x1080 --binaries <variant wrappers>
+--caps 0,250 --seconds 10 --runs 3 --preload libinlat.so --framelog DIR`
+with `INLAT_DISPLAY=1`, the variants `x_off`, `x_on`, `w_off`, `w_on`
+appending `+set r_fullscreen 1 +set in_nograb 0` and, for `on`, `+set
+r_fastSync 1`, `w` with `SDL_VIDEODRIVER=wayland`; the acquire times from
+the frame log, `--vklog`, in runs of their own). Frame time: the medians of
+the runs' percentiles, ms:
+
+| `com_maxfps` | variant | input to present: median, p99 | input to display: median, p90, p99, p99.9 (pooled) | shown | frame time: p99, p99.9 | frames a second |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | Xwayland, `r_fastSync 0` (immediate, tearing) | 0.594, 1.309 | 1.51, 2.22, 3.00, 3.37 | 92 % | 1.354, 1.751 | 1441 |
+| 0 | Xwayland, `r_fastSync 1` (mailbox) | 0.526, 1.139 | 5.54, 7.20, 8.41, 8.79 (to 7.20) | 4 % | 1.675, 2.097 | 1406 |
+| 0 | Wayland, `r_fastSync 0` | 0.591, 1.319 | 1.48, 2.25, 3.08, 3.52 | 92 % | 1.372, 1.766 | 1415 |
+| 0 | Wayland, `r_fastSync 1` | 0.539, 1.176 | 6.53, 8.06, 9.67, 16.48 | 4 % | 1.775, 2.175 | 1342 |
+| 250 | Xwayland, `r_fastSync 0` | 0.483, 0.893 | 1.91, 2.37, 2.74, 3.38 | 99 % | 4.033, 4.165 | 250 |
+| 250 | Xwayland, `r_fastSync 1` | 0.504, 0.911 | 6.56, 8.35, 9.13, 9.79 (to 8.28) | 24 % | 4.032, 4.193 | 250 |
+| 250 | Wayland, `r_fastSync 0` | 0.482, 0.866 | 1.89, 2.29, 2.73, 3.04 | 100 % | 4.032, 4.155 | 250 |
+| 250 | Wayland, `r_fastSync 1` | 0.498, 0.895 | 7.97, 10.16, 11.83, 25.49 | 24 % | 4.034, 4.198 | 250 |
+
+- No tearing costs the latch: 4.0 to 5.0 ms more input to display
+  uncapped and 4.6 to 6.1 ms at 250, at this 60 Hz display, about what
+  the mailbox runs above showed (KWin's margin moves from run to run: the
+  medians of single Xwayland runs differed by up to 1.5 ms; the Wayland
+  p99.9 at 250 is one refresh of a 25 ms frame). A faster display waits
+  less, but KWin's margins are times, not refreshes (see above).
+- With mailbox the acquire after the present waits: KWin holds the image
+  it shows, the one it took for the next refresh and the newest presented,
+  so with 4 images the next acquire waits until KWin releases the image
+  that the newest present replaced. More than 0.3 ms in 8 to 17 % of the
+  frames uncapped (99th percentile 0.72 to 0.90 ms) and in 5 to 6 % at 250
+  (1.0 to 1.1 ms; one Xwayland run at 250: 0.4 %); with immediate never
+  (99.9th percentile 0.07 ms). Uncapped that is 2 to 5 % fewer frames a
+  second and 0.3 to 0.4 ms more at the frame time's 99th percentile; at
+  250 the limiter's wait takes it in.
+- The stall the pull request was written for, immediate's acquire taking
+  0.2 ms a frame in fullscreen on Wayland with NVIDIA (its author's
+  report), doesn't happen with RADV: the acquire after an immediate
+  present takes 0.03 ms on the median, 0.04 at the 99th percentile.
+- A fifth swapchain image for mailbox (as the submit thread has) was tried
+  and left out (2 x 3 runs, then 2 x 5 on native Wayland): the acquire
+  never waited (99th percentile 0.05 to 0.12 ms), uncapped 14 % more
+  frames a second (1359 to 1547) and the frame time's 99th percentile
+  1.76 to 1.23 ms; at 250 the same input to display (8.15 and 8.16 ms on
+  the median, 12.00 and 11.99 at the 99th percentile; Xwayland 7.96 to
+  7.74), but on native Wayland 0.15 ms more on the median uncapped and,
+  at a cap of 1000 with the same frame rate, 0.24 ms more (6.17 to 6.41;
+  99th percentile 8.94 to 9.62). Not traced further: KWin scanned out the
+  same 5 to 6 framebuffers, nothing imported again.
 
 World culling (2026-10-17): the world's traversal (`R_RecursiveWorldNode`,
 `R_AddWorldSurfaces`) led the CPU causes of `o4match`'s slow frames (Plan,
@@ -8100,6 +8182,26 @@ Done:
     Performance, Command rate); `m_filter` removed. The same frames as
     the build before, no validation message.
 
+34. `r_fastSync` (2026-10-24, see Status and Performance, Present timing;
+    the renderer): JayRewd's pull request #1 on MoHAA-Reloaded
+    ("r_fastSync: prefer mailbox on Wayland when uncapped", against an
+    acquire stall of immediate, 0.2 ms a frame in fullscreen, that its
+    author saw on Wayland with NVIDIA) merged without conflicts, then
+    measured and reworked. Kept: the latched, archived `r_fastSync`
+    (default 0), mailbox first and immediate as its fallback when
+    `r_swapInterval` is 0. Changed: no test of SDL's video driver (the
+    pull request applied it to native Wayland windows only, so under SDL
+    2's default on a Wayland desktop, Xwayland, `r_fastSync 1` did
+    nothing, while mailbox works the same there, on X11 and on Windows),
+    the choice in two lines, a description that says what it does and
+    costs. Measured: no tearing for 4 to 6 ms more input to display at the
+    60 Hz display; with RADV mailbox's acquire after the present waits up
+    to 1 ms in 5 to 17 % of the frames, and immediate has no stall; a
+    fifth swapchain image for mailbox took that wait away but added 0.15
+    to 0.24 ms of input to display on native Wayland at 1000 frames a
+    second and more, so it was left out. The same frames as the build
+    before, no validation message.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -8233,6 +8335,15 @@ Remaining:
   last scene the front end took), not the drawn list's `backEnd.refdef`, as
   GL1 does, and computes the inventory's item models' sphere for each of
   their surfaces.
+- `r_fastSync` (Plan 34, see Performance, Present timing): not measured on
+  NVIDIA, where its author saw immediate's acquire stall (runs with
+  `libinlat.so`, `INLAT_DISPLAY=1` and `r_vkFrameLog 1`, `r_fastSync` 0
+  and 1, would show that stall and what mailbox costs there), on Windows
+  or on a 240 Hz display. Mailbox's acquire after the present waits up to
+  1 ms at times on RADV under KWin; a fifth swapchain image for mailbox
+  takes that away for 0.15 to 0.24 ms more input to display on native
+  Wayland at 1000 frames a second and more (none at 250): not done, as it
+  adds input lag there.
 - The submit thread (see Performance, Submit thread): not measured on
   NVIDIA, where its gain was reported (a tester's input to display runs
   with `libinlat.so` and `INLAT_DISPLAY=1`, the thread on and off, would
