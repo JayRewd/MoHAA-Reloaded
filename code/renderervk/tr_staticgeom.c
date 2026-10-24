@@ -796,17 +796,13 @@ void RB_StaticAddRange( int firstIndex, int numIndexes ) {
 	if ( inst->copiedIndex < 0 ) {
 		if ( !inst->numIndexes ) {
 			inst->firstIndex = firstIndex;
-			inst->numIndexes = numIndexes;
-			tess.numIndexes += numIndexes;
+		} else if ( inst->firstIndex + inst->numIndexes != firstIndex ) {
+			Com_Memcpy( RB_StaticCopyIndexes(), tr.staticIndexes + firstIndex, sizeof( glIndex_t ) * numIndexes );
+			RB_StaticIndexesAdded( numIndexes );
 			return;
 		}
-		if ( inst->firstIndex + inst->numIndexes == firstIndex ) {
-			inst->numIndexes += numIndexes;
-			tess.numIndexes += numIndexes;
-			return;
-		}
-		Com_Memcpy( RB_StaticCopyIndexes(), tr.staticIndexes + firstIndex, sizeof( glIndex_t ) * numIndexes );
-		RB_StaticIndexesAdded( numIndexes );
+		inst->numIndexes += numIndexes;
+		tess.numIndexes += numIndexes;
 		return;
 	}
 
@@ -919,7 +915,7 @@ void RB_StaticDraw( drawGeometry_t *geometry ) {
 
 	modelview = glState.modelview;
 	for ( i = 0; i < tess.numStaticInstances; i++ ) {
-		staticInstance_t *inst = &tess.staticInstances[i];
+		const staticInstance_t *inst = &tess.staticInstances[i];
 
 		if ( !inst->numIndexes ) {
 			continue;

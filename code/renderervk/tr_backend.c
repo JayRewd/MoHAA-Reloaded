@@ -684,15 +684,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
 		if ( drawSurf->sort == (unsigned)oldSort && *drawSurf->surface != SF_SPRITE ) {
-			/* Coalesce same-sort Adds into one run. */
-			do {
-				RB_AddSurface( drawSurf->surface );
-				i++;
-				drawSurf++;
-			} while ( i < numDrawSurfs && drawSurf->sort == (unsigned)oldSort
-				&& *drawSurf->surface != SF_SPRITE );
-			i--;
-			drawSurf--;
+			// fast path, same as previous sort
+			RB_AddSurface( drawSurf->surface );
 			continue;
 		}
 		oldSort = (int)drawSurf->sort;
@@ -716,7 +709,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			// shader can share a batch (tr_staticgeom.c)
 			if (shader != oldShader || dlightMap != oldDlightMap || (oldShader->flags & 1)
 				|| !bStaticModel || !oldbStaticModel || !RB_StaticMerge(entityNum)) {
-				if ( oldShader != NULL ) {
+				if (oldShader != NULL) {
 					RB_EndSurface();
 				}
 				RB_BeginSurface( shader );
@@ -784,79 +777,53 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			oldbStaticModel = bStaticModel;
 		}
 
-		/* Lighting setup: hoist per entity+shader-needs. spareSphere is forced
-		 * above — cache hit must re-bind lightSphere. World faces skip. */
+		if (bStaticModel)
 		{
-			static int lightEntityNum = -2;
-			static int lightStaticModel = -1;
-			static int lightNeedsGrid = -1;
-			static int lightNeedsSpherical = -1;
-			static int lightFastEnt = -1;
-			static int lightDrawSphere = -1;
-			static sphereor_t *lightSphere = NULL;
-			const qboolean needsLightSetup = (qboolean)( bStaticModel
-				|| ( backEnd.currentEntity && backEnd.currentEntity->e.tiki ) );
+			if (r_drawspherelights->integer) {
+				RB_Static_BuildDLights();
+			}
 
-			if ( !needsLightSetup ) {
-				lightEntityNum = -2;
-				lightSphere = NULL;
-			} else {
-				int needsGrid = shader->needsLGrid ? 1 : 0;
-				int needsSpherical = shader->needsLSpherical ? 1 : 0;
-				int fastEnt = r_fastentlight->integer ? 1 : 0;
-				int drawSphere = r_drawspherelights->integer ? 1 : 0;
-				int lightDirty = ( entityNum != lightEntityNum )
-					|| ( (int)bStaticModel != lightStaticModel )
-					|| ( needsGrid != lightNeedsGrid )
-					|| ( needsSpherical != lightNeedsSpherical )
-					|| ( fastEnt != lightFastEnt )
-					|| ( drawSphere != lightDrawSphere );
-
-				if ( !lightDirty && lightSphere ) {
-					backEnd.currentSphere = lightSphere;
-				} else {
-					lightEntityNum = entityNum;
-					lightStaticModel = (int)bStaticModel;
-					lightNeedsGrid = needsGrid;
-					lightNeedsSpherical = needsSpherical;
-					lightFastEnt = fastEnt;
-					lightDrawSphere = drawSphere;
-
-					if ( bStaticModel ) {
-						if ( r_drawspherelights->integer ) {
-							RB_Static_BuildDLights();
-						}
-						if ( !backEnd.currentStaticModel->bLightGridCalculated ) {
-							RB_Grid_SetupStaticModel();
-						}
-					} else if ( backEnd.currentEntity->e.tiki ) {
-						if ( shader->needsLGrid
-							|| ( shader->needsLSpherical && r_fastentlight->integer )
-							|| !r_drawspherelights->integer ) {
-							backEnd.currentSphere->TessFunction = RB_CalcLightGridColor;
-							RB_Grid_SetupEntity();
-						} else if ( shader->needsLSpherical ) {
-							if ( tr.refdef.rdflags & RDF_HUD ) {
-								backEnd.currentSphere = &backEnd.hudSphere;
-								backEnd.hudSphere.TessFunction = 0;
-								RB_Sphere_SetupEntity();
-							} else if ( backEnd.currentEntity->sphereCalculated ) {
-								backEnd.currentSphere = &backEnd.spheres[backEnd.currentEntity->lightingSphere];
-							} else {
-								if ( backEnd.numSpheresUsed == MAX_SPHERE_LIGHTS ) {
-									ri.Printf( PRINT_DEVELOPER, "Spherical lighting: Ran out of space in the sphere array!\n" );
-									backEnd.currentSphere = &backEnd.spareSphere;
-								} else {
-									backEnd.currentSphere = &backEnd.spheres[backEnd.numSpheresUsed];
-									backEnd.currentEntity->lightingSphere = backEnd.numSpheresUsed++;
-									backEnd.currentEntity->sphereCalculated = 1;
-								}
-								backEnd.currentSphere->TessFunction = NULL;
-								RB_Sphere_SetupEntity();
-							}
-						}
+			if (!backEnd.currentStaticModel->bLightGridCalculated) {
+				RB_Grid_SetupStaticModel();
+			}
+		}
+		else if (backEnd.currentEntity->e.tiki)
+		{
+			if (shader->needsLGrid
+				|| shader->needsLSpherical && r_fastentlight->integer
+				|| !r_drawspherelights->integer)
+			{
+				backEnd.currentSphere->TessFunction = RB_CalcLightGridColor;
+				RB_Grid_SetupEntity();
+			}
+			else if (shader->needsLSpherical)
+			{
+				if (tr.refdef.rdflags & RDF_HUD)
+				{
+					backEnd.currentSphere = &backEnd.hudSphere;
+					backEnd.hudSphere.TessFunction = 0;
+					RB_Sphere_SetupEntity();
+				}
+				else if (backEnd.currentEntity->sphereCalculated)
+				{
+					backEnd.currentSphere = &backEnd.spheres[backEnd.currentEntity->lightingSphere];
+				}
+				else
+				{
+					if (backEnd.numSpheresUsed == MAX_SPHERE_LIGHTS)
+					{
+						ri.Printf(PRINT_DEVELOPER, "Spherical lighting: Ran out of space in the sphere array!\n");
+						backEnd.currentSphere = &backEnd.spareSphere;
 					}
-					lightSphere = backEnd.currentSphere;
+					else
+					{
+						backEnd.currentSphere = &backEnd.spheres[backEnd.numSpheresUsed];
+						backEnd.currentEntity->lightingSphere = backEnd.numSpheresUsed++;
+						backEnd.currentEntity->sphereCalculated = 1;
+					}
+
+					backEnd.currentSphere->TessFunction = NULL;
+					RB_Sphere_SetupEntity();
 				}
 			}
 		}
@@ -865,22 +832,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			backEnd.shaderStartTime = ((refSprite_t*)drawSurf->surface)->shaderTime;
 		}
 
-		/* First surf of a new sort key + any immediately following same-sort. */
-		{
-			unsigned sortKey = drawSurf->sort;
-
-			do {
-				if ( *drawSurf->surface == SF_SPRITE ) {
-					backEnd.shaderStartTime = ( (refSprite_t *)drawSurf->surface )->shaderTime;
-				}
-				RB_AddSurface( drawSurf->surface );
-				i++;
-				drawSurf++;
-			} while ( i < numDrawSurfs && drawSurf->sort == sortKey
-				&& *drawSurf->surface != SF_SPRITE );
-			i--;
-			drawSurf--;
-		}
+		// add the triangles for this surface
+		RB_AddSurface( drawSurf->surface );
 	}
 
 	// draw the contents of the last shader batch

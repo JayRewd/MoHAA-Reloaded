@@ -36,8 +36,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // time, for which the values that can occur are built:
 //  - where the shader is drawn: in 2D (RB_StretchPic: depth test off unless
 //    the stage has a second texture; the cull Set2DWindow leaves, none, or
-//    the shader's), in a 3D view on the CPU (colors per vertex), from the
-//    static geometry (colors per vertex or a constant), from it with the
+//    the shader's), in a 3D view on the CPU (colors per vertex, a constant
+//    for RB_StageConstantColor's stages and the lightmapped multitexture
+//    iterator), from the static geometry (colors per vertex or a
+//    constant), from it with the
 //    effects shader (deforms, tcGen and tcMod, distFade, static models'
 //    dynamic lights: tr_staticgeom.c), skinned (the vertex-lit iterator and
 //    the generic one's stages that R_SkinPasses takes, tr_skin.c);
@@ -276,7 +278,7 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 		ds.texEnv[1] = TEXENV_MODULATE;
 		ds.skinned = place == PB_SKINNED;
 		ds.effects = place == PB_EFFECTS;
-		ds.colorArray = place != PB_STATIC && place != PB_EFFECTS;
+		ds.colorArray = place != PB_STATIC && place != PB_EFFECTS && ( place == PB_SKINNED || !RB_StageConstantColor( pStage ) );
 		// the generic iterator sets the shader's (the vertex-lit one is
 		// only chosen without it)
 		ds.polygonOffset = shader->polygonOffset && !vertexLit;
@@ -328,13 +330,14 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 R_PrebuildLightmappedMultitexture
 
 RB_StageIteratorLightmappedMultitextureUnfogged: one stage, its alpha test
-and fog bits only, the lightmap modulated by unit 1
+and fog bits only, the lightmap modulated by unit 1, white as the constant
+color (on the CPU and from the static geometry)
 ===============
 */
-static int R_PrebuildLightmappedMultitexture( const shader_t *shader, int where ) {
+static int R_PrebuildLightmappedMultitexture( const shader_t *shader ) {
 	shaderStage_t *pStage = shader->unfoggedStages[0];
 	vkDrawState_t ds;
-	int colors, lights, n = 0;
+	int lights, n = 0;
 
 	Com_Memset( &ds, 0, sizeof( ds ) );
 	ds.prim = PRIM_TRIANGLES;
@@ -343,17 +346,13 @@ static int R_PrebuildLightmappedMultitexture( const shader_t *shader, int where 
 	ds.texEnv[1] = r_lightmap->integer ? TEXENV_REPLACE : TEXENV_MODULATE;
 	ds.cull = R_ShaderCull( shader );
 
-	// tess.constantColor255 per vertex, a constant from the static geometry
-	for ( colors = where & PB_STATIC ? 0 : 1; colors < ( where & PB_CPU ? 2 : 1 ); colors++ ) {
-		ds.colorArray = colors;
-		for ( lights = 0; lights < ( pStage->bundle[1].isLightmap ? 3 : 1 ); lights++ ) {
-			if ( lights == 2 && r_dlightBacks->integer ) {
-				break;
-			}
-			ds.dlightTmu = lights ? 1 : -1;
-			ds.dlightBacks = lights == 2;
-			n += R_PrebuildImages( &ds, &pStage->bundle[0], &pStage->bundle[1], ds.stateBits );
+	for ( lights = 0; lights < ( pStage->bundle[1].isLightmap ? 3 : 1 ); lights++ ) {
+		if ( lights == 2 && r_dlightBacks->integer ) {
+			break;
 		}
+		ds.dlightTmu = lights ? 1 : -1;
+		ds.dlightBacks = lights == 2;
+		n += R_PrebuildImages( &ds, &pStage->bundle[0], &pStage->bundle[1], ds.stateBits );
 	}
 	return n;
 }
@@ -468,7 +467,7 @@ static int R_PrebuildShader( const shader_t *shader ) {
 	}
 
 	if ( shader->optimalStageIteratorFunc == RB_StageIteratorLightmappedMultitextureUnfogged ) {
-		n += R_PrebuildLightmappedMultitexture( shader, where & ( PB_CPU | PB_STATIC ) );
+		n += R_PrebuildLightmappedMultitexture( shader );
 	} else if ( shader->optimalStageIteratorFunc == RB_StageIteratorVertexLitTextureUnfogged ) {
 		if ( !world && r_gpuSkinning->integer ) {
 			where |= PB_SKINNED;

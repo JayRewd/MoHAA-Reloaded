@@ -2209,6 +2209,7 @@ void R_ClearFxTables( void );
 extern cvar_t *r_gpuSkinning;
 
 void R_ClearSkinData( void );
+void R_ClearSkelMeshes( void );
 int R_SkinPasses( const shader_t *shader );
 void R_SkinRegisterModel( const model_t *mod );
 void R_SkinRegisteredModels( void );
@@ -2225,6 +2226,7 @@ void RB_StageIteratorGeneric( void );
 void RB_StageIteratorSky( void );
 void RB_StageIteratorVertexLitTextureUnfogged( void );
 void RB_StageIteratorLightmappedMultitextureUnfogged( void );
+qboolean RB_StageConstantColor( const shaderStage_t *pStage );
 
 void RB_AddQuadStamp( vec3_t origin, vec3_t left, vec3_t up, byte *color );
 void RB_AddQuadStampExt( vec3_t origin, vec3_t left, vec3_t up, byte *color, float s1, float t1, float s2, float t2 );

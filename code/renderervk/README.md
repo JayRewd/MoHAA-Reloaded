@@ -440,6 +440,20 @@ below are done.
   (`s_obstructionBudget`, off) was removed; input to present at 250
   within the runs' spread (see Implementation notes, Sound system, and
   Performance, Sound system)
+- the surface list (2026-10-23, Plan 32, the renderer): JayRewd's pull
+  request #3, which took 69 µs off the back end's surface list on its
+  author's benchmark, merged and reworked: a stage drawn on the CPU takes
+  the mesh's or the lightmap's texture coordinates from tess instead of a
+  copy, a stage with one color for all its vertexes gets it as the
+  constant color (its pipelines now built at the load: the pull request
+  made 2 to 4 of them in a match's frames), and a skeletal surface's mesh
+  comes from a table cleared at each map load (the pull request's was
+  never cleared); its cache of the entities' lighting setup (which carried
+  a setup from one draw list to the next and saved nothing measurable),
+  its loop for the surfaces of one sort and its canary change were left
+  out. 1.5 to 2.2 µs less a frame in the code it changes, within the
+  runs' spread in the frame times; the same frames (see Performance,
+  Surface list)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
@@ -1875,6 +1889,27 @@ mixer (the queued PCM, seeks, stops) logged:
   program (the thread and the mixer at once) and on the game in live mode
   (the demo, the live script with its `snd_restart` and speaker changes)
   but RADV's own report.
+
+The surface list (2026-10-23, Plan 32, see Performance, Surface list; the
+renderer only), the merged pull request as it came and the final build
+against the build before (`run.sh` through `cmplists.sh`, `tgadiff.py`,
+640x480, `r_vkValidation 1`): on 47 view lists (all but `m3l1a` and the
+performance lists; 203 views) the merged pull request gives the same
+frames to the bit in 171 views, the final build in 172; the others are in
+the lists whose frames differ between two runs of one build (see Busy
+moments above: `smoke`'s debris differs in 99 % of its pixels from run to
+run, `m1l1`'s `m11_flag` by up to 99.7 % with the convoy's lights and
+dust). No validation message in these runs; no synchronization validation
+message (`r_vkValidation 2`) through `hud`, `mp_mohdm1`, `mohdm1_dlight`,
+`menus` and 3000 frames of `o4match`. GL1 against the final build on
+`hud`, `mp_mohdm1`, `obj_team2` and `dm/mohdm1`: the differences of the
+build before (the same frames; `hud`'s team match can't be paused, so its
+swaying trees differ). `perf.py --cold` (nothing recorded): no pipeline
+created in the measured frames of `o2match` and `o4match` (the merged pull
+request: 2 and 4). `renderer_vulkan.so` imports no GL or Vulkan symbol.
+With temporary test builds (not kept): the counts and the TSC cycles of
+Performance, Surface list, and the pull request's lighting cache with a
+count of the hits taken before a list's first setup.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -5551,6 +5586,118 @@ against 0.88. One run of the last row had a slow stretch (99.9th
 percentile 0.57 ms, max 0.90), the others' max 0.29 and 0.34 ms. The
 frame isn't touched: the mixer runs on the device's thread.
 
+Surface list (2026-10-23, Plan 32; see Implementation notes, CPU stages
+and skeletal meshes). JayRewd's pull request #3 ("cut beSurfs CPU ~69µs on
+outdoor scenes": 2401 to 3059 frames a second in an outdoor demo of its
+author's benchmark, other hardware) changes the back end's surface list
+and the generic stage iterator in six places. Its author measured with
+per-surface profiling timers (`com_prof`, not part of the pull request);
+the largest gain, 36 µs, came from calling those timers less often. What
+each part does in two matches (temporary counting builds, one run of
+`o2match` and `o4match` each; per frame, over the 15000 measured):
+
+| per frame | `o2match` | `o4match` |
+| --- | --- | --- |
+| lit surfaces (a new sort with a lit entity or static model) | 100.7 | 251.0 |
+| of them the same entity, lit the same way, as the one before (the pull request's cache hits) | 6.1 | 11.4 |
+| of the hits, where something not cached was set up (a static model's dynamic lights) | 2.0 | 4.2 |
+| `RDF_HUD` lighting (`hudSphere`, computed for each surface) | 0 | 0 |
+| skeletal surfaces (`RB_SkelMesh`, each a walk of its TIKI's meshes) | 26.4 | 40.2 |
+| stages drawn on the CPU (not static, not skinned; 2D too) / their vertexes | 96.7 / 1525 | 125.0 / 1927 |
+| of them with tess's texture coordinates (no copy) / vertexes | 65.9 / 1401 | 101.6 / 1801 |
+| of them with one color (the constant, no array) / vertexes | 21.6 / 87 | 36.6 / 147 |
+| entries in the mesh table at the end | 82 | 112 |
+
+The parts:
+
+- Texture coordinates from tess (kept, fixed): 1400 to 1800 vertexes'
+  coordinates a frame no longer copied into `tess.svars.texcoords` (the
+  upload copies them from tess instead). A stage whose `rgbGen` or
+  `alphaGen` is `sCoord` or `tCoord` reads that copy, and the pull
+  request gave such a stage whatever was copied before; the game's 14
+  such stages all have a `tcMod`, which keeps the copy, but a map's or a
+  mod's shader may not.
+- One color as the constant (kept, predicted at the load): 22 to 37
+  stages a frame, quads (4 vertexes) on average. The constant has another
+  pipeline key, which the load (`tr_pipelines.c`) didn't build: with
+  nothing recorded (`perf.py --cold`) the pull request created 2
+  pipelines in `o2match`'s measured frames and 4 in `o4match`'s (none
+  before; 0.1 ms in all here, the driver's disk cache had them, 1 to 2 ms
+  each with cold driver caches) and recorded them for the next runs. The
+  load now builds the constant's keys for those stages instead of the
+  color array's (188 and 222 pipelines at the load, from 191 and 219) and
+  no pipeline is made in the frames.
+- The mesh table (kept, fixed): 26 to 40 lookups a frame instead of walks.
+  The pull request's table was never cleared, so the pointers of models
+  freed at a map change stayed in it (a new model at the same address
+  would get the old one's mesh and skel), and after about ten maps (82 to
+  112 entries each) its 1024 entries would be full and a new surface's
+  lookup would probe all of them; the front end wrote every surface of
+  every model into it in every frame. Now cleared with the skin data,
+  filled at a surface's first lookup.
+- The lighting setup cache (left out): 6 to 11 hits a frame, 2 to 4 of
+  them where it saved a few distance checks (a static model's dynamic
+  lights), the others where the entity's sphere was taken from its cache
+  anyway. The sphere that is computed for every surface, `hudSphere`, is
+  for `RDF_HUD` scenes, which only the inventory's item models are
+  (`cl_invrender.cpp`; the view weapon is drawn in the main view). The
+  cache kept its last setup in static variables, from one draw list to
+  the next: a temporary build counting the hits taken before a list's
+  first setup found 2 in `o2match`, 0 in `o4match` (a frame's first list
+  then uses the lighting set up in the list before: a static model's
+  dynamic lights, an entity's light grid value or another entity's sphere).
+- One loop for the surfaces of one sort, and `RB_EndSurface`'s canary
+  checks only near a full tess (left out): the same work as the list's own
+  loop for those surfaces, and three loads of lines that every batch
+  touches.
+
+The code that changed, timed (a temporary build that added up the TSC
+cycles of the stage iterator's CPU work, `RB_SkelMesh`'s mesh lookup and
+`VK_UploadGeometry` in every frame; the build before and Plan 32, 3
+interleaved runs each, medians; µs per frame):
+
+| | `o2match` before | after | `o4match` before | after |
+| --- | --- | --- | --- | --- |
+| stages on the CPU (97 and 124 a frame): texture coordinates, colors | 5.85 | 4.95 | 12.47 | 10.90 |
+| `RB_SkelMesh`'s mesh (26 and 40 a frame) | 0.50 | 0.35 | 0.92 | 0.53 |
+| `VK_UploadGeometry` (103 and 153 a frame) | 8.75 | 8.32 | 13.01 | 12.75 |
+
+1.5 and 2.2 µs a frame in all; the upload doesn't take longer for the
+coordinates read with a stride of 16 (fewer color bytes to copy).
+
+Results (idle machine: other processes at most 0.6 CPUs, no Plex
+transcoding; `base` (4f2bdbf2), `raw` (the pull request merged, its
+conflict resolved) and `new` (Plan 32), interleaved, 5 runs of 15000
+frames of `o2match` and `o4match` at 1920x1080 in a window, `perf.py
+--caps 0` and `--caps 250`, `--preload libinlat.so --framelog`; the
+medians of the runs' percentiles from the third frame on, in parentheses
+the content ones (each frame's median over the runs); ms):
+
+| demo | `com_maxfps` | build | frame time p99.9 | max | p99 | mean | input to present p99.9 | max | p99 | median |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `o2match` | 0 | `base` | 1.561 (1.529) | 1.94 (1.82) | 1.179 (1.147) | 0.536 | 1.516 | 1.80 | 1.132 | 0.479 |
+| | | `raw` | 1.534 (1.506) | 1.85 (1.82) | 1.184 (1.148) | 0.531 | 1.494 | 1.81 | 1.138 | 0.472 |
+| | | `new` | 1.540 (1.536) | 1.92 (1.84) | 1.162 (1.153) | 0.531 | 1.524 | 1.85 | 1.125 | 0.473 |
+| | 250 | `base` | 4.206 (4.192) | 4.82 (4.39) | 4.045 (4.041) | 4.000 | 1.304 | 2.35 | 1.015 | 0.473 |
+| | | `raw` | 4.199 (4.194) | 5.00 (4.43) | 4.044 (4.042) | 4.000 | 1.279 | 2.19 | 1.021 | 0.478 |
+| | | `new` | 4.205 (4.195) | 5.07 (4.44) | 4.045 (4.042) | 4.000 | 1.336 | 2.30 | 1.012 | 0.477 |
+| `o4match` | 0 | `base` | 1.832 (1.761) | 2.58 (2.45) | 1.416 (1.366) | 0.891 | 1.809 | 2.54 | 1.371 | 0.830 |
+| | | `raw` | 1.790 (1.734) | 2.54 (2.46) | 1.389 (1.345) | 0.895 | 1.754 | 2.54 | 1.355 | 0.835 |
+| | | `new` | 1.897 (1.759) | 2.80 (2.47) | 1.396 (1.346) | 0.888 | 1.881 | 2.67 | 1.360 | 0.834 |
+| | 250 | `base` | 4.157 (4.140) | 4.29 (4.26) | 4.041 (4.032) | 4.000 | 1.947 | 2.49 | 1.418 | 0.850 |
+| | | `raw` | 4.135 (4.133) | 4.30 (4.28) | 4.038 (4.033) | 4.000 | 1.803 | 2.52 | 1.416 | 0.855 |
+| | | `new` | 4.157 (4.137) | 4.29 (4.25) | 4.040 (4.032) | 4.000 | 1.805 | 2.46 | 1.383 | 0.846 |
+
+The renderer's own time (`renderer_timed.so`, mean / 99th percentile):
+`o2match` 0.354 / 0.721, 0.352 / 0.730, 0.353 / 0.727 ms uncapped and
+0.365 / 0.726, 0.367 / 0.726, 0.366 / 0.734 at 250; `o4match` 0.674 /
+1.115, 0.677 / 1.101, 0.672 / 1.121 and 0.701 / 1.187, 0.701 / 1.183,
+0.697 / 1.163. Everything is within the runs' spread (one run's 99.9th
+percentile of `o4match` uncapped ranges from 1.72 to 2.24 ms within a
+build; the content ones, which leave most of that out, are 1.734 to
+1.761): the 1.5 to 2 µs a frame of the parts are too small to show in
+frame times on this machine.
+
 ### Coordinate conventions
 
 - Projection matrices are OpenGL ones (column-major, clip z in [-w, w], y up).
@@ -6612,6 +6759,32 @@ selects the sample count (see Implementation notes).
   (`x * 73856093 ^ y * 19349663 ^ z * 83492791`, the low 10 bits) keeps the
   low zero bits of whole coordinates, but debris doesn't rest at whole
   coordinates: its hit rate in matches is that of a good hash.
+- **CPU stages and skeletal meshes** (`RB_IterateStagesGeneric`,
+  `RB_SkelMesh`; JayRewd's pull request #3 and Plan 32, see Performance,
+  Surface list). What the back end did again for each stage or surface
+  with the same result:
+  - A stage drawn on the CPU (not from the static geometry, not skinned)
+    whose texture coordinates are tess's own (every bundle `tcGen texture`
+    or `lightmap` without `tcMod`, and no `rgbGen` or `alphaGen` `sCoord`
+    or `tCoord`, which read the copy: `RB_StageTexCoordsDirect`) gives
+    the draw `tess.texCoords` (stride 16) instead of `ComputeTexCoords`
+    copying them into `tess.svars.texcoords`. A stage with the same color
+    at every vertex (`rgbGen identity` or `identityLighting`, `alphaGen
+    identity`: `RB_StageConstantColor`) is drawn with it as the constant
+    color (`ComputeColors`' byte over 255, the float the vertex input
+    makes of the array's bytes) instead of an array `ComputeColors` fills
+    and the draw copies, and so is the lightmapped multitexture iterator's
+    white (GL1's `tess.constantColor255`). A constant color has another
+    pipeline key (no `VK_PIPE_COLOR_ARRAY`); `tr_pipelines.c` predicts it
+    for those stages in 2D and on the CPU (see Pipelines at load).
+  - `RB_SkelMesh` finds the mesh of a surface in a table by TIKI and
+    surface (a skel can be a mesh of more than one TIKI; 1024 entries,
+    open addressing, filled up to 3/4, then the walk for the rest; 82 and
+    112 entries in two matches) instead of walking the TIKI's meshes (an
+    engine call each) for every surface drawn; the walk fills it at a
+    surface's first draw. It is forgotten with the skin data
+    (`R_ClearSkinData`: at each map load and at shutdown, after
+    `TIKI_FreeAll` may have freed the models).
 - **Push constants** (`vkPushConstants_t`, the guaranteed 128 bytes).
   Vertex stage: projection × modelview, row 2 of the modelview (fog
   distance) and the clip plane in object space (zero without a clip plane),
@@ -6673,7 +6846,9 @@ selects the sample count (see Implementation notes).
   drawn (2D, where depth test is off for a stage without a second texture
   and the cull is the shader's or the none `Set2DWindow` sets behind
   `GL_Cull`'s back, which a draw keeps until `GL_Cull` changes it; a 3D
-  view on the CPU, with colors per vertex; the static geometry, with a
+  view on the CPU, with colors per vertex, or the constant color of the
+  stages `RB_StageConstantColor` takes and of the lightmapped multitexture
+  iterator (Plan 32; in 2D too); the static geometry, with a
   constant color when `RB_StaticStageColor` can give one; the static
   geometry with the effects shader, for a stage it can draw: the shader's
   deforms, a bundle's `tcGen` or `tcMod`, `distFade`, a lit static model's
@@ -7701,6 +7876,40 @@ Done:
     loops' 30 ms loss fixed), ThreadSanitizer clean but RADV's own report,
     GL1 plays with the new engine.
 
+32. The surface list (2026-10-23, see Performance, Surface list, and
+    Implementation notes, CPU stages and skeletal meshes; the renderer):
+    JayRewd's pull request #3 ("cut beSurfs CPU ~69µs on outdoor scenes",
+    measured on its author's benchmark with per-surface profiling timers
+    that aren't part of it) merged into the branch, its one conflict
+    resolved (dynamic light lines that Plan 24 had removed), then measured
+    with temporary counting and timing builds in `o2match` and `o4match`
+    and reworked. Kept: a stage drawn on the CPU takes its texture
+    coordinates from tess when they are the mesh's or the lightmap's, a
+    stage with one color for all its vertexes (and the lightmapped
+    multitexture iterator's white) gets it as the constant color,
+    `RB_SkelMesh` finds a surface's mesh in a table, the deforms are only
+    called for a shader that has some. Fixed: the table is cleared with
+    the skin data at each map load (it was never cleared, so freed
+    models' pointers stayed in it, and once its 1024 entries were full
+    every new surface's lookup probed all of them) and filled at a
+    surface's first lookup instead of by the front end for every surface
+    of every model in every frame; `sCoord` and `tCoord` stages, which
+    read the copied texture coordinates, get the copy; the constant
+    colors' pipelines are built at the load (`tr_pipelines.c`: the pull
+    request made 2 and 4 pipelines in the two matches' frames when nothing
+    was recorded). Left out: the cache of the entities' lighting setup (6
+    to 11 hits a frame, all but 2 to 4 where a cached value was taken
+    anyway; kept in static variables, it carried a setup from one draw
+    list to the next, twice in `o2match`), the loop for the surfaces of
+    one sort (the same work as the list's own loop; its gain was the
+    author's timers), the canary checks limited to a nearly full tess,
+    and edits that change nothing. The code it changes takes 1.5 and 2.2
+    µs less a frame (0.9 to 1.6 µs in the stages, 0.15 to 0.4 µs in the
+    mesh lookups, 0.26 to 0.43 µs in the upload); the frame times and
+    input to present of the merged pull request and of the final build
+    are within the runs' spread of the build before's, uncapped and at
+    250. The same frames as the build before, no validation message.
+
 Remaining:
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
@@ -7824,6 +8033,16 @@ Remaining:
   threads: the streams decode on the main thread there). The device's
   period on this machine's PulseAudio is 15 ms (5 ms x 3 requested); the
   audio latency against OpenAL's was not measured.
+- The surface list (Plan 32, see Performance, Surface list): not measured
+  on the pull request's author's hardware or outdoor demo, where its 69 µs
+  were measured with profiling timers. Left in the code:
+  `tess.constantColor255` (8 KB of tess) is only read by `RB_StaticDraw`'s
+  case of a draw with a color array that isn't the stage's, which no
+  iterator makes any more (removing it moves tess's other arrays: to be
+  timed); the back end tests `RDF_HUD` in the front end's `tr.refdef` (the
+  last scene the front end took), not the drawn list's `backEnd.refdef`, as
+  GL1 does, and computes the inventory's item models' sphere for each of
+  their surfaces.
 - The submit thread (see Performance, Submit thread): not measured on
   NVIDIA, where its gain was reported (a tester's input to display runs
   with `libinlat.so` and `INLAT_DISPLAY=1`, the thread on and off, would

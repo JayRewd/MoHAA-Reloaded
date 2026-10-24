@@ -61,8 +61,7 @@ SURFACE SHADERS
 shaderCommands_t	tess;
 static qboolean	setArraysOnce;
 
-static qboolean RB_StageTexCoordsDirect( const shaderStage_t *pStage );
-static void RB_BindStageTexCoord( const shaderStage_t *pStage, int bundle );
+static void RB_BindStageTexCoords( const shaderStage_t *pStage, int bundle );
 
 /*
 =================
@@ -231,12 +230,10 @@ t0 = most upstream according to spec
 t1 = most downstream according to spec
 ===================
 */
-static void DrawMultitextured( shaderCommands_t *input, int stage ) {
+static void DrawMultitextured( shaderCommands_t *input, int stage, qboolean directTc ) {
 	shaderStage_t	*pStage;
-	qboolean		directTc;
 
 	pStage = tess.xstages[stage];
-	directTc = RB_StageTexCoordsDirect( pStage );
 
 	GL_State( pStage->stateBits );
 
@@ -245,7 +242,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	//
 	GL_SelectTexture( 0 );
 	if ( directTc ) {
-		RB_BindStageTexCoord( pStage, 0 );
+		RB_BindStageTexCoords( pStage, 0 );
 	} else {
 		RB_SetTexCoordArray( input->svars.texcoords[0][0], 0 );
 	}
@@ -270,7 +267,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	}
 
 	if ( directTc ) {
-		RB_BindStageTexCoord( pStage, 1 );
+		RB_BindStageTexCoords( pStage, 1 );
 	} else {
 		RB_SetTexCoordArray( input->svars.texcoords[1][0], 0 );
 	}
@@ -1116,33 +1113,66 @@ static void ComputeColors( shaderStage_t *pStage )
 
 /*
 ===============
+RB_StageConstantColor
+
+Whether a stage drawn on the CPU has the same color at every vertex:
+rgbGen identity or identityLighting with alphaGen identity. It is drawn
+with that color as the constant (RB_SetStageConstantColor) instead of an
+array ComputeColors fills; tr_pipelines.c predicts the same keys
+===============
+*/
+qboolean RB_StageConstantColor( const shaderStage_t *pStage ) {
+	return ( pStage->rgbGen == CGEN_IDENTITY || pStage->rgbGen == CGEN_IDENTITY_LIGHTING )
+		&& pStage->alphaGen == AGEN_IDENTITY;
+}
+
+/*
+===============
+RB_SetStageConstantColor
+
+ComputeColors' color for such a stage, as the vertexes would have it (bytes)
+===============
+*/
+static void RB_SetStageConstantColor( const shaderStage_t *pStage ) {
+	const float c = ( pStage->rgbGen == CGEN_IDENTITY ? 255 : tr.identityLightByte ) / 255.0f;
+
+	RB_EnableColorArray( qfalse );
+	RB_SetColor3f( c, c, c );
+}
+
+/*
+===============
 RB_StageTexCoordsDirect
 
-TEXTURE/LIGHTMAP with no texMods: draw from tess.texCoords (stride 16)
-instead of memcpy into svars.
+Whether a stage drawn on the CPU can take its texture coordinates from
+tess.texCoords (RB_BindStageTexCoords) instead of a copy ComputeTexCoords
+makes: every bundle has the mesh's or the lightmap's, without texMods, and
+neither rgbGen nor alphaGen reads the copy (sCoord, tCoord)
 ===============
 */
 static qboolean RB_StageTexCoordsDirect( const shaderStage_t *pStage ) {
 	int b;
 
+	if ( pStage->rgbGen == CGEN_SCOORD || pStage->rgbGen == CGEN_TCOORD
+		|| pStage->alphaGen == AGEN_SCOORD || pStage->alphaGen == AGEN_TCOORD ) {
+		return qfalse;
+	}
 	for ( b = 0; b < NUM_TEXTURE_BUNDLES && pStage->bundle[b].image[0]; b++ ) {
-		if ( pStage->bundle[b].numTexMods ) {
-			return qfalse;
-		}
-		if ( pStage->bundle[b].tcGen != TCGEN_TEXTURE
-			&& pStage->bundle[b].tcGen != TCGEN_LIGHTMAP ) {
+		if ( pStage->bundle[b].numTexMods
+			|| ( pStage->bundle[b].tcGen != TCGEN_TEXTURE && pStage->bundle[b].tcGen != TCGEN_LIGHTMAP ) ) {
 			return qfalse;
 		}
 	}
 	return pStage->bundle[0].image[0] != NULL;
 }
 
-static void RB_BindStageTexCoord( const shaderStage_t *pStage, int bundle ) {
-	if ( pStage->bundle[bundle].tcGen == TCGEN_LIGHTMAP ) {
-		RB_SetTexCoordArray( tess.texCoords[0][1], 16 );
-	} else {
-		RB_SetTexCoordArray( tess.texCoords[0][0], 16 );
-	}
+/*
+===============
+RB_BindStageTexCoords
+===============
+*/
+static void RB_BindStageTexCoords( const shaderStage_t *pStage, int bundle ) {
+	RB_SetTexCoordArray( tess.texCoords[0][pStage->bundle[bundle].tcGen == TCGEN_LIGHTMAP], 16 );
 }
 
 /*
@@ -1544,7 +1574,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 	for (stage = 0; stage < MAX_SHADER_STAGES; stage++)
 	{
 		shaderStage_t* pStage = tess.xstages[stage];
-		qboolean directTc = qfalse;
+		qboolean directTc = qfalse, constColor = qfalse;
 
 		if (!pStage)
 		{
@@ -1563,51 +1593,26 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		} else if (tess.staticBatch == STATIC_BATCH_SKINNED) {
 			RB_SkinStage(pStage);
 		} else {
-			qboolean constColor = ( pStage->rgbGen == CGEN_IDENTITY
-				|| pStage->rgbGen == CGEN_IDENTITY_LIGHTING )
-				&& ( pStage->alphaGen == AGEN_IDENTITY );
-
-			directTc = RB_StageTexCoordsDirect( pStage );
-			if ( !directTc ) {
+			// on the CPU: the texture coordinates and colors that differ
+			// from tess's own or from vertex to vertex
+			directTc = RB_StageTexCoordsDirect(pStage);
+			constColor = RB_StageConstantColor(pStage);
+			if (!directTc) {
 				ComputeTexCoords(pStage);
 			}
-			if ( !constColor ) {
+			if (!constColor) {
 				ComputeColors(pStage);
-			}
-			if ( setArraysOnce && stage == 0 ) {
-				GL_SelectTexture( 0 );
-				if ( directTc ) {
-					RB_BindStageTexCoord( pStage, 0 );
-				}
-				if ( constColor ) {
-					RB_EnableColorArray( qfalse );
-					if ( pStage->rgbGen == CGEN_IDENTITY_LIGHTING ) {
-						RB_SetColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
-					} else {
-						RB_SetColor3f( 1, 1, 1 );
-					}
-				}
 			}
 		}
 
-		if (!setArraysOnce)
+		if (constColor)
 		{
-			qboolean constColor = ( tess.staticBatch != STATIC_BATCH_ON
-				&& tess.staticBatch != STATIC_BATCH_SKINNED
-				&& ( pStage->rgbGen == CGEN_IDENTITY || pStage->rgbGen == CGEN_IDENTITY_LIGHTING )
-				&& pStage->alphaGen == AGEN_IDENTITY );
-
-			if ( constColor ) {
-				RB_EnableColorArray( qfalse );
-				if ( pStage->rgbGen == CGEN_IDENTITY_LIGHTING ) {
-					RB_SetColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
-				} else {
-					RB_SetColor3f( 1, 1, 1 );
-				}
-			} else {
-				RB_EnableColorArray(qtrue);
-				RB_SetColorArray(input->svars.colors[0]);
-			}
+			RB_SetStageConstantColor(pStage);
+		}
+		else if (!setArraysOnce)
+		{
+			RB_EnableColorArray(qtrue);
+			RB_SetColorArray(input->svars.colors[0]);
 		}
 
 		//
@@ -1615,7 +1620,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		//
 		if (pStage->bundle[1].image[0] != 0)
 		{
-			DrawMultitextured(input, stage);
+			DrawMultitextured(input, stage, directTc);
 		}
 		else
 		{
@@ -1626,13 +1631,13 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				GL_State(pStage->stateBits);
 			}
 
-			if (!setArraysOnce)
+			if (directTc)
 			{
-				if ( directTc ) {
-					RB_BindStageTexCoord( pStage, 0 );
-				} else {
-					RB_SetTexCoordArray(input->svars.texcoords[0][0], 0);
-				}
+				RB_BindStageTexCoords(pStage, 0);
+			}
+			else if (!setArraysOnce)
+			{
+				RB_SetTexCoordArray(input->svars.texcoords[0][0], 0);
 			}
 
 			//
@@ -1680,8 +1685,7 @@ void RB_StageIteratorGeneric( void )
 
 	// the effects shader deforms static batches (RB_StaticFxRecord); skinned
 	// ones have no deforms (R_SkinPasses)
-	if ( tess.staticBatch != STATIC_BATCH_ON && tess.staticBatch != STATIC_BATCH_SKINNED
-		&& input->shader->numDeforms ) {
+	if ( input->shader->numDeforms && tess.staticBatch != STATIC_BATCH_ON && tess.staticBatch != STATIC_BATCH_SKINNED ) {
 		RB_DeformTessGeometry();
 	}
 
@@ -1710,32 +1714,13 @@ void RB_StageIteratorGeneric( void )
 	}
 	else
 	{
-		shaderStage_t *p0 = tess.xstages[0];
-		qboolean constColor = p0
-			&& ( p0->rgbGen == CGEN_IDENTITY || p0->rgbGen == CGEN_IDENTITY_LIGHTING )
-			&& p0->alphaGen == AGEN_IDENTITY;
-		qboolean directTc = p0 && RB_StageTexCoordsDirect( p0 );
-
 		setArraysOnce = qtrue;
 
-		if ( constColor ) {
-			RB_EnableColorArray( qfalse );
-			if ( p0->rgbGen == CGEN_IDENTITY_LIGHTING ) {
-				RB_SetColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
-			} else {
-				RB_SetColor3f( 1, 1, 1 );
-			}
-		} else {
-			RB_EnableColorArray( qtrue );
-			RB_SetColorArray( tess.svars.colors[0] );
-		}
+		RB_EnableColorArray(qtrue);
+		RB_SetColorArray(tess.svars.colors[0]);
 
-		RB_EnableTexCoordArray( qtrue );
-		if ( directTc ) {
-			RB_BindStageTexCoord( p0, 0 );
-		} else {
-			RB_SetTexCoordArray( tess.svars.texcoords[0][0], 0 );
-		}
+		RB_EnableTexCoordArray(qtrue);
+		RB_SetTexCoordArray(tess.svars.texcoords[0][0], 0);
 	}
 
 	//
@@ -1865,7 +1850,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	GL_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
 	RB_SetTessVertexArray();
 
-	/* White is constant — avoid uploading N× RGBA255 into the frame VB. */
+	// white: the constant color (tr_pipelines.c predicts it), not an array
 	RB_EnableColorArray( qfalse );
 	RB_SetColor3f( 1, 1, 1 );
 
@@ -1925,22 +1910,18 @@ void RB_EndSurface( void ) {
 
 	input = &tess;
 
-	if ( input->numIndexes == 0 ) {
+	if (input->numIndexes == 0) {
 		tess.staticBatch = STATIC_BATCH_OFF;
 		return;
 	}
-	/* Canaries sit at the far end of huge tess arrays — skip cold loads unless near full. */
-	if ( input->numIndexes > SHADER_MAX_INDEXES - 64
-		&& input->indexes[SHADER_MAX_INDEXES - 1] != 0 ) {
-		ri.Error( ERR_DROP, "RB_EndSurface() - SHADER_MAX_INDEXES hit" );
-	}
-	if ( input->numVertexes > SHADER_MAX_VERTEXES - 64
-		&& input->xyz[SHADER_MAX_VERTEXES - 1][0] != 0 ) {
-		ri.Error( ERR_DROP, "RB_EndSurface() - SHADER_MAX_VERTEXES hit" );
+	if (input->indexes[SHADER_MAX_INDEXES-1] != 0) {
+		ri.Error (ERR_DROP, "RB_EndSurface() - SHADER_MAX_INDEXES hit");
+	}	
+	if (input->xyz[SHADER_MAX_VERTEXES-1][0] != 0) {
+		ri.Error (ERR_DROP, "RB_EndSurface() - SHADER_MAX_VERTEXES hit");
 	}
 
-	if ( tess.numVertexes > SHADER_MAX_VERTEXES - 64
-		&& tess.xyz[SHADER_MAX_VERTEXES - 1][0] && r_shadows->integer != 3 ) {
+	if (tess.xyz[SHADER_MAX_VERTEXES - 1][0] && r_shadows->integer != 3) {
 		tess.xyz[SHADER_MAX_VERTEXES - 1][0] = 0;
 	}
 

@@ -153,6 +153,8 @@ void R_ClearSkinData( void ) {
 	vk_clear_skin_data();
 	// the effects shader's wave tables
 	R_ClearFxTables();
+	// the meshes of the skeletal surfaces (RB_SkelMesh)
+	R_ClearSkelMeshes();
 }
 
 /*
