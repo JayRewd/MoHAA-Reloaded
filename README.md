@@ -73,7 +73,7 @@ seta r_fullscreen 1
 
 | Setting | Default (upstream's) | What it does |
 |---|---|---|
-| `cl_movefps` | `100` (new) | **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, each exactly 1000 / this many ms of movement (10 at 100, 8 at 125) at any frame rate; the view turns with every frame. On `metal`, `0` is stock (one command per rendered frame); on `vulkan` it is always on. |
+| `cl_movefps` | `100` (new) | **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, each exactly 1000 / this many ms of movement (10 at 100, 8 at 125) at any frame rate; the view turns with every frame. `0` is stock: one command per rendered frame, and at most 1000 frames a second. |
 | `com_maxfps` | `125` (`85`) | The frame cap, exact (240 is 240, not 250); `0` is uncapped. With the movement clock on, movement doesn't depend on it. |
 | `cl_maxpackets` | `125` (`30`) | Every command goes out in its own packet. |
 | `r_fullscreen`, `r_noborder` | `1`, `0` | Fullscreen at `r_mode`'s size. On `metal`, `1` and `1` is the fullscreen Space (the cleanest mode); on `vulkan`, `r_fullscreen 0` with `r_noborder 1` is a borderless window. `0`, `0` is a window (more latency on both). |
