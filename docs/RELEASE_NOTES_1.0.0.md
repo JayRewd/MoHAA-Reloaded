@@ -1,6 +1,6 @@
 # MoHAA Reloaded 1.0.0: native Metal for Apple Silicon
 
-> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from the tagged commit (first from 08f19e40, then bdce5ca9 the same day for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`, then fb6008ea for `m_filter 0`, `cl_ctrlbindings`, the config after a game-folder change, the HUD's per-frame work and the chat clear of the compass, then the tag moved and the zip replaced again the same day for the crosshair drawn as boxes and 14 old GL settings no longer saved), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
+> Published on 2026-10-23 as [v1.0.0](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0), from f1541d96 (first from 08f19e40, then bdce5ca9 the same day for the icon fix, the name MoHAA Reloaded and `com_maxfps 125`, then fb6008ea for `m_filter 0`, `cl_ctrlbindings`, the config after a game-folder change, the HUD's per-frame work and the chat clear of the compass, then the tag moved and the zip replaced again the same day for the crosshair drawn as boxes and 14 old GL settings no longer saved), replacing the first v1.0.0 of 2026-10-20 (ab81ff5b; its text is this file at 7692472f); the release's text is this file without its title and this note.
 
 The first release of the Metal port of [MoHAA Reloaded](https://github.com/pstngh/MoHAA-Reloaded) (its `metal` branch), a fork of [OpenMoHAA](https://github.com/openmoh/openmohaa) that runs Medal of Honor: Allied Assault, Spearhead and Breakthrough natively on Apple Silicon Macs. It is not an upstream release: problems with this port belong on this repository's tracker, not upstream's.
 
@@ -97,4 +97,4 @@ Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose 
 
 | File | SHA-256 |
 |---|---|
-| `openmohaa-metal-1.0.0-macos-arm64.zip` | (CI's zip of the tagged commit: filled in when it is attached) |
+| `openmohaa-metal-1.0.0-macos-arm64.zip` | `8318702699ac3f8b5343e7ca4793774c5865077630072b3d5f291d576148242f` |
