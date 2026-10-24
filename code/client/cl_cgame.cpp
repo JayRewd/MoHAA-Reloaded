@@ -860,6 +860,7 @@ void CL_InitCGameDLL( clientGameImport_t *cgi, clientGameExport_t **cge ) {
 	cgi->GetLiveUserCmd				= CL_GetLiveUserCmd;
 	cgi->CM_EntityString			= CM_EntityString;
 	cgi->GetConfigString			= CL_ConfigString;
+	cgi->R_DrawBoxes				= re.DrawBoxes;
 	// FIXME
 	//cgi->pUnknownVar				= NULL;
 

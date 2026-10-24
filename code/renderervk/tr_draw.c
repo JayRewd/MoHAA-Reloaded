@@ -637,6 +637,45 @@ void DrawBox(float x, float y, float w, float h) {
 
 /*
 ================
+DrawBoxes
+
+DrawBox for count boxes (x, y, width, height) in one draw, in the color
+given (taken as Draw_SetColor takes it); the 2D color stays (the crosshair)
+================
+*/
+void DrawBoxes(const float (*boxes)[4], int count, const float *color) {
+	byte	rgba[4];
+	int		i;
+
+	R_IssuePendingRenderCommands();
+
+	rgba[0] = (byte)(color[0] * tr.identityLightByte);
+	rgba[1] = (byte)(color[1] * tr.identityLightByte);
+	rgba[2] = (byte)(color[2] * tr.identityLightByte);
+	rgba[3] = (byte)(color[3] * 255.0);
+	RB_SetColor4ubv(rgba);
+	R_EnableTexture(qfalse);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
+
+	RB_ImmBegin(IMM_QUADS);
+
+	for (i = 0; i < count; i++) {
+		const float *b = boxes[i];
+
+		RB_ImmVertex2f(b[0], b[1]);
+		RB_ImmVertex2f(b[0] + b[2], b[1]);
+		RB_ImmVertex2f(b[0] + b[2], b[1] + b[3]);
+		RB_ImmVertex2f(b[0], b[1] + b[3]);
+	}
+
+	RB_ImmEnd();
+
+	RB_SetColor4ubv(backEnd.color2D);
+	R_EnableTexture(qtrue);
+}
+
+/*
+================
 DrawLineLoop
 ================
 */

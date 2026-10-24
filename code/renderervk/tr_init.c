@@ -2138,6 +2138,7 @@ refexport_t *GetRefAPI ( int apiVersion, refimport_t *rimp ) {
 	re.DrawTrianglePic = Draw_TrianglePic;
 	re.DrawBox = DrawBox;
 	re.AddBox = AddBox;
+	re.DrawBoxes = DrawBoxes;
 	re.Set2DWindow = Set2DWindow;
 	re.Scissor = RE_Scissor;
 	re.DrawLineLoop = DrawLineLoop;

@@ -592,6 +592,17 @@ below are done.
   steps meet the lip, up to 10 to 14 points more often. `0` keeps every
   command on the grid, `cl_movefps 0` runs none of it (see Performance,
   Command rate)
+- the crosshair (2026-10-24, Plan 39, cgame and the renderer, as on the
+  `metal` branch; the user's request): drawn as four boxes in one draw, by
+  default the stock image's shape (`cg_crosshair_length` 4,
+  `cg_crosshair_gap` 3, `cg_crosshair_thickness` 1, in HUD pixels, scaled
+  above 1920x1080; `cg_crosshair_color` `FFFFFF`), read at a map load and
+  on `vid_restart`; `ui_crosshair 0` hides it. The stock image, the
+  teammate image of Spearhead and Breakthrough with the trace that chose
+  between them in every frame, `cg_crosshair` and `cg_crosshair_friend`
+  are gone. The frames are the build before's but for the stock image's
+  four half-dark pixels at the arms' inner ends; the renderer's API is
+  version 15 (`DrawBoxes`). See Implementation notes, Crosshair
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -697,6 +708,12 @@ OpenAL headers deleted; `code/qcommon/files.cpp`, `qcommon.h`:
 HRTF set; `cmake/client.cmake`, `cmake/libraries/{miniaudio,mysofa,pffft}.cmake`,
 `openal.cmake` deleted; the CI workflows and the Windows installer without
 OpenAL, with the HRTF set; see Implementation notes, Sound system), and the
+crosshair (`code/cgame/cg_drawtools.cpp`: `CG_UpdateCrosshair`,
+`CG_DrawCrosshair`; `cg_main.c` and `cg_local.h`: the cvars, its layout at
+`CG_GetRendererConfig`; `code/cgame/cg_public.h` and
+`code/client/cl_cgame.cpp`: the cgame import `R_DrawBoxes`;
+`code/renderercommon/tr_public.h`: the export `DrawBoxes`,
+`REF_API_VERSION` 15; see Implementation notes, Crosshair), and the
 sub-grid (`code/client/cl_input.cpp`: `cl_movesubgrid`, `CL_SubGridStep`,
 `CL_CreateNewCommands`, `CL_GetLiveUserCmd`, `CL_ReadyToSendPacket`;
 `code/cgame/cg_predict.c` and `cg_public.h`: the open step as long as the
@@ -2184,6 +2201,41 @@ the next refresh is normal; the LAN search finds a local dedicated server
 and ends (7c82547a stayed in "Searching LAN."). `test_lz77` and
 `test_serverlist_scheduler` pass with GCC and with clang (Debug, the
 Unit Tests job's setup).
+
+Shots and jumps on the sub-grid and the crosshair (2026-10-24, Plans 38
+and 39; engine, cgame and renderer) against the build before (4524cda1
+from a `git archive` export, in a bin dir of its own through a wrapper;
+`cmplists.sh`, 640x480, `r_vkValidation 1`): of the 53 views of `menus`,
+`hud`, `mp_mohdm1`, `mp_obj_team1`, `mohdm1`, `mohdm1_dlight`,
+`team_obj_team2`, `obj_team2`, `mohdm2_fog`, `m2l3` and `skin_passes`, 50
+give the same frames to the bit, and the three of `hud` differ in the
+stock crosshair image's half-dark pixel at each arm's inner end alone (4
+pixels; 3 in `hud_scores`, whose fourth lies on black). The final build
+(Plan 38's jump rule came after that pass) over `menus`, `hud`,
+`mp_mohdm1`, `mohdm1` and `mohdm1_dlight` again: the same. No validation
+message, and none at `r_vkValidation 2` in `menus`, `hud` and `dm/mohdm1`
+nor through a `vid_restart` with new crosshair values. The crosshair in
+magenta in a team match on `dm/mohdm1` (a temporary cfg, the player with a
+rifle): at 640x480, 1920x1080, 1280x720 with length 5, gap 3 and
+thickness 2, 1600x900 with 6, 4 and 3, 1600x900 with a gap and a length
+past their maximums and thickness 0, 2560x1440 (scale 1.333) and
+3840x2160 (scale 2), with `#00ff00`, with an invalid color (white) and
+before and after a `vid_restart` that changed the values, every capture
+has exactly the expected pixels, symmetric about the center square;
+`ui_crosshair 0` draws none. `glcheck.sh` clean; `renderer_vulkan.so`
+imports no GL or Vulkan symbol. Frame times (`perf.py`, `o2match` and
+`o4match` at 1920x1080 fullscreen with `libinlat.so`, 5 runs each,
+interleaved with the build before; the demos draw the HUD, the crosshair
+where the recorder had it): at 250 frames a second the same, frame time
+p99 4.043 and 4.038 ms against 4.043 and 4.039, p99.9 4.191 and 4.162
+against 4.199 and 4.154, input to present p99 0.984 and 1.383 against
+0.987 and 1.388 and p99.9 within the runs' spread (1.23 to 2.02 against
+1.14 to 1.98 ms, 1.69 to 2.40 against 1.75 to 2.70); uncapped 1642 and
+1008 frames a second against 1607 and 992 (p99 1.274 and 1.546 ms
+against 1.306 and 1.592, p99.9 within the spread). cgame's own time a
+frame (`renderer_timed.so`) is 0.2 to 0.3 µs lower in all four (4.4
+against 4.6 µs in `o2match` at 250, 5.7 against 6.0 in `o4match`): the
+stock path's trace and shader lookups of every frame.
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -7440,6 +7492,47 @@ selects the sample count (see Implementation notes).
   included (37 of the 40 boxes a frame in matches). Its state changes are
   kept, so the draws after it see the same state; with `r_measureOverdraw`
   (its fragments counted in the stencil buffer) the box is drawn.
+- **Crosshair** (cgame's `CG_UpdateCrosshair` and `CG_DrawCrosshair` in
+  `cg_drawtools.cpp`, the renderer's `DrawBoxes` in `tr_draw.c`; 2026-10-24,
+  Plan 39, as on the `metal` branch, its bccff6f9). `ui_crosshair 1` (the
+  default) draws the crosshair as four untextured boxes in one draw, `0`
+  hides it (the Options' Crosshair box). The stock path is gone: the image
+  (`textures/hud/crosshair`, `cg_crosshair`), the teammate image
+  (`cg_crosshair_friend`, which only Spearhead and Breakthrough have) with
+  the trace along the view that chose between them in every frame of a
+  team game, the two shader lookups of every frame, and the registration
+  of both images at the load (`CG_PrecacheMatch`). `cg_crosshair_length`
+  (4), `cg_crosshair_gap` (3, from the center) and
+  `cg_crosshair_thickness` (1) are HUD pixels as the stock image was drawn
+  (16x16: white arms one pixel thick and four long, a gap of three; its
+  half-transparent black pixel at each arm's inner end is left out),
+  scaled with the height above 1920x1080 (`uiHiResScale`, rounded to whole
+  pixels), and `cg_crosshair_color` is `RRGGBB` (a leading `#` too;
+  anything else is white). The layout is worked out when cgame takes the
+  renderer's configuration (a map load, `vid_restart`), so a change of
+  the cvars shows after one of those, and a frame only draws. The arms sit
+  around a center square as wide as they are thick, the same whole number
+  of pixels from it on every side (the gap less half the thickness, at
+  least 1), so the crosshair is symmetric at any size. It shows where the
+  stock one did (`STAT_CROSSHAIR`, not with `PMF_NO_HUD` or at the
+  intermission; the stock code's zoom test drew nothing without
+  `STAT_CROSSHAIR`) and leaves the 2D color white, as the stock image's
+  stretch pic did. `DrawBoxes`, new at the end of `refexport_t` (with the
+  cgame import `R_DrawBoxes`), draws the boxes as one immediate draw with
+  `DrawBox`'s state and pipeline in the color given, converted as
+  `Draw_SetColor` converts it (`tr.identityLightByte`), after
+  `R_IssuePendingRenderCommands` (so an open 2D batch is drawn first, as
+  the stock image's own surface came after it), and gives the current
+  color back to the 2D color; the frame log and `renderer_timed.so` time
+  it as a 2D call. `REF_API_VERSION` is 15 since: an engine refuses an
+  older `renderer_vulkan.so` at startup ("Mismatched REF_API_VERSION",
+  then "Couldn't initialize refresh") instead of calling a missing export,
+  so comparisons with a build before this one run the old build from its
+  own bin dir (a wrapper as the binary of a `cmplists.sh` variant or of
+  `perf.py --binaries`), as for engine and cgame changes. Against
+  `metal`'s: the color goes through the 2D color's conversion, the API
+  version, the tools' wrappers and the load's registration are this
+  branch's, the cgame code is the same.
 - **Light grid lookups** (`tr_light.c`, `R_GetLightingGridValue`; see
   Performance, Light grid lookups). A lookup blends the 8 light grid
   samples around a point: those of the 4 columns around it, at its row and
@@ -7640,7 +7733,8 @@ selects the sample count (see Implementation notes).
     explosion), read as text rather than tokens;
   - bit 4: what cgame registers itself the first time it draws it (the
     `blastmark` decal, the team icons, the radar, the lag icon, the four
-    head icon sprites, the two crosshairs) and the health box
+    head icon sprites; the two crosshair images until Plan 39 drew the
+    crosshair as boxes) and the health box
     `Player::EventDMDeathDrop` drops.
 
   Each model (`CG_PrecacheModel`) gets the server's name for it
@@ -8767,6 +8861,18 @@ Done:
     its command is unsent. Measured at 250, 1000 and 125 frames a second
     against a local dedicated server; the stop rate at `dm/mohdm2`'s bumps
     with a sweep of the server's own moves (temporary builds, not kept).
+39. The crosshair (2026-10-24, the user's request: "merging ... the
+    crosshair"; see Status and Implementation notes, Crosshair): `metal`'s
+    bccff6f9, the crosshair drawn as four boxes in one draw, the stock
+    image's shape by default. The cgame code is `metal`'s; the renderer's
+    `DrawBoxes` converts the color as the 2D color is converted, the
+    renderer's API is version 15 (an older `renderer_vulkan.so` is refused
+    at startup instead of calling a missing export), the frame log and
+    `renderer_timed.so` wrap the new export, and the load's registration
+    of the two crosshair images is gone. The frames differ from the build
+    before in the stock image's four half-dark pixels only; every size and
+    setting tried gives the expected pixels, symmetric; frame times the
+    same, cgame 0.2 to 0.3 µs less a frame.
 
 Remaining:
 

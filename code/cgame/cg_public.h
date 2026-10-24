@@ -463,6 +463,9 @@ functions exported to the main executable
         // one configstring of the client's gamestate
         const char *(*GetConfigString)(int index);
 
+        // R_DrawBox for count boxes (x, y, width, height) in one draw, in the color given (the crosshair)
+        void (*R_DrawBoxes)(const float (*boxes)[4], int count, const float *color);
+
     } clientGameImport_t;
 
     /*

@@ -28,7 +28,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern "C" {
 #endif
 
-#define	REF_API_VERSION		14
+#define	REF_API_VERSION		15	// 15: DrawBoxes
 
 typedef struct dtiki_s dtiki_t;
 typedef struct skelAnimFrame_s skelAnimFrame_t;
@@ -180,6 +180,9 @@ typedef struct {
     void (*FreeRawImage)(byte *pic);
 
     void (*Set2DInitialShaderTime)(float startTime);
+
+    // DrawBox for count boxes (x, y, width, height) in one draw, in the color given (the crosshair)
+    void (*DrawBoxes)(const float (*boxes)[4], int count, const float *color);
 } refexport_t;
 
 //

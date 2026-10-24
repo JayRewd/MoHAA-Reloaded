@@ -335,6 +335,9 @@ static void FL_DrawBox( float x, float y, float w, float h ) {
 static void FL_AddBox( float x, float y, float w, float h ) {
 	FL_2D( fl.real.AddBox( x, y, w, h ) )
 }
+static void FL_DrawBoxes( const float (*boxes)[4], int count, const float *color ) {
+	FL_2D( fl.real.DrawBoxes( boxes, count, color ) )
+}
 static void FL_Scissor( int x, int y, int width, int height ) {
 	FL_2D( fl.real.Scissor( x, y, width, height ) )
 }
@@ -703,6 +706,7 @@ refexport_t *VK_FrameLogExports( refexport_t *real ) {
 	e->DrawBackground = FL_DrawBackground;
 	e->DrawBox = FL_DrawBox;
 	e->AddBox = FL_AddBox;
+	e->DrawBoxes = FL_DrawBoxes;
 	e->Scissor = FL_Scissor;
 	e->DrawLineLoop = FL_DrawLineLoop;
 	e->DrawString = FL_DrawString;
