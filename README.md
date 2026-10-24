@@ -33,7 +33,7 @@ Each branch's README has its install steps, settings and limits: [`metal`](https
 Both ports are built for low input latency and even frame times, measured at every step:
 
 - **The same game online.** The network protocol, the server-side game code and the data formats are upstream's: both play on stock MOHAA and OpenMoHAA servers.
-- **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, and every one is the same length at any frame rate (`cl_movefps` on `metal`, `cl_cmdfps` on `vulkan`).
+- **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, and every one is the same length at any frame rate (`cl_movefps`).
 - **Exact frame caps.** `com_maxfps 240` runs at 240 frames a second, not 250.
 - **Their own sound mixers, no OpenAL.** `metal` mixes on Core Audio, with Apple's HRTF for headphones; `vulkan` has the Omaha mixer (miniaudio, with HRTF for headphones).
 
@@ -43,7 +43,7 @@ They differ in much else (the window and input layers, the defaults, the sound m
 
 Both ports keep upstream's settings and add a few of their own. Type them in the console (the `~` key, under Esc): `seta name value` changes a setting and saves it in your config, `set name value` only until you quit. At launch, `+set name value` does the same: on macOS `open openmohaa.app --args +set name value`, on Linux `./openmohaa +set name value` (or after a launcher's name), on Windows at the end of a shortcut's target. Display settings take effect after `vid_restart`, sound settings after `snd_restart`.
 
-Your config keeps what it holds: one saved by an earlier build (of these ports or upstream's) may still say `com_maxfps 85`, `cl_maxpackets 30`, `m_filter 1` or `ui_console 0`. Set the new values yourself. Configs live in the game folder's `main/configs/` on `metal` (or `~/Library/Application Support/openmohaa/` if the folder isn't writable), in `~/.config/openmohaa/` on Linux and `%APPDATA%\openmohaa\` on Windows.
+Your config keeps what it holds: one saved by an earlier build (of these ports or upstream's) may still say `com_maxfps 85`, `cl_maxpackets 30` or `ui_console 0`. Set the new values yourself (on `vulkan`, `cl_cmdfps` of earlier builds is `cl_movefps` now). Configs live in the game folder's `main/configs/` on `metal` (or `~/Library/Application Support/openmohaa/` if the folder isn't writable), in `~/.config/openmohaa/` on Linux and `%APPDATA%\openmohaa\` on Windows.
 
 ### For the lowest input latency
 
@@ -54,32 +54,24 @@ seta cl_movefps 100
 seta com_maxfps 480
 seta r_fullscreen 1
 seta r_noborder 1
-seta r_swapInterval 0
 seta in_mouseRaw 1
-seta m_filter 0
 ```
 
 `vulkan`, as played on a 240 Hz display:
 
 ```
-seta cl_cmdfps 100
+seta cl_movefps 100
 seta com_maxfps 250
 seta r_fullscreen 1
-seta r_swapInterval 0
-seta m_filter 0
 ```
-
-Both tear (no vsync): `r_swapInterval 1` is tear-free, at about two refreshes more latency.
 
 ### Settings both ports have
 
 | Setting | Default (upstream's) | What it does |
 |---|---|---|
-| `cl_movefps` (`metal`), `cl_cmdfps` (`vulkan`) | `100` (new) | **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, each exactly 1000 / this many ms of movement (10 at 100, 8 at 125) at any frame rate; the view turns with every frame. On `metal`, `0` is stock (one command per rendered frame); on `vulkan` it is always on. |
+| `cl_movefps` | `100` (new) | **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, each exactly 1000 / this many ms of movement (10 at 100, 8 at 125) at any frame rate; the view turns with every frame. On `metal`, `0` is stock (one command per rendered frame); on `vulkan` it is always on. |
 | `com_maxfps` | `125` (`85`) | The frame cap, exact (240 is 240, not 250); `0` is uncapped. With the movement clock on, movement doesn't depend on it. |
 | `cl_maxpackets` | `125` (`30`) | Every command goes out in its own packet. |
-| `m_filter` | `0` (`1` on macOS) | `1` averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. |
-| `r_swapInterval` | `0` | `0` shows each frame at once (it can tear); `1` is vsync. `vulkan` also has `-1`: vsync that tears when a frame is late. |
 | `r_fullscreen`, `r_noborder` | `1`, `0` | Fullscreen at `r_mode`'s size. On `metal`, `1` and `1` is the fullscreen Space (the cleanest mode); on `vulkan`, `r_fullscreen 0` with `r_noborder 1` is a borderless window. `0`, `0` is a window (more latency on both). |
 | `r_uselod` | `0` (`1`) | `0`: soldiers and weapons at full detail at any distance. Not saved in configs: set it at launch or in `autoexec.cfg`. |
 | `s_speaker_type` | `0` | `1` is **headphone 3D**: sounds behind, above or below you sound there (`metal`: Apple's HRTF, your personalized one when macOS has it; `vulkan`: the SADIE KU100 set, mixed at 48 kHz; set it at launch). `0` is stereo. |
@@ -94,17 +86,14 @@ Both tear (no vsync): `r_swapInterval 1` is tear-free, at about two refreshes mo
 | `in_mouseRaw` | `1` | Raw mouse deltas through GCMouse, no macOS acceleration; `0` uses AppKit's mouse events. |
 | `r_borderlessWindow` | `0` | With `r_fullscreen 1` and `r_noborder 1`: a borderless window over the screen instead of a fullscreen Space. |
 | `com_busyWait` | `0` | `1` spins the CPU through the frame wait: about 0.05 to 0.1 ms sooner, for a full core. |
-| `ui_crosshair`, `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `1`, `4`, `3`, `1`, `FFFFFF` | The crosshair, drawn as boxes in HUD pixels (`ui_crosshair 0` hides it). |
+| `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` | The crosshair, drawn as boxes in HUD pixels. |
 | `cg_tauntsounds` | `1` | `0` mutes other players' taunts (the chat text stays). |
 | `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened or played (on `vulkan`, `0` only mutes it). |
-| `cl_ctrlbindings` | `0` | `1` turns on the Ctrl and Del key bindings (`ctrlbind`); `cl_altbindings 1` only the Alt and Ins ones. |
-| `cl_latencyStats` | `0` | `1` prints input-to-screen times while you play. |
 
 ### Only on `vulkan`
 
 | Setting | Default | What it does |
 |---|---|---|
-| `cl_renderer` | `vulkan` | `opengl1` runs upstream's OpenGL renderer, which comes with it (for a machine without a Vulkan driver). |
 | `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, for drivers that stall there (5 swapchain images, 3 with vsync). |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling. |
@@ -118,7 +107,7 @@ Both tear (no vsync): `r_swapInterval 1` is tear-free, at about two refreshes mo
 | `record <name>`, `stoprecord`, `demo <name>` | Record a demo, stop, play one back (`main/demos/`). |
 | `screenshot`, `screenshotJPEG` (`vulkan` also `screenshotPNG`) | Save a screenshot to `main/screenshots/`. |
 | `bind <key> <command>`, `unbind <key>`, `bindlist` | Key bindings. |
-| `altbind`, `ctrlbind`, `altbindlist`, `ctrlbindlist` | Bindings for Alt and Ctrl combinations (see `cl_ctrlbindings` on `metal`). |
+| `altbind`, `ctrlbind`, `altbindlist`, `ctrlbindlist` | Bindings for Alt and Ctrl combinations. |
 | `exec <file>`, `writeconfig <file>` | Run a config file, save your settings to one. |
 | `cvarlist [text]`, `cmdlist` | List the settings (those that start with `text`) and commands. |
 
