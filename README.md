@@ -75,6 +75,8 @@ seta r_fullscreen 1
 | `r_fullscreen`, `r_noborder` | `1`, `0` | Fullscreen at `r_mode`'s size. On `metal`, `1` and `1` is the fullscreen Space (the cleanest mode); on `vulkan`, `r_fullscreen 0` with `r_noborder 1` is a borderless window. `0`, `0` is a window (more latency on both). |
 | `r_uselod` | `0` (`1`) | `0`: soldiers and weapons at full detail at any distance. Not saved in configs: set it at launch or in `autoexec.cfg`. |
 | `s_speaker_type` | `0` | `1` is **headphone 3D**: sounds behind, above or below you sound there (`metal`: Apple's HRTF, your personalized one when macOS has it; `vulkan`: the SADIE KU100 set, mixed at 48 kHz; set it at launch). `0` is stereo. |
+| `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened or played. |
+| `cg_tauntsounds` | `1` (new) | `0` turns other players' taunts off: they aren't played at all (the chat text stays); your own still play. |
 | `ui_console` | `1` (`0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (`1`) | `1` plays the intro videos at startup. |
 
@@ -87,8 +89,6 @@ seta r_fullscreen 1
 | `r_borderlessWindow` | `0` | With `r_fullscreen 1` and `r_noborder 1`: a borderless window over the screen instead of a fullscreen Space. |
 | `com_busyWait` | `0` | `1` spins the CPU through the frame wait: about 0.05 to 0.1 ms sooner, for a full core. |
 | `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` | The crosshair, drawn as boxes in HUD pixels. |
-| `cg_tauntsounds` | `1` | `0` mutes other players' taunts (the chat text stays). |
-| `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened or played (on `vulkan`, `0` only mutes it). |
 
 ### Only on `vulkan`
 
