@@ -33,8 +33,9 @@ GL1_REF=c9dddadd22cf775766b34c118e9ce414290efbb6
 GL1_PATCHES=(ae894bcf)
 # The last commit with SDL2 (Phase 6g removed it after this one): its code is db88239d's, the 6f baseline.
 SDL_REF=fd94160b617a8afa34e4acac8faa3ca8fc306eed
-# The last commit with openal-soft (Phase 9g removed it after this one): 9f's tree, both sound drivers.
-SND_REF=846287f5c8f6d66fdc17e8d4cf961be01a635c2b
+# The last commit with openal-soft (Phase 9g removed it after this one): 9f's tree, both sound drivers (846287f5
+# until session 72's rewrite folded headphone 3D's EQ into 9f; the same tree otherwise).
+SND_REF=a661b7b29ba3df91faed0688a70dd6c8cae7cff0
 
 case "$FLAVOR" in
 	gl)
