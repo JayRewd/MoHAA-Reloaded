@@ -446,13 +446,14 @@ functions exported to the main executable
         stopWatch_t  *stopWatch;
 
         // the newest command with this frame's view angles: commands come at
-        // cl_movefps, the view turns every frame
+        // cl_movefps (every frame at 0), the view turns every frame
         void (*GetViewUserCmd)(usercmd_t *ucmd);
 
         // sub-millisecond fraction of the current server millisecond, 0..1
         float (*GetRenderTimeFraction)(void);
 
-        // the open cl_movefps step with the keys held now. Not sent.
+        // the open cl_movefps step with the keys held now (at 0 the newest
+        // command, as GetViewUserCmd). Not sent.
         void (*GetLiveUserCmd)(usercmd_t *ucmd);
 
         // the entity lump of the map CM_LoadMap loaded

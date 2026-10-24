@@ -1210,6 +1210,7 @@ void CL_Disconnect();
 void CL_AbnormalDisconnect();
 void CL_Shutdown(const char *finalmsg, qboolean disconnect, qboolean quit);
 qboolean CL_FinishedIntro(void);
+qboolean CL_CommandPerFrame(void);	// cl_movefps 0: frames of 1 ms or more (Com_Frame)
 void CL_FinishedStartStage(void);
 void CL_SetFrameNumber(int frameNumber);
 void CL_Frame( int msec );

@@ -28,7 +28,37 @@ unsigned	frame_msec;
 int			old_com_frameTime;
 static int	old_look_frameTime;	// com_frameTime of the last CL_ApplyLook
 
-cvar_t		*cl_movefps;			// usercmds a second, whatever the frame rate
+cvar_t		*cl_movefps;			// usercmds a second, whatever the frame rate; 0: one per frame
+
+/*
+=================
+CL_MoveInterval
+
+The usercmd step of cl_movefps in whole milliseconds of server time, 1000 /
+cl_movefps (85 to 125 a second: 11 to 8 ms), or 0 for cl_movefps 0 (and
+below): one usercmd per frame at the frame's server time, as a stock client,
+each as long as its frame (as on the metal branch)
+=================
+*/
+static int CL_MoveInterval( void ) {
+	if ( cl_movefps->integer <= 0 ) {
+		return 0;
+	}
+	return 1000 / (int)Com_Clamp( 85, 125, cl_movefps->integer );
+}
+
+/*
+=================
+CL_CommandPerFrame
+
+cl_movefps 0: one usercmd per frame. Com_Frame then keeps every frame a
+whole millisecond or longer, at most 1000 a second (also uncapped), as stock:
+each usercmd has a server time of its own.
+=================
+*/
+qboolean CL_CommandPerFrame( void ) {
+	return cl_movefps && cl_movefps->integer <= 0;
+}
 
 /*
 ===============================================================================
@@ -747,7 +777,8 @@ Turns the view with this frame's input: the keyboard, the mouse and the
 joystick, every frame. Usercmds come at cl_movefps (CL_CreateNewCommands) and
 carry the angles of the frame that makes them; cgame turns the view of the
 frames between them (CL_GetViewUserCmd). The picture's step uses the keys
-held now (CL_GetLiveUserCmd). The usercmd still waits for the grid.
+held now (CL_GetLiveUserCmd). The usercmd still waits for the grid (at
+cl_movefps 0 every frame makes one).
 =================
 */
 static void CL_ApplyLook( void ) {
@@ -841,6 +872,7 @@ every pmove step has that length, at 144 frames a second as at 250 or 2000,
 also when the server time drifts (CL_AdjustTimeDelta). A frame that passes
 none makes none (the view still turns, CL_ApplyLook), a frame longer than
 the step makes several, with the same input (up to 100 ms of them).
+cl_movefps 0 is stock: one per frame, each step as long as its frame.
 =================
 */
 void CL_CreateNewCommands( void ) {
@@ -852,12 +884,12 @@ void CL_CreateNewCommands( void ) {
 		return;
 	}
 
-	// before the first snapshot cl.serverTime doesn't run: one per frame
-	interval = 0;
+	// before the first snapshot cl.serverTime doesn't run, and cl_movefps 0
+	// is stock: one per frame
+	interval = clc.state == CA_ACTIVE ? CL_MoveInterval() : 0;
 	count = 1;
 	cmdTime = cl.serverTime;
-	if ( clc.state == CA_ACTIVE ) {
-		interval = 1000 / (int)Com_Clamp( 85, 125, cl_movefps->integer );
+	if ( interval ) {
 		elapsed = cl.serverTime - cl.cmds[cl.cmdNumber & CMD_MASK].serverTime;
 		// else the first one, or the time went back (map_restart) or jumped
 		// (a hitch, or under 10 frames a second: one step of all of it, as
@@ -978,7 +1010,9 @@ CL_GetLiveUserCmd
 
 The newest usercmd with this frame's view and the moves the next command
 will carry if the keys stay as they are. The open interval is one stock
-Pmove of that command. Nothing is written into cl.cmds.
+Pmove of that command. Nothing is written into cl.cmds. At cl_movefps 0
+there is no open interval (every frame makes its usercmd): the newest one
+with this frame's view.
 =================
 */
 void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
@@ -986,9 +1020,14 @@ void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
 	int			forward, side, up;
 	unsigned	weapon;
 
+	interval = CL_MoveInterval();
+	if ( !interval ) {
+		CL_GetViewUserCmd( ucmd );
+		return;
+	}
+
 	*ucmd = cl.cmds[cl.cmdNumber & CMD_MASK];
 
-	interval = 1000 / (int)Com_Clamp( 85, 125, cl_movefps->integer );
 	elapsed = cl.serverTime - ucmd->serverTime;
 	if ( elapsed < 0 ) {
 		elapsed = 0;
@@ -1352,7 +1391,7 @@ void CL_SendCmd( void ) {
 		return;
 	}
 
-	// the view turns every frame, usercmds come at cl_movefps
+	// the view turns every frame, usercmds come at cl_movefps (every frame at 0)
 	if ( clc.state >= CA_PRIMED ) {
 		CL_ApplyLook();
 	}

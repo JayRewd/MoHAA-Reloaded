@@ -2421,7 +2421,9 @@ void Com_Frame( void ) {
     // cap above 1000 waits only for its deadline in microseconds and an
     // uncapped client not at all: its frames can last 0 ms of game time
     // (Com_ModifyMsec, which makes them 1 ms at other timescales), the
-    // commands to the server come at their own rate (cl_movefps)
+    // commands to the server come at their own rate (cl_movefps). With
+    // cl_movefps 0 every frame makes a command, so caps above 1000 and
+    // uncapped are 1000 (a frame per tick), as stock
     minMsec = 1;
     periodUs = 0;
     periodMs = 0;
@@ -2437,6 +2439,11 @@ void Com_Frame( void ) {
                 maxfps = com_maxfpsUnfocused->integer;
             else
                 maxfps = com_maxfps->integer;
+
+#ifndef DEDICATED
+            if ((maxfps > 1000 || maxfps <= 0) && CL_CommandPerFrame())
+                maxfps = 1000;
+#endif
 
             // 1000: minMsec alone, a frame per tick of Sys_Milliseconds
             if (maxfps > 1000)

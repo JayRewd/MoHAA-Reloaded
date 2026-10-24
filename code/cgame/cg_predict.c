@@ -645,8 +645,9 @@ void CG_PredictPlayerState(void)
     // interval is one more stock step of that same length, with the keys
     // held now, sampled by how far server time has moved into it. The step
     // is not sent. commandTime stays the sealed command. The next frame
-    // replays from the snapshot.
-    if (!cg.thisFrameTeleport && !cg.nextFrameTeleport) {
+    // replays from the snapshot. cl_movefps 0 (one command per frame, stock)
+    // has no open interval.
+    if (!cg.thisFrameTeleport && !cg.nextFrameTeleport && cl_movefps->integer > 0) {
         int            interval, elapsed, commandTime;
         float          t, scale;
         playerState_t  start, end;

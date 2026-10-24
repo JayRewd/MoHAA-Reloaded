@@ -45,7 +45,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 
 | Setting | Default | What it does |
 |---|---|---|
-| `cl_movefps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_movefps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). |
+| `cl_movefps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_movefps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). `0` is stock, as on `metal`: one command per frame, each as long as its frame, and at most 1000 frames a second (a higher `com_maxfps` or `0` runs at 1000). |
 | `cg_tauntsounds` | `1` | `0` turns other players' taunts off: they aren't played at all (their chat line and radar icon stay). Your own still play. |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
 | `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, so the main thread never waits in the driver's present or acquire (which stalled up to 1.8 ms here, 1.3 ms every 341 frames on NVIDIA). Uncapped, 3 to 21 % more frames a second; at 250 the same frames, input to present 0.01 to 0.02 ms longer. 5 swapchain images (3 with vsync); latched. |
@@ -54,7 +54,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 
 | Setting | Default | What it does here |
 |---|---|---|
-| `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_movefps`). |
+| `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too (1000 at `cl_movefps 0`). Movement doesn't depend on it (`cl_movefps`) unless `cl_movefps` is `0`. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
 | `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened, decoded or played (the music that scripts trigger, `s_musicvolume`, plays on). Raised again, the song starts where it stopped. |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
@@ -68,7 +68,7 @@ Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 8
 ## Online
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
-- A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate.
+- A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate (at `cl_movefps 0`, one per frame).
 
 ## Building
 

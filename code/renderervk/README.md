@@ -228,8 +228,10 @@ below are done.
   the bit (see Performance, Skeletal culling)
 - command rate (2026-10-19, an engine, client and cgame change, for both
   renderers): the client makes its usercmds, the steps of the player's
-  movement, at a fixed rate (`cl_movefps`, `cl_cmdfps` until 2026-10-23, 85 to 125 a second, default 100) instead of
-  one per frame, the same steps at every frame rate, and the frame rate is
+  movement, at a fixed rate (`cl_movefps`, `cl_cmdfps` until 2026-10-23,
+  85 to 125 a second, default 100; `0` one per frame as stock since
+  2026-10-24) instead of one per frame, the same steps at every frame
+  rate, and the frame rate is
   no longer held at 1000 a second (`com_maxfps` above 1000 or 0); the view
   turns with every frame's mouse look. The server still receives `cl_movefps`
   steps. The client samples the current stock step with the keys held this
@@ -481,8 +483,11 @@ below are done.
   53d8f9d7. The same frames as 53d8f9d7 (but in the lists that differ
   between two runs of one build)
 - `cl_movefps` (2026-10-23): the command rate's cvar (`cl_cmdfps` until
-  then) has the `metal` branch's name, with the same behavior here (85 to
-  125, default 100, always on; see Performance, Command rate)
+  then) has the `metal` branch's name (85 to 125, default 100; see
+  Performance, Command rate), and since 2026-10-24, as the user asked, its
+  `0` as there: one command per frame, as a stock client, each step as long
+  as its frame, and frames of a whole millisecond or more (at most 1000 a
+  second, also above a cap of 1000 or uncapped)
 - `m_filter` (2026-10-23): removed, as the user asked; the mouse movement
   of each frame is used as it comes (what `m_filter 0` did), and a config
   or the Controls menu's box that sets `m_filter 1` changes nothing
@@ -4196,6 +4201,20 @@ What was taken, and how it differs:
   a frame in the same millisecond as the one before shows the same moment
   of the world with the newest view. One division by the frame time in
   cgame (the water ripples) is guarded against 0.
+- `cl_movefps 0` (2026-10-24, the user's, as on the `metal` branch): stock,
+  one command per frame at the frame's server time (`CL_MoveInterval` 0 in
+  `CL_CreateNewCommands`), so each step is as long as its frame (4 ms at
+  250 frames a second); cgame predicts no open step (the newest command is
+  this frame's; `GetLiveUserCmd` gives it with this frame's view), and
+  `Com_Frame` keeps every frame a whole millisecond or longer
+  (`CL_CommandPerFrame`): a cap above 1000 and uncapped run at 1000, as
+  stock, so every command has a time of its own. A command log in
+  `dm/mohdm1` (10 s, walking and turning, a temporary engine): at
+  `com_maxfps` 250, 144, 1000, 2000 and 0, one command in every frame (250,
+  144 and 1000 a second; steps of 4, 7 (4 to 8) and 1 ms, 1.5 % of the 1 ms
+  steps 0 ms where the time delta's correction held the server time, as a
+  stock client's); at the default 100 and `com_maxfps` 2000 as before (1986
+  frames, 100 commands a second, every step 10 ms).
 
 The bump. A temporary cgame command (not kept) walked the player's pmove
 the way the server runs it (`Player::ClientMove`: no ground entity before
@@ -8077,7 +8096,8 @@ Done:
     `cmplists.sh`) and check that no OpenGL comes back (`glcheck.sh`);
     the command rate's cvar is `cl_movefps`, `metal`'s name (its behavior
     unchanged: always on, 85 to 125 a second; `metal`'s `0`, one command
-    per rendered frame, not taken); `m_filter` removed. The same frames as
+    per rendered frame, followed on 2026-10-24 at the user's word, see
+    Performance, Command rate); `m_filter` removed. The same frames as
     the build before, no validation message.
 
 Remaining:
