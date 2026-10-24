@@ -642,11 +642,11 @@ void CG_PredictPlayerState(void)
     }
 
     // The sealed commands were just replayed with stock steps. The open
-    // interval is one more stock step of that same length, with the keys
-    // held now, sampled by how far server time has moved into it. The step
-    // is not sent. commandTime stays the sealed command. The next frame
-    // replays from the snapshot. cl_movefps 0 (one command per frame, stock)
-    // has no open interval.
+    // interval is one more stock step as long as the next command's, with
+    // the keys held now, sampled by how far server time has moved into it.
+    // The step is not sent. commandTime stays the sealed command. The next
+    // frame replays from the snapshot. cl_movefps 0 (one command per frame,
+    // stock) has no open interval.
     if (!cg.thisFrameTeleport && !cg.nextFrameTeleport && cl_movefps->integer > 0) {
         int            interval, elapsed, commandTime;
         float          t, scale;
@@ -658,6 +658,12 @@ void CG_PredictPlayerState(void)
         elapsed     = cg.time - commandTime;
         interval    = 1000 / (int)Com_Clamp(85, 125, cl_movefps->integer);
         if (elapsed > 0 && interval > 0) {
+            cgi.GetLiveUserCmd(&cmd);
+            // the next command's time: a shorter step with cl_movesubgrid
+            // (half of it to a shot's or a jump's command, the rest after it)
+            if (cmd.serverTime > commandTime && cmd.serverTime < commandTime + interval) {
+                interval = cmd.serverTime - commandTime;
+            }
             if (elapsed > interval) {
                 elapsed = interval;
             }
@@ -665,7 +671,6 @@ void CG_PredictPlayerState(void)
             start = cg.predicted_player_state;
             end   = start;
 
-            cgi.GetLiveUserCmd(&cmd);
             cmd.serverTime = commandTime + interval;
             if (end.feetfalling && (cg_pmove.waterlevel < 2)) {
                 cmd.forwardmove = 0;

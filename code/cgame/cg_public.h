@@ -452,8 +452,9 @@ functions exported to the main executable
         // sub-millisecond fraction of the current server millisecond, 0..1
         float (*GetRenderTimeFraction)(void);
 
-        // the open cl_movefps step with the keys held now (at 0 the newest
-        // command, as GetViewUserCmd). Not sent.
+        // the open cl_movefps step with the keys held now, at the next
+        // command's time (at 0 the newest command, as GetViewUserCmd). Not
+        // sent.
         void (*GetLiveUserCmd)(usercmd_t *ucmd);
 
         // the entity lump of the map CM_LoadMap loaded

@@ -575,6 +575,23 @@ below are done.
   connection is given up after 3 s instead of 10, "update server" on an
   idle list never ended, the LAN search never ended. CI runs the unit
   tests now (`cmake/tests/all.cmake` wasn't included)
+- shots and jumps on the sub-grid (2026-10-24, Plan 38, the engine and
+  cgame, as on the `metal` branch; the user's request): `cl_movesubgrid`
+  (archived, default 1). With `cl_movefps` on, a fire click or a jump in
+  the first half of a command's step gets a command of its own at the half
+  step (5 ms after the one before at 100, 4 at 125), sent at once, and the
+  commands after it stay on their grid: that one step is split in two.
+  At 250 frames a second and `cl_movefps 100` a click reached a local
+  server 2.6 ms after the press on average instead of 5.8 (95th
+  percentile 6.6 instead of 11.4), a jump 2.9 instead of 4.7 (6.5 instead
+  of 11.1); the server ran every command. A jump is early by the click's
+  rule here (`metal` waits for the frame after the key's: SDL's key events
+  carry the frame before's time). A shot or a jump at a random moment of a
+  run into one of `dm/mohdm2`'s bumps stops it about as often as without
+  (0 to 2 points more, 3 at one bump with 8 ms steps); where its two short
+  steps meet the lip, up to 10 to 14 points more often. `0` keeps every
+  command on the grid, `cl_movefps 0` runs none of it (see Performance,
+  Command rate)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -679,7 +696,11 @@ OpenAL headers deleted; `code/qcommon/files.cpp`, `qcommon.h`:
 `OMAHA-SOUND-LICENSES.txt`, new; `assets/main/sound/prom/hrtf`, new: the
 HRTF set; `cmake/client.cmake`, `cmake/libraries/{miniaudio,mysofa,pffft}.cmake`,
 `openal.cmake` deleted; the CI workflows and the Windows installer without
-OpenAL, with the HRTF set; see Implementation notes, Sound system).
+OpenAL, with the HRTF set; see Implementation notes, Sound system), and the
+sub-grid (`code/client/cl_input.cpp`: `cl_movesubgrid`, `CL_SubGridStep`,
+`CL_CreateNewCommands`, `CL_GetLiveUserCmd`, `CL_ReadyToSendPacket`;
+`code/cgame/cg_predict.c` and `cg_public.h`: the open step as long as the
+next command's; see Performance, Command rate).
 
 ## Build and run
 
@@ -4691,6 +4712,113 @@ bit. The final engine differs from the one these lists ran with in
 `Com_Frame` alone (`objdump -d`, addresses left out: the timescale
 condition and the `fps` counter) and in `cl_cmdfps`'s default.
 
+Shots and jumps on the sub-grid (2026-10-24, Plan 38; the engine and
+cgame; the `metal` branch's e38910e4, notuern's idea, the user's request:
+"merging the subgrid thing from the metal port"): `cl_movesubgrid`
+(archived, default 1). With `cl_movefps` on, a fire click (attack primary
+or secondary) or a jump seen in the first half of a command's step takes
+the next command to the half step (the newest command's time + half the
+interval, rounded down: 5 ms at 100, 4 at 125), made by the first frame
+there, and the commands after it stay on their grid: that step is split in
+two (5 + 5 ms at 100, the steps of a stock client at 200 frames a second),
+and the early command and the split's rest each go out at once in a packet
+of their own (`CL_ReadyToSendPacket`: `cl_maxpackets` would hold a command
+made half a step after the packet before). One early command a step; one
+still to come when a frame is already at the grid's point is dropped, the
+grid's command takes the event. Use and the movement keys stay on the grid
+(on `metal` the movement keys needed two more rules and made four times as
+many short steps; notuern: "Safe bet is shots and jumps only"). A click or
+a jump is early when the frame before was still before the half point (it
+came after that frame's input read). Unlike `metal`: here a key event
+carries the time of the frame before's input read (`in_eventTime` of
+`sdl_input.c`), so a command made by the frame that sees a jump already
+has a share of the key (`CL_KeyState`) and a jump is early by the click's
+rule; only one whose key event is in the frame's own millisecond (frames
+under 1 ms apart), with the early command due in that frame, waits for the
+grid. `metal`'s rule (early only when the frame that sees the jump is
+before the half point) made 15 of 120 jumps early at 250 frames a second
+here, whose frames between commands sit 4 to 7 and 8 to 11 ms past the
+grid's point. cgame's open step takes the next command's time from
+`GetLiveUserCmd` (the half or the rest while the sub-grid has one, whose
+key shares the live command counts over that step), so the picture shows
+the part gone of the shorter step. `cl_movesubgrid 0` is the grid as
+before (the interval's step and count, no packet sent early), and
+`cl_movefps 0` runs none of it.
+
+Measured with a temporary engine (not kept): a dedicated server on
+`dm/mohdm1` (a team match) logged every packet and every command its game
+ran, with the time; the client, connected over UDP with
+`cl_lanForcePackets 0` (so `cl_maxpackets` counts as on the internet),
+pressed keys at random moments (fire, jump and forward in turn, 250 to 500
+ms apart, held 60 to 160 ms, 180 presses a run, each queued as a key
+event by the first frame's input read after its moment, as a real key)
+and logged every command and packet; the runs interleaved, off, on, on,
+off. From the press to the server running its command, ms, mean / p50 /
+p95 / max (in brackets the presses whose command was on a short step):
+
+| `com_maxfps`, `cl_movefps` | `cl_movesubgrid` | fire | jump | forward (on the grid in both) | short steps run |
+| --- | --- | --- | --- | --- | --- |
+| 250, 100 | 0 (2 runs) | 5.80 / 5.78 / 11.38 / 11.89 | 4.68 / 4.05 / 11.14 / 11.81 | 5.00 / 4.90 / 10.63 / 11.98 | 0 of 17,481 |
+| | 1 (2 runs) | **2.59 / 2.42 / 6.55 / 7.40** (58 of 120) | **2.87 / 2.68 / 6.51 / 7.50** (58 of 120) | 5.59 / 5.54 / 11.21 / 11.99 | 232 of 17,527 (5 ms) |
+| 250, 125 | 0 (2 runs) | 6.35 / 5.98 / 11.46 / 12.04 | 6.48 / 6.12 / 11.68 / 11.97 | 6.13 / 5.86 / 10.83 / 11.87 | 0 of 21,939 |
+| | 1 (2 runs) | **2.53 / 2.23 / 5.97 / 8.22** (57 of 120) | **2.47 / 2.53 / 5.11 / 7.58** (67 of 120) | 4.83 / 5.04 / 8.65 / 11.44 | 248 of 22,184 (4 ms) |
+| 1000, 100 | 0 | 5.51 / 6.28 / 9.72 / 11.34 | 5.71 / 5.77 / 9.64 / 10.36 | 5.12 / 5.49 / 9.27 / 10.86 | 0 of 8,755 |
+| | 1 | **2.49 / 2.52 / 4.71 / 6.07** (27 of 60) | **2.75 / 2.79 / 4.90 / 5.06** (35 of 60) | 4.39 / 3.58 / 9.10 / 10.05 | 124 of 8,782 |
+| 125, 100 | 0 | 4.93 / 4.15 / 12.72 / 15.50 | 5.92 / 5.66 / 13.77 / 15.17 | 5.44 / 4.42 / 12.40 / 13.44 | 0 of 8,825 |
+| | 1 | 4.17 / 4.09 / 7.34 / 8.07 (11 of 60) | 4.17 / 4.19 / 7.88 / 8.02 (11 of 60) | 5.78 / 5.67 / 13.45 / 15.15 | 44 of 8,794 |
+
+In every run the server ran every command the client made from the
+first press on (in every build its game drops the commands of the first
+second after the connection, while the client's clock settles), in steps
+of the interval and its half only, and every early command and split's
+rest went out at once. Forward, which stays on the grid, is the same
+within the spread of 120 presses. At 125 frames a second the frames (8
+ms) seldom fall in the first half of a 10 ms step: 11 of 60 presses
+early. At `cl_movefps 125` the runs without the sub-grid held half of all
+commands for a frame (made to sent: median 3.98 ms, 11,040 of 21,939 held
+4 ms): `cl_maxpackets 125` counts real time, the time delta's corrections
+bring the grid's commands 4 ms apart in real time now and then, and from
+there every command waits a frame until a longer gap comes; with the
+sub-grid's own packets 3,770 were held, so forward is faster there too.
+At the default 100 (2 ms of margin) one command of 17,481 was held. Not
+changed here (see Remaining).
+
+The cost is `metal`'s, measured again here with a temporary game (not
+kept) that ran the server's own move (`Player::ClientMove`) with made-up
+commands inside a player's think, its state put back after: `dm/mohdm2`'s
+bumps C1, C3 and C7 (the table above), runs from 64 to 256 units before
+each (every 2 units) and up to 12 units to either side (every 4),
+forward and run toward the bump with a rifle; a run stopped when it got
+no more than 32 units past the bump's point in 2.5 s. Each start ran
+plain, with its step k split in two (a shot at that moment), and with a
+jump pressed at step k (held 100 ms) on the grid and with that step split,
+for every step k from the start to 6 steps past the lip (the step where
+the plain run got within 3 units of where the plain runs that stop end):
+850,645 runs, 150 million moves. Stopped, %, over every start and moment
+alike (a shot or a jump at a random moment of the run), against the same
+runs without the split; the extra points at each moment of the run
+(mean, 95th percentile, the worst moment, in steps from the lip); the
+runs whose outcome changed:
+
+| bump, step | plain | shot, split | extra per moment | changed | jump: split, on the grid | extra per moment |
+| --- | --- | --- | --- | --- | --- | --- |
+| C1, 10 ms (5 + 5) | 54.9 | 54.9, 55.0 | -0.1, +0.6, +11.5 (+3) | 1.0 % | 54.8, 54.9 | -0.1, +1.4, +9.9 (+3) |
+| C1, 8 ms (4 + 4) | 55.2 | 55.8, 55.7 | +0.3, +0.9, +12.7 (+4) | 0.9 % | 57.5, 57.4 | +0.1, +1.4, +13.8 (+4) |
+| C3, 10 ms | 21.1 | 24.5, 22.9 | +1.9, +5.0, +11.4 (+1) | 10.3 % | 26.5, 26.0 | +0.5, +4.3, +7.0 (+1) |
+| C3, 8 ms | 28.5 | 30.6, 29.3 | +1.2, +4.8, +9.2 (+1) | 13.2 % | 30.8, 30.7 | +0.2, +3.8, +5.9 (0) |
+| C7, 10 ms | 0 | 0, 0 | 0 | 0 | 0, 0 | 0 |
+| C7, 8 ms | 26.8 | 29.1, 26.0 | +3.3, +6.9, +10.5 (-63) | 18.2 % | 33.4, 34.1 | -0.8, +3.8, +7.4 (-64) |
+
+As on `metal` (its sweep at 8 ms: C1 55.7 against 56.1, worst +15 at the
+lip; C3 47.7 against 46.1; C7 29.9 against 35.4): a shot or a jump at a
+random moment of a run stops it about as often as without (C1 the same,
+C3 0.5 to 1.6 points more, C7 none at 10 ms and 3 points either way at 8
+ms, where a small change of the path anywhere in the run changes one run
+in five), and where its two short steps land on the lip the run stops up
+to 10 to 14 points more often. No run of C7 stops with 10 ms steps, with
+or without a split.
+
+
 Submit thread (2026-10-19, Plan 19; see Implementation notes, Submit
 thread). JayRewd's commit a5f5a54a drew every frame offscreen and handed
 it to a thread that acquired a swapchain image, copied the frame into it,
@@ -8616,8 +8744,40 @@ Done:
     queries while masters send. `cmake/tests/all.cmake` is included
     (upstream doesn't): CI's Unit Tests run `test_lz77` and
     `test_serverlist_scheduler`.
+38. Shots and jumps on the sub-grid (2026-10-24, the user's request:
+    "merging the subgrid thing from the metal port"; see Status and
+    Performance, Command rate): `metal`'s e38910e4 (`cl_movesubgrid`,
+    default 1) ported to this branch's grid, whose usercmds
+    `CL_CreateNewCommands` makes (`metal` has a grid function of its own
+    and a frame of its own at each grid point, `CL_CmdClock`; here the
+    first frame at the half step makes the early command, as for the
+    grid's points). Kept as on `metal`: the split (the grid goes on after
+    the early command), shots and jumps only, one early command a step,
+    the early command and the split's rest sent at once, the open step of
+    the shorter length. Changed: a jump is early by the click's rule (SDL
+    stamps a key event with the frame before's input read, so the command
+    of the frame that sees it has a share of the key; `metal`'s rule left
+    seven of eight jumps on the grid at 250 frames a second here); the
+    state is one struct reset in one place (`cl_movefps 0`, before the
+    first snapshot, a grid started again); `metal`'s count of the events
+    seen in a step is gone (an event seen too late in a step stays too
+    late); the open step's length goes to cgame in the live command's
+    time instead of cgame's own copy of the interval (an engine without
+    it gives the interval as before); the packet sent at once only while
+    its command is unsent. Measured at 250, 1000 and 125 frames a second
+    against a local dedicated server; the stop rate at `dm/mohdm2`'s bumps
+    with a sweep of the server's own moves (temporary builds, not kept).
 
 Remaining:
+
+- `cl_maxpackets` at `cl_movefps 125` (found with Plan 38): it counts real
+  time, so at `cl_maxpackets 125` (the default) and `com_maxfps 250` half
+  of all commands waited a frame (4 ms) before their packet in a local
+  test, after the time delta's corrections brought two of the grid's
+  commands 4 ms apart in real time (at the default `cl_movefps 100` one
+  command of 17,481). `metal` counts the commands' own time in its
+  decoupled mode (b5112fb9: a command's packet waits only while its server
+  time is less than 1000 / `cl_maxpackets` past the last packet's).
 
 - What makes the slow frames, in order (see Performance, Frame spikes;
   frame times in two matches played back, 1920x1080 unless named):

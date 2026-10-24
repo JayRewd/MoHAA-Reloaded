@@ -46,6 +46,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | Setting | Default | What it does |
 |---|---|---|
 | `cl_movefps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_movefps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). `0` is stock, as on `metal`: one command per frame, each as long as its frame, and at most 1000 frames a second (a higher `com_maxfps` or `0` runs at 1000). |
+| `cl_movesubgrid` | `1` | **Shots and jumps sooner**, with `cl_movefps` on, as on `metal` (notuern's idea). A fire click (primary or secondary) or a jump in the first half of a command's step gets a command of its own at the half step (5 ms after the one before at 100, 4 at 125), sent at once, and the commands after it stay where they were: that one step is split in two. At 250 frames a second and `cl_movefps 100` a shot reached a local server 2.6 ms after the click on average instead of 5.8 (at most 7.4 instead of 11.9), a jump 2.9 instead of 4.7. The cost: MOHAA's movement catches on small bumps more often in short steps, so a run whose two short steps land on a bump's lip stops there more often (10 to 14 points at that moment, at `dm/mohdm2`'s bumps); a shot or a jump at a random moment of a run stops it about as often as without (0 to 3 points more). Use and the movement keys stay on the grid. `0`: every command on the grid. |
 | `cg_tauntsounds` | `1` | `0` turns other players' taunts off: they aren't played at all (their chat line and radar icon stay). Your own still play. |
 | `r_fastSync` | `0` | `1`: **no tearing**, without tying the frame rate to the display (the mailbox present mode, like NVIDIA's Fast Sync): each refresh shows the newest finished frame. It costs input-to-screen time: fullscreen on a 60 Hz display here 5.5 to 6.5 ms instead of 1.5 uncapped, 6.6 to 8.0 instead of 1.9 at 250 (a faster display waits less). Its author added it for Wayland with NVIDIA, where the tearing mode stalled 0.2 ms a frame. Nothing changes where the driver has no mailbox. Latched. |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
@@ -70,7 +71,7 @@ Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 8
 ## Online
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
-- A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate (at `cl_movefps 0`, one per frame).
+- A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate (at `cl_movefps 0`, one per frame). A shot or a jump in the first half of a step splits that step in two (`cl_movesubgrid`: 5 + 5 ms at 100, the steps of a stock client at 200 frames a second), one more command and packet for it.
 
 ## Building
 

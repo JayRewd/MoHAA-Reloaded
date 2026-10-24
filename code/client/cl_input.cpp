@@ -29,6 +29,7 @@ int			old_com_frameTime;
 static int	old_look_frameTime;	// com_frameTime of the last CL_ApplyLook
 
 cvar_t		*cl_movefps;			// usercmds a second, whatever the frame rate; 0: one per frame
+static cvar_t	*cl_movesubgrid;	// a shot's or a jump's usercmd at the half step (CL_SubGridStep)
 
 /*
 =================
@@ -861,6 +862,60 @@ usercmd_t CL_CreateCmd( void ) {
 }
 
 
+// the sub-grid (cl_movesubgrid, CL_SubGridStep)
+static struct {
+	int			step;		// to the next usercmd when not the interval: the half to an early one, the rest after it
+	qboolean	early;		// the next usercmd is an early one
+	qboolean	send;		// the newest usercmds started with a short step: their packet goes at once
+	qboolean	upHeld;		// the jump key held at the newest usercmd
+	int			prevNow;	// the server time of the frame before
+} cmd_sub;
+
+/*
+=================
+CL_SubGridStep
+
+cl_movesubgrid: the step from the newest usercmd to the next one, called in
+every frame of cl_movefps before its usercmds. A fire click (attack primary
+or secondary) or a jump seen in the first half of a step takes the next
+usercmd to the half step (the newest one's time + half the interval: 5 ms at
+100, 4 at 125), made by the first frame there, so the server gets the shot or
+the jump up to half a step sooner, and the grid goes on from its own points:
+that step is split in two (CL_CreateNewCommands). It is early when the
+frame before was still before the half point (the click or the key came
+after that frame's input read). A jump's share of its usercmd counts from
+its key event's time, the frame before's input read (IN_Frame, CL_KeyState),
+so only an early usercmd made now in that same millisecond would carry none
+of it: that one waits for the grid. One early usercmd a step; one still to
+come when a frame is at the grid's point is dropped: the grid's usercmd
+takes the event. Use and the movement keys stay on the grid. notuern's
+idea, as on the metal branch.
+=================
+*/
+static int CL_SubGridStep( int interval, int elapsed ) {
+	int		half = interval / 2;
+	int		before = cmd_sub.prevNow - ( cl.serverTime - elapsed );	// the frame before's elapsed
+	int		seen = half;
+
+	cmd_sub.prevNow = cl.serverTime;
+	if ( cmd_sub.early && elapsed >= interval ) {
+		cmd_sub.step = 0;
+		cmd_sub.early = qfalse;
+	}
+	if ( !cmd_sub.step && elapsed < interval && cl_movesubgrid->integer > 0 ) {
+		if ( in_buttons[0].wasPressed || in_buttons[1].wasPressed ) {
+			seen = before;
+		} else if ( !cmd_sub.upHeld && ( in_up.active || in_up.msec ) ) {
+			seen = elapsed >= half && in_up.active && in_up.downtime == (unsigned)com_frameTime ? half : before;
+		}
+		if ( seen < half ) {
+			cmd_sub.step = half;
+			cmd_sub.early = qtrue;
+		}
+	}
+	return cmd_sub.step ? cmd_sub.step : interval;
+}
+
 /*
 =================
 CL_CreateNewCommands
@@ -871,22 +926,30 @@ server time (85 to 125 a second; 1000 / 85 is 11 ms, 1000 / 125 is 8), so that
 every pmove step has that length, at 144 frames a second as at 250 or 2000,
 also when the server time drifts (CL_AdjustTimeDelta). A frame that passes
 none makes none (the view still turns, CL_ApplyLook), a frame longer than
-the step makes several, with the same input (up to 100 ms of them).
+the step makes several, with the same input (up to 100 ms of them). A shot
+or a jump can split a step in two (cl_movesubgrid, CL_SubGridStep).
 cl_movefps 0 is stock: one per frame, each step as long as its frame.
 =================
 */
 void CL_CreateNewCommands( void ) {
 	usercmd_t	cmd;
-	int			interval, elapsed, cmdTime, count, i;
+	int			interval, elapsed, step, cmdTime, count, i;
+	qboolean	upNow;
+
+	// before the first snapshot cl.serverTime doesn't run, and cl_movefps 0
+	// is stock: one per frame
+	interval = clc.state == CA_ACTIVE ? CL_MoveInterval() : 0;
+	step = interval;
+	if ( !interval ) {
+		Com_Memset( &cmd_sub, 0, sizeof( cmd_sub ) );
+		cmd_sub.prevNow = cl.serverTime;
+	}
 
 	// no need to create usercmds until we have a gamestate
 	if ( clc.state < CA_PRIMED ) {
 		return;
 	}
 
-	// before the first snapshot cl.serverTime doesn't run, and cl_movefps 0
-	// is stock: one per frame
-	interval = clc.state == CA_ACTIVE ? CL_MoveInterval() : 0;
 	count = 1;
 	cmdTime = cl.serverTime;
 	if ( interval ) {
@@ -896,13 +959,22 @@ void CL_CreateNewCommands( void ) {
 		// before, so that a packet with the last one's usercmds
 		// (cl_packetdup) stays within MAX_PACKET_USERCMDS): from now on
 		if ( elapsed >= 0 && elapsed <= 100 ) {
-			if ( elapsed < interval ) {
+			step = CL_SubGridStep( interval, elapsed );
+			if ( elapsed < step ) {
 				return;
 			}
-			count = elapsed / interval;
-			cmdTime = cl.cmds[cl.cmdNumber & CMD_MASK].serverTime + interval;
+			count = 1 + ( elapsed - step ) / interval;
+			cmdTime = cl.cmds[cl.cmdNumber & CMD_MASK].serverTime + step;
+		} else {
+			cmd_sub.step = 0;
+			cmd_sub.early = qfalse;
+			cmd_sub.prevNow = cl.serverTime;
 		}
 	}
+
+	// a jump pressed in this millisecond has no share of its usercmd
+	// (CL_KeyState), so it is still a starting event after it (CL_SubGridStep)
+	upNow = in_up.active && in_up.downtime == (unsigned)com_frameTime;
 
 	frame_msec = com_frameTime - old_com_frameTime;
 
@@ -933,6 +1005,15 @@ void CL_CreateNewCommands( void ) {
 		cmd.serverTime = cmdTime + i * interval;
 		cl.cmdNumber++;
 		cl.cmds[cl.cmdNumber & CMD_MASK] = cmd;
+	}
+
+	// the sub-grid: after an early usercmd the rest of the step, back to the
+	// grid's point; the packet of a short step goes at once
+	if ( interval ) {
+		cmd_sub.send = step < interval;
+		cmd_sub.step = cmd_sub.early ? interval - interval / 2 : 0;
+		cmd_sub.early = qfalse;
+		cmd_sub.upHeld = in_up.active && !upNow;
 	}
 }
 
@@ -1008,11 +1089,12 @@ static float CL_LiveKeyFraction( const kbutton_t *key, int interval, int elapsed
 =================
 CL_GetLiveUserCmd
 
-The newest usercmd with this frame's view and the moves the next command
-will carry if the keys stay as they are. The open interval is one stock
-Pmove of that command. Nothing is written into cl.cmds. At cl_movefps 0
-there is no open interval (every frame makes its usercmd): the newest one
-with this frame's view.
+The next usercmd as it goes out if the keys stay as they are: this frame's
+view, the moves for its step (the interval, or the sub-grid's,
+CL_SubGridStep) and its time. The open interval is one stock Pmove of that
+command. Nothing is written into cl.cmds. At cl_movefps 0 there is no open
+interval (every frame makes its usercmd): the newest one with this frame's
+view.
 =================
 */
 void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
@@ -1024,6 +1106,9 @@ void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
 	if ( !interval ) {
 		CL_GetViewUserCmd( ucmd );
 		return;
+	}
+	if ( cmd_sub.step ) {
+		interval = cmd_sub.step;	// the sub-grid's step
 	}
 
 	*ucmd = cl.cmds[cl.cmdNumber & CMD_MASK];
@@ -1085,6 +1170,7 @@ void CL_GetLiveUserCmd( usercmd_t *ucmd ) {
 	for ( i = 0; i < 3; i++ ) {
 		ucmd->angles[i] = ANGLE2SHORT( cl.viewangles[i] );
 	}
+	ucmd->serverTime += interval;
 }
 
 /*
@@ -1178,6 +1264,13 @@ qboolean CL_ReadyToSendPacket( void ) {
 		Cvar_Set( "cl_maxpackets", "125" );
 	}
 	oldPacketNum = (clc.netchan.outgoingSequence - 1) & PACKET_MASK;
+
+	// the sub-grid's usercmds (cl_movesubgrid) go at once: cl_maxpackets
+	// would hold one made half a step after the packet before
+	if ( cmd_sub.send && cl.cmdNumber != cl.outPackets[ oldPacketNum ].p_cmdNumber ) {
+		return qtrue;
+	}
+
 	delta = cls.realtime -  cl.outPackets[ oldPacketNum ].p_realtime;
 	if ( delta < 1000 / cl_maxpackets->integer ) {
 		// the accumulated commands will go out in the next packet
@@ -1503,6 +1596,7 @@ void CL_InitInput( void ) {
 	cl_nodelta = Cvar_Get ("cl_nodelta", "0", 0);
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
 	cl_movefps = Cvar_Get ("cl_movefps", "100", CVAR_ARCHIVE);
+	cl_movesubgrid = Cvar_Get ("cl_movesubgrid", "1", CVAR_ARCHIVE);
 }
 
 /*
