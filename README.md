@@ -37,7 +37,7 @@ Each branch's README has its install steps, settings and limits: [`metal`](https
 Both ports are built for low input latency and even frame times, measured at every step:
 
 - **The same game online.** The network protocol, the server-side game code and the data formats are upstream's: both play on stock MOHAA and OpenMoHAA servers.
-- **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, and every one is the same length at any frame rate (`cl_movefps`).
+- **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, and every one is the same length at any frame rate (`cl_movefps`); a shot or a jump gets a command of its own at the half step (`cl_movesubgrid`).
 - **Exact frame caps.** `com_maxfps 240` runs at 240 frames a second, not 250.
 - **Their own sound mixers, no OpenAL.** `metal` mixes on Core Audio, with Apple's HRTF for headphones; `vulkan` has the Omaha mixer (miniaudio, with HRTF for headphones).
 
@@ -74,6 +74,7 @@ seta r_fullscreen 1
 | Setting | Default (upstream's) | What it does |
 |---|---|---|
 | `cl_movefps` | `100` (new) | **Movement apart from the frame rate.** The commands the server runs come from their own clock, 85 to 125 a second, each exactly 1000 / this many ms of movement (10 at 100, 8 at 125) at any frame rate; the view turns with every frame. `0` is stock: one command per rendered frame, and at most 1000 frames a second. |
+| `cl_movesubgrid` | `1` (new) | With `cl_movefps` on, a fire click or a jump in the first half of a step gets a command of its own at the half step: shots and jumps reach the server sooner. `0` keeps every command on the grid. |
 | `com_maxfps` | `125` (`85`) | The frame cap, exact (240 is 240, not 250); `0` is uncapped. With the movement clock on, movement doesn't depend on it. |
 | `cl_maxpackets` | `125` (`30`) | Every command goes out in its own packet. |
 | `r_fullscreen`, `r_noborder` | `1`, `0` | Fullscreen at `r_mode`'s size. On `metal`, `1` and `1` is the fullscreen Space (the cleanest mode); on `vulkan`, `r_fullscreen 0` with `r_noborder 1` is a borderless window. `0`, `0` is a window (more latency on both). |
@@ -81,6 +82,7 @@ seta r_fullscreen 1
 | `s_speaker_type` | `0` | `1` is **headphone 3D**: sounds behind, above or below you sound there (`metal`: Apple's HRTF, your personalized one when macOS has it; `vulkan`: the SADIE KU100 set, mixed at 48 kHz; set it at launch). `0` is stereo. |
 | `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened or played. |
 | `cg_tauntsounds` | `1` (new) | `0` turns other players' taunts off: they aren't played at all (the chat text stays); your own still play. |
+| `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` (new) | The crosshair, drawn as boxes in HUD pixels: by default the stock image's shape, in one draw. |
 | `ui_console` | `1` (`0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (`1`) | `1` plays the intro videos at startup. |
 
@@ -88,11 +90,9 @@ seta r_fullscreen 1
 
 | Setting | Default | What it does |
 |---|---|---|
-| `cl_movesubgrid` | `1` | With `cl_movefps` on, a fire click or a jump in the first half of a step gets a command of its own at the half step: shots and jumps reach the server sooner. `0` keeps every command on the grid. |
 | `in_mouseRaw` | `1` | Raw mouse deltas through GCMouse, no macOS acceleration; `0` uses AppKit's mouse events. |
 | `r_borderlessWindow` | `0` | With `r_fullscreen 1` and `r_noborder 1`: a borderless window over the screen instead of a fullscreen Space. |
 | `com_busyWait` | `0` | `1` spins the CPU through the frame wait: about 0.05 to 0.1 ms sooner, for a full core. |
-| `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` | The crosshair, drawn as boxes in HUD pixels. |
 
 ### Only on `vulkan`
 
