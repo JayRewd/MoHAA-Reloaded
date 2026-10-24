@@ -1598,7 +1598,8 @@ void R_Register( void )
 	r_showImages = ri.Cvar_Get( "r_showImages", "0", CVAR_TEMP );
 	r_showlod = ri.Cvar_Get("r_showlod", "0", CVAR_TEMP);
 	r_showstaticlod = ri.Cvar_Get("r_showstaticlod", "0", CVAR_TEMP);
-	r_uselod = ri.Cvar_Get("r_uselod", "1", CVAR_TEMP);
+	// skeletal models at full detail at any distance unless r_uselod 1 (MoHAA Reloaded's default, upstream's is 1)
+	r_uselod = ri.Cvar_Get("r_uselod", "0", CVAR_TEMP);
 	lod_LOD = ri.Cvar_Get("lod_LOD", "0", CVAR_TEMP);
 	lod_minLOD = ri.Cvar_Get("lod_minLOD", "1.0", CVAR_TEMP);
 	lod_maxLOD = ri.Cvar_Get("lod_maxLOD", "0.3", CVAR_TEMP);

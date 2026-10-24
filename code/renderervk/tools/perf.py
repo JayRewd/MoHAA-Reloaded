@@ -411,7 +411,9 @@ def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None,
            "+set", "cl_renderer", "timed" if TIMED else renderer, "+set", "r_fullscreen", "0", "+set", "r_mode", "3",
            "+set", "s_volume", "0", "+set", "s_musicvolume", "0", "+set", "s_ambientvolume", "0",
            "+set", "in_nograb", "1", "+set", "in_mouse", "0", "+set", "ui_gmbox", "0",
-           "+set", "com_maxfps", "0", "+set", "r_swapInterval", "0", "+set", "r_vkValidation", "0"]
+           "+set", "com_maxfps", "0", "+set", "r_swapInterval", "0", "+set", "r_vkValidation", "0",
+           # GL1's LOD, and the numbers measured before the Vulkan renderer's default became 0 (2026-10-23)
+           "+set", "r_uselod", "1"]
     if framelog and vklog:
         cmd += ["+set", "r_vkFrameLog", "1"]
     if view.cap is not None:

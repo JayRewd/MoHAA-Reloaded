@@ -4910,9 +4910,10 @@ CL_TryStartIntro
 */
 void CL_TryStartIntro(void)
 {
-    if (developer->integer || !cl_playintro->integer) {
+    // the console opens at startup only in developer mode (upstream opened it whenever no intro played)
+    if (developer->integer) {
         UI_ToggleConsole();
-    } else {
+    } else if (cl_playintro->integer) {
         // FIXME: no intro from now
         Cvar_Set(cl_playintro->name, "0");
         UI_StartIntro_f();
@@ -5249,7 +5250,8 @@ void CL_InitializeUI(void)
     ui_minicon         = Cvar_Get("ui_minicon", "0", 1);
     ui_gmbox           = Cvar_Get("ui_gmbox", "1", 1);
     ui_consoleposition = Cvar_Get("ui_consoleposition", "", 1);
-    ui_console         = Cvar_Get("ui_console", "0", 1);
+    // the console key works by default (MoHAA Reloaded's default, upstream's is 0)
+    ui_console         = Cvar_Get("ui_console", "1", 1);
     ui_crosshair       = Cvar_Get("ui_crosshair", "1", 1);
     ui_weaponsbar      = Cvar_Get("ui_weaponsbar", "1", 1);
     ui_weaponsbartime  = Cvar_Get("ui_weaponsbartime", "2500", 1);
@@ -5295,7 +5297,8 @@ void CL_InitializeUI(void)
     ui_legalscreen_fadeout = Cvar_Get("ui_legalscreen_fadeout", "1", 0);
     ui_legalscreen_stay    = Cvar_Get("ui_legalscreen_stay", "3", 0);
     cl_greenfps            = Cvar_Get("cl_greenfps", "0", 1);
-    cl_playintro           = Cvar_Get("cl_playintro", "1", 0);
+    // no intro videos unless asked for (MoHAA Reloaded's default, upstream's is 1)
+    cl_playintro           = Cvar_Get("cl_playintro", "0", 0);
     cl_movieaudio          = Cvar_Get("cl_movieaudio", "1", 0);
     Cvar_Get("ui_startmap", "", 1);
     Cvar_Get("dlg_badsave", "This save game is invalid", 0);

@@ -1904,7 +1904,8 @@ void Com_Init( char *commandLine ) {
 	showLoad = Cvar_Get( "showLoad", "0", 0 );
 	convertAnims = Cvar_Get( "convertAnim", "0", 0 );
 	com_altivec = Cvar_Get ("com_altivec", "1", CVAR_ARCHIVE);
-	com_maxfps = Cvar_Get( "com_maxfps", "85", CVAR_ARCHIVE );
+	// MoHAA Reloaded's default (upstream's is 85), as on the metal branch; movement doesn't depend on it (cl_cmdfps)
+	com_maxfps = Cvar_Get( "com_maxfps", "125", CVAR_ARCHIVE );
 	deathmatch = Cvar_Get( "deathmatch", "0", 0 );
 	paused = Cvar_Get( "paused", "0", 64 );
 	autopaused = Cvar_Get( "autopaused", "1", CVAR_ARCHIVE );

@@ -40,7 +40,7 @@ seta r_swapInterval 0
 seta r_fullscreen 1
 ```
 
-Change settings in the console (`seta name value`) or at launch (`+set name value`). Latched settings take effect after `vid_restart` (sound settings after `snd_restart`).
+Change settings in the console (`seta name value`) or at launch (`+set name value`). Latched settings take effect after `vid_restart` (sound settings after `snd_restart`). Both ports' settings side by side: [the settings guide](https://github.com/pstngh/MoHAA-Reloaded#settings-guide).
 
 **Added by this port:**
 
@@ -50,15 +50,22 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
 | `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, so the main thread never waits in the driver's present or acquire (which stalled up to 1.8 ms here, 1.3 ms every 341 frames on NVIDIA). Uncapped, 3 to 21 % more frames a second; at 250 the same frames, input to present 0.01 to 0.02 ms longer. 5 swapchain images (3 with vsync); latched. |
 
-**Upstream's, with new behavior:**
+**Upstream's, with new behavior or defaults:**
 
 | Setting | Default | What it does here |
 |---|---|---|
 | `cl_renderer` | `vulkan` | `opengl1` runs upstream's GL1 renderer from the same build. |
-| `com_maxfps` | `85` | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_cmdfps`). |
+| `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_cmdfps`). |
 | `r_swapInterval` | `0` | `0` shows each frame at once (it can tear; mailbox where immediate is missing). `1` is vsync (FIFO), `-1` vsync that tears when a frame is late (FIFO relaxed). Latched. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
+| `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
+| `m_filter` | `0` (upstream `1` on macOS) | `1` averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. |
+| `r_uselod` | `0` (upstream `1`) | `0`: soldiers and weapons at full detail at any distance. Not saved in configs: set it at launch or in `autoexec.cfg`. |
+| `ui_console` | `1` (upstream `0`) | The console key works; the game still starts at the main menu. |
+| `cl_playintro` | `0` (upstream `1`) | `1` plays the intro videos at startup. |
+
+Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 85`, `cl_maxpackets 30` or `ui_console 0` stays until you change it.
 
 ## Online
 

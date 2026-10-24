@@ -3611,7 +3611,8 @@ void CL_Init( void ) {
 	cl_pitchspeed = Cvar_Get ("cl_pitchspeed", "140", CVAR_ARCHIVE);
 	cl_anglespeedkey = Cvar_Get ("cl_anglespeedkey", "1.5", 0);
 
-	cl_maxpackets = Cvar_Get ("cl_maxpackets", "30", CVAR_ARCHIVE );
+	// every command of cl_cmdfps 100 in its own packet (MoHAA Reloaded's default, upstream's is 30)
+	cl_maxpackets = Cvar_Get ("cl_maxpackets", "125", CVAR_ARCHIVE );
 	cl_packetdup = Cvar_Get ("cl_packetdup", "1", CVAR_ARCHIVE );
 
 	cl_run = Cvar_Get( "cl_run", "1", CVAR_ARCHIVE );
@@ -3652,12 +3653,8 @@ void CL_Init( void ) {
 	m_yaw = Cvar_Get ("m_yaw", "0.022", CVAR_ARCHIVE);
 	m_forward = Cvar_Get ("m_forward", "0.25", CVAR_ARCHIVE);
 	m_side = Cvar_Get ("m_side", "0.25", CVAR_ARCHIVE);
-#ifdef MACOS_X
-        // Input is jittery on OS X w/o this
-	m_filter = Cvar_Get ("m_filter", "1", CVAR_ARCHIVE);
-#else
+	// 0 on every platform (upstream's is 1 on macOS: half of every mouse movement a frame later)
 	m_filter = Cvar_Get ("m_filter", "0", CVAR_ARCHIVE);
-#endif
 
 	j_pitch =        Cvar_Get ("j_pitch",        "0.022", CVAR_ARCHIVE);
 	j_yaw =          Cvar_Get ("j_yaw",          "-0.022", CVAR_ARCHIVE);

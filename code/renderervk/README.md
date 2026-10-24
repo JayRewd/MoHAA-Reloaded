@@ -454,6 +454,16 @@ below are done.
   out. 1.5 to 2.2 µs less a frame in the code it changes, within the
   runs' spread in the frame times; the same frames (see Performance,
   Surface list)
+- defaults (2026-10-23, the engine and `renderer_vulkan`, as on the `metal`
+  branch): `com_maxfps` 125 (upstream's 85), `cl_maxpackets` 125 (30: every
+  command in its own packet), `m_filter` 0 on every platform (upstream's is
+  1 on macOS), `ui_console` 1 (0; the console opens at startup only in
+  developer mode now), `cl_playintro` 0 (1), and in `renderer_vulkan`
+  `r_uselod` 0 (1: soldiers and weapons at full detail at any distance;
+  GL1 keeps 1). `run.sh` and `perf.py` set `r_uselod 1`, so comparisons
+  with GL1 and the numbers in this file stay comparable; with the tools'
+  settings the frames of `menus`, `hud`, `mp_mohdm1` and `dm/mohdm1` are
+  the same as before but the Advanced menu's ticked Console box
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
   Vulkan is loaded at runtime through SDL
