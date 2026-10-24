@@ -1980,6 +1980,25 @@ With temporary test builds (not kept): the counts and the TSC cycles of
 Performance, Surface list, and the pull request's lighting cache with a
 count of the hits taken before a list's first setup.
 
+No OpenGL, `cl_movefps` and no `m_filter` (2026-10-23, Plan 33; the engine,
+cgame and the renderer's names) against the build before (53d8f9d7 in a
+directory of its own, run through a wrapper; `cmplists.sh`, 640x480,
+`r_vkValidation 1`): of the 206 views of the 48 lists with shots, 167 give
+the same frames to the bit; the 39 others are in the lists whose frames
+differ between two runs of one build (`m1l1`, `m1l2a`, `m2l1_skyportal`,
+`m3l1a`, `m4l1_fog`, `m5l1a`, `m5l2a`, `m5l3`, `m6l1a`, `mohdm5_fog`,
+`mohdm7`, `pm7_front`, `smoke`) but five views of `m3l2`, which one run of
+the new build gave with their trees, water and a wheel off at the edges,
+as if turned by a fraction of a pixel; run again (the build before, the
+new build, the final one, the build before, the new build) `m3l2` gave the
+same frames to the bit in all five runs. No validation message; no
+synchronization validation message (`r_vkValidation 2`) through `menus`,
+`hud`, `mp_mohdm1`, `mohdm1_dlight` and `dm/mohdm1`. `glcheck.sh`: clean
+on the source and the build (on 53d8f9d7's build it reports
+`renderer_opengl1.so` and its `SDL_GL_*` imports); the running game maps
+no OpenGL, GLX or EGL library. `renderer_vulkan.so` of 53d8f9d7 still runs
+under the new engine (`perf.py` through `renderer_timed.so`).
+
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
 open sea after the two minutes in the landing craft (GL1's horizon was
@@ -8023,6 +8042,19 @@ Done:
     input to present of the merged pull request and of the final build
     are within the runs' spread of the build before's, uncapped and at
     250. The same frames as the build before, no validation message.
+
+33. No OpenGL, `cl_movefps` and no `m_filter` (2026-10-23, the user's
+    requests, to match the `metal` branch; see Status, Implementation
+    notes, No OpenGL, and Testing): upstream's GL1 and GL2 renderers,
+    their SDL glue, build options and platform (Emscripten) and the GL
+    code that was never built deleted, the GL-era names of this renderer
+    renamed, `cl_renderer` only `vulkan` (an old config's `opengl1` is
+    reset), and the tools compare builds with each other (`compare.sh`,
+    `cmplists.sh`) and check that no OpenGL comes back (`glcheck.sh`);
+    the command rate's cvar is `cl_movefps`, `metal`'s name (its behavior
+    unchanged: always on, 85 to 125 a second; `metal`'s `0`, one command
+    per rendered frame, not taken); `m_filter` removed. The same frames as
+    the build before, no validation message.
 
 Remaining:
 

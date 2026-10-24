@@ -36,7 +36,6 @@ Low input-to-screen time with even frames, as played on a 240 Hz display (tearin
 
 ```
 seta com_maxfps 250
-seta r_swapInterval 0
 seta r_fullscreen 1
 ```
 
@@ -55,7 +54,6 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | Setting | Default | What it does here |
 |---|---|---|
 | `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_movefps`). |
-| `r_swapInterval` | `0` | `0` shows each frame at once (it can tear; mailbox where immediate is missing). `1` is vsync (FIFO), `-1` vsync that tears when a frame is late (FIFO relaxed). Latched. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
 | `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
