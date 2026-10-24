@@ -203,7 +203,7 @@ static void VK_CreateInstance( void ) {
 
 	qvkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
 	if ( !qvkGetInstanceProcAddr ) {
-		ri.Error( ERR_FATAL, "Vulkan: no Vulkan loader (SDL_Vulkan_GetVkGetInstanceProcAddr: %s)" VK_OPENGL_HINT, SDL_GetError() );
+		ri.Error( ERR_FATAL, "Vulkan: no Vulkan loader (SDL_Vulkan_GetVkGetInstanceProcAddr: %s)" VK_DRIVER_HINT, SDL_GetError() );
 	}
 
 #define VK_LOAD_GLOBAL( name ) \
@@ -347,7 +347,7 @@ static void VK_CreateInstance( void ) {
 
 	result = qvkCreateInstance( &createInfo, NULL, &vk.instance );
 	if ( result == VK_ERROR_INCOMPATIBLE_DRIVER ) {
-		ri.Error( ERR_FATAL, "Vulkan: no compatible Vulkan driver found" VK_OPENGL_HINT );
+		ri.Error( ERR_FATAL, "Vulkan: no compatible Vulkan driver found" VK_DRIVER_HINT );
 	}
 	VK_CHECK( result );
 
@@ -458,7 +458,7 @@ static void VK_SelectPhysicalDevice( void ) {
 
 	VK_CHECK( qvkEnumeratePhysicalDevices( vk.instance, &numDevices, NULL ) );
 	if ( !numDevices ) {
-		ri.Error( ERR_FATAL, "Vulkan: no Vulkan device found" VK_OPENGL_HINT );
+		ri.Error( ERR_FATAL, "Vulkan: no Vulkan device found" VK_DRIVER_HINT );
 	}
 	devices = ri.Hunk_AllocateTempMemory( sizeof( *devices ) * numDevices );
 	VK_CHECK( qvkEnumeratePhysicalDevices( vk.instance, &numDevices, devices ) );
@@ -475,7 +475,7 @@ static void VK_SelectPhysicalDevice( void ) {
 	ri.Hunk_FreeTempMemory( devices );
 
 	if ( !bestScore ) {
-		ri.Error( ERR_FATAL, "Vulkan: no usable Vulkan device found" VK_OPENGL_HINT );
+		ri.Error( ERR_FATAL, "Vulkan: no usable Vulkan device found" VK_DRIVER_HINT );
 	}
 
 	qvkGetPhysicalDeviceProperties( vk.physicalDevice, &vk.deviceProperties );
@@ -834,8 +834,8 @@ static VkPresentModeKHR VK_ChoosePresentMode( void ) {
 	modes = ri.Hunk_AllocateTempMemory( sizeof( *modes ) * ( numModes + 1 ) );
 	VK_CHECK( qvkGetPhysicalDeviceSurfacePresentModesKHR( vk.physicalDevice, vk.surface, &numModes, modes ) );
 
-	// r_swapInterval like SDL_GL_SetSwapInterval: 0 no vsync, > 0 vsync,
-	// < 0 adaptive vsync; FIFO is always available
+	// r_swapInterval: 0 no vsync, > 0 vsync, < 0 adaptive vsync; FIFO is
+	// always available
 	numWanted = 0;
 	if ( r_swapInterval->integer == 0 ) {
 		wanted[numWanted++] = VK_PRESENT_MODE_IMMEDIATE_KHR;

@@ -22,9 +22,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 // sdl_vkimp.c -- window handling for the Vulkan renderer
 //
-// Same window, video mode and fullscreen handling as sdl_glimp.c, without
-// creating an OpenGL context: the window is created for Vulkan and the
-// backend (renderervk/vk.c) creates its surface from SDL_window.
+// The window, video modes and fullscreen handling of ioquake3's SDL layer,
+// with the window created for Vulkan: the backend (renderervk/vk.c) creates
+// its surface from SDL_window.
 
 #ifdef USE_INTERNAL_SDL_HEADERS
 #	include "SDL.h"
@@ -308,8 +308,8 @@ static int VKimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		return RSERR_INVALID_MODE;
 	}
 
-	// requested framebuffer bits, same defaults as sdl_glimp.c; the backend
-	// updates them when it picks its formats
+	// requested framebuffer bits (ioquake3's defaults); the backend updates
+	// them when it picks its formats
 	glConfig.colorBits = r_colorbits->integer;
 	if( !glConfig.colorBits || glConfig.colorBits >= 32 )
 		glConfig.colorBits = 24;
@@ -330,8 +330,8 @@ static int VKimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		desiredMode.refresh_rate = glConfig.displayFrequency = ri.Cvar_VariableIntegerValue( "r_displayRefresh" );
 		desiredMode.driverdata = NULL;
 
-		// like sdl_glimp.c, keep the fullscreen window when the exact
-		// display mode can't be set
+		// keep the fullscreen window when the exact display mode can't be
+		// set (as ioquake3 did)
 		if( SDL_SetWindowDisplayMode( SDL_window, &desiredMode ) < 0 )
 		{
 			ri.Printf( PRINT_DEVELOPER, "SDL_SetWindowDisplayMode failed: %s\n", SDL_GetError( ) );
@@ -422,15 +422,11 @@ void VKimp_Init( void )
 		ri.Cvar_Set( "com_abnormalExit", "0" );
 	}
 
-	ri.Sys_GLimpInit( );
-
 	// Create the window
 	if(VKimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
 		goto success;
 
-	// Try again, this time in a platform specific "safe mode"
-	ri.Sys_GLimpSafeInit( );
-
+	// Try again without the border setting
 	if(VKimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, qfalse))
 		goto success;
 
@@ -445,7 +441,7 @@ void VKimp_Init( void )
 	}
 
 	// Nothing worked, give up
-	ri.Error( ERR_FATAL, "VKimp_Init() - could not create the window" VK_OPENGL_HINT );
+	ri.Error( ERR_FATAL, "VKimp_Init() - could not create the window" VK_DRIVER_HINT );
 
 success:
 	// These values force the UI to disable driver selection

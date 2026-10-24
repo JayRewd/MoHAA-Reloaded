@@ -10,11 +10,11 @@
 > [!IMPORTANT]
 > **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
 
-- **Vulkan, drawn its own way.** `renderer_vulkan` starts from upstream's GL1 renderer with every OpenGL call replaced, then redesigned: the world and the static models are uploaded once per map and drawn from GPU memory, soldiers are skinned and lit in the vertex shader, dynamic lights are per pixel, and a map's pipelines are built while it loads, so nothing stalls the first time it is drawn. Vulkan is loaded at run time; GL1 stays in the build (`cl_renderer opengl1`).
-- **Low input latency.** Frames are drawn straight into the swapchain image, with at most two frames in flight and nothing drawn from older input: from reading the input to the present takes 0.47 and 0.83 ms (medians) in two real matches at 1920x1080 uncapped, against GL1's 0.66 and 1.31.
+- **Vulkan, drawn its own way.** `renderer_vulkan` starts from upstream's GL1 renderer with every OpenGL call replaced, then redesigned: the world and the static models are uploaded once per map and drawn from GPU memory, soldiers are skinned and lit in the vertex shader, dynamic lights are per pixel, and a map's pipelines are built while it loads, so nothing stalls the first time it is drawn. Vulkan is loaded at run time, and no OpenGL is left: upstream's GL1 and GL2 renderers are gone from the code, the build and the downloads.
+- **Low input latency.** Frames are drawn straight into the swapchain image, with at most two frames in flight and nothing drawn from older input: from reading the input to the present takes 0.47 and 0.83 ms (medians) in two real matches at 1920x1080 uncapped, against 0.66 and 1.31 with upstream's GL1 renderer.
 - **Movement apart from the frame rate.** The commands the server runs come from their own clock (`cl_cmdfps`, below), each exactly as long at any frame rate, and the view turns with every frame.
 - **Smooth matches.** What used to load in the middle of a match (models announced late, a sound's first play, the soundtrack at a round restart) now happens while the map loads.
-- **Fast.** In two real matches played back at 1920x1080 on an AMD Radeon 780M (an integrated GPU), the renderer's CPU time per frame is about half of GL1's (0.35 ms against 0.65, 0.68 against 1.26), frames take 35 to 40 % less time, and the 99th percentile is 1.2 ms against 1.9 and 1.4 against 2.4.
+- **Fast.** In two real matches played back at 1920x1080 on an AMD Radeon 780M (an integrated GPU), the renderer's CPU time per frame is about half of upstream's GL1 renderer's (0.35 ms against 0.65, 0.68 against 1.26), frames take 35 to 40 % less time, and the 99th percentile is 1.2 ms against 1.9 and 1.4 against 2.4.
 - **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's.
 
@@ -26,7 +26,7 @@ Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDI
 2. Find your MOHAA game folder: the folder with `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
 3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows).
 
-On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so: `+set cl_renderer opengl1` runs upstream's OpenGL renderer, which comes with it.
+On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so.
 
 Builds of newer commits come from [CI on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (`out-linux-amd64`, `out-windows-x64`; needs a GitHub login, kept for a few days), or build it yourself (below).
 
@@ -54,7 +54,6 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 
 | Setting | Default | What it does here |
 |---|---|---|
-| `cl_renderer` | `vulkan` | `opengl1` runs upstream's GL1 renderer from the same build. |
 | `com_maxfps` | `125` (upstream `85`) | The render cap, exact now (144, 165 and 240 ran at 167, 167 and 250 before); above 1000 and `0` (uncapped) work too. Movement doesn't depend on it (`cl_cmdfps`). |
 | `r_swapInterval` | `0` | `0` shows each frame at once (it can tear; mailbox where immediate is missing). `1` is vsync (FIFO), `-1` vsync that tears when a frame is late (FIFO relaxed). Latched. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
@@ -87,7 +86,7 @@ cmake --install Vulkan-Headers/build
 ```
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_RENDERER_VULKAN=ON -DVulkanHeaders_DIR="$PWD/vulkan-headers/share/cmake/VulkanHeaders"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVulkanHeaders_DIR="$PWD/vulkan-headers/share/cmake/VulkanHeaders"
 cmake --build build
 ```
 
@@ -95,7 +94,7 @@ Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /
 
 ## Looks and limits
 
-- **Looks like GL1**, except where a change bought speed: dynamic lights per pixel (a smoother falloff than GL1's lightmap texels), up to 64 of them and on doors and lifts too, and a few pixels where the drivers rasterize differently.
+- **Looks like upstream's GL1 renderer**, except where a change bought speed: dynamic lights per pixel (a smoother falloff than GL1's lightmap texels), up to 64 of them and on doors and lifts too, and a few pixels where the drivers rasterize differently.
 - **Tested on Linux only**, on AMD (Mesa) and NVIDIA. Windows builds but hasn't been played; macOS (MoltenVK) is untested. Reports are welcome.
 
 ## More

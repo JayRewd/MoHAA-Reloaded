@@ -26,8 +26,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // at a time. Vertices are collected here and converted to indexed triangles
 // or lines for vk_draw(). Each vertex takes the current color (glState.color)
 // and the last texture coordinate; texture unit 0 is used when enabled.
-// Quads and polygons drawn with GLS_POLYMODE_LINE become their outlines, as
-// OpenGL draws only the edges of the polygon and not the triangulation.
+// Quads and polygons drawn with GLS_POLYMODE_LINE become their outlines: only
+// the edges of the polygon are drawn, not the triangulation.
 
 #include "tr_local.h"
 

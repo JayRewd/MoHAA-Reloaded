@@ -1276,7 +1276,7 @@ the bits are allocated as follows:
 #define	QSORT_REFENTITYNUM_SHIFT	7
 #define	QSORT_STATICMODEL_SHIFT	20 // was 21, decreased in 2.30
 
-extern	int			gl_filter_min, gl_filter_max;
+extern	int			tex_filter_min, tex_filter_max;
 
 /*
 ** performanceCounters_t
@@ -1795,15 +1795,15 @@ void R_SetupFrustum(void);
 /*
 ** state tracking helpers (historical GL_ names; they call the backend in vk.h)
 */
-void	GL_SetFogColor(const vec4_t fColor);
-void	GL_Bind( image_t *image );
-void	GL_SetDefaultState (void);
-void	GL_SelectTexture( int unit );
-void	GL_TextureMode( const char *string );
-void	GL_State( unsigned long stateVector );
-void	GL_TexEnv( int env );
-void	GL_Cull( int cullType );
-void	GL_EnableTexture( qboolean enable );
+void	R_SetFogColor(const vec4_t fColor);
+void	R_Bind( image_t *image );
+void	R_SetDefaultState (void);
+void	R_SelectTexture( int unit );
+void	R_TextureMode( const char *string );
+void	R_State( unsigned long stateVector );
+void	R_TexEnv( int env );
+void	R_Cull( int cullType );
+void	R_EnableTexture( qboolean enable );
 
 void	RB_SetProjection( const float *matrix );
 void	RB_SetModelview( const float *matrix );
@@ -2016,7 +2016,7 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 // the window functions are declared in vk.h
 
 // hardware gamma ramp, implemented with SDL in sdl/sdl_gamma.c
-void		GLimp_SetGamma( unsigned char red[256], 
+void		VKimp_SetGamma( unsigned char red[256], 
 						    unsigned char green[256],
 							unsigned char blue[256] );
 

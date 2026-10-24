@@ -28,7 +28,7 @@ trGlobals_t		tr;
 
 static float	s_flipMatrix[16] = {
 	// convert from our coordinate system (looking down X)
-	// to OpenGL's coordinate system (looking down -Z)
+	// to the eye space of the projection (looking down -Z)
 	0, 0, -1, 0,
 	-1, 0, 0, 0,
 	0, 1, 0, 0,
@@ -478,7 +478,7 @@ void R_RotateForViewer (void)
 	viewerMatrix[15] = 1;
 
 	// convert from our coordinate system (looking down X)
-	// to OpenGL's coordinate system (looking down -Z)
+	// to the eye space of the projection (looking down -Z)
 	myGlMultMatrix( viewerMatrix, s_flipMatrix, tr.ori.modelMatrix );
 
 	tr.viewParms.world = tr.ori;
@@ -1505,7 +1505,7 @@ R_DebugPolygon
 void R_DebugPolygon( int color, int numPoints, float *points ) {
 	int		i;
 
-	GL_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
+	R_State( GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 
 	// draw solid shade
 
@@ -1517,7 +1517,7 @@ void R_DebugPolygon( int color, int numPoints, float *points ) {
 	RB_ImmEnd();
 
 	// draw wireframe outline
-	GL_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
+	R_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
 	vk_set_depth_range( 0, 0 );
 	RB_SetColor3f( 1, 1, 1 );
 	RB_ImmBegin( IMM_POLYGON );
@@ -1543,8 +1543,8 @@ void R_DebugGraphics( void ) {
 	// the render thread can't make callbacks to the main thread
 	R_IssuePendingRenderCommands();
 
-	GL_Bind( tr.whiteImage);
-	GL_Cull( CT_FRONT_SIDED );
+	R_Bind( tr.whiteImage);
+	R_Cull( CT_FRONT_SIDED );
 	ri.CM_DrawDebugSurface( R_DebugPolygon );
 }
 
@@ -1668,11 +1668,11 @@ void R_DrawDebugLines(void) {
 	}
 
 	R_IssuePendingRenderCommands();
-    GL_Bind(tr.whiteImage);
+    R_Bind(tr.whiteImage);
 	if (r_debuglines_depthmask->integer) {
-		GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+		R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 	} else {
-		GL_State(GLS_POLYMODE_LINE);
+		R_State(GLS_POLYMODE_LINE);
 	}
 
     RB_EnableColorArray( qfalse );

@@ -24,9 +24,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "../qcommon/q_shared.h"
 #include "../renderercommon/tr_public.h"
-#ifndef USE_VULKAN
-#include "qgl.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -118,7 +115,7 @@ extern cvar_t *r_ignorehwgamma;		// overrides hardware gamma capabilities
 extern cvar_t *r_drawBuffer;
 extern cvar_t *r_swapInterval;
 
-extern cvar_t *r_allowExtensions;				// global enable/disable of OpenGL extensions
+extern cvar_t *r_allowExtensions;				// global enable/disable of the r_ext_* features
 extern cvar_t *r_ext_compressed_textures;		// these control use of specific extensions
 extern cvar_t *r_ext_multitexture;
 extern cvar_t *r_ext_compiled_vertex_array;
@@ -175,14 +172,9 @@ IMPLEMENTATION SPECIFIC FUNCTIONS
 ====================================================================
 */
 
-void		GLimp_Init( qboolean fixedFunction );
-void		GLimp_Shutdown( void );
-void		GLimp_EndFrame( void );
-
-void		GLimp_LogComment( char *comment );
-void		GLimp_Minimize(void);
-
-void		GLimp_SetGamma( unsigned char red[256],
+// the window is renderervk/vk.h's (sdl/sdl_vkimp.c); the hardware gamma ramp
+// is sdl/sdl_gamma.c's
+void		VKimp_SetGamma( unsigned char red[256],
 		unsigned char green[256],
 		unsigned char blue[256] );
 

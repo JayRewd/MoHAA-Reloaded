@@ -86,13 +86,8 @@ if(BUILD_STANDALONE)
     list(APPEND CLIENT_DEFINITIONS STANDALONE)
 endif()
 
-if(USE_RENDERER_DLOPEN)
-    list(APPEND CLIENT_DEFINITIONS USE_RENDERER_DLOPEN)
-    # the default cl_renderer: the Vulkan renderer when it is built
-    if(BUILD_RENDERER_VULKAN)
-        list(APPEND CLIENT_DEFINITIONS DEFAULT_RENDERER_VULKAN)
-    endif()
-endif()
+# the renderer is loaded at run time: renderer_<cl_renderer> (renderer_vulkan)
+list(APPEND CLIENT_DEFINITIONS USE_RENDERER_DLOPEN)
 
 if(USE_HTTP)
     list(APPEND CLIENT_DEFINITIONS USE_HTTP)
@@ -152,18 +147,6 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/main/sound
     DESTINATION ${INSTALL_BINDIR_FULL}/main)
 install(FILES ${CMAKE_SOURCE_DIR}/code/thirdparty/OMAHA-SOUND-LICENSES.txt
     DESTINATION ${INSTALL_BINDIR_FULL})
-
-if(NOT USE_RENDERER_DLOPEN)
-    target_sources(${CLIENT_BINARY} PRIVATE
-        # These are never simultaneously populated
-        ${RENDERER_GL1_BINARY_SOURCES}
-        ${RENDERER_GL2_BINARY_SOURCES})
-
-    target_include_directories( ${CLIENT_BINARY} PRIVATE ${RENDERER_INCLUDE_DIRS})
-    target_compile_definitions( ${CLIENT_BINARY} PRIVATE ${RENDERER_DEFINITIONS})
-    target_compile_options(     ${CLIENT_BINARY} PRIVATE ${RENDERER_COMPILE_OPTIONS})
-    target_link_libraries(      ${CLIENT_BINARY} PRIVATE ${RENDERER_LIBRARIES})
-endif()
 
 foreach(LIBRARY IN LISTS CLIENT_DEPLOY_LIBRARIES)
     add_custom_command(TARGET ${CLIENT_BINARY} POST_BUILD

@@ -6,7 +6,7 @@
 The images (TGA or PNG written by tgadiff.py, all the same size) are placed
 left to right, top to bottom, each reduced by the integer downscale factor
 (nearest neighbour), with a 4 pixel black gap. A typical row is
-<view>_gl.png <view>_vk.png <view>_diff.png.
+<view>_a.png <view>_b.png <view>_diff.png (compare.sh).
 """
 import os
 import sys

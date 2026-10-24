@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rows of the README's parity tables from compare.sh results.
+"""The worst view of each list in compare.sh results (standard library only).
 
   summary.py <list>... [--wide] [--readme README.md]
 

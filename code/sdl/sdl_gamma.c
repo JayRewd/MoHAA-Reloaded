@@ -33,10 +33,10 @@ extern SDL_Window *SDL_window;
 
 /*
 =================
-GLimp_SetGamma
+VKimp_SetGamma
 =================
 */
-void GLimp_SetGamma( unsigned char red[256], unsigned char green[256], unsigned char blue[256] )
+void VKimp_SetGamma( unsigned char red[256], unsigned char green[256], unsigned char blue[256] )
 {
 	Uint16 table[3][256];
 	int i, j;

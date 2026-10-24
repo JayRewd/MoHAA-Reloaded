@@ -673,7 +673,7 @@ static void RB_Sphere_Light_Sun()
                 VectorCopy(backEnd.currentEntity->e.origin, temppos);
                 MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
 
-                GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+                R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
                 float savedModelview[16];
 
@@ -683,7 +683,7 @@ static void RB_Sphere_Light_Sun()
                 // Clear the depth range
                 vk_set_depth_range(0.0, 0.0);
 
-                GL_EnableTexture( qfalse );
+                R_EnableTexture( qfalse );
 
                 RB_ImmBegin( IMM_LINES );
                 RB_SetColor3f(0.0, 0.0, 0.0);
@@ -692,7 +692,7 @@ static void RB_Sphere_Light_Sun()
                 RB_ImmVertex3fv(transpos);
                 RB_ImmEnd();
 
-                GL_EnableTexture( qtrue );
+                R_EnableTexture( qtrue );
 
                 // Bring the depth range back
                 vk_set_depth_range(0.0, 1.0);
@@ -713,7 +713,7 @@ static void RB_Sphere_Light_Sun()
         VectorSubtract(trace->endpos, backEnd.currentEntity->e.origin, temppos);
         MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
 
-        GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+        R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
         float savedModelview[16];
 
@@ -723,7 +723,7 @@ static void RB_Sphere_Light_Sun()
         // Clear the depth range
         vk_set_depth_range(0.0, 0.0);
 
-        GL_EnableTexture( qfalse );
+        R_EnableTexture( qfalse );
 
         RB_ImmBegin( IMM_LINES );
 
@@ -738,7 +738,7 @@ static void RB_Sphere_Light_Sun()
         RB_ImmVertex3fv(transpos);
         RB_ImmEnd();
 
-        GL_EnableTexture( qtrue );
+        R_EnableTexture( qtrue );
 
         // Bring the depth range back
         vk_set_depth_range(0.0, 1.0);
@@ -887,7 +887,7 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
     // Clear the depth range
     vk_set_depth_range(0.0, 0.0);
 
-    GL_EnableTexture( qfalse );
+    R_EnableTexture( qfalse );
 
     if (r_light_lines->integer == 2) {
         newColor[0] = thislight->color[0] * (falloff * r_entlight_scale->value / 255.0);
@@ -932,7 +932,7 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
     }
 
     RB_ImmEnd();
-    GL_EnableTexture( qtrue );
+    R_EnableTexture( qtrue );
     // Restore depth
     vk_set_depth_range(0.0, 1.0);
     RB_SetModelview(savedModelview);

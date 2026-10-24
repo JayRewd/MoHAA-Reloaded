@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frame times of views with GL1 and Vulkan (standard library only).
+"""Frame times of views with builds of the Vulkan renderer (standard library only).
 
   perf.py <map> x y z pitch yaw roll [options] [-- +set args...]
   perf.py --list views/perf.txt [options] [-- +set args...]
@@ -8,8 +8,8 @@ options:
   --sp              single-player map (spdevmap instead of devmap)
   --frames N        frames per measurement (default 1000)
   --renderers A,B   cl_renderer values (renderer_<name>.so of MOH_BINDIR),
-                    default opengl1,vulkan; a copy of an older
-                    renderer_vulkan.so under another name compares builds
+                    default vulkan; a copy of an older renderer_vulkan.so
+                    under another name compares builds (base,vulkan)
   --binaries A,B    engine executables of MOH_BINDIR (default openmohaa); a
                     copy of an older openmohaa under another name compares
                     engine builds: each runs every renderer, interleaved
@@ -19,8 +19,7 @@ options:
   --seconds S       with --caps: about S seconds per measurement (S x N
                     frames, S x 1000 for 0) instead of --frames
   --preload LIB,... libraries of MOH_BINDIR preloaded into the game:
-                    libinlat.so (input to present times, with --framelog),
-                    libglts.so (GL1's GPU time per frame, with --framelog)
+                    libinlat.so (input to present times, with --framelog)
   --runs N          measurements per renderer, view and size (default 5)
   --sizes WxH,...   window sizes (default 640x480)
   --pause PID,...   SIGSTOP these processes and their descendants while the
@@ -47,9 +46,8 @@ options:
                     and, for the renderers of --vklog, the Vulkan renderer's
                     frame log (r_vkFrameLog 1, vkframelog) in ...vk.txt;
                     tools/framelog.py reads them. The summary then gives
-                    the frame time percentiles. With libglts.so preloaded,
-                    GL1's GPU time per frame goes to ...gl.txt, with
-                    libinlat.so every frame's input read and present to
+                    the frame time percentiles. With libinlat.so preloaded,
+                    every frame's input read and present goes to
                     ...in.txt; with INLAT_DISPLAY=1 in the environment
                     libinlat.so also writes ...pt.txt, what happened to
                     each present after the call (framelog.py --display)
@@ -400,8 +398,6 @@ def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None,
         env["STACKS_OUT"] = stacks
     if framelog:
         env["RTIMER_FRAMES"] = framelog + ".rt.txt"
-        # GL1's GPU time per frame when libglts.so is preloaded (tools/rtimer/glts.c)
-        env["GLTS_FRAMES"] = framelog + ".gl.txt"
         # every frame's input read and present when libinlat.so is preloaded (tools/rtimer/inlat.c)
         env["INLAT_FRAMES"] = framelog + ".in.txt"
     if TIMED:
@@ -412,7 +408,7 @@ def run(binary, renderer, view, extra, pauser, cold, stacks=None, framelog=None,
            "+set", "s_volume", "0", "+set", "s_musicvolume", "0", "+set", "s_ambientvolume", "0",
            "+set", "in_nograb", "1", "+set", "in_mouse", "0", "+set", "ui_gmbox", "0",
            "+set", "com_maxfps", "0", "+set", "r_swapInterval", "0", "+set", "r_vkValidation", "0",
-           # GL1's LOD, and the numbers measured before the Vulkan renderer's default became 0 (2026-10-23)
+           # upstream's LOD, as in the numbers measured before the renderer's default became 0 (2026-10-23)
            "+set", "r_uselod", "1"]
     if framelog and vklog:
         cmd += ["+set", "r_vkFrameLog", "1"]
@@ -546,7 +542,7 @@ def main():
     ap.add_argument("--list")
     ap.add_argument("--sp", action="store_true")
     ap.add_argument("--frames", type=int, default=1000)
-    ap.add_argument("--renderers", default="opengl1,vulkan")
+    ap.add_argument("--renderers", default="vulkan")
     ap.add_argument("--binaries", default="openmohaa")
     ap.add_argument("--caps", default="")
     ap.add_argument("--seconds", type=float)

@@ -2,10 +2,6 @@ if(NOT BUILD_CLIENT OR NOT BUILD_RENDERER_VULKAN)
     return()
 endif()
 
-if(NOT USE_RENDERER_DLOPEN)
-    message(FATAL_ERROR "The Vulkan renderer requires USE_RENDERER_DLOPEN")
-endif()
-
 include(utils/set_output_dirs)
 include(renderer_common)
 
@@ -65,7 +61,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/vk_submit.c
 )
 
-# No OpenGL: the window is created by sdl_vkimp.c instead of sdl_glimp.c
+# The window (sdl_vkimp.c) and the gamma ramp (sdl_gamma.c)
 set(SDL_RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/sdl/sdl_gamma.c
     ${SOURCE_DIR}/sdl/sdl_vkimp.c

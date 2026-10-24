@@ -1992,8 +1992,8 @@ void R_DebugSkeleton(void)
 
     R_IssuePendingRenderCommands();
 
-    GL_Bind(tr.whiteImage);
-    GL_State(GLS_POLYMODE_LINE);
+    R_Bind(tr.whiteImage);
+    R_State(GLS_POLYMODE_LINE);
 
     RB_EnableColorArray( qfalse );
     RB_EnableTexCoordArray( qfalse );

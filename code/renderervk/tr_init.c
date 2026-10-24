@@ -363,7 +363,7 @@ static void InitGraphics( void )
 	GfxInfo_f();
 
 	// set default state
-	GL_SetDefaultState();
+	R_SetDefaultState();
 }
 
 /*
@@ -1229,9 +1229,9 @@ const void *RB_TakeVideoFrameCmd( const void *data )
 //============================================================================
 
 /*
-** GL_SetDefaultState
+** R_SetDefaultState
 */
-void GL_SetDefaultState( void )
+void R_SetDefaultState( void )
 {
 	float identity[16];
 
@@ -1245,15 +1245,15 @@ void GL_SetDefaultState( void )
 	// initialize downstream texture unit if we're running
 	// in a multitexture environment
 	if ( glConfig.numTextureUnits > 1 ) {
-		GL_SelectTexture( 1 );
-		GL_TextureMode( r_textureMode->string );
+		R_SelectTexture( 1 );
+		R_TextureMode( r_textureMode->string );
 		vk_set_texenv( 1, TEXENV_MODULATE );
-		GL_EnableTexture( qfalse );
-		GL_SelectTexture( 0 );
+		R_EnableTexture( qfalse );
+		R_SelectTexture( 0 );
 	}
 
-	GL_EnableTexture( qtrue );
-	GL_TextureMode( r_textureMode->string );
+	R_EnableTexture( qtrue );
+	R_TextureMode( r_textureMode->string );
 	vk_set_texenv( 0, TEXENV_MODULATE );
 
 	//
@@ -1262,7 +1262,7 @@ void GL_SetDefaultState( void )
 	glState.glStateBits = GLS_DEPTHTEST_DISABLE | GLS_DEPTHMASK_TRUE;
 	vk_set_state( glState.glStateBits );
 
-	// the rest is the OpenGL initial state the renderer relies on
+	// the rest is the initial state the renderer relies on
 	Com_Memset( &glState.arrays, 0, sizeof( glState.arrays ) );
 	RB_LoadIdentity( identity );
 	RB_SetProjection( identity );

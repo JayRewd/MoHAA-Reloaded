@@ -1,13 +1,16 @@
 # renderervk — Vulkan renderer
 
-`renderer_vulkan` is a copy of the GL1 renderer (`code/renderergl1`) with every
-OpenGL call removed. All GPU work goes through the interface in [`vk.h`](vk.h),
-which the `vk*.c` files implement with Vulkan. It is the default renderer
-(`cl_renderer vulkan`) of builds that include it (`BUILD_RENDERER_VULKAN`,
-with `USE_RENDERER_DLOPEN`); `cl_renderer opengl1` selects the GL1 renderer.
-On a system without Vulkan (no loader, driver or device) it stops with an
-error that says so and suggests `+set cl_renderer opengl1`. `cl_renderer`
-is archived, so a config written before keeps its renderer.
+`renderer_vulkan` started as a copy of upstream's GL1 renderer
+(`code/renderergl1`) with every OpenGL call removed. All GPU work goes through
+the interface in [`vk.h`](vk.h), which the `vk*.c` files implement with
+Vulkan. Since 2026-10-23 it is the only renderer: upstream's GL1 and GL2
+renderers and every other piece of OpenGL are gone from this branch (see
+Implementation notes, No OpenGL). `cl_renderer` is `vulkan`; another name
+loads `renderer_<name>` from the binary's directory (the tools' copies of
+other builds) and falls back to `vulkan` when there is no such library, and
+the `opengl1` of a config of an earlier build is reset to `vulkan`. On a
+system without Vulkan (no loader, driver or device) it stops with an error
+that says so.
 
 Status (2026-10-14, branch `vulkan-renderer`): milestones 1 to 6 of the plan
 below are done.
@@ -459,18 +462,30 @@ below are done.
   command in its own packet), `m_filter` 0 on every platform (upstream's is
   1 on macOS), `ui_console` 1 (0; the console opens at startup only in
   developer mode now), `cl_playintro` 0 (1), and in `renderer_vulkan`
-  `r_uselod` 0 (1: soldiers and weapons at full detail at any distance;
-  GL1 keeps 1). `run.sh` and `perf.py` set `r_uselod 1`, so comparisons
-  with GL1 and the numbers in this file stay comparable; with the tools'
-  settings the frames of `menus`, `hud`, `mp_mohdm1` and `dm/mohdm1` are
-  the same as before but the Advanced menu's ticked Console box
+  `r_uselod` 0 (1: soldiers and weapons at full detail at any distance).
+  `run.sh` and `perf.py` set `r_uselod 1`, so the numbers in this file
+  (GL1's included) stay comparable; with the tools' settings the frames of
+  `menus`, `hud`, `mp_mohdm1` and `dm/mohdm1` are the same as before but
+  the Advanced menu's ticked Console box
+- no OpenGL (2026-10-23, the user's request, as on the `metal` branch):
+  upstream's GL1 and GL2 renderers, `qgl.h`, `sdl_glimp.c`, the GL build
+  options, the WebGL (Emscripten) platform and the OpenGL code that was
+  never built (vendored GL headers, a GameSpy sample, recastnavigation's
+  demo, a map compiler's GL view) are deleted, the state helpers renamed
+  (`R_State`, `R_Bind`, ...), and `cl_renderer` only loads
+  `renderer_vulkan` (or a test copy); `tools/glcheck.sh` checks the source
+  and the binaries (see Implementation notes, No OpenGL). The tools compare
+  builds with each other (`compare.sh`, `cmplists.sh`); the GL1 comparisons
+  in this file were made with the GL1 renderer of the builds up to
+  53d8f9d7. The same frames as 53d8f9d7 (but in the lists that differ
+  between two runs of one build)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
-  only SDL2, libm, libstdc++, libgcc_s and libc (same as `renderer_opengl1.so`).
-  Vulkan is loaded at runtime through SDL
-- `renderergl1` is unchanged. It was the visual reference until
-  2026-10-19; since then the look may change where that buys performance,
-  and comparisons with GL1 (and with the build before) check for bugs and
-  show what changed instead of requiring the same pixels
+  only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
+  runtime through SDL
+- GL1 was the visual reference until 2026-10-19; since then the look may
+  change where that buys performance, and comparisons with the build before
+  (until 2026-10-23 also with GL1) check for bugs and show what changed
+  instead of requiring the same pixels
 
 ## Layout
 
@@ -492,32 +507,38 @@ below are done.
 | `shaders/effects.vert` | the vertex shader of the static geometry's draws with effects (deforms, `tcGen` and `tcMod`, `distFade`, static models' dynamic lights; see Implementation notes, Effects shader), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
 | `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
-| `tools/` | GL1/Vulkan screenshot comparison and performance scripts, view lists (see Testing) |
+| `tools/` | build-against-build screenshot comparison and performance scripts, view lists, the OpenGL check (see Testing) |
 | `WINDOWS_TESTING.md` | a tester's checklist for Windows: commands, cvars, what to send back |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
-| `tr_backend.c` | renderer-side state tracking (`GL_State`, `GL_Bind`, `GL_Cull`, `GL_TexEnv`, matrices, vertex arrays, current color) |
-| `tr_*.c`, `tr_*.cpp` | the GL1 renderer with GL calls replaced, otherwise unchanged but for the performance work (see Performance) and the static geometry hooks of the surface functions and stage iterators |
-| `../sdl/sdl_vkimp.c` | SDL window, video modes and fullscreen without a GL context (`VKimp_*`) |
+| `tr_backend.c` | renderer-side state tracking (`R_State`, `R_Bind`, `R_Cull`, `R_TexEnv`, matrices, vertex arrays, current color) |
+| `tr_*.c`, `tr_*.cpp` | upstream's GL1 renderer with its GL calls replaced, otherwise unchanged but for the performance work (see Performance) and the static geometry hooks of the surface functions and stage iterators |
+| `../sdl/sdl_vkimp.c` | SDL window for Vulkan, video modes and fullscreen (`VKimp_*`) |
+| `../sdl/sdl_gamma.c` | the hardware gamma ramp through SDL (`VKimp_SetGamma`) |
 | `../../cmake/renderer_vulkan.cmake` | build target `renderer_vulkan` (only `GetRefAPI` is exported: hidden symbol visibility) |
 
-The `GL_` prefix of the state helpers and `glConfig`/`glState` are historical
-names kept to make it easy to port fixes from `renderergl1`; they do not touch
-OpenGL. `GLimp_SetGamma` comes from the shared `sdl/sdl_gamma.c` and only uses
-SDL.
+The state helpers had GL1's names until 2026-10-23 (`GL_State`, `GL_Bind`,
+...); they are `R_State`, `R_Bind`, `R_Cull`, `R_TexEnv`, `R_SelectTexture`,
+`R_EnableTexture`, `R_TextureMode`, `R_SetDefaultState` and `R_SetFogColor`
+now, as on the `metal` branch (and `gl_filter_min`/`max` are
+`tex_filter_min`/`max`). `glConfig` (a `glconfig_t`, whose layout cgame and
+the UI share) and `glState` keep their names.
 
-Shared files touched outside this directory: `CMakeLists.txt` (option),
+Shared files touched outside this directory: `CMakeLists.txt`
+(`BUILD_RENDERER_VULKAN`, on by default, the only renderer option),
 `cmake/libraries/{freetype,jpeg}.cmake` and `cmake/platforms/macos.cmake`
-(accept the new renderer), `code/renderercommon/tr_common.h` (does not include
-`qgl.h` when `USE_VULKAN` is defined; `texnum` is `unsigned int`, same type as
-before), and the CI workflows (`.github/workflows`: Linux x64 and Windows x64
-only, with `USE_RENDERER_DLOPEN=ON` and `BUILD_RENDERER_VULKAN=ON`, the
-renderers then shipping as `renderer_opengl1` and `renderer_vulkan` libraries
-next to the executable; artifacts kept 3 days; since 2026-10-23 the Windows
-job uploads only the game's files, no symbols or installer) and the Windows
-installer (`misc/setup/windows/app/Package.wxs` lists both renderer DLLs;
-CI no longer builds it), and the
-client's default `cl_renderer` (`vulkan` when `BUILD_RENDERER_VULKAN` is on:
-`cmake/client.cmake`, `code/client/cl_main.cpp`), and the frame limiter
+(the renderer's libraries and app bundle), `cmake/renderer_common.cmake`
+and `cmake/client.cmake` (the renderer is always a library loaded at run
+time), `code/renderercommon/tr_common.h` and `tr_types.h` (no `qgl.h` and
+no GL declarations; `texnum` is `unsigned int`, same type as before), and
+the CI workflows (`.github/workflows`: Linux x64 and Windows x64 only, the
+renderer shipping as the `renderer_vulkan` library next to the executable;
+artifacts kept 3 days; since 2026-10-23 the Windows job uploads only the
+game's files, no symbols or installer; the unit tests build without the
+renderer) and the Windows installer
+(`misc/setup/windows/app/Package.wxs` lists `renderer_vulkan.dll`; CI no
+longer builds it), and the client's `cl_renderer` (`vulkan`, the only
+renderer: `code/client/cl_main.cpp`), and the removal of OpenGL (see
+Implementation notes, No OpenGL), and the frame limiter
 (`Com_Frame` and `Com_FrameWait` in `code/qcommon/common.c`,
 `Sys_Microseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
 the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
@@ -574,16 +595,20 @@ used). `glslc` is only needed to change shaders. `vulkan-validationlayers`
 is needed for `r_vkValidation`.
 
 ```sh
-cmake -S . -B build-vk -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_RENDERER_VULKAN=ON
+cmake -S . -B build-vk -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build-vk
 cd build-vk/RelWithDebInfo
-./openmohaa +set cl_renderer vulkan +set fs_basepath ~/Documents/moh \
+./openmohaa +set fs_basepath ~/Documents/moh \
     +set fs_homepath /tmp/moh-home +set r_fullscreen 0 +set r_mode 3
 ```
 
-`cl_renderer opengl1` runs the GL1 renderer from the same build for comparison
-(`cl_renderer` defaults to `vulkan` when the Vulkan renderer is built,
-`cmake/client.cmake`, `code/client/cl_main.cpp`).
+`renderer_vulkan` is the only renderer: `cl_renderer` is `vulkan`, and
+another name loads `renderer_<name>` of the binary's directory (a copy of
+another build's `renderer_vulkan.so`, as the tools use them; see Testing) or,
+when there is none, falls back to `vulkan`; a name that starts with `opengl`
+(a config of an earlier build) is reset to `vulkan`, also when an earlier
+install left `renderer_opengl1` in the game folder
+(`code/client/cl_main.cpp`).
 
 Cvars of the backend:
 
@@ -591,7 +616,7 @@ Cvars of the backend:
 | --- | --- |
 | `r_vkValidation` (latched, default 0) | 1 enables `VK_LAYER_KHRONOS_validation` and prints its warnings and errors to the console; 2 also enables synchronization validation (slow) |
 | `r_swapInterval` (latched) | 0: immediate present mode (mailbox if unavailable), < 0: FIFO relaxed, > 0: FIFO; FIFO when the wanted mode is missing |
-| `r_ext_multisample` (latched, shared with GL1) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
+| `r_ext_multisample` (latched) | 0 or 1: off; 2 to 16: samples (the largest the device supports up to that), see Implementation notes |
 | `r_staticGeometry` (default 1) | 0 tessellates world surfaces and static models on the CPU every frame instead of drawing them from the static geometry (see Implementation notes) |
 | `r_gpuSkinning` (default 1) | 0 skins and lights skeletal models on the CPU every frame instead of in the vertex shader (see Implementation notes, Skeletal models) |
 | `r_skelCull` (default 1) | 0 prepares and draws skeletal models outside the view too, as GL1 does (see Implementation notes, Skeletal culling) |
@@ -654,6 +679,14 @@ and commit the regenerated `vk_shaders.c`.
 
 ## Testing
 
+Since 2026-10-23 there is no GL1 renderer to compare with (see Implementation
+notes, No OpenGL): the tools compare builds of `renderer_vulkan` (and of the
+engine and cgame) with each other, `compare.sh` two of them on one view
+list, `cmplists.sh` any number on many lists. The GL1 numbers in this file
+(the milestone tables, every "against GL1", `libglts.so`'s GPU times) were
+measured with the GL1 renderer of the builds up to 53d8f9d7: check that
+commit out to measure GL1 again.
+
 Automated runs: put a cfg in `<fs_homepath>/main/` and pass `+exec name.cfg`.
 Don't give it the name of a cfg the game runs itself: `default.cfg` runs
 `menu.cfg` at startup, so a test script called `menu.cfg` runs then. Use
@@ -674,7 +707,7 @@ Two runs of the same map normally give different frames: the game time at the
 screenshot depends on how long the loading and every frame took (swaying
 foliage, animated and scrolling shaders, HUD), the player spawns at a random
 point and the camera drifts. This script gives the same frame in every run
-and with both renderers:
+and with every build:
 
 ```
 set thereisnomonkey 1
@@ -719,12 +752,11 @@ What each part is for:
   colliding, `god` and `notarget` keep the AI out of it. `coord` prints the
   current position and angles. Spawn points are in the entity lump of the
   BSP (`info_player_*`).
-- `pause` before the screenshot: GL1's `screenshot` command reads the back
-  buffer before anything of the frame is drawn, a buffer that Mesa hands out
-  from two or three swaps earlier, while the Vulkan renderer takes it at the
+- `pause` before the screenshot: the renderer takes the screenshot at the
   end of the frame in which the command runs (see Frames and
-  synchronisation), so without the pause everything that moves (trees and
-  bushes sway) differs. While paused every frame is the same.
+  synchronisation; GL1 read a back buffer from two or three swaps earlier),
+  so without the pause everything that moves (trees and bushes sway) can
+  differ by a frame. While paused every frame is the same.
   `finishloadingscreen` unpauses too.
 - The `screenshot` command centerprints "Wrote ..." in the view; the blank
   `centerprint` replaces it before the next screenshot.
@@ -749,22 +781,18 @@ waits, run it with `TIMEOUT=400`). `face` still turns the view.
 Views must be taken from inside the world. From outside it (the void
 around the map, above the sky brushes, inside a solid; the view cluster is
 -1) part of the frame can be covered by no surface at all: it keeps what an
-earlier frame drew into that buffer, an older swapchain image with Vulkan
-(the offscreen render target before milestone 6's performance work) and an
-older back buffer with GL1, so the two differ there without meaning
-anything. Two such views of this parity pass
+earlier frame drew into that buffer, an older swapchain image (the
+offscreen render target before milestone 6's performance work; an older
+back buffer with GL1), so two runs can differ there without meaning
+anything. Two such views of the GL1 parity pass
 looked like bugs: `obj_team2` from 1177 289 -120 and `dm/mohdm7` from
 -1000 1000 800 above the sky, where the sky box (drawn from the sky polygons
 seen from the view point) covers less than the frame. `shots.py` turns on
 `r_showcluster` and `compare.sh` warns about shots whose cluster is -1.
 
-GL1 now and then saves an all-black frame (about one shot in 40 in the
-milestone 6 runs, a different one every run): the back buffer Mesa hands
-out was never drawn, it seems. Once it saved the frame of the previous shot
-instead. Run the list again; `compare.sh` warns about all-black GL1
-frames. With several games running at once it happened more often and
-also gave frames with black areas, so run one game at a time. The Vulkan
-frames are the same either way.
+GL1 now and then saved an all-black frame (about one shot in 40 in the
+milestone 6 runs), which `compare.sh` warned about until GL1 was removed;
+the Vulkan frames never did.
 
 ### Comparing
 
@@ -775,8 +803,11 @@ They read `MOH_BASEPATH` (game data, default `~/Documents/moh`),
 `$MOH_HOMEPATH/compare`).
 
 ```sh
+cp build-vk/RelWithDebInfo/renderer_vulkan.so build-vk/RelWithDebInfo/renderer_base.so   # before the change
 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.txt
 WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.txt
+code/renderervk/tools/cmplists.sh /tmp/cmp base=base,new=vulkan code/renderervk/tools/views/*.txt
+code/renderervk/tools/glcheck.sh
 ```
 
 - `views/*.txt`: view lists (`map <name>`, or `spmap <name>` for a single
@@ -789,36 +820,49 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   `shot` after it. `mask` leaves a rectangle of the 640x480 UI screen out
   of a view's statistics, scaled to the frame size (`tgadiff.py
   --mask-res`), for what the UI animates with the wall clock.
-- `compare.sh`: writes the cfg (`shots.py`), runs it with GL1 and Vulkan
-  (`run.sh`), then prints per channel the max and mean absolute difference
-  and the number of differing pixels for every view (`tgadiff.py`), and
-  writes PNG copies and an amplified difference image (|a - b| x 8, equal
-  pixels as a dark copy) to `$MOH_OUT`. `WIDE=1` compares at 4160x240.
+- `compare.sh`: writes the cfg (`shots.py`), runs it with two builds,
+  `A` (the reference, default `base`: `renderer_base.so`, a copy of the
+  build before) and `B` (default `vulkan`), with the engine binaries
+  `A_BIN` and `B_BIN` of `MOH_BINDIR` (default `openmohaa`; a wrapper
+  script `exec <dir>/openmohaa "$@"` runs a build with its own cgame.so,
+  which is loaded from the binary's directory), through `run.sh`, then
+  prints per channel the max and mean absolute difference and the number of
+  differing pixels for every view (`tgadiff.py`), and writes PNG copies
+  (`<view>_a.png`, `<view>_b.png`) and an amplified difference image
+  (|a - b| x 8, equal pixels as a dark copy) to `$MOH_OUT`. `WIDE=1`
+  compares at 4160x240. Until 2026-10-23 it compared GL1 with Vulkan.
   `VAL=2` runs with synchronization validation; validation messages are
   printed. A `views/<list>.shader` next to the list is installed as
   `main/scripts/aaa_<list>.shader` during the runs: the shader file listed
   first wins, so it replaces shaders of the game data (see
   `mohdm1_texenv`, `obj_team3_deepbluesea`). It warns about shots taken
-  from outside the world and about all-black GL1 frames (see
-  Deterministic 3D views); `TIMEOUT` (seconds, default 180) is passed to
-  `run.sh` for the lists that wait long (`m1l1`, `m3l1a`).
+  from outside the world (see Deterministic 3D views); `TIMEOUT`
+  (seconds, default 180) is passed to `run.sh` for the lists that wait long
+  (`m1l1`, `m3l1a`).
+- `cmplists.sh <out> <variants> <list>...`: the same over many lists and
+  any number of builds (`name=renderer[=r_vkFallbacks[=binary]]`, the first
+  the reference), one `identical` or `DIFFERS` line per view and build in
+  `<out>/summary.txt`; what the sessions used for the "against the build
+  before" checks below.
+- `glcheck.sh [bin dir]`: no OpenGL in the source and the binaries (see
+  Implementation notes, No OpenGL).
 - `hotspots.py`: zoomed side-by-side crops of the areas that differ most.
-- `montage.py`: a grid of images, for example `gl | vk | diff` rows.
+- `montage.py`: a grid of images, for example `a | b | diff` rows.
 - `bspinfo.py`: worldspawn keys (fog, sun), spawn points, the number of LOD
   terrain patches and static models (the models whose path contains a
   keyword are listed with their origins), whether the `.dcl` decals load
   (keyword `decal` lists them) and the surfaces of the shaders whose name or
   script contains a keyword (`polygonoffset`, `alphafunc`, `nextbundle`,
   ...; terrain patches included), to pick views.
-- `perf.py`: frame time and renderer time of views with both renderers,
-  uncapped, in interleaved runs (see Performance), also of demos played
+- `perf.py`: frame time and renderer time of views with several builds
+  (copies of `renderer_vulkan.so`, `--renderers base,vulkan`), uncapped,
+  in interleaved runs (see Performance), also of demos played
   frame by frame (`demo` lines, `views/perf_demo.txt`) and with every
   frame kept (`--framelog`), at frame rate caps (`--caps`), and of other
   engine builds (`--binaries`); `rtimer/` builds the
   `renderer_timed.so` wrapper it uses, `libstacks.so`, a stack sampler
-  whose output `stacks.py` sums up, `libglts.so`, GPU timestamps of
-  GL1's frames (see Performance, GPU time at 3840x2160), and
-  `libinlat.so`, the time from each frame's input read to its present
+  whose output `stacks.py` sums up, and `libinlat.so`, the time from each
+  frame's input read to its present
   (see Performance, Frame limiter) and, with `INLAT_DISPLAY=1`, what the
   presentation engine, the compositor and the display did with it (see
   Performance, Present timing). With `r_vkSubmitThread 1` the present is
@@ -831,7 +875,8 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
 - `framelog.py`: frame time percentiles and the causes of the slow frames
   from the Vulkan renderer's frame log (`r_vkFrameLog`, `vkframelog`) or
   `renderer_timed.so`'s frame files, a `perf.py --framelog` directory as a
-  whole (GL1 against Vulkan frame by frame, an SVG of the distributions,
+  whole (the renderers against the first one by name frame by frame, an
+  SVG of the distributions,
   the input to present times of `libinlat.so`), the stack samples of
   the slow frames (see Performance, Frame spikes), and when each frame
   reached the display (`--display`, see Performance, Present timing).
@@ -842,16 +887,20 @@ WIDE=1 code/renderervk/tools/compare.sh code/renderervk/tools/views/mohdm5_fog.t
   milestone 6 table below, with that table's row next to them
   (`--readme README.md`).
 
-Changes that should not change the picture (the performance work of
-milestone 6) are best checked against the previous Vulkan build rather
-than GL1: copy the old `renderer_vulkan.so` to `renderer_<name>.so` in the
-binary directory, run the list with `run.sh <name> <list>` and compare
-its shots with `tgadiff.py`; the frames of a deterministic view are then
-identical to the bit, run after run. For an engine change, copy the old
-`openmohaa` under another name and run the list with `MOH_BIN=<name>
-run.sh vulkan <list>`.
+Changes that should not change the picture are checked against the
+previous build: copy the old `renderer_vulkan.so` to `renderer_<name>.so`
+in the binary directory and run the lists with `compare.sh` or
+`cmplists.sh` (or one list with `run.sh <name> <list>` and `tgadiff.py`);
+the frames of a deterministic view are then identical to the bit, run
+after run, but for the lists that differ between two runs of the same
+build (snow, smoke, AI and vehicles, some near-camera pixels; the checks
+below name them). For an engine
+change, copy the old `openmohaa` under another name (`MOH_BIN=<name>
+run.sh vulkan <list>`, or the binary field of `cmplists.sh`); for a
+cgame change, give the old build its own directory and a wrapper.
 
-With RADV and GL1 on radeonsi (same GPU) expect:
+What the comparisons with GL1 found (radeonsi against RADV on the same
+GPU, until 2026-10-23):
 
 - At 640x480 (`r_mode 3`) 1 to 8 % of the pixels differ by 1 and a few
   hundred alpha-tested pixels (foliage edges) flip. radeonsi rasterizes
@@ -1979,12 +2028,14 @@ Other things learned:
 
 ### Performance
 
-`tools/perf.py` measures views with both renderers (see its docstring):
+`tools/perf.py` measures views with several builds of the renderer (see its
+docstring; until 2026-10-23 its default was GL1 against Vulkan, as in most
+tables below):
 
 ```sh
-code/renderervk/tools/rtimer/build.sh      # renderer_timed.so, libstacks.so and libglts.so into build-vk
+code/renderervk/tools/rtimer/build.sh      # renderer_timed.so, libstacks.so and libinlat.so into build-vk
 code/renderervk/tools/perf.py --list code/renderervk/tools/views/perf.txt \
-    --sizes 640x480,1920x1080 --renderers opengl1,vulkan --runs 3 --json out.json
+    --sizes 640x480,1920x1080 --renderers base,vulkan --runs 3 --json out.json
 code/renderervk/tools/perf.py m6l1a 6152 -6528 5500 0 135 0 --runs 1 --stacks out
 code/renderervk/tools/stacks.py out_m6l1a_640x480_vulkan_1.txt --tree RB_RenderDrawSurfList --callers CM_BoxTrace
 ```
@@ -2535,8 +2586,8 @@ against 2.53, see the tables above), about 0.08 ms per frame, which
 turning content off didn't change (see Plan, Remaining, before this
 work). GL1 has no GPU timestamps, so `tools/rtimer/glts.c`
 (`libglts.so`, preloaded: `LD_PRELOAD=<bindir>/libglts.so
-GLTS_OUT=<file> perf.py ... --renderers opengl1,...`) writes GL
-timestamp queries right after each swap, before and after the first
+GLTS_OUT=<file> perf.py ... --renderers opengl1,...`; removed with GL1 on
+2026-10-23) wrote GL timestamp queries right after each swap, before and after the first
 depth clear of a frame (the 3D view's) and before the swap, and a
 temporary build of the Vulkan renderer wrote timestamps at the same
 points (bottom of the pipe, like GL's). Per frame, ms (medians of 2 or 3
@@ -5760,7 +5811,7 @@ The test applies to the final fragment alpha (after texture env, before fog).
 
 `GLS_CLAMP_EDGE`, `GLS_MULTITEXTURE` and `GLS_MULTITEXTURE_ENV` are never set
 by the current shader parser. `GLS_COLOR_NOMASK` (shader keyword
-`nocolorwrite`) is set but GL1 ignores it. Fog bits are handled by `GL_State`
+`nocolorwrite`) is set but GL1 ignores it. Fog bits are handled by `R_State`
 through `vk_set_fog*`.
 
 The framebuffer has no destination alpha, like the GL1 visual on Linux (SDL
@@ -5993,6 +6044,47 @@ selects the sample count (see Implementation notes).
 
 ## Implementation notes
 
+- **No OpenGL** (2026-10-23, the user's request: "strip all of OpenGL from
+  the code like we did for metal"). Deleted: upstream's GL1 and GL2
+  renderers (`code/renderergl1`, `code/renderergl2`, `renderer_opengl1`
+  was built and shipped as a fallback until then), `renderercommon/qgl.h`,
+  `sdl/sdl_glimp.c`, `cmake/renderer_gl1.cmake` and `renderer_gl2.cmake`,
+  the options `BUILD_RENDERER_GL1`, `BUILD_RENDERER_GL2` and
+  `USE_RENDERER_DLOPEN` (the renderer is always a library loaded at run
+  time: the tools load copies of other builds by name), the Emscripten
+  platform (WebGL only) and its `code/web` page, the macOS OpenGL framework
+  and the unused macOS CI workflow (a static GL1 build), `OPENGL_DRIVER_NAME`,
+  the unused `GLimp_*` declarations and SMP stubs, and the OpenGL code
+  that was never built: SDL2's vendored GL and GLES headers,
+  recastnavigation's demo, the GameSpy `gt2action` sample, the map
+  compiler's `gldraw.c`, and the tools' `libglts.so`. Renamed as on
+  `metal`: the state helpers (`GL_State` -> `R_State`, `GL_Bind`,
+  `GL_Cull`, `GL_TexEnv`, `GL_SelectTexture`, `GL_EnableTexture`,
+  `GL_TextureMode`, `GL_SetDefaultState`, `GL_SetFogColor`),
+  `gl_filter_min`/`max` -> `tex_filter_min`/`max`, `GLimp_SetGamma` ->
+  `VKimp_SetGamma`, and the comments and messages that named OpenGL
+  (the error without a Vulkan driver no longer suggests `cl_renderer
+  opengl1`, and `CL_InitRef` resets that value to `vulkan`). The window layer no longer calls the refimport hooks
+  `Sys_GLimpInit`/`Sys_GLimpSafeInit` (no-ops on Linux and Windows); they
+  stay in `refimport_t` so that the layout, and with it renderer copies of
+  older builds, still fit. `tools/glcheck.sh` runs the `metal` branch's
+  grep (`qgl|opengl|SDL_GL_|GL_[A-Z0-9_]+|glimp`, any case) over `code/`,
+  `cmake/`, `.github/`, `misc/` and `CMakeLists.txt`, Markdown files left
+  out, and prints whatever is not one of its documented exceptions:
+  SDL2's own API headers (vendored), comments of miniaudio and a Qt guard
+  of libjpeg, recastnavigation's own CI files, the shader script keywords
+  of the retail `.shader` files (`blendFunc GL_ONE GL_ZERO`), the cvar
+  values configs hold (`r_textureMode GL_LINEAR_MIPMAP_NEAREST`,
+  `r_drawBuffer GL_BACK`), GLSL's built-ins (`gl_Position`,
+  `gl_ClipDistance`, ...), false positives (`fontheader_sgl_t`,
+  `GL_USEANGLES`, `EV_UILGL_*`) and the two hooks above; then it checks
+  the binaries of a bin dir: no OpenGL renderer, no GL, GLX, EGL or GLES
+  library needed and no `gl*`, `glX*`, `egl*`, `wgl*` or `SDL_GL_*` import
+  (the build before: `renderer_opengl1.so` and its `SDL_GL_*` imports).
+  SDL2 itself, a library the game ships, still has its own OpenGL support,
+  which loads OpenGL only for a GL window; the game asks for a Vulkan one.
+  Frames: the same as 53d8f9d7 (but in the lists that differ between two
+  runs of one build).
 - **Loading.** `SDL_Vulkan_GetVkGetInstanceProcAddr` gives
   `vkGetInstanceProcAddr`; every other function is loaded into a `qvk*`
   pointer (lists in `vk_local.h`), device functions through
@@ -6706,7 +6798,7 @@ selects the sample count (see Implementation notes).
   order with the same pipeline and state give the same pixels (blending
   follows the order of the primitives within a draw); single-pass shaders
   only, so the state of each joined draw is what the first one's stage
-  iteration sets (`GL_State`, `GL_Cull` and `GL_Bind` change nothing the
+  iteration sets (`R_State`, `R_Cull` and `R_Bind` change nothing the
   second time). What draws the batch first: every path that runs the back
   end or records GPU work outside these draws goes through
   `R_IssuePendingRenderCommands` or `R_IssueRenderCommands` (`Set2DWindow`
@@ -6844,7 +6936,7 @@ selects the sample count (see Implementation notes).
   after cgame has registered the map's models, effects and HUD)
   `R_PrebuildPipelines` goes through every registered shader and works
   out the draws the stage iterators make with it, from its stages as they
-  pass them to `GL_State`, `GL_Cull`, `GL_TexEnv` and `GL_Bind` (the
+  pass them to `R_State`, `R_Cull`, `R_TexEnv` and `R_Bind` (the
   generic iterator stage by stage, the lightmapped multitexture and
   vertex-lit ones, the sky box, the projected dynamic light pass), and
   `vk_prebuild_pipeline` creates their pipelines. It builds the key with
@@ -6857,7 +6949,7 @@ selects the sample count (see Implementation notes).
   only the frame decides, every value it can take: where the shader is
   drawn (2D, where depth test is off for a stage without a second texture
   and the cull is the shader's or the none `Set2DWindow` sets behind
-  `GL_Cull`'s back, which a draw keeps until `GL_Cull` changes it; a 3D
+  `R_Cull`'s back, which a draw keeps until `R_Cull` changes it; a 3D
   view on the CPU, with colors per vertex, or the constant color of the
   stages `RB_StageConstantColor` takes and of the lightmapped multitexture
   iterator (Plan 32; in 2D too); the static geometry, with a
@@ -6865,7 +6957,7 @@ selects the sample count (see Implementation notes).
   geometry with the effects shader, for a stage it can draw: the shader's
   deforms, a bundle's `tcGen` or `tcMod`, `distFade`, a lit static model's
   `rgbGen`; skinned), the
-  fog (off, or the stage's `GLS_FOG_ENABLED`, since `GL_State` keeps the
+  fog (off, or the stage's `GLS_FOG_ENABLED`, since `R_State` keeps the
   previous fog when that bit doesn't change and `Set2DWindow` turns it
   off: both, the map's fog isn't known before its first frame), dynamic
   lights on a lightmap unit (and `r_dlightBacks 0`'s test when set), the
@@ -7185,7 +7277,7 @@ selects the sample count (see Implementation notes).
 ## GL1 quirks kept on purpose
 
 - `Set2DWindow`, the stencil shadow code and `RE_DrawBackground_TexSubImage`
-  change cull state behind `GL_Cull`'s cache, like GL1 did.
+  change cull state behind `R_Cull`'s cache, like GL1 did.
 - `R_DrawDebugLines` and `R_DebugGraphics` draw from the front end
   (`R_RenderView`), before the back end draws the view over them.
 - `RB_RenderFlare` doesn't set `tess.vertexColorValid` (see Flares).
@@ -7197,7 +7289,7 @@ selects the sample count (see Implementation notes).
   texture as with two passes.
 - `RE_StretchRaw` (cinematics) waits for the GPU before each frame
   (`vk_finish`), as GL1 called `glFinish`.
-- `GL_State` enables fog on any transition of the external `GLS_FOG` bit,
+- `R_State` enables fog on any transition of the external `GLS_FOG` bit,
   whatever the stage's `GLS_FOG_ENABLED` bit.
 - The `nofog` shader keyword sets `GLS_FOG` in the stage bits.
 

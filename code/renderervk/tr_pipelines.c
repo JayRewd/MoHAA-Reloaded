@@ -32,7 +32,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // so the same pipeline); a shader registered later (an effect or a sprite
 // announced in a match) gets its own when it is created. What a draw's key
 // holds comes from the shader's stages, as the iterators pass them to
-// GL_State, GL_Cull, GL_TexEnv and GL_Bind, and from what changes at run
+// R_State, R_Cull, R_TexEnv and R_Bind, and from what changes at run
 // time, for which the values that can occur are built:
 //  - where the shader is drawn: in 2D (RB_StretchPic: depth test off unless
 //    the stage has a second texture; the cull Set2DWindow leaves, none, or
@@ -43,7 +43,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    effects shader (deforms, tcGen and tcMod, distFade, static models'
 //    dynamic lights: tr_staticgeom.c), skinned (the vertex-lit iterator and
 //    the generic one's stages that R_SkinPasses takes, tr_skin.c);
-//  - fog: off, or the stage's GLS_FOG_ENABLED (GL_State keeps the fog of
+//  - fog: off, or the stage's GLS_FOG_ENABLED (R_State keeps the fog of
 //    the previous state when the bit doesn't change, and Set2DWindow turns
 //    it off behind its back, so a fogged stage can draw without it); the
 //    map's fog isn't known before its first frame, so both;
@@ -80,7 +80,7 @@ static int				r_prebuildSetupFogs;	// backEnd.setupFogs at the end of the regist
 ===============
 R_StateTexEnv
 
-The texture environment GL_State gives the current unit for these state bits
+The texture environment R_State gives the current unit for these state bits
 ===============
 */
 static texEnv_t R_StateTexEnv( unsigned long stateBits ) {
@@ -109,7 +109,7 @@ static cullFace_t R_ShaderCull( const shader_t *shader ) {
 R_PrebuildFog
 
 The draw without fog, and with it when the state's GLS_FOG_ENABLED asks for
-it: GL_State turns the fog on for such a state in a fogged view, off for
+it: R_State turns the fog on for such a state in a fogged view, off for
 the others, and keeps it when the bit doesn't change (Set2DWindow turns it
 off behind its back)
 ===============
@@ -302,7 +302,7 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 			}
 		}
 
-		// Set2DWindow sets no cull behind GL_Cull's back
+		// Set2DWindow sets no cull behind R_Cull's back
 		numCulls = place == PB_2D && R_ShaderCull( shader ) != CULL_NONE ? 2 : 1;
 		for ( cull = 0; cull < numCulls; cull++ ) {
 			ds.cull = cull ? CULL_NONE : R_ShaderCull( shader );
@@ -397,7 +397,7 @@ static int R_PrebuildDlightPass( const shader_t *shader ) {
 ===============
 R_PrebuildSkyBox
 
-RB_StageIteratorSky's outer box: GL_State( 0 ), immediate mode (a constant
+RB_StageIteratorSky's outer box: R_State( 0 ), immediate mode (a constant
 color), after whatever cull and fog the previous draw left
 ===============
 */
@@ -501,7 +501,7 @@ R_PrebuildImmediate
 What the back end draws in immediate mode whatever the shaders: the color
 clear drawn as a quad (VK_ClearColor: the 3D view of fogged maps, cleared to
 the fog color) and the UI's boxes (DrawBox, AddBox: no texture, a constant
-color, the cull of the draw before, the fog that GL_State turns off)
+color, the cull of the draw before, the fog that R_State turns off)
 ===============
 */
 static int R_PrebuildImmediate( void ) {

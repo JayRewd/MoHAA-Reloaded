@@ -56,8 +56,8 @@ layout(constant_id = 10) const bool DLIGHT_BACKS = false;
 // the fragment stage range of the push constants (vkPushConstants_t in vk.c)
 layout(push_constant) uniform PushConstants {
 	layout(offset = 96) vec4	fogColor;
-	// -1 / (end - start), end / (end - start), as Mesa's
-	// gl_MesaFogParamsOptimized
+	// -1 / (end - start), end / (end - start), as Mesa's optimized fog
+	// parameters
 	vec2	fogParams;
 	// the lights the draw adds: those of a mask over the 32 lights of
 	// dlights[] from dlightBase, or with DLIGHT_COUNT in dlightBase the

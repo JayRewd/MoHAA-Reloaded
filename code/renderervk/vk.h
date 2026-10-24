@@ -33,8 +33,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // pipelines (see README.md in this directory for the full contract).
 //
 // Conventions (inherited from the GL1 renderer):
-//  - matrices are 4x4, column-major; projection matrices produce OpenGL clip
-//    space (y up, z in [-w, w])
+//  - matrices are 4x4, column-major; projection matrices produce clip space
+//    with y up and z in [-w, w] (the backend remaps z, VK_ComputeMVP)
 //  - window coordinates (viewport, scissor, read pixels) are in pixels with
 //    the origin at the bottom-left corner of the window
 //  - texture data is uploaded top row first; t = 0 is the first row
@@ -59,8 +59,8 @@ void		VKimp_Shutdown( void );		// destroy the window
 void		VKimp_EndFrame( void );		// handle window changes (fullscreen toggle) after presenting
 
 // appended to the errors of a system without Vulkan (no loader, driver or
-// device, no window with a Vulkan surface): the OpenGL renderer may work there
-#define VK_OPENGL_HINT "; start the game with +set cl_renderer opengl1 to use OpenGL instead"
+// device, no window with a Vulkan surface)
+#define VK_DRIVER_HINT "; the game needs a graphics driver with Vulkan 1.1 or later"
 
 /*
 ====================================================================
@@ -154,7 +154,7 @@ void		vk_set_texture_filter( texFilter_t filter );
 RENDER STATE
 
 All setters only record state; it applies to subsequent draws and clears.
-GL_SetDefaultState() sets every piece of state once the backend is
+R_SetDefaultState() sets every piece of state once the backend is
 initialized, so the backend's own initial values do not matter.
 
 ====================================================================
@@ -210,7 +210,7 @@ void		vk_set_texenv( int tmu, texEnv_t env );
 
 void		vk_set_cull( cullFace_t face );
 void		vk_set_depth_range( float zNear, float zFar );
-// depth bias for filled polygons only (glPolygonOffset with GL_POLYGON_OFFSET_FILL)
+// depth bias for filled polygons only (not lines)
 void		vk_set_polygon_offset( qboolean enable, float factor, float units );
 void		vk_set_color_mask( qboolean red, qboolean green, qboolean blue, qboolean alpha );
 

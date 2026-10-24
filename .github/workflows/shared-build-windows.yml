@@ -213,8 +213,6 @@ jobs:
         -DSDL2_DIR='${{github.workspace}}/thirdparties/SDL2/install/cmake' `
         -DCURL_ROOT='${{github.workspace}}/thirdparties/curl/install' `
         -DFLEX_EXECUTABLE='${{github.workspace}}/thirdparties/winflexbison-install/win_flex.exe' `
-        -DUSE_RENDERER_DLOPEN=ON `
-        -DBUILD_RENDERER_GL2=OFF `
         -DBUILD_RENDERER_VULKAN=ON `
         -DVulkanHeaders_DIR='${{github.workspace}}/thirdparties/Vulkan-Headers/install/share/cmake/VulkanHeaders' `
         -DPRODUCT_VERSION_STAGE='${{ env.RELEASE_STAGE }}'".Replace("`r", "").Replace("`n", "") >> $env:GITHUB_ENV

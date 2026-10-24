@@ -1764,7 +1764,7 @@ static qboolean ParseStage(shaderStage_t* stage, char** text, qboolean picmip)
 	}
 
 	//
-	// implicitly assume that a GL_ONE GL_ZERO blend mask disables blending
+	// implicitly assume that a blendFunc of one and zero disables blending
 	//
 	if ( ( blendSrcBits == GLS_SRCBLEND_ONE ) && 
 		 ( blendDstBits == GLS_DSTBLEND_ZERO ) )

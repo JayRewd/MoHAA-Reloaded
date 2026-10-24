@@ -2696,7 +2696,7 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 		for ( i = 0; i < 4; i++ ) {
 			pc.fogColor[i] = Com_Clamp( 0.0f, 1.0f, vks.fogColor[i] );
 		}
-		// computed like Mesa's gl_MesaFogParamsOptimized, so the factor
+		// computed like Mesa's optimized fog parameters, so the factor
 		// matches GL1 on Mesa drivers to the bit
 		scale = ( vks.fogEnd == vks.fogStart ) ? 1.0f : -1.0f / ( vks.fogEnd - vks.fogStart );
 		pc.fogParams[0] = scale;
@@ -2766,7 +2766,7 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primT
 				}
 			}
 		} else if ( s->polygonOffset ) {
-			// GL_POLYGON_OFFSET_FILL: filled polygons only
+			// polygon offset for filled polygons only
 			bits |= VK_PIPE_DEPTHBIAS;
 		}
 	}

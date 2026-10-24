@@ -27,14 +27,14 @@ backEndState_t	backEnd;
 
 static float	s_flipMatrix[16] = {
 	// convert from our coordinate system (looking down X)
-	// to OpenGL's coordinate system (looking down -Z)
+	// to the eye space of the projection (looking down -Z)
 	0, 0, -1, 0,
 	-1, 0, 0, 0,
 	0, 1, 0, 0,
 	0, 0, 0, 1
 };
 
-void GL_SetFogColor(const vec4_t fColor) {
+void R_SetFogColor(const vec4_t fColor) {
 	glState.fFogColor[0] = fColor[0];
 	glState.fFogColor[1] = fColor[1];
 	glState.fFogColor[2] = fColor[2];
@@ -46,13 +46,13 @@ void GL_SetFogColor(const vec4_t fColor) {
 }
 
 /*
-** GL_Bind
+** R_Bind
 */
-void GL_Bind( image_t *image ) {
+void R_Bind( image_t *image ) {
 	image_t *bound;
 
 	if ( !image ) {
-		ri.Printf( PRINT_WARNING, "GL_Bind: NULL image\n" );
+		ri.Printf( PRINT_WARNING, "R_Bind: NULL image\n" );
 		bound = tr.defaultImage;
 	} else {
 		bound = image;
@@ -73,12 +73,12 @@ void GL_Bind( image_t *image ) {
 }
 
 /*
-** GL_SelectTexture
+** R_SelectTexture
 **
-** Selects the texture unit used by GL_Bind, GL_TexEnv, GL_EnableTexture
+** Selects the texture unit used by R_Bind, R_TexEnv, R_EnableTexture
 ** and the texture coordinate array functions
 */
-void GL_SelectTexture( int unit )
+void R_SelectTexture( int unit )
 {
 	if ( glState.currenttmu == unit )
 	{
@@ -86,26 +86,26 @@ void GL_SelectTexture( int unit )
 	}
 
 	if ( unit != 0 && unit != 1 ) {
-		ri.Error( ERR_DROP, "GL_SelectTexture: unit = %i", unit );
+		ri.Error( ERR_DROP, "R_SelectTexture: unit = %i", unit );
 	}
 
 	glState.currenttmu = unit;
 }
 
 /*
-** GL_EnableTexture
+** R_EnableTexture
 **
 ** Enables or disables texturing on the current texture unit
 */
-void GL_EnableTexture( qboolean enable ) {
+void R_EnableTexture( qboolean enable ) {
 	glState.texEnabled[glState.currenttmu] = enable;
 }
 
 
 /*
-** GL_Cull
+** R_Cull
 */
-void GL_Cull( int cullType ) {
+void R_Cull( int cullType ) {
 	if ( glState.faceCulling == cullType ) {
 		return;
 	}
@@ -144,9 +144,9 @@ void GL_Cull( int cullType ) {
 }
 
 /*
-** GL_TexEnv
+** R_TexEnv
 */
-void GL_TexEnv( int env )
+void R_TexEnv( int env )
 {
 	if ( env == glState.texEnv[glState.currenttmu] )
 	{
@@ -167,18 +167,18 @@ void GL_TexEnv( int env )
 		vk_set_texenv( glState.currenttmu, env );
 		break;
 	default:
-		ri.Error( ERR_DROP, "GL_TexEnv: invalid env '%d' passed\n", env );
+		ri.Error( ERR_DROP, "R_TexEnv: invalid env '%d' passed\n", env );
 		break;
 	}
 }
 
 /*
-** GL_State
+** R_State
 **
 ** This routine is responsible for setting the most commonly changed state
 ** in Q3.
 */
-void GL_State( unsigned long stateBits )
+void R_State( unsigned long stateBits )
 {
 	unsigned long diff = glState.glStateBits ^ (glState.externalSetState | stateBits);
 
@@ -197,16 +197,16 @@ void GL_State( unsigned long stateBits )
 	{
 		if (stateBits & GLS_MULTITEXTURE_ENV)
 		{
-			GL_TexEnv(TEXENV_COMBINE4);
+			R_TexEnv(TEXENV_COMBINE4);
 		}
 		else if (stateBits & GLS_MULTITEXTURE)
 		{
 			glState.cntTexEnvExt = GLS_MULTITEXTURE;
-			GL_TexEnv(TEXENV_COMBINE_INTERPOLATE);
+			R_TexEnv(TEXENV_COMBINE_INTERPOLATE);
 		}
 		else
 		{
-			GL_TexEnv(TEXENV_MODULATE);
+			R_TexEnv(TEXENV_MODULATE);
 		}
 	}
 	
@@ -558,7 +558,7 @@ void RB_BeginDrawingView (void) {
 	SetViewportAndScissor();
 
 	// ensures that depth writes are enabled for the depth clear
-	GL_State( GLS_DEFAULT );
+	R_State( GLS_DEFAULT );
 	// clear relevant buffers
 	clearBits = CLEAR_DEPTH;
 
@@ -992,7 +992,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 		ri.Error (ERR_DROP, "Draw_StretchRaw: size not a power of 2: %i by %i", cols, rows);
 	}
 
-	GL_Bind( tr.scratchImage );
+	R_Bind( tr.scratchImage );
 
 	// if the scratchImage isn't in the format we want, specify it as a new texture
 	R_UploadScratchImage( tr.scratchImage, cols, rows, data, qtrue );
@@ -1022,7 +1022,7 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 	// the open 2D batch is drawn with the contents it was made with
 	R_End2DBatch();
 
-	GL_Bind( &tr.scratchImage[client] );
+	R_Bind( &tr.scratchImage[client] );
 
 	// if the scratchImage isn't in the format we want, specify it as a new texture
 	R_UploadScratchImage( &tr.scratchImage[client], cols, rows, data, dirty );
@@ -1142,7 +1142,7 @@ void RB_SetupFog() {
         vFogColor[1] = backEnd.viewParms.farplane_color[1] * tr.identityLight;
         vFogColor[2] = backEnd.viewParms.farplane_color[2] * tr.identityLight;
         vFogColor[3] = 1.0;
-        GL_SetFogColor(vFogColor);
+        R_SetFogColor(vFogColor);
 
 		glState.externalSetState |= GLS_FOG;
 	}
@@ -1263,7 +1263,7 @@ void RB_ShowImages( qboolean quiet ) {
 			h *= image->uploadHeight / 512.0f;
 		}
 
-		GL_Bind( image );
+		R_Bind( image );
 		RB_ImmBegin (IMM_QUADS);
 		RB_ImmTexCoord2f( 0, 0 );
 		RB_ImmVertex2f( x, y );

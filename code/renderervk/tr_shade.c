@@ -73,7 +73,7 @@ static void R_BindAnimatedImage( textureBundle_t *bundle ) {
 	int index;
 
 	if (bundle->numImageAnimations <= 1) {
-		GL_Bind(bundle->image[0]);
+		R_Bind(bundle->image[0]);
 		return;
 	}
 
@@ -91,7 +91,7 @@ static void R_BindAnimatedImage( textureBundle_t *bundle ) {
 		index = bundle->numImageAnimations - 1;
 	}
 
-	GL_Bind(bundle->image[index]);
+	R_Bind(bundle->image[index]);
 }
 
 /*
@@ -102,13 +102,13 @@ Draws triangle outlines for debugging
 ================
 */
 static void DrawTris (shaderCommands_t *input, int flags) {
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	RB_SetColor3f (1,1,1);
 
 	if (flags == 1) {
-		GL_State(GLS_POLYMODE_LINE);
+		R_State(GLS_POLYMODE_LINE);
 	} else {
-        GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+        R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
         vk_set_depth_range(0, 0);
 	}
 
@@ -129,10 +129,10 @@ static void DrawTris (shaderCommands_t *input, int flags) {
         start[1] = start[0] = 0.0;
 		end[1] = end[0] = 0.0;
 
-        GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
+        R_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
         vk_set_depth_range(0, 0);
 
-        GL_EnableTexture(qfalse);
+        R_EnableTexture(qfalse);
         RB_ImmBegin(IMM_LINES);
 
         RB_SetColor4f(1.0, 0.0, 0.0, 1.0);
@@ -163,7 +163,7 @@ static void DrawTris (shaderCommands_t *input, int flags) {
         end[0] = end[0] - 5.0;
 
         RB_ImmEnd();
-        GL_EnableTexture(qtrue);
+        R_EnableTexture(qtrue);
         vk_set_depth_range(0.0, 1.0);
 
 	}
@@ -180,10 +180,10 @@ static void DrawNormals (shaderCommands_t *input) {
 	int		i;
 	vec3_t	temp;
 
-	GL_Bind( tr.whiteImage );
+	R_Bind( tr.whiteImage );
 	RB_SetColor3f (1,1,1);
 	vk_set_depth_range( 0, 0 );	// never occluded
-	GL_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE );
+	R_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE );
 
 	RB_ImmBegin (IMM_LINES);
 	for (i = 0 ; i < input->numVertexes ; i++) {
@@ -235,12 +235,12 @@ static void DrawMultitextured( shaderCommands_t *input, int stage, qboolean dire
 
 	pStage = tess.xstages[stage];
 
-	GL_State( pStage->stateBits );
+	R_State( pStage->stateBits );
 
 	//
 	// base
 	//
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 	if ( directTc ) {
 		RB_BindStageTexCoords( pStage, 0 );
 	} else {
@@ -254,16 +254,16 @@ static void DrawMultitextured( shaderCommands_t *input, int stage, qboolean dire
 	//
 	// lightmap/secondary pass
 	//
-	GL_SelectTexture( 1 );
-	GL_EnableTexture( qtrue );
+	R_SelectTexture( 1 );
+	R_EnableTexture( qtrue );
 	RB_EnableTexCoordArray( qtrue );
 
 	if ( r_lightmap->integer && pStage->bundle[1].isLightmap ) {
-		GL_TexEnv( TEXENV_REPLACE );
+		R_TexEnv( TEXENV_REPLACE );
 	} else {
 		// MOHAA 1.x had a GLS_MULTITEXTURE_ENV case before this one, using
 		// an interpolating combiner; removed in 2.0
-		GL_TexEnv( pStage->multitextureEnv );
+		R_TexEnv( pStage->multitextureEnv );
 	}
 
 	if ( directTc ) {
@@ -280,13 +280,13 @@ static void DrawMultitextured( shaderCommands_t *input, int stage, qboolean dire
 	R_DrawElements( input->numVertexes, input->numIndexes, input->indexes );
 	RB_LightmapDlights(-1);
 
-	GL_EnableTexture( qfalse );
+	R_EnableTexture( qfalse );
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0
 	//
 	RB_EnableTexCoordArray( qfalse );
 
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 }
 
 
@@ -528,14 +528,14 @@ static void ProjectDlightTexture( void ) {
 		RB_SetColorArray(colorArray[0]);
 		RB_SetTexCoordArray(texCoordsArray[0], 0);
 
-		GL_Bind( tr.dlightImage );
+		R_Bind( tr.dlightImage );
 		// include GLS_DEPTHFUNC_EQUAL so alpha tested surfaces don't add light
 		// where they aren't rendered
 		if ( dl->type & additive) {
-			GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+			R_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
 		}
 		else {
-			GL_State( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+			R_State( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
 		}
 		R_DrawElements( tess.numVertexes, numIndexes, hitIndexes );
 		backEnd.pc.c_totalIndexes += numIndexes;
@@ -1625,10 +1625,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		else
 		{
 			if (backEnd.in2D) {
-				GL_State(pStage->stateBits | GLS_DEPTHTEST_DISABLE);
+				R_State(pStage->stateBits | GLS_DEPTHTEST_DISABLE);
 			}
 			else {
-				GL_State(pStage->stateBits);
+				R_State(pStage->stateBits);
 			}
 
 			if (directTc)
@@ -1645,7 +1645,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			//
 			if (pStage->bundle[0].vertexLightmap && r_vertexLight->integer && r_lightmap->integer)
 			{
-				GL_Bind(tr.whiteImage);
+				R_Bind(tr.whiteImage);
 			}
 			else {
 				R_BindAnimatedImage(&pStage->bundle[0]);
@@ -1692,7 +1692,7 @@ void RB_StageIteratorGeneric( void )
 	//
 	// set face culling appropriately
 	//
-	GL_Cull( input->shader->cullType );
+	R_Cull( input->shader->cullType );
 
 	// set polygon offset if necessary
 	if ( input->shader->polygonOffset )
@@ -1805,7 +1805,7 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	//
 	// set face culling appropriately
 	//
-	GL_Cull( input->shader->cullType );
+	R_Cull( input->shader->cullType );
 
 	//
 	// set arrays
@@ -1821,7 +1821,7 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	// call special shade routine
 	//
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
-	GL_State( tess.xstages[0]->stateBits );
+	R_State( tess.xstages[0]->stateBits );
 	R_DrawElements( input->numVertexes, input->numIndexes, input->indexes );
 
 	// 
@@ -1842,12 +1842,12 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	//
 	// set face culling appropriately
 	//
-	GL_Cull( input->shader->cullType );
+	R_Cull( input->shader->cullType );
 
 	//
 	// set color and pointers
 	//
-	GL_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
+	R_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
 	RB_SetTessVertexArray();
 
 	// white: the constant color (tr_pipelines.c predicts it), not an array
@@ -1857,7 +1857,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	//
 	// select base stage
 	//
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 
 	RB_EnableTexCoordArray( qtrue );
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
@@ -1866,12 +1866,12 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	//
 	// configure second stage
 	//
-	GL_SelectTexture( 1 );
-	GL_EnableTexture( qtrue );
+	R_SelectTexture( 1 );
+	R_EnableTexture( qtrue );
 	if ( r_lightmap->integer ) {
-		GL_TexEnv( TEXENV_REPLACE );
+		R_TexEnv( TEXENV_REPLACE );
 	} else {
-		GL_TexEnv( TEXENV_MODULATE );
+		R_TexEnv( TEXENV_MODULATE );
 	}
 	R_BindAnimatedImage(&tess.xstages[0]->bundle[1]);
 	if (tess.xstages[0]->bundle[1].isLightmap) {
@@ -1886,12 +1886,12 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0
 	//
-	GL_EnableTexture( qfalse );
+	R_EnableTexture( qfalse );
 	RB_EnableTexCoordArray( qfalse );
 
-	GL_SelectTexture( 0 );
+	R_SelectTexture( 0 );
 #ifdef REPLACE_MODE
-	GL_TexEnv( TEXENV_MODULATE );
+	R_TexEnv( TEXENV_MODULATE );
 #endif
 
 	// 

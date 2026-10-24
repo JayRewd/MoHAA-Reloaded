@@ -38,7 +38,7 @@
  * the renderer was loaded. Unlike com_speeds (whole milliseconds, read
  * right after the frame limiter's millisecond tick, and bk only counts the
  * last batch of commands of a frame) it is exact and complete, and it
- * measures GL1 and Vulkan the same way. tools/perf.py uses it when
+ * measures every renderer build the same way. tools/perf.py uses it when
  * renderer_timed.so is in MOH_BINDIR; build it with tools/rtimer/build.sh.
  */
 

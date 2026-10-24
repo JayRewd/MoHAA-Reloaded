@@ -258,6 +258,7 @@ typedef struct {
 
 	// system stuff
 	void	(*Sys_SetEnv)( const char *name, const char *value );
+	// no-ops that nothing calls any more, kept for the layout of refimport_t
 	void	(*Sys_GLimpSafeInit)( void );
 	void	(*Sys_GLimpInit)( void );
 	qboolean (*Sys_LowPhysicalMemory)( void );

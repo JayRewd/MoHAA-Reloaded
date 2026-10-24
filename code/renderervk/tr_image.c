@@ -43,8 +43,8 @@ static void LoadJPG( const char *name, byte **pic, int *width, int *height );
 static byte			 s_intensitytable[256];
 static unsigned char s_gammatable[256];
 
-int		gl_filter_min = TEXFILTER_LINEAR_MIPMAP_NEAREST;
-int		gl_filter_max = TEXFILTER_LINEAR;
+int		tex_filter_min = TEXFILTER_LINEAR_MIPMAP_NEAREST;
+int		tex_filter_max = TEXFILTER_LINEAR;
 
 #define FILE_HASH_SIZE		1024
 static	image_t*		hashTable[FILE_HASH_SIZE];
@@ -102,10 +102,10 @@ static long generateHashValue( const char *fname ) {
 
 /*
 ===============
-GL_TextureMode
+R_TextureMode
 ===============
 */
-void GL_TextureMode( const char *string ) {
+void R_TextureMode( const char *string ) {
 	int		i;
 
 	for ( i=0 ; i< 6 ; i++ ) {
@@ -127,11 +127,11 @@ void GL_TextureMode( const char *string ) {
 		return;
 	}
 
-	gl_filter_min = modes[i].minimize;
-	gl_filter_max = modes[i].maximize;
+	tex_filter_min = modes[i].minimize;
+	tex_filter_max = modes[i].maximize;
 
 	// applies to all the existing mipmap textures
-	vk_set_texture_filter( gl_filter_min );
+	vk_set_texture_filter( tex_filter_min );
 }
 
 /*
@@ -774,7 +774,7 @@ static void UploadCompressed(
 
 	*pBytesUsed = 0;
 
-	// GL_TextureMode gives every image with numMipmaps set a mipmap filter;
+	// R_TextureMode gives every image with numMipmaps set a mipmap filter;
 	// without it only the first level is sampled
 	if (numMipmaps) {
 		int mipLevels;
@@ -2827,7 +2827,7 @@ void R_SetColorMappings( void ) {
 
 	if ( glConfig.deviceSupportsGamma )
 	{
-		GLimp_SetGamma( s_gammatable, s_gammatable, s_gammatable );
+		VKimp_SetGamma( s_gammatable, s_gammatable, s_gammatable );
 	}
 }
 

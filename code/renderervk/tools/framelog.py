@@ -5,11 +5,12 @@
   framelog.py --worst N FILE...   also the N slowest frames of each, with their parts and events
   framelog.py --batch DIR         a tools/perf.py --framelog directory: per view, size
                                   and renderer the medians over the runs, the causes
-                                  of the slow frames, and Vulkan against GL1 frame
-                                  by frame (demo views show the same frames in every run)
+                                  of the slow frames, and the renderers against the
+                                  first one (by name) frame by frame (demo views show
+                                  the same frames in every run)
   framelog.py --svg OUT.svg ...   with --batch: frame time percentile curves and the
                                   frame times of the first run of each view and size
-                                  (--labels opengl1=GL1,vulkan=Vulkan,...: the renderers
+                                  (--labels base=Before,vulkan=After,...: the renderers
                                   drawn, their names and the order of the colors)
   framelog.py --display DIR       when each frame reached the display: a perf.py --framelog
                                   directory of runs with libinlat.so and INLAT_DISPLAY=1
@@ -107,8 +108,6 @@ class Log:
                         self.kind = "vk"
                     elif "rtimer frames" in line and self.kind is None:
                         self.kind = "rt"
-                    elif "glts frames" in line and self.kind is None:
-                        self.kind = "gl"
                     elif "inlat frames" in line and self.kind is None:
                         self.kind = "in"
                     m = re.match(r"# columns[^:]*: (.*)", line)
@@ -129,7 +128,7 @@ class Log:
             m = re.match(r"clock ([\d.]+):", h)
             if m:
                 self.clock = float(m.group(1))
-        if self.kind in ("gl", "in"):
+        if self.kind == "in":
             return
         self.interval = self.cols["interval"]
         if self.kind == "vk":
@@ -332,7 +331,7 @@ def summary(log, worst=0, above=None):
 
 # --batch
 
-NAME = re.compile(r"(.+)_(\d+x\d+)_(.+)_(\d+)\.(rt|vk|gl|in|pt)\.txt$")
+NAME = re.compile(r"(.+)_(\d+x\d+)_(.+)_(\d+)\.(rt|vk|in|pt)\.txt$")
 
 
 def inlat_window(inl, rt):
@@ -341,15 +340,6 @@ def inlat_window(inl, rt):
     t0 = rt.clock * 1000 + rt.cols["start"][0]
     t1 = rt.clock * 1000 + rt.cols["start"][-1] + rt.interval[-1]
     return [(r, p) for r, p in zip(inl.cols["read"], inl.cols["present"]) if t0 <= p < t1]
-
-
-def gl_window(gl, rt):
-    """the GPU periods (libglts.so) of the frames renderer_timed.so measured:
-    all frames since startup are in the file, the measured ones are the last
-    but 6 (perf.py's `wait 100` before quit); rt lost its last frame"""
-    n = rt.n + 1
-    rows = range(max(gl.n - 6 - n, 0), max(gl.n - 6, 0))
-    return [gl.cols["period"][i] for i in rows], [gl.cols["pre"][i] + gl.cols["clear"][i] + gl.cols["draw"][i] for i in rows]
 
 
 def batch(directory, above=None, svg=None, worst=0, labels=None):
@@ -401,13 +391,8 @@ def batch(directory, above=None, svg=None, worst=0, labels=None):
                         for i in sorted(range(log.n), key=lambda i: -log.interval[i])[:worst]:
                             print("      " + frame_text(log, i))
             for run, r in sorted(byrun.items()):
-                if "rt" in r and "vk" not in r and renderer.startswith("opengl"):
+                if "rt" in r and "vk" not in r:
                     print(f"  {renderer} run {run}:")
-                    if "gl" in r:
-                        period, draw = gl_window(r["gl"], r["rt"])
-                        if len(period) > 1:
-                            print("    GPU frame to frame ms (libglts): " + dist_line(dist(period)))
-                            print("    GPU after swap to before swap ms:" + dist_line(dist(draw)))
                     print(causes_text(r["rt"], slow_frames(r["rt"], above), "    "), end="")
         content_and_noise(rs, worst)
         compare_renderers(rs, above)
@@ -552,10 +537,11 @@ def repeatability(rs, above, limit_ms=None):
 
 def compare_renderers(rs, above):
     """demo views: the same frame index is the same moment in every run (up
-    to a shift of a frame or so between renderers, see best_shift), so GL1's
-    and Vulkan's frames can be compared one to one"""
-    gl = [r for r in rs if r.startswith("opengl")]
-    if not gl:
+    to a shift of a frame or so between renderers, see best_shift), so the
+    frames of each renderer can be compared one to one with those of the
+    first one by name (gl: that reference)"""
+    gl = sorted(rs)[:1]
+    if not gl or len(rs) < 2:
         return
     for renderer, byrun in rs.items():
         if renderer in gl:
@@ -572,7 +558,7 @@ def compare_renderers(rs, above):
             both = sum(1 for i in slow if 0 <= i + s < g.n and g.interval[i + s] > glimit)
             worse = sorted(idx, key=lambda i: g.interval[i + s] - v.interval[i])[:6]
             print(f"  {renderer} run {run} against {gl[0]} run {run} (its frame i is {gl[0]}'s i{s:+d}): of its {len(slow)}"
-                  f" slow frames, {both} are slow in {gl[0]} too; largest differences (ms, vk - gl):")
+                  f" slow frames, {both} are slow in {gl[0]} too; largest differences (ms, this - {gl[0]}):")
             for i in worse:
                 vkl = r.get("vk")
                 ev = (", " + ", ".join(vkl.events(i))) if vkl and i < vkl.n and vkl.events(i) else ""
@@ -595,7 +581,7 @@ def write_svg(path, runs, labels=None):
     panels = sorted(runs.items(), key=lambda x: (x[0][0], int(x[0][1].split("x")[0])))
     present = {r for _, rs in panels for r in rs}
     # with labels only those, in their order
-    renderers = [r for r in labels if r in present] if labels else sorted(present, key=lambda r: (not r.startswith("opengl"), r))
+    renderers = [r for r in labels if r in present] if labels else sorted(present)
     name = lambda r: labels.get(r, r)
     slot = {r: i % len(PALETTE) for i, r in enumerate(renderers)}
     W, PH = 1000, 230

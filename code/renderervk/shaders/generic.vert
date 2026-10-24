@@ -78,8 +78,8 @@ void main() {
 	pos = fma( pc.mvp[2], vec4( in_position.z ), pos );
 	gl_Position = pos + pc.mvp[3];
 
-	// fog coordinate of Mesa's fixed-function vertex program in the default
-	// GL_EYE_PLANE_ABSOLUTE_NV mode: the z of modelview * position, computed
+	// fog coordinate of Mesa's fixed-function vertex program in its default
+	// mode (eye plane, absolute): the z of modelview * position, computed
 	// with the same operations as the position
 	float eyeZ = pc.eyeZ.x * in_position.x;
 	eyeZ = fma( pc.eyeZ.y, in_position.y, eyeZ );

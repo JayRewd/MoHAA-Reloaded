@@ -545,14 +545,14 @@ void RE_DrawBackground_TexSubImage(int cols, int rows, int bgr, byte* data) {
 		rgba[i * 4 + 3] = 255;
 	}
 
-	GL_Bind(tr.scratchImage);
+	R_Bind(tr.scratchImage);
 	R_UploadScratchImage(tr.scratchImage, cols, rows, rgba, qtrue);
 	ri.Hunk_FreeTempMemory(rgba);
 
 	// bypasses the tracked state, like the original
 	vk_set_cull(CULL_NONE);
 	vk_set_state(glState.glStateBits | GLS_DEPTHTEST_DISABLE);
-	GL_EnableTexture(qtrue);
+	R_EnableTexture(qtrue);
 
 	RB_ImmBegin(IMM_QUADS);
 
@@ -591,8 +591,8 @@ void AddBox(float x, float y, float w, float h) {
 	R_IssuePendingRenderCommands();
 
 	RB_SetColor4ubv(backEnd.color2D);
-	GL_EnableTexture(qfalse);
-	GL_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
+	R_EnableTexture(qfalse);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
 
 	RB_ImmBegin(IMM_QUADS);
 
@@ -603,7 +603,7 @@ void AddBox(float x, float y, float w, float h) {
 
 	RB_ImmEnd();
 
-	GL_EnableTexture(qtrue);
+	R_EnableTexture(qtrue);
 }
 
 /*
@@ -615,8 +615,8 @@ void DrawBox(float x, float y, float w, float h) {
 	R_IssuePendingRenderCommands();
 
 	RB_SetColor4ubv(backEnd.color2D);
-	GL_EnableTexture(qfalse);
-	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
+	R_EnableTexture(qfalse);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
 
 	// with alpha 0 the box blends to what is there (the UI's widgets draw
 	// their backgrounds and borders this way, most of them transparent: 37 of
@@ -632,7 +632,7 @@ void DrawBox(float x, float y, float w, float h) {
 		RB_ImmEnd();
 	}
 
-	GL_EnableTexture(qtrue);
+	R_EnableTexture(qtrue);
 }
 
 /*
@@ -645,7 +645,7 @@ void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipp
 
 	R_IssuePendingRenderCommands();
 
-	GL_EnableTexture(qfalse);
+	R_EnableTexture(qfalse);
 
 	if (stipple_factor) {
 		vk_set_line_stipple(stipple_factor, stipple_mask);
@@ -659,7 +659,7 @@ void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipp
 
 	RB_ImmEnd();
 
-	GL_EnableTexture(qtrue);
+	R_EnableTexture(qtrue);
 
 	if (stipple_factor) {
 		vk_set_line_stipple(0, 0xFFFF);
@@ -682,12 +682,12 @@ void Set2DWindow(int x, int y, int w, int h, float left, float right, float bott
 
 	RB_LoadIdentity(matrix);
 	RB_SetModelview(matrix);
-	GL_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
+	R_State(GLS_DEPTHTEST_DISABLE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_SRCBLEND_SRC_ALPHA);
 	vk_set_cull(CULL_NONE);
 	vk_set_clip_plane(NULL);
 	// Make sure to disable the fog to avoid messing up with the UI
 	vk_set_fog(qfalse);
-	// GL_State can enable it again for 2D stages; with a start of 0 the
+	// R_State can enable it again for 2D stages; with a start of 0 the
 	// fog has no effect at the 2D depth
 	RB_SetFogRange(0, glState.fogEnd);
 

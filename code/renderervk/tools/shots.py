@@ -24,9 +24,8 @@ frame advances the game by 16 ms whatever the real frame time, and `wait`
 counts game milliseconds, so every run reaches each screenshot after the
 same number of frames at the same game time (sway, animated shaders, sky,
 camera). The pause matters too: the screenshot command reads the frame
-before it is drawn, which is the last presented frame with Vulkan but an
-older one with GL (Mesa hands out a back buffer from 2 or 3 swaps ago);
-while paused all frames are the same.
+before it is drawn, the last presented one; while paused all frames are
+the same.
 
 A menu shot pushes the menu (`pushmenu <menu>`; none, or `-`, for the
 screen as it is), waits 1 s (or [wait] milliseconds), takes the
@@ -40,8 +39,8 @@ r_showcluster 1 prints the view cluster whenever it changes and every shot
 is announced with `echo shot <name>`, so compare.sh can warn about shots
 taken from outside the world (cluster -1): there, parts of the frame are
 covered by no surface and keep whatever the buffer held before (the
-previous frame with Vulkan, an older back buffer with GL1), so they differ
-between the renderers without meaning anything.
+previous frame), so they differ between builds and runs without meaning
+anything.
 
 The script goes to $MOH_HOMEPATH/main/<cfg name>.cfg (default homepath
 /tmp/moh-vktest, default cfg name: the list file name without extension).

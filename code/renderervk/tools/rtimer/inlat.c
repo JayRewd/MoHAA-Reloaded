@@ -2,13 +2,13 @@
  * libinlat.so -- the time from input read to present of every frame, and
  * optionally what the presentation engine and the display did with it
  *
- * Preloaded (LD_PRELOAD) into the game, with either renderer and any
- * engine build. A frame reads input at its start (Com_Frame: the frame
- * limiter's wait, then IN_Frame, whose SDL_PollEvent loop takes the window
- * system's events) and reaches the display at its present: GL1's
- * SDL_GL_SwapWindow, or the Vulkan renderer's vkQueuePresentKHR (its entry
- * point comes from SDL_Vulkan_GetVkGetInstanceProcAddr, then
- * vkGetDeviceProcAddr, both wrapped here). For every present it records
+ * Preloaded (LD_PRELOAD) into the game, with any renderer and engine
+ * build. A frame reads input at its start (Com_Frame: the frame limiter's
+ * wait, then IN_Frame, whose SDL_PollEvent loop takes the window system's
+ * events) and reaches the display at its present: the Vulkan renderer's
+ * vkQueuePresentKHR (its entry point comes from
+ * SDL_Vulkan_GetVkGetInstanceProcAddr, then vkGetDeviceProcAddr, both
+ * wrapped here). For every present it records
  * the time of the first SDL_PollEvent call since the previous present (the
  * frame's input read; 0 when there was none, as in loading screens) and of
  * the present call, with CLOCK_MONOTONIC (the clock of renderer_timed.so's
@@ -785,7 +785,7 @@ static VkResult VKAPI_CALL IN_QueuePresent( VkQueue queue, const VkPresentInfoKH
 
 /*
 ------------------------------------------------------------------------------
-X11: the Present events of Mesa's WSI (and of GL1's GLX)
+X11: the Present events of Mesa's WSI
 ------------------------------------------------------------------------------
 */
 
@@ -1141,19 +1141,6 @@ void *SDL_CreateWindow( const char *title, int x, int y, int w, int h, uint32_t 
 	}
 	in_window = real( title, x, y, w, h, flags );
 	return in_window;
-}
-
-void SDL_GL_SwapWindow( void *window ) {
-	static void ( *real )( void * );
-
-	if ( !real ) {
-		real = (void ( * )( void * ))dlsym( RTLD_NEXT, "SDL_GL_SwapWindow" );
-	}
-	IN_Present();
-	if ( IN_Display() ) {
-		IN_StartDisplay();
-	}
-	real( window );
 }
 
 static voidFunc_t IN_WrapDeviceFunction( const char *name, voidFunc_t f ) {

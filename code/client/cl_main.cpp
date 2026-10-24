@@ -3201,11 +3201,15 @@ void CL_InitRef( void ) {
 #define RENDERER_ARCH_DLL_EXT DLL_SUFFIX DLL_EXT
 
 #ifdef USE_RENDERER_DLOPEN
-#ifdef DEFAULT_RENDERER_VULKAN
+	// renderer_vulkan, the only renderer; another name loads renderer_<name>
+	// (a test copy), and a name without a library falls back to vulkan.
+	// Upstream's OpenGL renderers are gone: an old config's opengl1 is reset,
+	// also where an earlier install left its library in the game folder
 	cl_renderer = Cvar_Get("cl_renderer", "vulkan", CVAR_ARCHIVE | CVAR_LATCH);
-#else
-	cl_renderer = Cvar_Get("cl_renderer", "opengl1", CVAR_ARCHIVE | CVAR_LATCH);
-#endif
+	if (!Q_stricmpn(cl_renderer->string, "opengl", 6)) {
+		Com_Printf("cl_renderer %s: no OpenGL renderer any more, using vulkan\n", cl_renderer->string);
+		Cvar_ForceReset("cl_renderer");
+	}
 
 	Com_sprintf(dllName, sizeof(dllName), "renderer_%s" RENDERER_ARCH_DLL_EXT, cl_renderer->string);
 

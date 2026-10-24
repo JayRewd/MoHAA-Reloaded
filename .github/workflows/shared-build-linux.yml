@@ -209,8 +209,6 @@ jobs:
         -DUSE_INTERNAL_SDL=OFF \
         -DSDL2_DIR='${{github.workspace}}/thirdparties/SDL2/install/lib/cmake/SDL2' \
         -DCURL_ROOT='${{github.workspace}}/thirdparties/curl/install' \
-        -DUSE_RENDERER_DLOPEN=ON \
-        -DBUILD_RENDERER_GL2=OFF \
         -DBUILD_RENDERER_VULKAN=ON \
         -DVulkanHeaders_DIR='${{github.workspace}}/thirdparties/Vulkan-Headers/install/share/cmake/VulkanHeaders' \
         -DGIT_REVISION_BUILD_NUMBER=${{ github.run_number }} \

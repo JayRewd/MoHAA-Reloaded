@@ -11,7 +11,7 @@ About 30 minutes. Sound can stay on.
 1. Build: the `out-windows-x64` artifact of the commit to test (GitHub,
    pstngh/openmohaa-vulkan, Actions, the "Builds" run of that commit;
    kept 3 days). Unzip it into a new folder: `openmohaa.exe`,
-   `renderer_vulkan.dll`, `renderer_opengl1.dll`, `game.dll`, `cgame.dll`...
+   `renderer_vulkan.dll`, `game.dll`, `cgame.dll`...
 2. Game data: the folder of a Medal of Honor: Allied Assault install, the
    one that contains `main\Pak0.pk3` (below `C:\MOHAA`).
 3. The game writes to `%APPDATA%\openmohaa\main` (paste that into the
@@ -108,10 +108,7 @@ overwrites it). The console opens with the key below Esc.
    `lim_*.txt` files of the first run before, e.g. to `lim_*_off.txt`).
    Look at the Task Manager's CPU column for openmohaa meanwhile if you
    can (one core busy is expected at 250 and uncapped).
-3. **GL1 for comparison** (`gl1.log`): run 1 again with
-   `+set cl_renderer opengl1` instead of the extras (the `vkinfo` lines
-   then say "unknown command"; that's fine).
-4. Optional, with the LunarG Vulkan SDK installed: run 1 with
+3. Optional, with the LunarG Vulkan SDK installed: run 1 with
    `+set r_vkValidation 2` (`life_val.log`, slower).
 
 ## What to look for
