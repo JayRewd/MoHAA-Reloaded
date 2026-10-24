@@ -122,8 +122,7 @@ typedef struct {
 
 	int			parseEntitiesNum;	// index (not anded off) into cl_parse_entities[]
 
-	int			mouseDx[2], mouseDy[2];	// added to by mouse events
-	int			mouseIndex;
+	int			mouseDx, mouseDy;	// added to by mouse events, taken by the next look (CL_MouseLook)
 
 	// what the mouse look of each frame leaves for the next usercmd
 	// (commands come at cl_movefps, see CL_ApplyLook)
@@ -461,7 +460,6 @@ extern	cvar_t	*m_pitch;
 extern	cvar_t	*m_yaw;
 extern	cvar_t	*m_forward;
 extern	cvar_t	*m_side;
-extern	cvar_t	*m_filter;
 
 extern	cvar_t	*j_pitch;
 extern	cvar_t	*j_yaw;

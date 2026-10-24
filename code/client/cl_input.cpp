@@ -455,8 +455,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 	}
 	else if ( !paused->integer )
 	{
-		cl.mouseDx[cl.mouseIndex] += dx;
-		cl.mouseDy[cl.mouseIndex] += dy;
+		cl.mouseDx += dx;
+		cl.mouseDy += dy;
 	}
 }
 
@@ -580,21 +580,12 @@ static void CL_MouseLook( void ) {
 	float	mx, my;
 	float	cgameSensitivity;
 
-	// allow mouse smoothing
-	if (m_filter->integer)
-	{
-		mx = (cl.mouseDx[0] + cl.mouseDx[1]) * 0.5f;
-		my = (cl.mouseDy[0] + cl.mouseDy[1]) * 0.5f;
-	}
-	else
-	{
-		mx = cl.mouseDx[cl.mouseIndex];
-		my = cl.mouseDy[cl.mouseIndex];
-	}
-
-	cl.mouseIndex ^= 1;
-	cl.mouseDx[cl.mouseIndex] = 0;
-	cl.mouseDy[cl.mouseIndex] = 0;
+	// the movement since the last frame, unfiltered (no m_filter: averaging
+	// with the frame before showed half of every movement a frame later)
+	mx = cl.mouseDx;
+	my = cl.mouseDy;
+	cl.mouseDx = 0;
+	cl.mouseDy = 0;
 
     if (mx == 0.0f && my == 0.0f)
         return;

@@ -460,13 +460,14 @@ below are done.
 - defaults (2026-10-23, the engine and `renderer_vulkan`, as on the `metal`
   branch): `com_maxfps` 125 (upstream's 85), `cl_maxpackets` 125 (30: every
   command in its own packet), `m_filter` 0 on every platform (upstream's is
-  1 on macOS), `ui_console` 1 (0; the console opens at startup only in
-  developer mode now), `cl_playintro` 0 (1), and in `renderer_vulkan`
-  `r_uselod` 0 (1: soldiers and weapons at full detail at any distance).
-  `run.sh` and `perf.py` set `r_uselod 1`, so the numbers in this file
-  (GL1's included) stay comparable; with the tools' settings the frames of
-  `menus`, `hud`, `mp_mohdm1` and `dm/mohdm1` are the same as before but
-  the Advanced menu's ticked Console box
+  1 on macOS; removed later that day, see below), `ui_console` 1 (0; the
+  console opens at startup only in developer mode now), `cl_playintro` 0
+  (1), and in `renderer_vulkan` `r_uselod` 0 (1: soldiers and weapons at
+  full detail at any distance). `run.sh` and `perf.py` set `r_uselod 1`, so
+  the numbers in this file (GL1's included) stay comparable; with the
+  tools' settings the frames of `menus`, `hud`, `mp_mohdm1` and
+  `dm/mohdm1` are the same as before but the Advanced menu's ticked
+  Console box
 - no OpenGL (2026-10-23, the user's request, as on the `metal` branch):
   upstream's GL1 and GL2 renderers, `qgl.h`, `sdl_glimp.c`, the GL build
   options, the WebGL (Emscripten) platform and the OpenGL code that was
@@ -482,6 +483,9 @@ below are done.
 - `cl_movefps` (2026-10-23): the command rate's cvar (`cl_cmdfps` until
   then) has the `metal` branch's name, with the same behavior here (85 to
   125, default 100, always on; see Performance, Command rate)
+- `m_filter` (2026-10-23): removed, as the user asked; the mouse movement
+  of each frame is used as it comes (what `m_filter 0` did), and a config
+  or the Controls menu's box that sets `m_filter 1` changes nothing
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL2, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -541,7 +545,8 @@ renderer) and the Windows installer
 (`misc/setup/windows/app/Package.wxs` lists `renderer_vulkan.dll`; CI no
 longer builds it), and the client's `cl_renderer` (`vulkan`, the only
 renderer: `code/client/cl_main.cpp`), and the removal of OpenGL (see
-Implementation notes, No OpenGL), and the frame limiter
+Implementation notes, No OpenGL), and `m_filter`'s removal
+(`code/client/cl_input.cpp`, `cl_main.cpp`, `client.h`), and the frame limiter
 (`Com_Frame` and `Com_FrameWait` in `code/qcommon/common.c`,
 `Sys_Microseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
 the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`

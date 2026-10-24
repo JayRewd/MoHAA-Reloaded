@@ -59,7 +59,6 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling (latched). |
 | `s_speaker_type` | `0` | `1` is **headphones** (HRTF, mixed at 48 kHz): sounds behind, above or below you sound there. Set it at launch. |
 | `cl_maxpackets` | `125` (upstream `30`) | Every command in its own packet. |
-| `m_filter` | `0` (upstream `1` on macOS) | `1` averages each frame's mouse movement with the frame before's: half of every movement shows a frame later. |
 | `r_uselod` | `0` (upstream `1`) | `0`: soldiers and weapons at full detail at any distance. Not saved in configs: set it at launch or in `autoexec.cfg`. |
 | `ui_console` | `1` (upstream `0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (upstream `1`) | `1` plays the intro videos at startup. |
