@@ -10,6 +10,7 @@ void GServerListSchedulerInit(GServerListScheduler *scheduler)
 	scheduler->nextRetry  = 0;
 }
 
+// index of the next server to query for the first time, -1: none
 int GServerListSchedulerClaim(GServerListScheduler *scheduler, int discovered)
 {
 	if (scheduler->next >= discovered) {
@@ -33,6 +34,7 @@ void GServerListSchedulerQueueRetry(GServerListScheduler *scheduler)
 	scheduler->retryCount++;
 }
 
+// index in the retry queue of the next server to query again, -1: none
 int GServerListSchedulerClaimRetry(GServerListScheduler *scheduler)
 {
 	if (scheduler->nextRetry >= scheduler->retryCount) {
@@ -41,23 +43,8 @@ int GServerListSchedulerClaimRetry(GServerListScheduler *scheduler)
 	return scheduler->nextRetry++;
 }
 
-int GServerListSchedulerDone(
-	const GServerListScheduler *scheduler, int discovered, int active, int mastersFinished
-)
+// every server listed so far was queried, every query ended (none active)
+int GServerListSchedulerDone(const GServerListScheduler *scheduler, int discovered, int active)
 {
-	// mastersFinished covers late master arrivals; completed >= discovered
-	// ensures every claimed query was retired (success, timeout, or cancel).
-	return mastersFinished && scheduler->next >= discovered && scheduler->nextRetry >= scheduler->retryCount
-		&& active == 0 && scheduler->completed >= discovered;
-}
-
-int GServerListSchedulerBudget(int totalBudget, int activeLists)
-{
-	int budget;
-
-	if (activeLists < 1) {
-		activeLists = 1;
-	}
-	budget = totalBudget / activeLists;
-	return budget > 0 ? budget : 1;
+	return scheduler->next >= discovered && scheduler->nextRetry >= scheduler->retryCount && active == 0;
 }

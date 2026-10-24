@@ -79,4 +79,9 @@ include(basegame)
 include(launcher)
 
 include(post_configure)
+
+# Unit tests (CTest's BUILD_TESTING, on by default)
+if(BUILD_TESTING)
+    include(tests/all)
+endif()
 #include(installer)

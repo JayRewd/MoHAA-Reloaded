@@ -555,6 +555,26 @@ below are done.
   uncapped and input to display the same or lower. Mouse sums exact, the
   same frames, no validation message, no SDL patch (see Performance,
   Present timing, and Implementation notes, SDL 3)
+- the internet server browser (2026-10-24, Plan 37, the engine's GameSpy
+  code): JayRewd's pull request #3 on MoHAA-Reloaded merged and reworked.
+  Servers are queried while the masters still send their lists, 32 at a
+  time (two lists share them) instead of 4 to 15 from `rate`, a server
+  that doesn't answer in 0.4 s is asked once more (1 s), and the status
+  line counts the servers that answered and timed out. In real refreshes
+  of the five public masters (about 220 servers listed, 132 answering)
+  half the answers are in after 0.5 to 0.8 s and all after 1.3 to 2.3 s
+  (before: 1.4 to 1.9 and 11 to 14 s), and the list is done after 5 s
+  (before 32 to 36 s, the pull request 11 s). The masters' names are
+  resolved on threads: name lookups on the main thread made frames of 36
+  to 137 ms during a refresh before, and of up to 174 ms when one started
+  with the pull request (all five at once); now a refresh has no frame
+  over 5 ms but the first of a session (5 to 10 ms more: the process
+  passes 64 open files, threads start). Fixed on the way: a master that
+  can't be resolved or connected is skipped (it was tried again every
+  frame and the refresh never ended), a master that accepts no
+  connection is given up after 3 s instead of 10, "update server" on an
+  idle list never ended, the LAN search never ended. CI runs the unit
+  tests now (`cmake/tests/all.cmake` wasn't included)
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -2116,6 +2136,33 @@ with `vid_restart`, as a native Wayland client and under Xwayland.
 `in_availableJoysticks` and shuts it down again, `in_restart` with 1 keeps
 it up, back to 0 shuts it down (`developer 1`). `glcheck.sh` clean. The
 mouse and the latency checks are in Performance, Present timing.
+
+The server browser (2026-10-24, Plan 37) with engine builds that log the
+browser's callbacks (a temporary patch) and `renderer_timed.so`'s frames,
+at `com_maxfps 250`: `pushmenu joinnetgame` (the first refresh), 45 s,
+`widgetcommand netgamelist refreshserverlist`, 45 s; 7c82547a, the merge of
+the pull request and the final code interleaved, three runs each against
+the five public masters. Fill and end per refresh, the frames meanwhile:
+
+| build | answers: half, all | list done | the slowest frame of a refresh: first of a session, later |
+| --- | --- | --- | --- |
+| 7c82547a | 1.4 to 1.9 s, 10.7 to 14.4 s | 31.6 to 35.7 s | 54 to 137 ms, 5 to 36 ms |
+| pull request #3 | 0.5 to 0.8 s, 1.1 to 3.1 s | 10.9 to 11.4 s | 84 to 96 ms, 5 to 171 ms |
+| Plan 37 | 0.5 to 0.8 s, 1.3 to 2.3 s | 4.9 to 5.3 s (once 10.0) | 21 to 23 ms, under 5 ms |
+
+The first frame of a session holds the menu's load (11.8 ms in every
+build); the UI's own time in it was 0.9 ms before, 71 to 83 ms with the
+pull request (five lookups) and 9 to 10 ms with Plan 37 (the process
+passes 64 open files: the kernel grows its file table, 4 ms of one
+`socket` call under `strace`; five threads start). The same servers answer
+in every build (130 to 133 of 215 to 228 listed). A master name that
+doesn't resolve (`com_master0_host master.invalid`) is skipped and one
+given as an address is used (the same 132 answers, done after 5 s); a
+cancel right after the start goes idle once the lookups end (71 ms) and
+the next refresh is normal; the LAN search finds a local dedicated server
+and ends (7c82547a stayed in "Searching LAN."). `test_lz77` and
+`test_serverlist_scheduler` pass with GCC and with clang (Debug, the
+Unit Tests job's setup).
 
 `m3l1a` is not in the table: the beach artillery shakes and rolls the
 camera at random, so the two renderers see slightly different views of the
@@ -8543,6 +8590,32 @@ Done:
     within the noise; uncapped and input to display the same or lower.
     Not taken: a patch of SDL that checks D-Bus every 100 ms (1.2 µs more;
     CI builds SDL from its tag and would have to patch it).
+37. The internet server browser (2026-10-24, JayRewd's pull request #3 on
+    MoHAA-Reloaded, "pipelined server discovery so the browser fills
+    faster", merged as a654b3bc; see Status and Testing): kept the
+    queries that start while the masters still send, 32 queries in flight
+    shared by the lists, a first query of 0.4 s and a second for a server
+    that didn't answer, the scheduler (`gserverlist_scheduler.c`) and its
+    unit test, the answered and timed-out counts in the status line, and
+    the pull request's fixes of the code before it (UDP sockets leaked at
+    every master connection, master sockets that started as socket 0,
+    the filter's termination, sockets left open by `ServerListFree`).
+    Changed: the masters' names resolved on threads of the GameSpy SDK
+    (`gsiStartResolvingHostname`, three fixes in it: IPv4 only, 0.0.0.0
+    an error, no read of the freed handle at the thread's end), a list
+    idle only once its lookups ended (the SDK can't cancel one safely), a
+    master skipped when it can't be resolved or connected, 3 s for a
+    master to connect and send its challenge, 1 s for the second query
+    (3 s kept the list busy for 9 to 12 s after the last answer with ~95
+    silent servers), the done test without the count of completed
+    queries (an update of one server on an idle list never ended), LAN
+    updates without masters and with a timestamp on their broadcast
+    socket (the master timeout closed it at once). Removed: the setters
+    of master concurrency, timeouts and pipelining, four callback
+    messages, `cl_browserDebug`, clamps of constants, the pause of the
+    queries while masters send. `cmake/tests/all.cmake` is included
+    (upstream doesn't): CI's Unit Tests run `test_lz77` and
+    `test_serverlist_scheduler`.
 
 Remaining:
 
@@ -8879,6 +8952,12 @@ left of them:
   run on Windows. SDL 3's pump checks its D-Bus connection before it
   reads the socket (1.2 µs a frame at 250 since Plan 36); no hint turns it
   off, a patch of SDL could check every 100 ms.
+- The server browser (Plan 37): the SDK's resolver thread on Windows
+  (`CreateThread`, `gethostbyname`) is built by CI but not run. One UDP
+  socket for all queries, the replies told apart by their address, would
+  replace the 32 sockets of a list (and the first refresh's 5 to 10 ms
+  frame when the process passes 64 open files); not done: a late answer
+  to a first query would then count as the answer to the second.
 
 Windows: the same code applies; the CI build fetches Khronos' Vulkan-Headers
 (see Build and run), so no Vulkan SDK is needed. The Vulkan-specific files

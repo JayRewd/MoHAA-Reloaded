@@ -28,11 +28,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "cl_ui.h"
 #include "../gamespy/goaceng.h"
-#include "../gamespy/gserverlist_scheduler.h"
 #include "../gamespy/sv_gamespy.h"
 #include "../gamespy/common/gsPlatformSocket.h"
-
-extern "C" unsigned int ServerListGetNumMasters();
 
 Event EV_FAKKServerList_Connect("connect", EV_DEFAULT, NULL, NULL, "Connect to the specified server");
 
@@ -334,10 +331,6 @@ UIFAKKServerList::UIFAKKServerList()
     m_bUpdatingList            = false;
     m_bLANListing              = false;
     m_iLastSortColumn          = 2;
-    m_iServerResponsiveCount   = 0;
-    m_iServerTimeoutCount      = 0;
-    m_iRefreshStartTime        = 0;
-    m_iLastStatusRefreshTime   = 0;
     m_bRefreshCancelled        = false;
 }
 
@@ -518,15 +511,11 @@ void UIFAKKServerList::RefreshServerList(Event *ev)
         m_serverList[1] = NULL;
     }
 
-    NewServerList(true);
+    NewServerList();
 
-    m_bDoneUpdating[0]         = false;
-    m_bDoneUpdating[1]         = m_serverList[1] == NULL;
-    m_bRefreshCancelled        = false;
-    m_iServerResponsiveCount   = 0;
-    m_iServerTimeoutCount      = 0;
-    m_iRefreshStartTime        = Sys_Milliseconds();
-    m_iLastStatusRefreshTime   = 0;
+    m_bDoneUpdating[0]  = false;
+    m_bDoneUpdating[1]  = m_serverList[1] == NULL;
+    m_bRefreshCancelled = false;
 
     Cvar_Set("dm_playercount", "0");
     {
@@ -606,16 +595,12 @@ void UIFAKKServerList::RefreshLANServerList(Event *ev)
         m_serverList[1] = NULL;
     }
 
-    NewServerList(false);
+    NewServerList();
 
-    m_bDoneUpdating[0]         = false;
-    m_bDoneUpdating[1]         = m_serverList[1] == NULL;
-    m_NeedAdditionalLANSearch  = true;
-    m_bRefreshCancelled        = false;
-    m_iServerResponsiveCount   = 0;
-    m_iServerTimeoutCount      = 0;
-    m_iRefreshStartTime        = Sys_Milliseconds();
-    m_iLastStatusRefreshTime   = 0;
+    m_bDoneUpdating[0]        = false;
+    m_bDoneUpdating[1]        = m_serverList[1] == NULL;
+    m_NeedAdditionalLANSearch = true;
+    m_bRefreshCancelled       = false;
 
     Cvar_Set("dm_playercount", "0");
     // Search all LAN servers from port 12300 to 12316
@@ -672,59 +657,13 @@ void UIFAKKServerList::CancelRefresh(Event *ev)
     }
 }
 
-static int ClampBrowserInt(int value, int minimum, int maximum)
+void UIFAKKServerList::NewServerList(void)
 {
-    if (value < minimum) {
-        return minimum;
-    }
-    if (value > maximum) {
-        return maximum;
-    }
-    return value;
-}
-
-static void ConfigureInternetServerList(GServerList serverlist, int firstTimeout, int retryTimeout)
-{
-    ServerListSetMasterConcurrency(serverlist, (int)ServerListGetNumMasters());
-    ServerListSetRetryTimeouts(
-        serverlist, (unsigned long)firstTimeout, (unsigned long)retryTimeout
-    );
-    ServerListSetPipelining(serverlist, 1);
-}
-
-void UIFAKKServerList::NewServerList(bool internet)
-{
-    int         iNumConcurrent;
-    int         iActiveLists;
-    int         firstTimeout;
-    int         retryTimeout;
-    const char *secret_key;
-    const char *game_name;
-    cvar_t     *pRateCvar = Cvar_Get("rate", "5000", CVAR_ARCHIVE | CVAR_USERINFO);
-    /* Changed in Omaha: browser knobs are fixed constants (not console cvars). */
-    static const int browserMaxQueries   = 32;
-    static const int browserTimeout      = 400;
-    static const int browserRetryTimeout = 3000;
+    // queries in flight, shared by the lists (two for Breakthrough and Spearhead)
+    int            iNumConcurrent = 32;
+    const char    *secret_key;
+    const char    *game_name;
     static cvar_t *dm_omit_spearhead = Cvar_Get("dm_omit_spearhead", "0", 1);
-
-    if (internet) {
-        iActiveLists =
-            com_target_game->integer >= target_game_e::TG_MOHTT && !dm_omit_spearhead->integer ? 2
-                                                                                               : 1;
-        iNumConcurrent = GServerListSchedulerBudget(
-            ClampBrowserInt(browserMaxQueries, 4, 64), iActiveLists
-        );
-        firstTimeout = ClampBrowserInt(browserTimeout, 250, 10000);
-        retryTimeout = ClampBrowserInt(browserRetryTimeout, 250, 10000);
-    } else if (pRateCvar->integer > 25000) {
-        iNumConcurrent = 15;
-    } else if (pRateCvar->integer > 5000) {
-        iNumConcurrent = 10;
-    } else if (pRateCvar->integer > 3000) {
-        iNumConcurrent = 6;
-    } else {
-        iNumConcurrent = 4;
-    }
 
     m_iServerQueryCount = 0;
     m_iServerTotalCount = 0;
@@ -747,10 +686,6 @@ void UIFAKKServerList::NewServerList(bool internet)
             (void *)&m_ServerListInst[0]
         );
 
-        if (internet) {
-            ConfigureInternetServerList(m_serverList[0], firstTimeout, retryTimeout);
-        }
-
         m_serverList[1] = NULL;
     } else {
         game_name  = GS_GetGameName(target_game_e::TG_MOHTT);
@@ -759,9 +694,8 @@ void UIFAKKServerList::NewServerList(bool internet)
         m_ServerListInst[0].iServerType = target_game_e::TG_MOHTT;
         m_ServerListInst[0].serverList  = this;
 
-        // LAN retains the historic 4/5 dual-list adjustment
-        if (!internet) {
-            iNumConcurrent = iNumConcurrent * 4 / 5;
+        if (!dm_omit_spearhead->integer) {
+            iNumConcurrent /= 2;
         }
 
         m_serverList[0] = ServerListNew(
@@ -773,10 +707,6 @@ void UIFAKKServerList::NewServerList(bool internet)
             1,
             (void *)&m_ServerListInst[0]
         );
-
-        if (internet) {
-            ConfigureInternetServerList(m_serverList[0], firstTimeout, retryTimeout);
-        }
 
         if (!dm_omit_spearhead->integer) {
             // Since mohtt is compatible with mohta
@@ -796,10 +726,6 @@ void UIFAKKServerList::NewServerList(bool internet)
                 1,
                 (void *)&m_ServerListInst[1]
             );
-
-            if (internet) {
-                ConfigureInternetServerList(m_serverList[1], firstTimeout, retryTimeout);
-            }
         } else {
             m_serverList[1] = NULL;
         }
@@ -1113,7 +1039,6 @@ void UIFAKKServerList::UpdateServerListCallBack(
     static cvar_t *dm_run_fast          = Cvar_Get("dm_run_fast", "1", CVAR_ARCHIVE);
     static cvar_t *dm_run_normal        = Cvar_Get("dm_run_normal", "1", CVAR_ARCHIVE);
     static cvar_t *dm_omit_spearhead    = Cvar_Get("dm_omit_spearhead", "0", CVAR_ARCHIVE);
-    static cvar_t *cl_browserDebug      = Cvar_Get("cl_browserDebug", "0", CVAR_ARCHIVE);
 
     iServerType    = ((FAKKServerListInstance *)instance)->iServerType;
     uiServerList   = ((FAKKServerListInstance *)instance)->serverList;
@@ -1123,45 +1048,6 @@ void UIFAKKServerList::UpdateServerListCallBack(
     // Changed in OPM
     //  Instead of calling Cvar_Set() for each list
     //  RefreshStatus() is called to combine results of all lists
-
-    if (msg == LIST_SERVERADDED || msg == LIST_QUERYSTARTED || msg == LIST_QUERYRETRY
-        || msg == LIST_QUERYTIMEOUT) {
-        if (cl_browserDebug->integer && server) {
-            unsigned int elapsed = Sys_Milliseconds() - uiServerList->m_iRefreshStartTime;
-            const char   *label;
-
-            if (msg == LIST_SERVERADDED) {
-                label = "listed";
-            } else if (msg == LIST_QUERYSTARTED) {
-                label = "query";
-            } else if (msg == LIST_QUERYRETRY) {
-                label = "retry";
-            } else {
-                label = "timeout";
-            }
-
-            Com_Printf(
-                "browser +%u ms: %s %s:%i\n",
-                elapsed,
-                label,
-                ServerGetAddress(server),
-                ServerGetQueryPort(server)
-            );
-        }
-
-        // High-frequency discovery/query events: throttle cvar/status updates.
-        // LIST_PROGRESS and LIST_STATECHANGED still refresh immediately.
-        {
-            const unsigned int kStatusRefreshIntervalMs = 150;
-            unsigned int       now                      = Sys_Milliseconds();
-
-            if (now - uiServerList->m_iLastStatusRefreshTime >= kStatusRefreshIntervalMs) {
-                uiServerList->m_iLastStatusRefreshTime = now;
-                uiServerList->RefreshStatus();
-            }
-        }
-        return;
-    }
 
     if (param2) {
         if (msg == LIST_PROGRESS && param2 == (void *)-1) {
@@ -1202,16 +1088,6 @@ void UIFAKKServerList::UpdateServerListCallBack(
         float       fGameVer;
         int         iNumPlayers, iMaxPlayers;
         int         iMinPlayers;
-
-        if (cl_browserDebug->integer && server) {
-            Com_Printf(
-                "browser +%u ms: response %s:%i (%i ms)\n",
-                Sys_Milliseconds() - uiServerList->m_iRefreshStartTime,
-                ServerGetAddress(server),
-                ServerGetQueryPort(server),
-                ServerGetPing(server)
-            );
-        }
 
         pszHostName      = ServerGetStringValue(server, "hostname", "(NONE)");
         bDiffVersion     = false;
@@ -1369,17 +1245,6 @@ void UIFAKKServerList::UpdateServerListCallBack(
         //    return;
         //}
 
-        //
-        // Rebuild the number of servers
-        //
-
-        uiServerList->m_iServerTotalCount = 0;
-        for (i = 0; i < ARRAY_LEN(uiServerList->m_serverList); i++) {
-            if (uiServerList->m_bGettingList[i] && uiServerList->m_serverList[i]) {
-                uiServerList->m_iServerTotalCount += ServerListCount(uiServerList->m_serverList[i]);
-            }
-        }
-
         // Removed in 2.0
         //  Only add entries for servers that are queried successfully
         //  it avoids unnecessary entries
@@ -1447,56 +1312,37 @@ void UIFAKKServerList::UpdateServerListCallBack(
 void UIFAKKServerList::RefreshStatus()
 {
     bool doneUpdating;
-    bool mastersPending;
+    bool busy = false;
     int  i;
-    int  discovered = 0;
-    int  completed  = 0;
     int  responsive = 0;
     int  timedout   = 0;
-    int  listDiscovered;
-    int  listCompleted;
     int  listResponsive;
     int  listTimedout;
 
+    m_iServerTotalCount = 0;
     for (i = 0; i < NUM_SERVERLISTS; i++) {
         if (!m_serverList[i]) {
             continue;
         }
 
-        ServerListGetQueryStats(
-            m_serverList[i], &listDiscovered, &listCompleted, &listResponsive, &listTimedout, NULL
-        );
-        discovered += listDiscovered;
-        completed += listCompleted;
+        ServerListGetQueryStats(m_serverList[i], &listResponsive, &listTimedout);
         responsive += listResponsive;
         timedout += listTimedout;
+        m_iServerTotalCount += ServerListCount(m_serverList[i]);
+        busy = busy || ServerListState(m_serverList[i]) != GServerListState::sl_idle;
     }
-
-    m_iServerResponsiveCount = responsive;
-    m_iServerTimeoutCount      = timedout;
-    m_iServerQueryCount        = completed;
-    m_iServerTotalCount        = discovered;
+    m_iServerQueryCount = responsive + timedout;
 
     Cvar_Set("dm_playercount", va("%d", m_iTotalNumPlayers));
-    if (discovered > 0) {
-        int percent = (100 * completed) / discovered;
+    if (m_iServerTotalCount > 0) {
+        int percent = 100 * m_iServerQueryCount / m_iServerTotalCount;
 
-        mastersPending = false;
-        for (i = 0; i < NUM_SERVERLISTS; i++) {
-            if (!m_serverList[i]) {
-                continue;
-            }
-            if (ServerListState(m_serverList[i]) != GServerListState::sl_idle) {
-                mastersPending = true;
-                break;
-            }
-        }
-
-        if (percent >= 100 && mastersPending) {
+        // the masters may still list more
+        if (busy && percent > 99) {
             percent = 99;
         }
         Cvar_Set("dm_serverstatusbar", va("%i", percent));
-        Cvar_Set("dm_servercount", va("%d/%d", completed, discovered));
+        Cvar_Set("dm_servercount", va("%d/%d", m_iServerQueryCount, m_iServerTotalCount));
     } else {
         Cvar_Set("dm_servercount", va("%d", getNumItems()));
         Cvar_Set("dm_serverstatusbar", "0");

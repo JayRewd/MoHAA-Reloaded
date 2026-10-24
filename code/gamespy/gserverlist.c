@@ -23,16 +23,19 @@ Fax(714)549-0757
 /**
  * The following modifications were made:
  *
- * 1) Non-blocking server list sockets. List requests are asynchronous and won't block the game. The only blocking request could be due to DNS resolution.
- * 2) Server list sockets will timeout after 10 seconds of no reply.
+ * 1) Non-blocking server list sockets. List requests are asynchronous and won't block the game.
+ * 2) Server list sockets will timeout after 10 seconds of no reply, 3 seconds before the master's first reply.
  * 3) Parallel server list requests.
- *  3.1) A pool of sockets is initially created
- *  3.2) The server list connects idling sockets to available masters, afterwards the server list state is set to `sl_listxfer`.
- *  3.3) The server list sends the list request to connected masters, and receives the data for each.
- *  3.4) When finished fetching 1 master (got `\final`), the server list state transitions to `sl_querying`.
- *  3.5) The server list queries all fetched servers. It can still continue fetching list from currently connected masters
- *       but it will not connect to other masters while servers are being queried. It won't be sending more queries if remaining masters replied in under 500 ms.
- *  3.6) When finished querying all fetched servers, the server list restarts from 3.2 and queries next masters.
+ *  3.1) One socket per master. A refresh resolves every master's name on a thread of its own
+ *       (gsiStartResolvingHostname: a lookup that isn't cached blocks for tens to hundreds of
+ *       milliseconds) and connects each as soon as its address is known; a master that can't be
+ *       resolved or connected is skipped.
+ *  3.2) The server list sends the list request to connected masters, and receives the data for each.
+ *  3.3) Servers are queried as soon as a master lists them (`sl_querying`), while the masters still send:
+ *       servers listed by several masters are queried once.
+ *  3.4) A query that gets no answer in QUERY_TIMEOUT is sent once more, after the first queries of all
+ *       servers, and given QUERY_RETRY_TIMEOUT.
+ *  3.5) The list is idle again when every master has finished and every server has answered or timed out.
  *
  * The idea here is to ensure the redundancy of the server list between multiple masters even if the results are combined.
  * Optionally for best results, the game should return a list of masters from the same community.
@@ -83,8 +86,10 @@ extern int ServerListGetMsPort(int index);
 #define MAX_INFO_FIELDS 20
 
 // Multi-master settings
-#define SERVER_QUERY_MAX_PAUSE 500
 #define INTERNET_SEARCH_TIME 10000 //10 sec
+#define MASTER_CONNECT_TIME 3000 // to connect and send the challenge, else the master is skipped
+#define QUERY_TIMEOUT 400 // the first query of a server
+#define QUERY_RETRY_TIMEOUT 1000 // the second, sent after the first queries of all servers
 
 #ifdef __cplusplus
 extern "C" {
@@ -101,12 +106,14 @@ typedef struct
 } UpdateInfo;
 
 typedef enum { pi_fieldcount, pi_fields, pi_servers } GParseInfoState;
-typedef enum { ls_none, ls_connecting, ls_connected } GListSocketState;
+typedef enum { ls_none, ls_resolving, ls_connecting, ls_connected } GListSocketState;
 
 typedef struct GServerListSocketImplementation
 {
     SOCKET s;
     GListSocketState socketstate;
+    GSIResolveHostnameHandle resolve; // ls_resolving: the master's name
+    unsigned short port;
     char data[2048];
     int oldlen;
     gsi_time lastreplytime;
@@ -131,8 +138,6 @@ struct GServerListImplementation
     gbool sortascending;
     GServerListSocket slsockets;
     int numslsockets;
-    unsigned int startslindex;
-    gsi_time lastsltime;
     unsigned long lanstarttime;
     GQueryType querytype;
     HashTable keylist;
@@ -148,10 +153,6 @@ struct GServerListImplementation
     GParseInfoState pistate;
 
     gbool updateinitialized;
-    gbool pipelinequeries;
-    gbool retryqueries;
-    unsigned long firstquerytimeout;
-    unsigned long retryquerytimeout;
     GServerListScheduler scheduler;
 };
 
@@ -208,26 +209,18 @@ GServerList	ServerListNew(const char *gamename, const char *enginename, const ch
     list->async = 0;
 
     list->updateinitialized = 0;
-    list->pipelinequeries = 0;
-    list->retryqueries = 0;
-    list->firstquerytimeout = SERVER_TIMEOUT;
-    list->retryquerytimeout = SERVER_TIMEOUT;
     GServerListSchedulerInit(&list->scheduler);
 
-    list->numslsockets = maxconcupdates / 4;
+    // one socket per master (the first one is also the LAN broadcast socket)
+    list->numslsockets = ServerListGetNumMasters();
     if (list->numslsockets < 1) {
         list->numslsockets = 1;
-    } else if (list->numslsockets > 4) {
-        // Above 4 seems too much
-        list->numslsockets = 4;
     }
     list->slsockets = (GServerListSocket)gsimalloc(sizeof(struct GServerListSocketImplementation) * list->numslsockets);
     memset(list->slsockets, 0, sizeof(struct GServerListSocketImplementation) * list->numslsockets);
     for (i = 0; i < list->numslsockets; i++) {
         list->slsockets[i].s = INVALID_SOCKET;
     }
-    list->startslindex = 0;
-    list->lastsltime = current_time();
 
     SocketStartUp();
     return list;	
@@ -309,46 +302,21 @@ static GError FreeUpdateList(GServerList serverlist)
 
 }
 
-//create and connect a server list socket
-static GError CreateServerListSocket(GServerList serverlist, GServerListSocket slsocket, gbool async)
+//create and connect a server list socket to a master's address; on a failure it stays free
+//(ls_none): the master is skipped
+static GError CreateServerListSocket(GServerList serverlist, GServerListSocket slsocket, unsigned int ip)
 {
     struct   sockaddr_in saddr;
-    struct hostent *hent;
     int lasterr;
-    int port;
-    const char *host;
-    unsigned int masterindex;
-
-    if (serverlist->startslindex >= ServerListGetNumMasters()) {
-        return GE_NODNS;
-    }
-
-    if (slsocket->socketstate != ls_none) {
-        closesocket(slsocket->s);
-        slsocket->s = INVALID_SOCKET;
-    }
-
-    // Only advance startslindex after the socket reaches ls_connecting so a
-    // transient DNS/connect failure can retry the same master.
-    masterindex = serverlist->startslindex;
-    port = ServerListGetMsPort(masterindex);
-    host = ServerListGetHost(masterindex);
 
     saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(port);
-    saddr.sin_addr.s_addr = inet_addr(host);
-    if (saddr.sin_addr.s_addr == INADDR_NONE)
-    {
-        hent = gethostbyname(host);
-        if (!hent)
-            return GE_NODNS; 
-        saddr.sin_addr.s_addr = *(u_long *)hent->h_addr_list[0];
-    }
+    saddr.sin_port = htons(slsocket->port);
+    saddr.sin_addr.s_addr = ip;
     slsocket->s = socket ( AF_INET, SOCK_STREAM, IPPROTO_TCP );
     if (slsocket->s == INVALID_SOCKET)
         return GE_NOSOCKET;
 
-    if (async) {
+    if (serverlist->async) {
         SetSockBlocking(slsocket->s, 0);
     }
 
@@ -364,7 +332,6 @@ static GError CreateServerListSocket(GServerList serverlist, GServerListSocket s
     slsocket->oldlen = 0;
     slsocket->cryptkey.index = -1; //mark as uninitialized
     slsocket->lastreplytime = current_time();
-    serverlist->startslindex++;
 
     //else we are connected
     return 0;
@@ -372,133 +339,35 @@ static GError CreateServerListSocket(GServerList serverlist, GServerListSocket s
 
 }
 
-//create and connect a server list sockets
-static GError CreateServerListForAvailableSockets(GServerList serverlist, gbool async)
+//start every master: an address at once, a name once a thread resolved it (ServerListThinkSocket);
+//a name that can't be resolved, or no thread for it, skips the master
+static void ServerListStartMasters(GServerList serverlist)
 {
-    int i;
+    GServerListSocket slsocket;
+    unsigned int ip;
+    unsigned int i;
 
-    for(i = 0; i < serverlist->numslsockets; i++) {
-        if (serverlist->slsockets[i].socketstate == ls_none) {
-            CreateServerListSocket(serverlist, &serverlist->slsockets[i], async);
+    for (i = 0; i < ServerListGetNumMasters() && i < (unsigned int)serverlist->numslsockets; i++) {
+        const char *host = ServerListGetHost(i);
+
+        slsocket = &serverlist->slsockets[i];
+        slsocket->port = ServerListGetMsPort(i);
+        ip = inet_addr(host);
+        if (ip != INADDR_NONE) {
+            CreateServerListSocket(serverlist, slsocket, ip);
+        } else if (gsiStartResolvingHostname(host, &slsocket->resolve) == 0) {
+            slsocket->socketstate = ls_resolving;
         }
     }
-
-    return 0;
 }
 
-GError ServerListSetMasterConcurrency(GServerList serverlist, int maxmasters)
+/* ServerListGetQueryStats
+-------------------------
+The servers of the current (or last) update that answered and that timed out */
+void ServerListGetQueryStats(GServerList serverlist, int *responsive, int *timedout)
 {
-    int available;
-    int i;
-    GServerListSocket newsockets;
-
-    if (serverlist->state != sl_idle) {
-        return GE_BUSY;
-    }
-
-    available = (int)ServerListGetNumMasters();
-    if (available < 1) {
-        return GE_NODNS;
-    }
-
-    if (maxmasters < 1) {
-        maxmasters = 1;
-    } else if (maxmasters > available) {
-        maxmasters = available;
-    }
-
-    if (maxmasters == serverlist->numslsockets) {
-        return GE_NOERROR;
-    }
-
-    newsockets = (GServerListSocket)gsimalloc(
-        sizeof(struct GServerListSocketImplementation) * maxmasters
-    );
-    if (!newsockets) {
-        return GE_NOSOCKET;
-    }
-    memset(newsockets, 0, sizeof(struct GServerListSocketImplementation) * maxmasters);
-    for (i = 0; i < maxmasters; i++) {
-        newsockets[i].s = INVALID_SOCKET;
-    }
-
-    for (i = 0; i < serverlist->numslsockets; i++) {
-        if (serverlist->slsockets[i].s != INVALID_SOCKET) {
-            closesocket(serverlist->slsockets[i].s);
-            serverlist->slsockets[i].s = INVALID_SOCKET;
-        }
-    }
-    gsifree(serverlist->slsockets);
-    serverlist->slsockets = newsockets;
-    serverlist->numslsockets = maxmasters;
-    return GE_NOERROR;
-}
-
-GError ServerListSetQueryTimeout(GServerList serverlist, unsigned long timeout)
-{
-    if (serverlist->state != sl_idle) {
-        return GE_BUSY;
-    }
-
-    serverlist->retryqueries = 0;
-    serverlist->firstquerytimeout = timeout;
-    serverlist->retryquerytimeout = timeout;
-    return GE_NOERROR;
-}
-
-GError ServerListSetRetryTimeouts(
-    GServerList serverlist, unsigned long firstTimeout, unsigned long retryTimeout
-)
-{
-    if (serverlist->state != sl_idle) {
-        return GE_BUSY;
-    }
-
-    serverlist->retryqueries = 1;
-    serverlist->firstquerytimeout = firstTimeout;
-    serverlist->retryquerytimeout = retryTimeout;
-    return GE_NOERROR;
-}
-
-GError ServerListSetPipelining(GServerList serverlist, gbool enabled)
-{
-    if (serverlist->state != sl_idle) {
-        return GE_BUSY;
-    }
-
-    serverlist->pipelinequeries = enabled;
-    return GE_NOERROR;
-}
-
-void ServerListGetQueryStats(
-    GServerList serverlist, int *discovered, int *completed, int *responsive, int *timedout, int *active
-)
-{
-    int i;
-    int activecount = 0;
-
-    if (discovered) {
-        *discovered = ArrayLength(serverlist->servers);
-    }
-    if (completed) {
-        *completed = serverlist->scheduler.completed;
-    }
-    if (responsive) {
-        *responsive = serverlist->scheduler.responsive;
-    }
-    if (timedout) {
-        *timedout = serverlist->scheduler.timedout;
-    }
-    if (active) {
-        if (serverlist->updateinitialized) {
-            for (i = 0; i < serverlist->maxupdates; i++) {
-                if (serverlist->updatelist[i].currentserver != NULL) {
-                    activecount++;
-                }
-            }
-        }
-        *active = activecount;
-    }
+    *responsive = serverlist->scheduler.responsive;
+    *timedout = serverlist->scheduler.timedout;
 }
 
 
@@ -513,6 +382,8 @@ static GError CreateServerListLANSocket(GServerList serverlist)
         return GE_NOSOCKET;
     if (setsockopt(slsocket->s, SOL_SOCKET, SO_BROADCAST, (char *)&optval, sizeof(optval)) != 0)
         return GE_NOSOCKET;
+    // ServerListCheckSocketError closes a list socket silent for INTERNET_SEARCH_TIME
+    slsocket->lastreplytime = current_time();
 
     //else we are ready to broadcast
     return 0;
@@ -647,7 +518,6 @@ Start updating a GServerList. */
 GError ServerListUpdate2(GServerList serverlist, gbool async, char *filter, GQueryType querytype)
 {
     GError error;
-    int i;
 
     if (serverlist->state != sl_idle)
         return GE_BUSY;
@@ -668,7 +538,6 @@ GError ServerListUpdate2(GServerList serverlist, gbool async, char *filter, GQue
     }
 
     serverlist->async = async;
-    serverlist->startslindex = 0;
 
     if (querytype != qt_grouprooms && querytype != qt_masterinfo) {
         error = InitUpdateList(serverlist);
@@ -677,18 +546,12 @@ GError ServerListUpdate2(GServerList serverlist, gbool async, char *filter, GQue
         }
     }
 
-    error = CreateServerListForAvailableSockets(serverlist, async);
-    //if (error) return error;
+    ServerListStartMasters(serverlist);
 
-    if (async) {
-        // As it's asynchronous, set the state to transfering
-        ServerListModeChange(serverlist, sl_listxfer);
-        return 0;
-    }
-
-    for(i = 0; i < serverlist->numslsockets; i++) {
-        ServerListStartQuery(serverlist, &serverlist->slsockets[i], async);
-    }
+    // ServerListThink reads the masters and queries the servers
+    ServerListModeChange(serverlist, sl_listxfer);
+    if (!async)
+        DoSyncLoop(serverlist);
 
     return 0;
 }
@@ -1074,7 +937,6 @@ static GError ServerListReadList(GServerList serverlist, GServerListSocket slsoc
     }
 
     slsocket->lastreplytime = current_time();
-    serverlist->lastsltime = slsocket->lastreplytime;
 
     if (serverlist->encryptdata && slsocket->cryptkey.index != -1)
     {
@@ -1148,15 +1010,9 @@ static GError ServerListReadList(GServerList serverlist, GServerListSocket slsoc
                 currentindex = ServerListFindServer(serverlist,ip,ntohs(port));
                 if (currentindex == -1)
                 {
-                    GServer server = ServerListAddServer(serverlist,ip,  ntohs(port), serverlist->querytype );
-                    serverlist->CallBackFn(
-                        serverlist,
-                        LIST_SERVERADDED,
-                        serverlist->instance,
-                        server,
-                        NULL
-                    );
-                    if (serverlist->pipelinequeries && serverlist->state == sl_listxfer) {
+                    ServerListAddServer(serverlist,ip,  ntohs(port), serverlist->querytype );
+                    if (serverlist->state == sl_listxfer) {
+                        // query the servers while the masters still send
                         ServerListModeChange(serverlist, sl_querying);
                     }
                 }
@@ -1169,32 +1025,18 @@ static GError ServerListReadList(GServerList serverlist, GServerListSocket slsoc
 
 }
 
-//loop through pending queries and send out new ones
+//a query got no answer: the first one is sent again later, the second one is the end
 static void ServerListHandleQueryFailure(GServerList serverlist, int updateindex)
 {
     UpdateInfo *update = &serverlist->updatelist[updateindex];
     GServer server = update->currentserver;
 
-    if (serverlist->retryqueries && update->attempt == 0) {
+    if (update->attempt == 0) {
         ArrayAppend(serverlist->retryservers, &server);
         GServerListSchedulerQueueRetry(&serverlist->scheduler);
         server->ping = 9999;
-        serverlist->CallBackFn(
-            serverlist,
-            LIST_QUERYRETRY,
-            serverlist->instance,
-            server,
-            NULL
-        );
     } else {
         GServerListSchedulerComplete(&serverlist->scheduler, 0);
-        serverlist->CallBackFn(
-            serverlist,
-            LIST_QUERYTIMEOUT,
-            serverlist->instance,
-            server,
-            NULL
-        );
     }
 
     update->currentserver = NULL;
@@ -1207,7 +1049,6 @@ static GError ServerListQueryLoop(GServerList serverlist)
     int retryindex;
     int percent;
     int discovered;
-    int mastersFinished;
     fd_set set;
     struct timeval timeout = {0,0};
     char indata[1500];
@@ -1215,7 +1056,6 @@ static GError ServerListQueryLoop(GServerList serverlist)
     int saddrlen = sizeof(saddr);
     GServer server;
     UpdateInfo *update;
-    unsigned long querytimeout;
 
 //first, check for available data
     FD_ZERO(&set);
@@ -1276,10 +1116,7 @@ static GError ServerListQueryLoop(GServerList serverlist)
         if (update->currentserver == NULL) {
             continue;
         }
-        querytimeout = update->attempt
-            ? serverlist->retryquerytimeout
-            : serverlist->firstquerytimeout;
-        if (current_time() - update->starttime > querytimeout) {
+        if (current_time() - update->starttime > (update->attempt ? QUERY_RETRY_TIMEOUT : QUERY_TIMEOUT)) {
             ServerListHandleQueryFailure(serverlist, i);
         }
     }
@@ -1292,39 +1129,9 @@ static GError ServerListQueryLoop(GServerList serverlist)
         }
     }
 
-    if (serverlist->abortupdate)
+    if (ServerListHasFinishedFetchingList(serverlist)
+        && GServerListSchedulerDone(&serverlist->scheduler, ArrayLength(serverlist->servers), active))
     { //we are done!!
-        FreeUpdateList(serverlist);
-        ServerListModeChange(serverlist, sl_idle);
-        return 0;
-    }
-
-    // non-pipelined callers: pause querying while masters are still transferring
-    if (!serverlist->pipelinequeries) {
-        if (serverlist->scheduler.next >= ArrayLength(serverlist->servers) && active == 0
-            && (serverlist->startslindex < ServerListGetNumMasters()
-                || !ServerListHasFinishedFetchingList(serverlist))) {
-            ServerListModeChange(serverlist, sl_listxfer);
-            return 0;
-        }
-
-        if (!ServerListHasFinishedFetchingList(serverlist)
-            && current_time() < serverlist->lastsltime + SERVER_QUERY_MAX_PAUSE) {
-            // Make sure to not send out other queries if currently fetching from other lists
-            // to avoid overloading the network
-            return GE_BUSY;
-        }
-    }
-
-    mastersFinished = serverlist->startslindex >= ServerListGetNumMasters()
-        && ServerListHasFinishedFetchingList(serverlist);
-    if (GServerListSchedulerDone(
-            &serverlist->scheduler,
-            ArrayLength(serverlist->servers),
-            active,
-            mastersFinished
-        ))
-    {
         FreeUpdateList(serverlist);
         ServerListModeChange(serverlist, sl_idle);
         return 0;
@@ -1369,13 +1176,6 @@ static GError ServerListQueryLoop(GServerList serverlist)
             continue;
         }
         serverlist->updatelist[i].starttime = current_time();
-        serverlist->CallBackFn(
-            serverlist,
-            LIST_QUERYSTARTED,
-            serverlist->instance,
-            server,
-            NULL
-        );
     }
 
 
@@ -1399,20 +1199,15 @@ GError ServerListThink(GServerList serverlist)
             if (serverlist->slsockets[i].s != INVALID_SOCKET) {
                 closesocket(serverlist->slsockets[i].s);
                 serverlist->slsockets[i].s = INVALID_SOCKET;
+                serverlist->slsockets[i].socketstate = ls_none;
             }
-            serverlist->slsockets[i].socketstate = ls_none;
         }
         FreeUpdateList(serverlist);
-        if (serverlist->state != sl_idle) {
+        // a name being resolved: the thread writes into its handle until it ends (never cancelled)
+        if (serverlist->state != sl_idle && ServerListHasFinishedFetchingList(serverlist)) {
             ServerListModeChange(serverlist, sl_idle);
         }
         return GE_NOERROR;
-    }
-
-    if ((serverlist->state == sl_listxfer
-            || (serverlist->state == sl_querying && serverlist->pipelinequeries))
-        && serverlist->startslindex < ServerListGetNumMasters()) {
-        CreateServerListForAvailableSockets(serverlist, serverlist->async);
     }
 
     switch(serverlist->state)
@@ -1420,8 +1215,7 @@ GError ServerListThink(GServerList serverlist)
         case sl_idle:
             break;
         case sl_listxfer:
-            if (serverlist->startslindex >= ServerListGetNumMasters()
-                && ServerListHasFinishedFetchingList(serverlist)) {
+            if (ServerListHasFinishedFetchingList(serverlist)) {
                 ServerListModeChange(serverlist, sl_idle);
             }
             break;
@@ -1598,12 +1392,13 @@ void ServerListSort(GServerList serverlist, gbool ascending, char *sortkey, GCom
 Verify if the server list socket has an error or has timed out, and abort. */
 static GError ServerListCheckSocketError(GServerList serverlist, GServerListSocket slsocket)
 {
-    int so_error;
+    int so_error = 0;
     int len = sizeof(so_error);
+    gsi_time timeout = slsocket->socketstate == ls_connecting ? MASTER_CONNECT_TIME : INTERNET_SEARCH_TIME;
     getsockopt(slsocket->s, SOL_SOCKET, SO_ERROR, (void*)&so_error, &len);
 
     // Abort if the socket has an error or if it connect/recv has timed out
-    if (so_error || current_time() >= slsocket->lastreplytime + INTERNET_SEARCH_TIME) {
+    if (so_error || current_time() >= slsocket->lastreplytime + timeout) {
         closesocket(slsocket->s);
         slsocket->s = INVALID_SOCKET;
         slsocket->socketstate = ls_none;
@@ -1619,18 +1414,13 @@ Start querying a GServerList. */
 static GError ServerListStartQuery(GServerList serverlist, GServerListSocket slsocket, gbool async)
 {
     GError error;
-    int i;
 
     if (slsocket->socketstate != ls_connecting) {
         return GE_BUSY;
     }
 
     if (serverlist->abortupdate) {
-        for(i = 0; i < serverlist->numslsockets; i++) {
-            closesocket(serverlist->slsockets[i].s);
-            serverlist->slsockets[i].s = INVALID_SOCKET;
-        }
-        ServerListModeChange(serverlist, sl_idle);
+        // ServerListThink closes the sockets
         return GE_NOCONNECT;
     }
 
@@ -1661,7 +1451,7 @@ static gbool ServerListHasFinishedFetchingList(GServerList serverlist)
     int i;
 
     for(i = 0; i < serverlist->numslsockets; i++) {
-        if (serverlist->slsockets[i].s != INVALID_SOCKET) {
+        if (serverlist->slsockets[i].s != INVALID_SOCKET || serverlist->slsockets[i].socketstate == ls_resolving) {
             return 0;
         }
     }
@@ -1676,6 +1466,21 @@ updating to occur during async server list updates */
 GError ServerListThinkSocket(GServerList serverlist, GServerListSocket slsocket)
 {
     GError socketerror;
+    unsigned int ip;
+
+    if (slsocket->socketstate == ls_resolving) {
+        ip = gsiGetResolvedIP(slsocket->resolve);
+        if (ip == GSI_STILL_RESOLVING_HOSTNAME) {
+            return 0;
+        }
+        // the handle is freed
+        slsocket->resolve = NULL;
+        slsocket->socketstate = ls_none;
+        if (ip == GSI_ERROR_RESOLVING_HOSTNAME || serverlist->abortupdate) {
+            return GE_NODNS;
+        }
+        return CreateServerListSocket(serverlist, slsocket, ip);
+    }
 
     if (slsocket->s == INVALID_SOCKET) {
         return GE_NOSOCKET;
