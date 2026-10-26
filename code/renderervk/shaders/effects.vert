@@ -48,6 +48,13 @@ layout(push_constant) uniform PushConstants {
 	mat4	mvp;
 	vec4	eyeZ;
 	vec4	clipPlane;
+#ifdef TEMPORAL
+	// generic.vert's
+	layout(offset = 128) mat4	prevMvp;
+	vec4	mvRow0;
+	vec4	mvRow1;
+	vec4	jitter;
+#endif
 } pc;
 
 layout(std430, set = 2, binding = 1) readonly buffer SkinData {
@@ -69,12 +76,28 @@ layout(location = 1) out vec2 v_st0;
 layout(location = 2) out vec2 v_st1;
 layout(location = 3) out vec2 v_fogClip;
 layout(location = 4) out vec3 v_position;
+#ifdef TEMPORAL
+// generic.vert's
+layout(location = 5) out vec4 v_currClip;
+layout(location = 6) out vec4 v_prevClip;
+layout(location = 7) out vec3 v_viewNormal;
+layout(location = 8) out vec3 v_viewPos;
+layout(location = 9) flat out float v_class;
+#endif
 
 #ifdef CLIP_DISTANCE
 out float gl_ClipDistance[1];
 #endif
 
 invariant gl_Position;
+
+#ifdef TEMPORAL
+// the temporal path: only the pipelines that write the normals buffer
+// (vk_pipeline.c) compute what it needs, the motion vectors' only those
+// that draw what moves (generic.frag)
+layout(constant_id = 11) const bool TEMPORAL_NORMALS = true;
+layout(constant_id = 12) const bool TEMPORAL_MOTION = true;
+#endif
 
 // record layout, in words from the record's first
 const uint FX_FLAGS = 0u;
@@ -461,4 +484,19 @@ void main() {
 	v_st0 = texCoords( 0u, xyz, normal );
 	v_st1 = texCoords( 1u, xyz, normal );
 	v_position = xyz;
+
+#ifdef TEMPORAL
+	if ( !TEMPORAL_NORMALS ) {
+		return;
+	}
+	if ( TEMPORAL_MOTION ) {
+		// the deforms of the last frame aren't known: its position is this
+		// frame's deformed one (the motion of the entity only)
+		v_currClip = gl_Position - vec4( pc.jitter.xy * gl_Position.w, 0.0, 0.0 );
+		v_prevClip = pc.prevMvp * vec4( xyz, 1.0 );
+	}
+	v_viewPos = vec3( dot( pc.mvRow0, vec4( xyz, 1.0 ) ), dot( pc.mvRow1, vec4( xyz, 1.0 ) ), dot( pc.eyeZ, vec4( xyz, 1.0 ) ) );
+	v_viewNormal = vec3( dot( pc.mvRow0.xyz, normal ), dot( pc.mvRow1.xyz, normal ), dot( pc.eyeZ.xyz, normal ) );
+	v_class = pc.jitter.z;
+#endif
 }

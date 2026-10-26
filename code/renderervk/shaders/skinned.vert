@@ -42,6 +42,13 @@ layout(push_constant) uniform PushConstants {
 	mat4	mvp;
 	vec4	eyeZ;
 	vec4	clipPlane;
+#ifdef TEMPORAL
+	// generic.vert's
+	layout(offset = 128) mat4	prevMvp;
+	vec4	mvRow0;
+	vec4	mvRow1;
+	vec4	jitter;
+#endif
 } pc;
 
 layout(std430, set = 2, binding = 1) readonly buffer SkinData {
@@ -52,17 +59,42 @@ layout(std430, set = 2, binding = 2) readonly buffer SkinFrame {
 	uint	frame[];
 };
 
+#ifdef TEMPORAL
+// the last frame's frame data (r_temporal): the entity's bones and morph
+// weights of the last frame are there, at the words before its view origin
+// says (VK_SKIN_PREV_*, vk.h)
+layout(std430, set = 2, binding = 3) readonly buffer SkinPrevFrame {
+	uint	prevFrame[];
+};
+#endif
+
 layout(location = 0) out vec4 v_color;
 layout(location = 1) out vec2 v_st0;
 layout(location = 2) out vec2 v_st1;
 layout(location = 3) out vec2 v_fogClip;
 layout(location = 4) out vec3 v_position;
+#ifdef TEMPORAL
+// generic.vert's
+layout(location = 5) out vec4 v_currClip;
+layout(location = 6) out vec4 v_prevClip;
+layout(location = 7) out vec3 v_viewNormal;
+layout(location = 8) out vec3 v_viewPos;
+layout(location = 9) flat out float v_class;
+#endif
 
 #ifdef CLIP_DISTANCE
 out float gl_ClipDistance[1];
 #endif
 
 invariant gl_Position;
+
+#ifdef TEMPORAL
+// the temporal path: only the pipelines that write the normals buffer
+// (vk_pipeline.c) compute what it needs, the motion vectors' only those
+// that draw what moves (generic.frag)
+layout(constant_id = 11) const bool TEMPORAL_NORMALS = true;
+layout(constant_id = 12) const bool TEMPORAL_MOTION = true;
+#endif
 
 // lighttype_t
 const uint LIGHT_POINT = 0u;
@@ -139,6 +171,48 @@ uint bone( uint draw, uint index ) {
 	}
 	return frame[draw] + index * 16u;
 }
+
+#ifdef TEMPORAL
+// the position of the vertex with the last frame's bones and morph weights
+// (in the last frame's frame data from prevBones and prevMorphs), as main
+// computes it with this frame's
+vec3 prevPosition( uint draw, uint vert, uint prevBones, uint prevMorphs, float scale ) {
+	uint counts = skin[vert + 5u];
+	uint numWeights = counts & 0xFFFFu;
+	uint numMorphs = counts >> 16;
+	uint p = vert + skin[vert + 6u];
+	uint remap = frame[draw + 1u];
+
+	precise vec3 totalmorph = vec3( 0.0 );
+	for ( uint m = 0u; m < numMorphs; m++, p += 4u ) {
+		int weight = prevMorphs != NONE ? int( prevFrame[prevMorphs + skin[p]] ) : 0;
+
+		if ( weight != 0 ) {
+			totalmorph = totalmorph + vec3( skinFloat( p + 1u ), skinFloat( p + 2u ), skinFloat( p + 3u ) ) * float( weight );
+		}
+	}
+
+	precise vec3 xyz = vec3( 0.0 );
+	for ( uint w = 0u; w < numWeights; w++, p += 5u ) {
+		uint index = skin[p];
+		if ( remap != NONE ) {
+			index = skin[remap + index];
+		}
+		uint b = prevBones + index * 16u;
+		vec3 offset = vec3( uintBitsToFloat( prevFrame[b] ), uintBitsToFloat( prevFrame[b + 1u] ), uintBitsToFloat( prevFrame[b + 2u] ) );
+		vec3 row0 = vec3( uintBitsToFloat( prevFrame[b + 4u] ), uintBitsToFloat( prevFrame[b + 5u] ), uintBitsToFloat( prevFrame[b + 6u] ) );
+		vec3 row1 = vec3( uintBitsToFloat( prevFrame[b + 8u] ), uintBitsToFloat( prevFrame[b + 9u] ), uintBitsToFloat( prevFrame[b + 10u] ) );
+		vec3 row2 = vec3( uintBitsToFloat( prevFrame[b + 12u] ), uintBitsToFloat( prevFrame[b + 13u] ), uintBitsToFloat( prevFrame[b + 14u] ) );
+		precise vec3 point = vec3( skinFloat( p + 2u ), skinFloat( p + 3u ), skinFloat( p + 4u ) );
+
+		if ( w == 0u && prevMorphs != NONE ) {
+			point = totalmorph + point;
+		}
+		xyz = xyz + ( ( point.x * row0 + point.y * row1 + point.z * row2 ) + offset ) * skinFloat( p + 1u );
+	}
+	return xyz * scale;
+}
+#endif
 
 // RB_Light_Real: the lights of the entity's sphere, in its space
 vec4 lightColor( uint list, vec3 xyz, vec3 normal ) {
@@ -296,4 +370,23 @@ void main() {
 	}
 	v_st1 = vec2( 0.0 );
 	v_position = xyz;
+
+#ifdef TEMPORAL
+	if ( !TEMPORAL_NORMALS ) {
+		return;
+	}
+	if ( TEMPORAL_MOTION ) {
+		// the words before the view origin: the last frame's bones and morph
+		// weights in its frame data, VK_SKIN_NONE without them
+		uint prevBones = frame[frame[draw] - 8u];
+		uint prevMorphs = frame[frame[draw] - 7u];
+		vec3 prevXyz = prevBones != NONE ? prevPosition( draw, vert, prevBones, prevMorphs, scale ) : xyz;
+
+		v_currClip = gl_Position - vec4( pc.jitter.xy * gl_Position.w, 0.0, 0.0 );
+		v_prevClip = pc.prevMvp * vec4( prevXyz, 1.0 );
+	}
+	v_viewPos = vec3( dot( pc.mvRow0, vec4( xyz, 1.0 ) ), dot( pc.mvRow1, vec4( xyz, 1.0 ) ), dot( pc.eyeZ, vec4( xyz, 1.0 ) ) );
+	v_viewNormal = vec3( dot( pc.mvRow0.xyz, normal ), dot( pc.mvRow1.xyz, normal ), dot( pc.eyeZ.xyz, normal ) );
+	v_class = pc.jitter.z;
+#endif
 }

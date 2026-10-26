@@ -714,6 +714,8 @@ void Set2DWindow(int x, int y, int w, int h, float left, float right, float bott
 	float	matrix[16];
 
 	R_IssuePendingRenderCommands();
+	// the temporal path's scene goes into the frame before the 2D drawing
+	RB_TemporalEndScene();
 	RB_SetViewport(x, y, w, h);
 	RB_SetScissor(x, y, w, h);
 	RB_OrthoMatrix(matrix, left, right, bottom, top, n, f);

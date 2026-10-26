@@ -30,7 +30,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // compile_shaders.sh builds two variants: the default one, and one with
 // CLIP_DISTANCE defined that clips against the user clip plane with
 // gl_ClipDistance (pipelines with a clip plane, when the device supports
-// shaderClipDistance; otherwise generic.frag discards).
+// shaderClipDistance; otherwise generic.frag discards). With TEMPORAL
+// defined (both again) it is the temporal path's (r_temporal, vk_temporal.c):
+// it also reads normals and writes what the motion vectors and the normals
+// buffer need.
 
 #version 450
 
@@ -44,12 +47,23 @@ layout(push_constant) uniform PushConstants {
 	vec4	eyeZ;
 	// user clip plane in object space (zero when there is none)
 	vec4	clipPlane;
+#ifdef TEMPORAL
+	// the temporal path's block (vkTemporalPush_t in vk_local.h)
+	layout(offset = 128) mat4	prevMvp;	// last frame's projection (unjittered) * modelview
+	vec4	mvRow0;			// rows 0 and 1 of the modelview (row 2 is eyeZ)
+	vec4	mvRow1;
+	vec4	jitter;			// xy: the projection's jitter in NDC, z: the surface class
+#endif
 } pc;
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec4 in_color;
 layout(location = 2) in vec2 in_st0;
 layout(location = 3) in vec2 in_st1;
+#ifdef TEMPORAL
+// (0, 0, 0) with a binding stride of 0 when the draw has no normals
+layout(location = 4) in vec3 in_normal;
+#endif
 
 layout(location = 0) out vec4 v_color;
 layout(location = 1) out vec2 v_st0;
@@ -60,9 +74,27 @@ layout(location = 3) out vec2 v_fogClip;
 // object space position, for the dynamic lights (only pipelines with them
 // read it; the others link it away)
 layout(location = 4) out vec3 v_position;
+#ifdef TEMPORAL
+// the temporal path's outputs (generic.frag): clip positions of this frame
+// without the jitter and of the last frame, the view space normal and
+// position, and the surface class
+layout(location = 5) out vec4 v_currClip;
+layout(location = 6) out vec4 v_prevClip;
+layout(location = 7) out vec3 v_viewNormal;
+layout(location = 8) out vec3 v_viewPos;
+layout(location = 9) flat out float v_class;
+#endif
 
 #ifdef CLIP_DISTANCE
 out float gl_ClipDistance[1];
+#endif
+
+#ifdef TEMPORAL
+// the temporal path: only the pipelines that write the normals buffer
+// (vk_pipeline.c) compute what it needs, the motion vectors' only those
+// that draw what moves (generic.frag)
+layout(constant_id = 11) const bool TEMPORAL_NORMALS = true;
+layout(constant_id = 12) const bool TEMPORAL_MOTION = true;
 #endif
 
 // multi-pass shaders use GLS_DEPTHFUNC_EQUAL: every pipeline must produce
@@ -95,4 +127,19 @@ void main() {
 	v_st0 = in_st0;
 	v_st1 = in_st1;
 	v_position = in_position;
+
+#ifdef TEMPORAL
+	if ( !TEMPORAL_NORMALS ) {
+		return;
+	}
+	if ( TEMPORAL_MOTION ) {
+		// the projection's jitter moves x and y by jitter * w
+		v_currClip = gl_Position - vec4( pc.jitter.xy * gl_Position.w, 0.0, 0.0 );
+		v_prevClip = pc.prevMvp * vec4( in_position, 1.0 );
+	}
+	v_viewPos = vec3( dot( pc.mvRow0, vec4( in_position, 1.0 ) ), dot( pc.mvRow1, vec4( in_position, 1.0 ) ),
+		dot( pc.eyeZ, vec4( in_position, 1.0 ) ) );
+	v_viewNormal = vec3( dot( pc.mvRow0.xyz, in_normal ), dot( pc.mvRow1.xyz, in_normal ), dot( pc.eyeZ.xyz, in_normal ) );
+	v_class = pc.jitter.z;
+#endif
 }

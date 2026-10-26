@@ -1,17 +1,21 @@
 #!/bin/sh
 #
 # Compiles the GLSL shaders in this directory to SPIR-V and writes them as
-# C arrays to ../vk_shaders.c, so that normal builds don't need glslc.
-# Run it after changing a shader and commit the regenerated file.
+# C arrays to ../vk_shaders.c (the renderer's shaders) and
+# ../vk_shaders_temporal.c (those of the temporal path, r_temporal), so that
+# normal builds don't need glslc. Run it after changing a shader and commit
+# the regenerated files. Another glslc (its spirv-opt) can make other SPIR-V
+# from the same source: with an argument only that file is written, main or
+# temporal, and the other one's arrays stay as they are.
 #
-# Usage: code/renderervk/shaders/compile_shaders.sh   (GLSLC=/path/to/glslc to override)
+# Usage: code/renderervk/shaders/compile_shaders.sh [main|temporal]   (GLSLC=/path/to/glslc to override)
 
 set -eu
 
 cd "$(dirname "$0")"
 
 GLSLC=${GLSLC:-glslc}
-# name of the array, source file, extra glslc options
+# name of the array, source file, extra glslc options (separated by commas)
 SHADERS="generic_vert:generic.vert:
 generic_clip_vert:generic.vert:-DCLIP_DISTANCE
 generic_frag:generic.frag:
@@ -19,11 +23,26 @@ skinned_vert:skinned.vert:
 skinned_clip_vert:skinned.vert:-DCLIP_DISTANCE
 effects_vert:effects.vert:
 effects_clip_vert:effects.vert:-DCLIP_DISTANCE"
-OUT=../vk_shaders.c
-TMP=$OUT.tmp
+TEMPORAL_SHADERS="generic_temporal_vert:generic.vert:-DTEMPORAL
+generic_temporal_clip_vert:generic.vert:-DTEMPORAL,-DCLIP_DISTANCE
+generic_temporal_frag:generic.frag:-DTEMPORAL
+skinned_temporal_vert:skinned.vert:-DTEMPORAL
+skinned_temporal_clip_vert:skinned.vert:-DTEMPORAL,-DCLIP_DISTANCE
+effects_temporal_vert:effects.vert:-DTEMPORAL
+effects_temporal_clip_vert:effects.vert:-DTEMPORAL,-DCLIP_DISTANCE
+temporal_composite_vert:temporal_composite.vert:
+temporal_composite_frag:temporal_composite.frag:
+hiz_prepare_comp:hiz_build.comp:-DPREPARE
+hiz_build_comp:hiz_build.comp:
+hiz_tail_comp:hiz_build.comp:-DTAIL
+taa_resolve_comp:taa_resolve.comp:"
 
-{
-	cat <<'EOF'
+# write <output file> <what it holds> <shader list>
+write() {
+	OUT=$1
+	TMP=$OUT.tmp
+	{
+		cat <<'EOF'
 /*
 ===========================================================================
 Copyright (C) 2026 the OpenMoHAA team
@@ -46,26 +65,34 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 
-// vk_shaders.c -- SPIR-V of the shaders in shaders/
-//
-// GENERATED FILE, DO NOT EDIT: run shaders/compile_shaders.sh instead.
-
-#include <stddef.h>
-#include <stdint.h>
-
 EOF
-	for entry in $SHADERS; do
-		name=vk_spirv_$(echo "$entry" | cut -d: -f1)
-		src=$(echo "$entry" | cut -d: -f2)
-		opts=$(echo "$entry" | cut -d: -f3)
-		echo "// $src${opts:+ $opts}"
-		echo "const uint32_t ${name}[] ="
-		"$GLSLC" --target-env=vulkan1.1 -O $opts -mfmt=c "$src" -o -
-		echo ";"
-		echo "const size_t ${name}_size = sizeof( ${name} );"
+		echo "// $(basename "$OUT") -- SPIR-V of $2 in shaders/"
+		echo "//"
+		echo "// GENERATED FILE, DO NOT EDIT: run shaders/compile_shaders.sh instead."
 		echo
-	done
-} > "$TMP"
+		echo "#include <stddef.h>"
+		echo "#include <stdint.h>"
+		echo
+		for entry in $3; do
+			name=vk_spirv_$(echo "$entry" | cut -d: -f1)
+			src=$(echo "$entry" | cut -d: -f2)
+			opts=$(echo "$entry" | cut -d: -f3 | tr ',' ' ')
+			echo "// $src${opts:+ $opts}"
+			echo "const uint32_t ${name}[] ="
+			"$GLSLC" --target-env=vulkan1.1 -O $opts -mfmt=c "$src" -o -
+			echo ";"
+			echo "const size_t ${name}_size = sizeof( ${name} );"
+			echo
+		done
+	} > "$TMP"
 
-mv "$TMP" "$OUT"
-echo "wrote $(cd .. && pwd)/vk_shaders.c"
+	mv "$TMP" "$OUT"
+	echo "wrote $(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
+}
+
+if [ "${1:-}" != temporal ]; then
+	write ../vk_shaders.c "the shaders" "$SHADERS"
+fi
+if [ "${1:-}" != main ]; then
+	write ../vk_shaders_temporal.c "the temporal path's shaders (r_temporal)" "$TEMPORAL_SHADERS"
+fi

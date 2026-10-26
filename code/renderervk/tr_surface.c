@@ -194,6 +194,10 @@ void RB_SurfacePolychain( srfPoly_t *p ) {
 		tess.texCoords[numv][0][0] = p->verts[i].st[0];
 		tess.texCoords[numv][0][1] = p->verts[i].st[1];
 		*(int *)&tess.vertexColors[numv] = *(int *)p->verts[ i ].modulate;
+		if ( backEnd.temporalScene ) {
+			// no normal: the temporal path's derives it from the depth
+			VectorClear( tess.normal[numv] );
+		}
 
 		numv++;
 	}
@@ -234,6 +238,9 @@ void RB_SurfaceMarkFragment(srfMarkFragment_t* p) {
 			tess.texCoords[numv][0][0] = p->verts[i].st[0];
 			tess.texCoords[numv][0][1] = p->verts[i].st[1];
 			*(int *)&tess.vertexColors[numv] = *(int *)p->verts[ i ].modulate;
+			if ( backEnd.temporalScene ) {
+				VectorClear( tess.normal[numv] );
+			}
 
 			numv++;
 		}
@@ -300,7 +307,8 @@ void RB_SurfaceTriangles( srfTriangles_t *srf ) {
 	normal = tess.normal[ tess.numVertexes ];
 	texCoords = tess.texCoords[ tess.numVertexes ][0];
 	color = tess.vertexColors[ tess.numVertexes ];
-	needsNormal = tess.shader->needsNormal;
+	// the temporal path's normals buffer takes them too
+	needsNormal = tess.shader->needsNormal || backEnd.temporalScene;
 
 	for ( i = 0 ; i < srf->numVerts ; i++, dv++, xyz += 4, normal += 4, texCoords += 4, color += 4 ) {
 		xyz[0] = dv->xyz[0];
@@ -437,7 +445,7 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	numPoints = surf->numPoints;
 
 	needsNormal = qfalse;
-	if (tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights) {
+	if (tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights || backEnd.temporalScene) {
 		needsNormal = qtrue;
 	}
 
@@ -559,7 +567,7 @@ static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *he
 	normal = tess.normal[numVertexes];
 	texCoords = tess.texCoords[numVertexes][0];
 	color = ( unsigned char * ) &tess.vertexColors[numVertexes];
-	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights;
+	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights || backEnd.temporalScene;
 
 	for ( i = 0 ; i < rows ; i++ ) {
 		for ( j = 0 ; j < lodWidth ; j++ ) {

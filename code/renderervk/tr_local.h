@@ -187,9 +187,11 @@ typedef struct {
 
 	// what tr_skin.c put in the frame data for it (RB_SkinEntity): words of
 	// its bones, morph weights and lights, for frame skinSerial and the
-	// e.bonestart of its last view
+	// e.bonestart of its last view; skinPrev: with the words of the temporal
+	// path's scene before them (VK_SKIN_PREV_WORDS)
 	unsigned int	skinSerial;
 	int			skinBonestart;
+	qboolean	skinPrev;
 	uint32_t	skinBones, skinMorphs, skinLights;
 
 	//
@@ -1384,6 +1386,11 @@ typedef struct {
 	// RB_SetupFog calls: once one came after a registration, the fog of its
 	// map is known (tr_pipelines.c)
 	int			setupFogs;
+	// the view is drawn in the temporal path's scene (r_temporal,
+	// tr_temporal.c): the surfaces fill tess.normal, and the primary view
+	// keeps the entities' motion for the next frame
+	qboolean	temporalScene;
+	qboolean	temporalPrimary;
 } backEndState_t;
 
 /*
@@ -2218,6 +2225,14 @@ void R_SkinRegisterModel( const model_t *mod );
 void R_SkinRegisteredModels( void );
 qboolean RB_SkinSurface( skelSurfaceGame_t *sf, int mesh, int render_count );
 void RB_SkinDraw( drawGeometry_t *geometry );
+
+// tr_temporal.c: the temporal path's views and motion (r_temporal)
+void R_TemporalInit( void );
+void RB_TemporalBeginView( void );
+void RB_TemporalEndScene( void );
+void RB_TemporalModelview( void );
+void RB_TemporalSkin( int numBones, qboolean hasMorph, uint32_t *prevBones, uint32_t *prevMorphs );
+void RB_TemporalRecordSkin( int numBones, uint32_t bones, uint32_t morphs );
 // tr_pipelines.c
 void R_PrebuildPipelines( void );
 void R_PrebuildNewShader( const shader_t *shader );

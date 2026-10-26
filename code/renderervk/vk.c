@@ -113,7 +113,7 @@ static struct {
 	VkDescriptorSet	sets[NUM_TEXTURE_BUNDLES];
 	VkBuffer		vertexBuffers[4];
 	VkDeviceSize	vertexOffsets[4];
-	VkBuffer		normalBuffer;	// binding 4, effects draws only
+	VkBuffer		normalBuffer;	// binding 4: effects draws and the temporal path's
 	VkDeviceSize	normalOffset;
 	VkBuffer		indexBuffer;
 	VkDeviceSize	indexOffset;
@@ -573,6 +573,9 @@ void VK_BeginFrameIfNeeded( void ) {
 
 	// before anything of the frame uses the depth image
 	VK_UpdateDepthTarget();
+
+	// the ring of the skinned draws' frame data (vk_temporal.c)
+	VK_TemporalBeginFrame( frame, vk_skin.buffer.buffer );
 }
 
 VkCommandBuffer VK_GetUploadCommandBuffer( void ) {
@@ -782,6 +785,7 @@ static void VK_SelectTarget( void ) {
 
 static void VK_BeginRenderPass( void ) {
 	VkRenderPassBeginInfo info;
+	VkClearValue clearValues[3];
 
 	VK_BeginFrameIfNeeded();
 	if ( vk.renderPassActive ) {
@@ -797,6 +801,19 @@ static void VK_BeginRenderPass( void ) {
 	info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 	info.renderPass = vk.renderPass;
 	info.framebuffer = vk.targetFramebuffer;
+	if ( vkt.active ) {
+		// the temporal path's scene (vk_temporal.c): its first render pass
+		// clears the color, the motion vectors and the normals (alpha 1, 0, 0)
+		info.renderPass = vkt.clearPending ? vkt.renderPassClear : vkt.renderPass;
+		info.framebuffer = vkt.framebuffers[vkt.current];
+		if ( vkt.clearPending ) {
+			Com_Memset( clearValues, 0, sizeof( clearValues ) );
+			clearValues[0].color.float32[3] = 1.0f;
+			info.clearValueCount = 3;
+			info.pClearValues = clearValues;
+			vkt.clearPending = qfalse;
+		}
+	}
 	info.renderArea.extent.width = vk.width;
 	info.renderArea.extent.height = vk.height;
 	qvkCmdBeginRenderPass( vk.frame->mainCmd, &info, VK_SUBPASS_CONTENTS_INLINE );
@@ -1287,7 +1304,7 @@ RENDER TARGETS
 ====================================================================
 */
 
-static qboolean VK_FormatHasFeatures( VkFormat format, VkFormatFeatureFlags features ) {
+qboolean VK_FormatHasFeatures( VkFormat format, VkFormatFeatureFlags features ) {
 	VkFormatProperties props;
 
 	qvkGetPhysicalDeviceFormatProperties( vk.physicalDevice, format, &props );
@@ -1297,8 +1314,15 @@ static qboolean VK_FormatHasFeatures( VkFormat format, VkFormatFeatureFlags feat
 #define VK_TARGET_FORMAT_FEATURES ( VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT \
 	| VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT )
 
-static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-	VkImage *image, VkDeviceMemory *memory, VkImageView *view )
+/*
+===============
+VK_CreateImage
+
+A 2D image with memory of its own and a view of all its levels (aspect)
+===============
+*/
+void VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+	int width, int height, int mipLevels, VkImage *image, VkDeviceMemory *memory, VkImageView *view )
 {
 	VkImageCreateInfo imageInfo;
 	VkImageViewCreateInfo viewInfo;
@@ -1308,10 +1332,10 @@ static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	imageInfo.imageType = VK_IMAGE_TYPE_2D;
 	imageInfo.format = format;
-	imageInfo.extent.width = vk.width;
-	imageInfo.extent.height = vk.height;
+	imageInfo.extent.width = width;
+	imageInfo.extent.height = height;
 	imageInfo.extent.depth = 1;
-	imageInfo.mipLevels = 1;
+	imageInfo.mipLevels = mipLevels;
 	imageInfo.arrayLayers = 1;
 	imageInfo.samples = samples;
 	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1330,9 +1354,15 @@ static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples
 	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 	viewInfo.format = format;
 	viewInfo.subresourceRange.aspectMask = aspect;
-	viewInfo.subresourceRange.levelCount = 1;
+	viewInfo.subresourceRange.levelCount = mipLevels;
 	viewInfo.subresourceRange.layerCount = 1;
 	VK_CHECK( qvkCreateImageView( vk.device, &viewInfo, NULL, view ) );
+}
+
+static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+	VkImage *image, VkDeviceMemory *memory, VkImageView *view )
+{
+	VK_CreateImage( format, samples, usage, aspect, vk.width, vk.height, 1, image, memory, view );
 }
 
 static int VK_DepthBits( VkFormat format ) {
@@ -1636,6 +1666,10 @@ static void VK_CreateDepthTarget( qboolean readable ) {
 	if ( readable ) {
 		usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	}
+	// the temporal path's passes read it (vk_temporal.c)
+	if ( vkt.enabled ) {
+		usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+	}
 	VK_CreateTargetImage( vk.depthFormat, VK_SAMPLE_COUNT_1_BIT, usage, vk.depthAspect, &vk.depthImage, &vk.depthMemory, &vk.depthView );
 	vk.depthReadable = readable;
 }
@@ -1711,6 +1745,7 @@ static void VK_UpdateDepthTarget( void ) {
 		}
 	}
 	VK_ClearTargetImage( vk.depthImage, qfalse );
+	VK_TemporalDepthChanged();
 	vk.stats.depthTargets++;
 }
 
@@ -1771,6 +1806,9 @@ static void VK_CreateRenderTargets( void ) {
 		ri.Error( ERR_FATAL, "Vulkan: no depth/stencil format" );
 	}
 
+	// whether the temporal path is on, before the depth image is created
+	VK_TemporalCheckDevice();
+
 	VK_CreateTargetImage( vk.colorFormat, VK_SAMPLE_COUNT_1_BIT,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_IMAGE_ASPECT_COLOR_BIT, &vk.colorImage, &vk.colorMemory, &vk.colorView );
@@ -1819,6 +1857,7 @@ static void VK_CreateRenderTargets( void ) {
 		VK_ClearTargetImage( vk.msColorImage, qtrue );
 		VK_ClearTargetImage( vk.msDepthImage, qfalse );
 	}
+	VK_TemporalCreateTargets();
 
 	VK_CreateSwapchainTargets();
 }
@@ -1877,7 +1916,7 @@ void VK_DestroySwapchainTargets( void ) {
 	vk.swapchainDirect = qfalse;
 }
 
-static void VK_DestroyTargetImage( VkImage *image, VkDeviceMemory *memory, VkImageView *view ) {
+void VK_DestroyTargetImage( VkImage *image, VkDeviceMemory *memory, VkImageView *view ) {
 	if ( *view ) {
 		qvkDestroyImageView( vk.device, *view, NULL );
 	}
@@ -1891,6 +1930,7 @@ static void VK_DestroyTargetImage( VkImage *image, VkDeviceMemory *memory, VkIma
 }
 
 static void VK_DestroyRenderTargets( void ) {
+	VK_TemporalDestroyTargets();
 	VK_DestroySwapchainTargets();
 	if ( vk.framebuffer ) {
 		qvkDestroyFramebuffer( vk.device, vk.framebuffer, NULL );
@@ -2077,6 +2117,7 @@ void vk_initialize( void ) {
 	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images (2: and copies every frame, for tests; see the renderer's README)" );
 	r_fastSync = ri.Cvar_Get( "r_fastSync", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_SetDescription( r_fastSync, "1: without vsync (r_swapInterval 0) the mailbox present mode instead of immediate: no tearing, every refresh shows the newest finished frame, for a few ms more input to display (immediate where there is no mailbox)" );
+	VK_TemporalRegisterCvars();
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
 	VK_ResetState();
@@ -2097,6 +2138,11 @@ void vk_initialize( void ) {
 	VK_CreateRenderTargets();
 	VK_InitPipelines();
 	VK_CreateDlightSets();
+	VK_TemporalInitPipelines();
+	// the frame VK_CreateRenderTargets started
+	if ( vk.frame ) {
+		VK_TemporalBeginFrame( vk.frame, vk_skin.buffer.buffer );
+	}
 	VK_InitTextures();
 	VK_ReportCapabilities();
 
@@ -2131,6 +2177,7 @@ void vk_shutdown( void ) {
 		VK_FreeTerrainPool( qfalse );
 		VK_DestroyBuffer( &vk_skin.buffer );
 		Com_Memset( &vk_skin, 0, sizeof( vk_skin ) );
+		VK_TemporalShutdownPipelines();
 		VK_ShutdownPipelines();
 		VK_DestroyFrames();
 		VK_DestroyRenderTargets();
@@ -2140,6 +2187,7 @@ void vk_shutdown( void ) {
 	VK_DestroyDevice();
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
+	Com_Memset( &vkt, 0, sizeof( vkt ) );
 }
 
 /*
@@ -2193,6 +2241,9 @@ void vk_end_frame( void ) {
 
 	VK_BeginFrameIfNeeded();
 	frame = vk.frame;
+
+	// a scene not ended by the 2D drawing
+	vk_end_scene();
 
 	if ( vk.submitThread ) {
 		VK_QueueThreadFrame( frame );
@@ -2313,6 +2364,10 @@ void vk_set_depth_range( float zNear, float zFar ) {
 	vks.depthMin = Com_Clamp( 0.0f, 1.0f, zNear );
 	vks.depthMax = Com_Clamp( 0.0f, 1.0f, zFar );
 	vk_dirty |= VK_DIRTY_VIEWPORT;
+	if ( vkt.active ) {
+		// the class of the temporal path's push constants
+		vk_dirty |= VK_DIRTY_MVP;
+	}
 }
 
 /*
@@ -2573,6 +2628,11 @@ void vk_set_modelview( const float *matrix ) {
 	}
 	Com_Memcpy( vks.modelview, matrix, sizeof( vks.modelview ) );
 	vk_dirty |= VK_DIRTY_MVP;
+	// the temporal path's last modelview applies while the modelview is the
+	// one it was given with (vk_set_prev_modelview)
+	if ( vkt.prevModelviewSet ) {
+		vkt.objectMotion = !memcmp( vkt.prevModelviewFor, matrix, sizeof( vkt.prevModelviewFor ) );
+	}
 }
 
 void vk_set_viewport( int x, int y, int width, int height ) {
@@ -2641,16 +2701,20 @@ projection * modelview, with the projection remapped from GL clip space
 (z in [-w, w]) to Vulkan's (z in [0, w]): z' = ( z + w ) / 2
 ===============
 */
-static void VK_ComputeMVP( float *mvp ) {
-	const float *mv = vks.modelview;
+static void VK_MultiplyMVP( const float *projection, const float *mv, const float *jitter, float *mvp ) {
 	float p[16];
 	int c, r;
 
 	for ( c = 0; c < 4; c++ ) {
-		p[c * 4 + 0] = vks.projection[c * 4 + 0];
-		p[c * 4 + 1] = vks.projection[c * 4 + 1];
-		p[c * 4 + 2] = vk.depthClipControl ? vks.projection[c * 4 + 2] : 0.5f * ( vks.projection[c * 4 + 2] + vks.projection[c * 4 + 3] );
-		p[c * 4 + 3] = vks.projection[c * 4 + 3];
+		p[c * 4 + 0] = projection[c * 4 + 0];
+		p[c * 4 + 1] = projection[c * 4 + 1];
+		p[c * 4 + 2] = vk.depthClipControl ? projection[c * 4 + 2] : 0.5f * ( projection[c * 4 + 2] + projection[c * 4 + 3] );
+		p[c * 4 + 3] = projection[c * 4 + 3];
+	}
+	if ( jitter ) {
+		// x_ndc = ( p0 x + p8 z ) / -z: p8 - j moves it by j
+		p[8] -= jitter[0];
+		p[9] -= jitter[1];
 	}
 
 	for ( c = 0; c < 4; c++ ) {
@@ -2659,6 +2723,78 @@ static void VK_ComputeMVP( float *mvp ) {
 				+ p[2 * 4 + r] * mv[c * 4 + 2] + p[3 * 4 + r] * mv[c * 4 + 3];
 		}
 	}
+}
+
+// a perspective projection, which the temporal path jitters (not the
+// orthographic ones of flares and the like drawn in a scene)
+static qboolean VK_JitteredProjection( const float *projection ) {
+	return vkt.active && vkt.jitter && projection[11] == -1.0f && projection[15] == 0.0f;
+}
+
+static void VK_ComputeMVP( float *mvp ) {
+	VK_MultiplyMVP( vks.projection, vks.modelview, VK_JitteredProjection( vks.projection ) ? vkt.jitterNdc : NULL, mvp );
+}
+
+// a * b, column-major
+static void VK_MultiplyMatrix( const float *a, const float *b, float *out ) {
+	int c, r;
+
+	for ( c = 0; c < 4; c++ ) {
+		for ( r = 0; r < 4; r++ ) {
+			out[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1]
+				+ a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
+		}
+	}
+}
+
+/*
+===============
+VK_TemporalPushConstants
+
+The temporal path's push constants of a draw (vkTemporalPush_t): its last
+frame's clip transform, the rows of the modelview the normals need, the
+jitter and the class of what it draws
+===============
+*/
+static void VK_TemporalPushConstants( vkTemporalPush_t *tp ) {
+	const float *mv = vks.modelview;
+	float prevModelview[16];
+	int i;
+
+	if ( !vkt.viewHistory ) {
+		// no last frame: the current position, without the jitter
+		VK_MultiplyMVP( vks.projection, mv, NULL, tp->prevMvp );
+	} else {
+		if ( vkt.objectMotion ) {
+			Com_Memcpy( prevModelview, vkt.prevModelview, sizeof( prevModelview ) );
+		} else {
+			// a surface that doesn't move: the camera's motion only
+			VK_MultiplyMatrix( vkt.cameraDelta, mv, prevModelview );
+		}
+		// the view's last projection, but for the orthographic ones drawn
+		// in it (flares)
+		VK_MultiplyMVP( vks.projection[11] == -1.0f ? vkt.prevProjection : vks.projection, prevModelview, NULL, tp->prevMvp );
+	}
+
+	for ( i = 0; i < 4; i++ ) {
+		tp->mvRow0[i] = mv[i * 4 + 0];
+		tp->mvRow1[i] = mv[i * 4 + 1];
+	}
+
+	if ( VK_JitteredProjection( vks.projection ) ) {
+		tp->jitter[0] = vkt.jitterNdc[0];
+		tp->jitter[1] = vkt.jitterNdc[1];
+	} else {
+		tp->jitter[0] = tp->jitter[1] = 0.0f;
+	}
+	if ( vks.depthMin == 1.0f && vks.depthMax == 1.0f ) {
+		tp->jitter[2] = VK_TEMPORAL_CLASS_SKY;
+	} else if ( vks.depthMin == 0.0f && vks.depthMax == VK_DEPTH_HACK_MAX ) {
+		tp->jitter[2] = VK_TEMPORAL_CLASS_WEAPON;
+	} else {
+		tp->jitter[2] = VK_TEMPORAL_CLASS_SURFACE;
+	}
+	tp->jitter[3] = 0.0f;
 }
 
 static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
@@ -2709,6 +2845,7 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 	if ( vk_dirty & VK_DIRTY_MVP ) {
 		const float *mv = vks.modelview;
 		vkPushConstants_t pc;
+		vkTemporalPush_t tp;
 		int i;
 
 		VK_ComputeMVP( pc.mvp );
@@ -2725,7 +2862,13 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 				+ vks.clipPlane[2] * mv[i * 4 + 2] + vks.clipPlane[3] * mv[i * 4 + 3] : 0.0f;
 		}
 
-		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VK_PUSH_VERTEX_SIZE, &pc );
+		if ( vkt.active ) {
+			qvkCmdPushConstants( cmd, vkt.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VK_PUSH_VERTEX_SIZE, &pc );
+			VK_TemporalPushConstants( &tp );
+			qvkCmdPushConstants( cmd, vkt.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, VK_TEMPORAL_PUSH_OFFSET, sizeof( tp ), &tp );
+		} else {
+			qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VK_PUSH_VERTEX_SIZE, &pc );
+		}
 	}
 
 	if ( vk_dirty & VK_DIRTY_FOG ) {
@@ -2742,7 +2885,9 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 		pc.fogParams[0] = scale;
 		pc.fogParams[1] = vks.fogEnd * -scale;
 
-		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, VK_PUSH_VERTEX_SIZE,
+		// the temporal path's vertex range covers the fragment stage's
+		qvkCmdPushConstants( cmd, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout,
+			vkt.active ? VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, VK_PUSH_VERTEX_SIZE,
 			offsetof( vkPushConstants_t, dlightBase ) - VK_PUSH_VERTEX_SIZE, (const byte *)&pc + VK_PUSH_VERTEX_SIZE );
 	}
 
@@ -2751,7 +2896,8 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 
 		pc.dlightBase = vks.dlightBase;
 		pc.dlightMask = vks.dlightMask;
-		qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, offsetof( vkPushConstants_t, dlightBase ),
+		qvkCmdPushConstants( cmd, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout,
+			vkt.active ? VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, offsetof( vkPushConstants_t, dlightBase ),
 			sizeof( pc.dlightBase ) + sizeof( pc.dlightMask ), &pc.dlightBase );
 	}
 
@@ -2767,7 +2913,9 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 	}
 }
 
-static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primType_t prim, const drawGeometry_t *geometry, vkTexture_t **textures ) {
+static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primType_t prim, const drawGeometry_t *geometry, vkTexture_t **textures,
+	qboolean temporal, qboolean objectMotion )
+{
 	unsigned long stateBits = s->stateBits;
 	uint64_t bits = 0;
 	float alphaRef = 0.0f;
@@ -2882,6 +3030,23 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primT
 		bits |= VK_PIPE_DEPTHCLAMP;
 	}
 
+	if ( temporal ) {
+		bits |= VK_PIPE_TEMPORAL;
+		// normals per vertex for the pipelines that write them (not the
+		// others: their draws copy none): the static geometry's (not the
+		// terrain pool's), or the draw's
+		if ( VK_TemporalWritesBuffers( bits ) && !geometry->isSkinned && !( geometry->isStatic && geometry->staticFx >= 0 )
+			&& ( geometry->isStatic ? !geometry->staticTerrain : geometry->normals != NULL ) ) {
+			bits |= VK_PIPE_NORMALS;
+		}
+		// the motion vectors of what moves: an entity with a last frame, a
+		// skeletal model's bones; the readers work out the camera's motion
+		// of the rest
+		if ( VK_TemporalWritesBuffers( bits ) && ( geometry->isSkinned || objectMotion ) ) {
+			bits |= VK_PIPE_MOTION;
+		}
+	}
+
 	if ( s->stencilTest ) {
 		bits |= VK_PIPE_STENCIL;
 		bits |= (uint64_t)s->stencilFunc << VK_PIPE_STENCILFUNC_SHIFT;
@@ -2963,6 +3128,14 @@ static void VK_BindIndexBuffer( VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSi
 	}
 }
 
+static void VK_BindNormals( VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset ) {
+	if ( vkb.normalBuffer != buffer || vkb.normalOffset != offset ) {
+		qvkCmdBindVertexBuffers( cmd, 4, 1, &buffer, &offset );
+		vkb.normalBuffer = buffer;
+		vkb.normalOffset = offset;
+	}
+}
+
 /*
 ===============
 VK_UploadGeometry
@@ -2972,10 +3145,10 @@ frame and binds them: positions, colors (or the constant color), texture
 coordinates of units 0 and 1, each in its own binding
 ===============
 */
-static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes, qboolean normals ) {
 	VkBuffer buffer, buffers[4], indexBuffer;
 	VkDeviceSize offset, offsets[4], indexOffset;
-	VkDeviceSize xyzSize, colorSize, stSize[NUM_TEXTURE_BUNDLES], indexSize, total, pos;
+	VkDeviceSize xyzSize, colorSize, stSize[NUM_TEXTURE_BUNDLES], indexSize, normalSize, total, pos;
 	int numVertexes = geometry->numVertexes;
 	qboolean sameXyz, sameIndexes;
 	byte *data;
@@ -2997,6 +3170,9 @@ static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geomet
 	}
 	indexSize = sameIndexes ? 0 : sizeof( glIndex_t ) * numIndexes;
 	total += indexSize;
+	// the temporal path's normals (VK_PIPE_NORMALS)
+	normalSize = normals ? PAD( sizeof( float ) * 3 * numVertexes, 16 ) : 0;
+	total += normalSize;
 
 	data = VK_VertexAlloc( total, &buffer, &offset );
 	vk.stats.vertexBytes += total;
@@ -3032,6 +3208,12 @@ static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geomet
 			buffers[2 + i] = buffers[0];
 			offsets[2 + i] = offsets[0];
 		}
+	}
+
+	if ( normals ) {
+		VK_CopyStream( (float *)( data + pos ), geometry->normals, numVertexes, 3, geometry->normalStride );
+		VK_BindNormals( cmd, buffer, offset + pos );
+		pos += normalSize;
 	}
 
 	if ( sameIndexes ) {
@@ -3160,7 +3342,9 @@ vertex buffer of the frame (once for the passes of a shader, see
 drawGeometry_t::version). Returns the first index of the draw
 ===============
 */
-static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes,
+	qboolean normals )
+{
 	VkBuffer buffers[4];
 	VkDeviceSize offsets[4];
 	VkBuffer buffer = vk_static.buffer.buffer;
@@ -3200,14 +3384,9 @@ static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t
 
 	VK_BindVertexBuffers( cmd, buffers, offsets );
 
-	if ( geometry->staticFx >= 0 ) {
-		VkDeviceSize offset = vk_static.normalOffset + sizeof( float ) * 3 * geometry->staticVertex;
-
-		if ( vkb.normalBuffer != buffer || vkb.normalOffset != offset ) {
-			qvkCmdBindVertexBuffers( cmd, 4, 1, &buffer, &offset );
-			vkb.normalBuffer = buffer;
-			vkb.normalOffset = offset;
-		}
+	// effects draws, and the temporal path's that write normals (VK_PIPE_NORMALS)
+	if ( geometry->staticFx >= 0 || normals ) {
+		VK_BindNormals( cmd, buffer, vk_static.normalOffset + sizeof( float ) * 3 * geometry->staticVertex );
 	}
 
 	if ( geometry->staticFirstIndex >= 0 ) {
@@ -3248,7 +3427,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		}
 	}
 
-	VK_BuildPipelineKey( &key, &vks, prim, geometry, textures );
+	VK_BuildPipelineKey( &key, &vks, prim, geometry, textures, vkt.active, vkt.objectMotion );
 	if ( key.bits == vk_lastKey.bits && key.alphaRef == vk_lastKey.alphaRef && vk_lastPipeline ) {
 		pipeline = vk_lastPipeline;
 	} else {
@@ -3267,7 +3446,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		VkDescriptorSet set = ( textures[i] ? textures[i] : VK_DefaultTexture() )->descriptorSet;
 
 		if ( set != vkb.sets[i] ) {
-			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipelineLayout, i, 1, &set, 0, NULL );
+			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout, i, 1, &set, 0, NULL );
 			vkb.sets[i] = set;
 			vk.stats.descriptorBinds++;
 		}
@@ -3275,12 +3454,21 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 
 	// declared by every pipeline (the shader is specialized), so bound for all
 	if ( !vkb.dlightSet ) {
-		qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipelineLayout, 2, 1, &vk.frame->dlightSet, 0, NULL );
+		if ( vkt.active ) {
+			// the temporal path's set 2 adds the last frame's frame data
+			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.pipelineLayout, 2, 1, &vkt.graphicsSets[vk.frameIndex], 0, NULL );
+		} else {
+			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipelineLayout, 2, 1, &vk.frame->dlightSet, 0, NULL );
+		}
 		vkb.dlightSet = qtrue;
 		vk.stats.descriptorBinds++;
 	}
 
 	VK_ApplyDynamicState( cmd, ( key.bits & VK_PIPE_STIPPLE ) != 0 );
+	// the temporal path's draws without normals read (0, 0, 0) with a stride of 0
+	if ( ( key.bits & ( VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_EFFECTS | VK_PIPE_SKINNED ) ) == VK_PIPE_TEMPORAL ) {
+		VK_BindNormals( cmd, vkt.zeroBuffer.buffer, 0 );
+	}
 	if ( geometry->isSkinned ) {
 		uint32_t firstIndex;
 
@@ -3306,14 +3494,14 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		vk_terrain.draws++;
 	} else if ( geometry->isStatic ) {
 		// effects draws: firstInstance is the record
-		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes ), 0,
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes, ( key.bits & VK_PIPE_NORMALS ) != 0 ), 0,
 			geometry->staticFx >= 0 ? geometry->staticFx : 0 );
 		vk.stats.staticDraws++;
 		if ( geometry->staticFx >= 0 ) {
 			vk.stats.effectsDraws++;
 		}
 	} else {
-		VK_UploadGeometry( cmd, geometry, numIndexes, indexes );
+		VK_UploadGeometry( cmd, geometry, numIndexes, indexes, ( key.bits & VK_PIPE_NORMALS ) != 0 );
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
 	}
 	vk.stats.draws++;
@@ -3376,8 +3564,23 @@ qboolean vk_prebuild_pipeline( const vkDrawState_t *state ) {
 		}
 	}
 
-	VK_BuildPipelineKey( &key, &s, state->prim, &geometry, textures );
-	return VK_PrebuildPipeline( &key );
+	// the temporal path draws the 3D views with its own pipelines: those,
+	// with the normals of the static geometry and of tess (not of the
+	// terrain pool, which the draw then creates)
+	if ( vkt.enabled && !state->skinned && !state->effects ) {
+		geometry.normals = (const float *)&geometry;
+	}
+	VK_BuildPipelineKey( &key, &s, state->prim, &geometry, textures, vkt.enabled, qfalse );
+	if ( !vkt.enabled || state->skinned || !VK_TemporalWritesBuffers( key.bits ) ) {
+		return VK_PrebuildPipeline( &key );
+	}
+	// and the one of the entities that move (VK_PIPE_MOTION)
+	{
+		qboolean built = VK_PrebuildPipeline( &key );
+
+		VK_BuildPipelineKey( &key, &s, state->prim, &geometry, textures, qtrue, qtrue );
+		return VK_PrebuildPipeline( &key ) || built;
+	}
 }
 
 /*
@@ -3759,7 +3962,8 @@ int vk_alloc_skin_frame( int numWords, uint32_t **data ) {
 		return -1;
 	}
 	vk.frame->skinWords = first + numWords;
-	*data = (uint32_t *)vk.frame->skinBuffer.mapped + first;
+	// with the temporal path, the frame's buffer of the ring (vk_temporal.c)
+	*data = (uint32_t *)( vkt.enabled ? vkt.skinRing[vkt.skinSlot]->mapped : vk.frame->skinBuffer.mapped ) + first;
 	return first;
 }
 
@@ -4009,6 +4213,10 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 	h = y1 - y0;
 
 	VK_BeginFrameIfNeeded();
+	if ( format == READ_RGB8 ) {
+		// the scene is in the color target once it has ended
+		vk_end_scene();
+	}
 	if ( format != READ_RGB8 ) {
 		// zeros until the depth image is readable (vk_want_depth_reads)
 		vk.depthReadSerial = vk.frameSerial;
@@ -4229,3 +4437,195 @@ frame about to start when called between frames (see VK_UpdateDepthTarget)
 void vk_want_depth_reads( void ) {
 	vk.depthReadSerial = vk.frame ? vk.frameSerial : vk.frameSerial + 1;
 }
+
+/*
+====================================================================
+
+TEMPORAL PATH (vk_temporal.c)
+
+====================================================================
+*/
+
+qboolean vk_temporal_enabled( void ) {
+	return vk.device && vkt.enabled;
+}
+
+// a GL viewport as a rectangle of the framebuffer from its top-left, clipped
+static void VK_ViewportRect( const int *viewport, int *rect ) {
+	int x0 = Q_max( viewport[0], 0 );
+	int y0 = Q_max( vk.height - ( viewport[1] + viewport[3] ), 0 );
+	int x1 = Q_min( viewport[0] + viewport[2], vk.width );
+	int y1 = Q_min( vk.height - viewport[1], vk.height );
+
+	rect[0] = x0;
+	rect[1] = y0;
+	rect[2] = Q_max( x1 - x0, 0 );
+	rect[3] = Q_max( y1 - y0, 0 );
+}
+
+// the radical inverse of index in base: the Halton sequence
+static float VK_Halton( int index, int base ) {
+	float f = 1.0f, r = 0.0f;
+
+	while ( index > 0 ) {
+		f /= base;
+		r += f * ( index % base );
+		index /= base;
+	}
+	return r;
+}
+
+/*
+===============
+vk_begin_scene
+
+A 3D view of the world starts. The first one of a frame begins the scene:
+the following render passes are the scene's (VK_BeginRenderPass: the first
+clears its images), the draws use the scene's pipelines (VK_PIPE_TEMPORAL)
+and their motion. A view that comes once the frame's scene has ended is
+drawn as without the temporal path
+===============
+*/
+qboolean vk_begin_scene( const vkSceneView_t *view ) {
+	int rect[4], sample;
+
+	if ( !vk.device || !vkt.enabled ) {
+		return qfalse;
+	}
+	VK_BeginFrameIfNeeded();
+
+	if ( !vkt.active ) {
+		if ( vkt.sceneSerial == vk.frameSerial ) {
+			return qfalse;
+		}
+		VK_EndRenderPass();
+		// the other images hold the last scene's
+		vkt.current ^= 1;
+		vkt.active = qtrue;
+		vkt.clearPending = qtrue;
+		vkt.sceneSerial = vk.frameSerial;
+		Com_Memset( vkt.rect, 0, sizeof( vkt.rect ) );
+		Com_Memset( &vkt.view, 0, sizeof( vkt.view ) );
+		vkt.primarySet = qfalse;
+
+		// the jitter of the frame: anti-aliasing needs it
+		vkt.taaOn = r_taa->integer != 0;
+		vkt.jitter = r_temporalJitter->integer != 0 || vkt.taaOn;
+		sample = (int)( vk.frameSerial % (uint64_t)Q_max( r_temporalJitterSamples->integer, 1 ) ) + 1;
+		vkt.jitterPixels[0] = vkt.jitter ? VK_Halton( sample, 2 ) - 0.5f : 0.0f;
+		vkt.jitterPixels[1] = vkt.jitter ? VK_Halton( sample, 3 ) - 0.5f : 0.0f;
+
+		// the scene's pipelines have their own layout and render pass:
+		// nothing bound so far applies
+		Com_Memset( &vkb, 0, sizeof( vkb ) );
+		vk_dirty = VK_DIRTY_ALL;
+	}
+
+	// the views of the scene, and the primary one's projection for the
+	// passes after it (the depth pyramid's view distances, the normals)
+	VK_ViewportRect( view->viewport, rect );
+	if ( !vkt.rect[2] ) {
+		Com_Memcpy( vkt.rect, rect, sizeof( rect ) );
+	} else if ( rect[2] && rect[3] ) {
+		int x1 = Q_max( vkt.rect[0] + vkt.rect[2], rect[0] + rect[2] );
+		int y1 = Q_max( vkt.rect[1] + vkt.rect[3], rect[1] + rect[3] );
+
+		vkt.rect[0] = Q_min( vkt.rect[0], rect[0] );
+		vkt.rect[1] = Q_min( vkt.rect[1], rect[1] );
+		vkt.rect[2] = x1 - vkt.rect[0];
+		vkt.rect[3] = y1 - vkt.rect[1];
+	}
+	// pixels (x right, y down) to NDC (y up) of this view
+	vkt.jitterNdc[0] = view->viewport[2] > 0 ? 2.0f * vkt.jitterPixels[0] / view->viewport[2] : 0.0f;
+	vkt.jitterNdc[1] = view->viewport[3] > 0 ? -2.0f * vkt.jitterPixels[1] / view->viewport[3] : 0.0f;
+
+	vkt.viewHistory = view->prevProjection && view->cameraDelta;
+	if ( vkt.viewHistory ) {
+		Com_Memcpy( vkt.prevProjection, view->prevProjection, sizeof( vkt.prevProjection ) );
+		Com_Memcpy( vkt.cameraDelta, view->cameraDelta, sizeof( vkt.cameraDelta ) );
+	}
+
+	// the first primary view, or until there is one the first view: the
+	// view of the passes after the scene and their readers (vk_temporal.c,
+	// TemporalView); VK_TemporalResolve adds its depth range
+	if ( !vkt.primarySet && ( view->primary || !vkt.view.rect[2] ) ) {
+		vkt.primarySet = view->primary;
+		Com_Memcpy( vkt.projection, view->projection, sizeof( vkt.projection ) );
+		Com_Memcpy( vkt.view.rect, rect, sizeof( rect ) );
+		vkt.view.proj[0] = view->projection[0];
+		vkt.view.proj[1] = view->projection[5];
+		vkt.view.proj[2] = view->projection[8];
+		vkt.view.proj[3] = view->projection[9];
+		vkt.view.params[0] = vkt.jitter ? vkt.jitterNdc[0] : 0.0f;
+		vkt.view.params[1] = vkt.jitter ? vkt.jitterNdc[1] : 0.0f;
+		vkt.view.params[2] = vkt.viewHistory ? 1.0f : 0.0f;
+		vkt.view.params[3] = VK_DEPTH_HACK_MAX;
+		if ( vkt.viewHistory ) {
+			VK_MultiplyMatrix( vkt.prevProjection, vkt.cameraDelta, vkt.view.reproject );
+		}
+	}
+	vkt.prevModelviewSet = qfalse;
+	vkt.objectMotion = qfalse;
+	vk_dirty |= VK_DIRTY_MVP;
+	return qtrue;
+}
+
+/*
+===============
+vk_end_scene
+
+The passes after the scene (vk_temporal.c), then the scene into the frame's
+color target, in vk.renderPass, where what follows draws
+===============
+*/
+void vk_end_scene( void ) {
+	VkCommandBuffer cmd;
+
+	if ( !vkt.active || !vk.frame ) {
+		vkt.active = qfalse;
+		return;
+	}
+
+	VK_EndRenderPass();
+	// a scene without a render pass (no view drew) still clears its images
+	if ( vkt.clearPending ) {
+		VK_BeginRenderPass();
+		VK_EndRenderPass();
+	}
+	cmd = vk.frame->mainCmd;
+	VK_TemporalResolve( cmd );
+	vkt.active = qfalse;
+	vkt.historySerial = vk.frameSerial;
+
+	VK_BeginRenderPass();
+	VK_TemporalComposite( cmd );
+
+	// the composite's pipeline, layout and dynamic state replaced the
+	// bindings of the draws
+	Com_Memset( &vkb, 0, sizeof( vkb ) );
+	vk_dirty = VK_DIRTY_ALL;
+}
+
+void vk_set_prev_modelview( const float *matrix ) {
+	if ( !vkt.active ) {
+		return;
+	}
+	if ( !matrix ) {
+		if ( vkt.prevModelviewSet ) {
+			vkt.prevModelviewSet = qfalse;
+			vkt.objectMotion = qfalse;
+			vk_dirty |= VK_DIRTY_MVP;
+		}
+		return;
+	}
+	if ( vkt.prevModelviewSet && !memcmp( vkt.prevModelview, matrix, sizeof( vkt.prevModelview ) )
+		&& !memcmp( vkt.prevModelviewFor, vks.modelview, sizeof( vkt.prevModelviewFor ) ) ) {
+		return;
+	}
+	Com_Memcpy( vkt.prevModelview, matrix, sizeof( vkt.prevModelview ) );
+	Com_Memcpy( vkt.prevModelviewFor, vks.modelview, sizeof( vkt.prevModelviewFor ) );
+	vkt.prevModelviewSet = qtrue;
+	vkt.objectMotion = qtrue;
+	vk_dirty |= VK_DIRTY_MVP;
+}
+

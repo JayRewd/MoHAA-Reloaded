@@ -1818,6 +1818,8 @@ void R_Init( void ) {
 		ri.Printf(PRINT_ALL,  "WARNING: tess.xyz not 16 byte aligned\n" );
 	}
 	Com_Memset( tess.constantColor255, 255, sizeof( tess.constantColor255 ) );
+	// the temporal path's history starts again with the backend's frames
+	R_TemporalInit();
 
 	tr.worldEntity.e.shaderRGBA[0] = -1;
 	tr.worldEntity.e.shaderRGBA[1] = 0;

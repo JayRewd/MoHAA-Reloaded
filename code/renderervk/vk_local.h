@@ -111,6 +111,8 @@ FUNCTION POINTERS
 	X( vkCmdCopyBuffer ) \
 	X( vkCmdCopyBufferToImage ) \
 	X( vkCmdCopyImageToBuffer ) \
+	X( vkCmdDispatch ) \
+	X( vkCmdDraw ) \
 	X( vkCmdDrawIndexed ) \
 	X( vkCmdEndRenderPass ) \
 	X( vkCmdPipelineBarrier ) \
@@ -126,6 +128,7 @@ FUNCTION POINTERS
 	X( vkCmdWriteTimestamp ) \
 	X( vkCreateBuffer ) \
 	X( vkCreateCommandPool ) \
+	X( vkCreateComputePipelines ) \
 	X( vkCreateDescriptorPool ) \
 	X( vkCreateDescriptorSetLayout ) \
 	X( vkCreateFence ) \
@@ -602,6 +605,10 @@ void		VK_BeginFrameIfNeeded( void );
 void		VK_EndRenderPass( void );
 void		VK_FlushAndWait( void );
 VkCommandBuffer VK_GetUploadCommandBuffer( void );
+qboolean	VK_FormatHasFeatures( VkFormat format, VkFormatFeatureFlags features );
+void		VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+				int width, int height, int mipLevels, VkImage *image, VkDeviceMemory *memory, VkImageView *view );
+void		VK_DestroyTargetImage( VkImage *image, VkDeviceMemory *memory, VkImageView *view );
 void		VK_ImageBarrier( VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
 				VkImageLayout oldLayout, VkImageLayout newLayout,
 				VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
@@ -642,6 +649,7 @@ typedef struct {
 } vkPipelineKey_t;
 
 void		VK_InitPipelines( void );
+VkShaderModule VK_CreateShaderModule( const uint32_t *code, size_t size );
 void		VK_ShutdownPipelines( void );
 VkPipeline	VK_GetPipeline( const vkPipelineKey_t *key );
 qboolean	VK_PrebuildPipeline( const vkPipelineKey_t *key );
@@ -676,6 +684,9 @@ void		VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed );
 #define VK_PIPE_SKINNED				( 1ull << 45 )	// skinned draw: shaders/skinned.vert, no vertex input
 #define VK_PIPE_EFFECTS				( 1ull << 46 )	// static geometry with effects: shaders/effects.vert, normals in binding 4
 #define VK_PIPE_DEPTHCLAMP			( 1ull << 47 )	// depth clamp instead of near/far clipping (vk_set_depth_clamp)
+#define VK_PIPE_TEMPORAL			( 1ull << 48 )	// the temporal path's scene (vk_temporal.c): its render pass, layout and shaders
+#define VK_PIPE_NORMALS				( 1ull << 49 )	// temporal, writes the normals buffer, not skinned or effects: normals per vertex in binding 4 (else a constant 0)
+#define VK_PIPE_MOTION				( 1ull << 50 )	// temporal, writes the normals buffer, and the motion vectors: draws what moves
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
@@ -706,6 +717,25 @@ typedef struct {
 #define VK_PUSH_VERTEX_SIZE		( (uint32_t)offsetof( vkPushConstants_t, fogColor ) )
 #define VK_PUSH_FRAGMENT_SIZE	( (uint32_t)( sizeof( vkPushConstants_t ) - VK_PUSH_VERTEX_SIZE ) )
 
+// the push constants the temporal path's vertex shaders add after
+// vkPushConstants_t (shaders/generic.vert)
+typedef struct {
+	float	prevMvp[16];		// the last frame's projection (unjittered) * modelview
+	float	mvRow0[4];			// rows 0 and 1 of the modelview (row 2 is eyeZ)
+	float	mvRow1[4];
+	float	jitter[4];			// xy: the projection's jitter in NDC, z: VK_TEMPORAL_CLASS_*, w: 0
+} vkTemporalPush_t;
+
+#define VK_TEMPORAL_PUSH_OFFSET	( (uint32_t)sizeof( vkPushConstants_t ) )
+#define VK_TEMPORAL_PUSH_END	( VK_TEMPORAL_PUSH_OFFSET + (uint32_t)sizeof( vkTemporalPush_t ) )
+
+// the class of a pixel in the normals buffer (its 2 alpha bits; see
+// shaders/temporal_common.glsl)
+#define VK_TEMPORAL_CLASS_NONE		0	// nothing that hides what is behind it was drawn there
+#define VK_TEMPORAL_CLASS_SURFACE	1
+#define VK_TEMPORAL_CLASS_WEAPON	2	// the view weapon (depth hack range)
+#define VK_TEMPORAL_CLASS_SKY		3	// the sky (depth range [1, 1])
+
 // vk_shaders.c
 extern const uint32_t	vk_spirv_generic_vert[];
 extern const size_t		vk_spirv_generic_vert_size;
@@ -722,9 +752,210 @@ extern const size_t		vk_spirv_effects_vert_size;
 extern const uint32_t	vk_spirv_effects_clip_vert[];
 extern const size_t		vk_spirv_effects_clip_vert_size;
 
+// vk_shaders_temporal.c
+extern const uint32_t	vk_spirv_generic_temporal_vert[];
+extern const size_t		vk_spirv_generic_temporal_vert_size;
+extern const uint32_t	vk_spirv_generic_temporal_clip_vert[];
+extern const size_t		vk_spirv_generic_temporal_clip_vert_size;
+extern const uint32_t	vk_spirv_generic_temporal_frag[];
+extern const size_t		vk_spirv_generic_temporal_frag_size;
+extern const uint32_t	vk_spirv_skinned_temporal_vert[];
+extern const size_t		vk_spirv_skinned_temporal_vert_size;
+extern const uint32_t	vk_spirv_skinned_temporal_clip_vert[];
+extern const size_t		vk_spirv_skinned_temporal_clip_vert_size;
+extern const uint32_t	vk_spirv_effects_temporal_vert[];
+extern const size_t		vk_spirv_effects_temporal_vert_size;
+extern const uint32_t	vk_spirv_effects_temporal_clip_vert[];
+extern const size_t		vk_spirv_effects_temporal_clip_vert_size;
+extern const uint32_t	vk_spirv_temporal_composite_vert[];
+extern const size_t		vk_spirv_temporal_composite_vert_size;
+extern const uint32_t	vk_spirv_temporal_composite_frag[];
+extern const size_t		vk_spirv_temporal_composite_frag_size;
+extern const uint32_t	vk_spirv_hiz_prepare_comp[];
+extern const size_t		vk_spirv_hiz_prepare_comp_size;
+extern const uint32_t	vk_spirv_hiz_build_comp[];
+extern const size_t		vk_spirv_hiz_build_comp_size;
+extern const uint32_t	vk_spirv_hiz_tail_comp[];
+extern const size_t		vk_spirv_hiz_tail_comp_size;
+extern const uint32_t	vk_spirv_taa_resolve_comp[];
+extern const size_t		vk_spirv_taa_resolve_comp_size;
+
+/*
+====================================================================
+
+TEMPORAL PATH (vk_temporal.c)
+
+r_temporal: the 3D views of a frame (a scene, vk_begin_scene) are drawn into
+images of their own instead of the frame's color target: the color in
+RGBA16F, the normals beside it and the motion vectors of what moves, the
+depth image made sampled. When the scene ends (vk_end_scene: the 2D drawing
+that follows it, another kind of view, the end of the frame) compute passes
+make the depth pyramid, and the scene is drawn into the frame's color
+target. The color and the pyramid of the last frame are kept: two of each,
+the frames alternate. What the buffers don't hold (the camera's motion of
+what doesn't move, the normals the draws didn't give) their readers work out
+with shaders/temporal_common.glsl.
+
+====================================================================
+*/
+
+#define VK_TEMPORAL_MAX_MIPS	16		// of the depth pyramid
+#define VK_TEMPORAL_HISTORY		2		// images that alternate between frames
+#define VK_TEMPORAL_MAX_PASSES	12		// dispatches of the pyramid after its levels 0 and 1
+#define VK_TEMPORAL_TAIL_SIZE	128		// a level no larger: the rest in one dispatch (hiz_build.comp, TAIL); 256 was slower: one workgroup
+#define VK_TEMPORAL_TAIL_IMAGES	8		// bindings of that dispatch: that level and up to 7 more
+#define VK_SKIN_RING			( VK_MAX_FRAMES + 1 )	// frame data of the skinned draws with the temporal path: see vk_alloc_skin_frame
+
+// what the passes that read the scene's buffers need besides them
+// (vkTemporal_t::readers): the depth image (readable) and the depth pyramid;
+// without a reader that needs them the pyramid isn't made
+#define VK_TEMPORAL_READ_DEPTH	1
+
+// a dispatch of the depth pyramid after the prepare pass (hiz_build.comp)
+typedef struct {
+	qboolean		tail;			// the TAIL variant: every level after src
+	int				src;			// the level it reads
+	int				count;			// the levels it makes after it (1 or 2 without tail)
+} vkHizPass_t;
+
+typedef struct {
+	VkImage			image;
+	VkDeviceMemory	memory;
+	VkImageView		view;			// every level
+} vkTemporalImage_t;
+
+// the primary view for the passes after the scene and their readers:
+// TemporalView of shaders/temporal_common.glsl
+typedef struct {
+	int				rect[4];		// x, y (from the top-left), width, height in framebuffer pixels
+	float			proj[4];		// projection[0], [5], [8], [9] (unjittered)
+	float			depth[4];		// projection[10], [14], the depth floor (vk_depth_floor), the far distance
+	float			params[4];		// the jitter in NDC, 1 when the view has a last frame, VK_DEPTH_HACK_MAX
+	float			reproject[16];	// the last frame's projection * the camera's motion (GL clip space)
+} vkTemporalView_t;
+
+typedef struct {
+	// r_temporal latched on, without multisampling, on a device that has
+	// what it needs (VK_TemporalCheckDevice); the rest is valid only then
+	qboolean		enabled;
+	qboolean		active;			// a scene is being drawn (between vk_begin_scene and vk_end_scene)
+	qboolean		clearPending;	// the scene's first render pass clears its images (renderPassClear)
+	uint64_t		sceneSerial;	// the frame of the last scene, 0 for none
+	uint64_t		historySerial;	// the frame whose scene the other images hold, 0 for none
+	int				current;		// the images of VK_TEMPORAL_HISTORY this frame's scene writes
+
+	VkFormat		colorFormat, velocityFormat, normalFormat, hizFormat, taaFormat;
+	vkTemporalImage_t	color[VK_TEMPORAL_HISTORY];		// RGBA16F
+	vkTemporalImage_t	velocity;						// written by what moves (TEMPORAL_FLAG_MOTION)
+	vkTemporalImage_t	normal;
+	vkTemporalImage_t	hiz[VK_TEMPORAL_HISTORY];		// the pyramid, RG32F (min, max), level 0 at half size
+	VkImageView		hizLevel[VK_TEMPORAL_HISTORY][VK_TEMPORAL_MAX_MIPS];	// a level each, for the storage writes
+	int				hizWidth, hizHeight, hizLevels;
+	uint64_t		hizSerial[VK_TEMPORAL_HISTORY];	// the frame each pyramid was made in, 0 for none
+	// VK_TEMPORAL_READ_*: what the readers of the scene's buffers need, which
+	// they set when they are created (none yet; r_taa and r_temporalShow's views add
+	// theirs, VK_TemporalReaders)
+	int				readers;
+	vkHizPass_t		hizPasses[VK_TEMPORAL_MAX_PASSES];
+	int				numHizPasses;
+	VkImageView		depthView;		// the depth aspect of vk.depthImage, sampled
+	// scene color, motion vectors, normals, depth: renderPassClear begins
+	// a scene (the color and the normals cleared), renderPass continues it
+	VkRenderPass	renderPass, renderPassClear;
+	VkFramebuffer	framebuffers[VK_TEMPORAL_HISTORY];	// with color[i]
+	VkSampler		sampler;		// nearest, clamped (the shaders fetch texels)
+	VkSampler		linearSampler;	// bilinear, clamped: the anti-aliasing's history
+	vkBuffer_t		zeroBuffer;		// (0, 0, 0): the normals of the draws that have none
+
+	// the scene's pipelines (VK_PIPE_TEMPORAL): set 2 adds the last frame's
+	// frame data of the skinned draws, the push constants vkTemporalPush_t
+	VkDescriptorSetLayout graphicsSetLayout;
+	VkPipelineLayout	pipelineLayout;
+	VkShaderModule	vertexShader, vertexShaderClip;
+	VkShaderModule	skinVertexShader, skinVertexShaderClip;
+	VkShaderModule	effectsVertexShader, effectsVertexShaderClip;
+	VkShaderModule	fragmentShader;
+	VkDescriptorSet	graphicsSets[VK_MAX_FRAMES];
+
+	// the passes after the scene: the prepare pass's set is written in each
+	// frame (the depth image can be replaced), the others once
+	VkDescriptorSetLayout prepareSetLayout, hizSetLayout, compositeSetLayout;
+	VkPipelineLayout	prepareLayout, hizLayout, compositeLayout;
+	VkShaderModule	prepareShader, hizShader, hizTailShader, compositeVertexShader, compositeFragmentShader;
+	VkPipeline		preparePipeline, hizPipeline, hizTailPipeline, compositePipeline;
+	VkDescriptorPool	pool;
+	VkDescriptorSet	prepareSets[VK_MAX_FRAMES];
+	VkDescriptorSet	hizSets[VK_TEMPORAL_HISTORY][VK_TEMPORAL_MAX_PASSES];
+	VkDescriptorSet	compositeSets[VK_TEMPORAL_HISTORY];
+	VkDescriptorSet	compositeTaaSets[VK_TEMPORAL_HISTORY];	// the same, showing taa[current]
+
+	// temporal anti-aliasing (r_taa, taa_resolve.comp): its result, this
+	// frame's and the last frame's (the history), alternating with current;
+	// GENERAL between frames
+	qboolean		taaOn;			// r_taa for this frame's scene (vk_begin_scene): it is jittered
+	qboolean		taaRan;			// the resolve wrote taa[current]: the composite shows it
+	vkTemporalImage_t	taa[VK_TEMPORAL_HISTORY];	// RGBA16F (taaFormat)
+	uint64_t		taaSerial[VK_TEMPORAL_HISTORY];	// the frame each was written in, 0 for none
+	VkDescriptorSetLayout taaSetLayout;
+	VkPipelineLayout	taaLayout;
+	VkShaderModule	taaShader;
+	VkPipeline		taaPipeline;
+	VkDescriptorSet	taaSets[VK_MAX_FRAMES];	// written in each frame (the depth image's view can change)
+
+	// the frame data of the skinned draws: a ring of VK_SKIN_RING buffers
+	// instead of one per frame slot (the frame slots' and one more), so the
+	// last frame's is still there while the next frame writes its own
+	// (skinned.vert reads the last frame's bones)
+	vkBuffer_t		*skinRing[VK_SKIN_RING];
+	vkBuffer_t		skinExtra;
+	int				skinSlot;		// the current frame's
+
+	// the scene's views (vk_begin_scene)
+	qboolean		viewHistory;	// the view has a last frame: prevProjection and cameraDelta are valid
+	float			prevProjection[16];	// the last frame's projection, unjittered
+	float			cameraDelta[16];	// the last frame's view matrix * the inverse of this view's
+	qboolean		jitter;			// the scene's perspective projections are jittered
+	float			jitterNdc[2];
+	float			jitterPixels[2];	// the same in pixels (x right, y down), for the resolve
+	int				rect[4];		// the union of the views, in framebuffer pixels from the top-left (x, y, width, height)
+	// the primary view (the first that is neither a portal nor the sky
+	// portal), for the passes after the scene
+	qboolean		primarySet;
+	float			projection[16];	// its projection, unjittered
+	vkTemporalView_t	view;
+	// the explicit last frame's modelview of the draws (vk_set_prev_modelview)
+	qboolean		prevModelviewSet;
+	float			prevModelview[16];
+	float			prevModelviewFor[16];	// the modelview it was given with
+	qboolean		objectMotion;	// it applies: the draws move (VK_PIPE_MOTION)
+} vkTemporal_t;
+
+extern vkTemporal_t	vkt;
+
+void		VK_TemporalRegisterCvars( void );
+void		VK_TemporalCheckDevice( void );
+void		VK_TemporalCreateTargets( void );
+void		VK_TemporalDestroyTargets( void );
+void		VK_TemporalDepthChanged( void );
+void		VK_TemporalInitPipelines( void );
+void		VK_TemporalShutdownPipelines( void );
+void		VK_TemporalBeginFrame( vkFrame_t *frame, VkBuffer skinData );
+void		VK_TemporalResolve( VkCommandBuffer cmd );
+void		VK_TemporalComposite( VkCommandBuffer cmd );
+qboolean	VK_TemporalWritesBuffers( uint64_t bits );
+
 // cvars
 extern cvar_t	*r_vkValidation;
 extern cvar_t	*r_vkFallbacks;
 extern cvar_t	*r_vkSubmitThread;
 extern cvar_t	*r_fastSync;
 extern cvar_t	*r_ext_multisample;
+extern cvar_t	*r_temporal;
+extern cvar_t	*r_temporalJitter;
+extern cvar_t	*r_temporalJitterSamples;
+extern cvar_t	*r_temporalShow;
+extern cvar_t	*r_temporalShowMip;
+extern cvar_t	*r_temporalShowScale;
+extern cvar_t	*r_taa;
+extern cvar_t	*r_taaFeedback;
+extern cvar_t	*r_taaSharpen;

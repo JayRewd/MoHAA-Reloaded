@@ -269,6 +269,50 @@ void		vk_set_scissor( int x, int y, int width, int height );
 /*
 ====================================================================
 
+TEMPORAL PATH
+
+With r_temporal (latched) the 3D views of a frame are a scene, drawn into
+images of the backend's own (see vk_local.h, TEMPORAL PATH): HDR color,
+motion vectors, normals, a depth pyramid, last frame's color and depth.
+The renderer starts each 3D view of the world with vk_begin_scene; the
+scene ends with vk_end_scene before anything else is drawn (2D, a view
+without the world), or at the end of the frame, and is then drawn into the
+frame. One scene per frame: a view that comes after the scene ended is
+drawn as without the temporal path (vk_begin_scene returns qfalse).
+
+Motion: a draw's last position is its vertexes through the last frame's
+modelview (vk_set_prev_modelview, or by default the camera's motion only:
+cameraDelta * modelview, a surface that doesn't move) and the view's last
+projection; skinned draws use their entity's last bones too (vk.h, SKINNED
+DRAWS). A view without prevProjection (a portal, a cut) has no motion.
+
+====================================================================
+*/
+
+typedef struct {
+	int				viewport[4];		// as vk_set_viewport
+	const float		*projection;		// the view's projection, unjittered (the backend jitters it with r_temporalJitter)
+	// the last frame's projection (unjittered), and its view matrix times
+	// the inverse of this view's; NULL: the view has no last frame
+	const float		*prevProjection;
+	const float		*cameraDelta;
+	qboolean		primary;			// the main view (not a portal or the sky portal)
+} vkSceneView_t;
+
+// whether the temporal path is on (r_temporal and the device)
+qboolean	vk_temporal_enabled( void );
+// a 3D view of the world starts: begins the frame's scene, or continues it;
+// qfalse when the view is drawn without the temporal path
+qboolean	vk_begin_scene( const vkSceneView_t *view );
+// ends the scene if one is being drawn (see above)
+void		vk_end_scene( void );
+// the last frame's modelview of the following draws while the modelview is
+// the current one (vk_set_modelview); NULL: the camera's motion only
+void		vk_set_prev_modelview( const float *matrix );
+
+/*
+====================================================================
+
 DRAWING
 
 ====================================================================
@@ -295,6 +339,10 @@ typedef struct {
 	float			color[4];			// constant color (0 to 1) when colors is NULL
 	const float		*st[NUM_TEXTURE_BUNDLES];	// 2 floats per vertex; NULL disables the unit
 	int				stStride[NUM_TEXTURE_BUNDLES];	// in bytes
+	// 3 floats per vertex, or NULL: the temporal path's normals buffer
+	// (read only in a scene, see TEMPORAL PATH)
+	const float		*normals;
+	int				normalStride;		// in bytes
 	// 0, or a value that promises the same xyz contents as the previous
 	// draw with the same version, xyz pointer, stride and vertex count
 	// (and the same indexes when indexes and numIndexes are the same too):
@@ -442,6 +490,12 @@ lists (count, ambient RGBA8, then a vkSkinLight_t per light).
 */
 
 #define VK_SKIN_NONE	0xFFFFFFFFu
+
+// in a scene of the temporal path (vk_begin_scene), the 4 words before an
+// entity's view origin in the frame data: the first word of its bones and
+// of its morph weights in the last frame's frame data (VK_SKIN_NONE for
+// none: no motion of the bones), then two unused
+#define VK_SKIN_PREV_WORDS	4
 
 // the texture coordinates of a skinned draw (vkSkinDraw_t::firstVertex):
 // the mesh's, RB_CalcEnvironmentTexCoords', RB_CalcEnvironmentTexCoords2's

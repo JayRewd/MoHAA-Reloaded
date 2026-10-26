@@ -26,6 +26,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // only runs the stages its state needs (see vk_pipeline.c).
 
 #version 450
+#ifdef TEMPORAL
+#extension GL_GOOGLE_include_directive : require
+#include "temporal_common.glsl"
+#endif
 
 // texture env of each unit, texEnv_t values from vk.h; 0 disables the unit
 layout(constant_id = 0) const int TEX_ENV0 = 0;
@@ -95,6 +99,62 @@ layout(location = 3) in vec2 v_fogClip;
 layout(location = 4) in vec3 v_position;
 
 layout(location = 0) out vec4 out_color;
+
+#ifdef TEMPORAL
+// the temporal path (r_temporal, vk_temporal.c): the scene's normals and
+// motion vectors, written by the pipelines that write depth without
+// blending (the others mask these attachments and skip this), the motion
+// vectors only by those that draw what moves
+layout(location = 5) in vec4 v_currClip;
+layout(location = 6) in vec4 v_prevClip;
+layout(location = 7) in vec3 v_viewNormal;
+layout(location = 8) in vec3 v_viewPos;
+layout(location = 9) flat in float v_class;
+
+// this frame's position minus the last frame's, in units of the viewport
+// (x right, y down)
+layout(location = 1) out vec2 out_velocity;
+// rg: the view space normal, octahedral; b (10 bits): TEMPORAL_FLAG_*;
+// a (2 bits): the class (TEMPORAL_CLASS_*)
+layout(location = 2) out vec4 out_normal;
+
+// the pipeline writes the normals buffer (vk_pipeline.c), and the motion
+// vectors
+layout(constant_id = 11) const bool TEMPORAL_NORMALS = true;
+layout(constant_id = 12) const bool TEMPORAL_MOTION = true;
+
+void TemporalOutputs() {
+	if ( !TEMPORAL_NORMALS ) {
+		return;
+	}
+
+	vec3 n = v_viewNormal;
+	float len = dot( n, n );
+	uint flags = 0u;
+
+	if ( TEMPORAL_MOTION ) {
+		vec2 velocity = vec2( 0.0 );
+
+		if ( v_prevClip.w > 1e-6 ) {
+			velocity = ( v_currClip.xy / v_currClip.w - v_prevClip.xy / v_prevClip.w ) * vec2( 0.5, -0.5 );
+		}
+		out_velocity = velocity;
+		flags |= TEMPORAL_FLAG_MOTION;
+	}
+
+	if ( len > 1e-12 ) {
+		n *= inversesqrt( len );
+		// towards the eye, for two-sided surfaces
+		if ( dot( n, v_viewPos ) > 0.0 ) {
+			n = -n;
+		}
+		out_normal = vec4( TemporalOctEncode( n ), float( flags | TEMPORAL_FLAG_NORMAL ) / 1023.0, v_class / 3.0 );
+	} else {
+		// derived from the depth by the readers (TemporalDerivedNormal)
+		out_normal = vec4( 0.5, 0.5, float( flags ) / 1023.0, v_class / 3.0 );
+	}
+}
+#endif
 
 // GL1's R_DlightSample, per pixel on the filtered lightmap texel: each light
 // adds color * ( 1 - d / radius )^2 at distance d, truncated to a lightmap
@@ -216,4 +276,7 @@ void main() {
 	}
 
 	out_color = ALPHA_ONE ? vec4( color.rgb, 1.0 ) : color;
+#ifdef TEMPORAL
+	TemporalOutputs();
+#endif
 }

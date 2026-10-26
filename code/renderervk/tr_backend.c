@@ -550,6 +550,15 @@ static void RB_SubmitElements( int numVertexes, int numIndexes, const glIndex_t 
 	geometry.version = glState.arrays.xyzVersion;
 	geometry.colors = glState.arrays.colorsEnabled ? glState.arrays.colors : NULL;
 	Vector4Copy( glState.color, geometry.color );
+	// the temporal path's normals buffer: the surfaces fill tess.normal in
+	// its scene
+	if ( backEnd.temporalScene && geometry.xyz == tess.xyz[0] ) {
+		geometry.normals = tess.normal[0];
+		geometry.normalStride = sizeof( tess.normal[0] );
+	} else {
+		geometry.normals = NULL;
+		geometry.normalStride = 0;
+	}
 
 	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
 		if ( glState.texEnabled[i] && glState.arrays.stEnabled[i] && glState.arrays.st[i] ) {
@@ -846,6 +855,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			}
 
 			RB_SetModelview( backEnd.ori.modelMatrix );
+			// the temporal path's motion of an entity (tr_temporal.c)
+			RB_TemporalModelview();
 
 			//
 			// change depthrange if needed
@@ -1256,6 +1267,8 @@ const void	*RB_DrawSurfs( const void *data ) {
 	backEnd.refdef = cmd->refdef;
 	backEnd.viewParms = cmd->viewParms;
 
+	// the temporal path's scene (tr_temporal.c)
+	RB_TemporalBeginView();
 	RB_SetupFog();
 	RB_RenderDrawSurfList( cmd->drawSurfs, cmd->numDrawSurfs );
 
@@ -1282,6 +1295,7 @@ const void* RB_SpriteSurfs(const void* data) {
     backEnd.refdef = cmd->refdef;
     backEnd.viewParms = cmd->viewParms;
 	
+	RB_TemporalBeginView();
 	RB_SetupFog();
     RB_RenderSpriteSurfList(cmd->drawSurfs, cmd->numDrawSurfs);
 
@@ -1425,6 +1439,10 @@ const void	*RB_SwapBuffers( const void *data ) {
 	if ( tess.numIndexes ) {
 		RB_EndSurface();
 	}
+
+	// a scene of the temporal path not ended by 2D drawing goes into the
+	// frame before the screenshots
+	RB_TemporalEndScene();
 
 	// texture swapping test
 	if ( r_showImages->integer ) {

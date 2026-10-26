@@ -133,8 +133,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		VkBool32	alphaOne;
 		int32_t		dlightUnit;
 		VkBool32	dlightBacks;
+		VkBool32	temporalNormals;	// the temporal path's shaders only
+		VkBool32	temporalMotion;
 	} specData;
-	VkSpecializationMapEntry specEntries[11];
+	VkSpecializationMapEntry specEntries[13];
 	VkSpecializationInfo specInfo;
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkVertexInputBindingDescription bindings[5];
@@ -147,7 +149,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	VkPipelineRasterizationLineStateCreateInfoEXT lineState;
 	VkPipelineMultisampleStateCreateInfo multisample;
 	VkPipelineDepthStencilStateCreateInfo depthStencil;
-	VkPipelineColorBlendAttachmentState blendAttachment;
+	VkPipelineColorBlendAttachmentState blendAttachments[3];
 	VkPipelineColorBlendStateCreateInfo blend;
 	VkDynamicState dynamicStates[8];
 	VkPipelineDynamicStateCreateInfo dynamicState;
@@ -155,10 +157,11 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	VkPipeline pipeline;
 	uint64_t bits, start;
 	int colorMask, srcBlend, dstBlend, i;
-	qboolean lines;
+	qboolean lines, temporal;
 
 	bits = key->bits;
 	lines = ( bits & VK_PIPE_LINES ) != 0;
+	temporal = ( bits & VK_PIPE_TEMPORAL ) != 0;
 
 	// shaders
 	specData.texEnv0 = VK_FIELD( bits, VK_PIPE_TEXENV0_SHIFT, 7 );
@@ -174,13 +177,19 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	specData.alphaOne = ( srcBlend || dstBlend ) ? VK_FALSE : VK_TRUE;
 	specData.dlightUnit = VK_FIELD( bits, VK_PIPE_DLIGHT_SHIFT, 3 );
 	specData.dlightBacks = ( bits & VK_PIPE_DLIGHT_BACKS ) ? VK_TRUE : VK_FALSE;
+	// the temporal path: the pipelines whose write masks drop the normals
+	// buffer skip its work, those that draw nothing that moves the motion
+	// vectors' (all their shaders read these)
+	specData.temporalNormals = VK_TemporalWritesBuffers( bits ) ? VK_TRUE : VK_FALSE;
+	specData.temporalMotion = specData.temporalNormals && ( bits & VK_PIPE_MOTION ) ? VK_TRUE : VK_FALSE;
 
 	for ( i = 0; i < (int)ARRAY_LEN( specEntries ); i++ ) {
 		specEntries[i].constantID = i;
 		specEntries[i].offset = i * 4;
 		specEntries[i].size = 4;
 	}
-	specInfo.mapEntryCount = ARRAY_LEN( specEntries );
+	// the shaders without the temporal path have no constants 11 and 12
+	specInfo.mapEntryCount = temporal ? 13 : 11;
 	specInfo.pMapEntries = specEntries;
 	specInfo.dataSize = sizeof( specData );
 	specInfo.pData = &specData;
@@ -188,7 +197,16 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	Com_Memset( stages, 0, sizeof( stages ) );
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	if ( bits & VK_PIPE_SKINNED ) {
+	if ( temporal ) {
+		// the temporal path's variants (vk_temporal.c)
+		if ( bits & VK_PIPE_SKINNED ) {
+			stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vkt.skinVertexShaderClip ) ? vkt.skinVertexShaderClip : vkt.skinVertexShader;
+		} else if ( bits & VK_PIPE_EFFECTS ) {
+			stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vkt.effectsVertexShaderClip ) ? vkt.effectsVertexShaderClip : vkt.effectsVertexShader;
+		} else {
+			stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vkt.vertexShaderClip ) ? vkt.vertexShaderClip : vkt.vertexShader;
+		}
+	} else if ( bits & VK_PIPE_SKINNED ) {
 		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.skinVertexShaderClip ) ? vk.skinVertexShaderClip : vk.skinVertexShader;
 	} else if ( bits & VK_PIPE_EFFECTS ) {
 		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.effectsVertexShaderClip ) ? vk.effectsVertexShaderClip : vk.effectsVertexShader;
@@ -196,9 +214,12 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		stages[0].module = ( ( bits & VK_PIPE_CLIPPLANE ) && vk.vertexShaderClip ) ? vk.vertexShaderClip : vk.vertexShader;
 	}
 	stages[0].pName = "main";
+	if ( temporal ) {
+		stages[0].pSpecializationInfo = &specInfo;
+	}
 	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[1].module = vk.fragmentShader;
+	stages[1].module = temporal ? vkt.fragmentShader : vk.fragmentShader;
 	stages[1].pName = "main";
 	stages[1].pSpecializationInfo = &specInfo;
 
@@ -230,6 +251,10 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	attributes[3].format = VK_FORMAT_R32G32_SFLOAT;
 	bindings[4].stride = sizeof( float ) * 3;
 	attributes[4].format = VK_FORMAT_R32G32B32_SFLOAT;
+	if ( temporal && !( bits & ( VK_PIPE_EFFECTS | VK_PIPE_NORMALS ) ) ) {
+		// the temporal path's generic draws without normals read (0, 0, 0)
+		bindings[4].stride = 0;
+	}
 	if ( !vk.strideZero ) {
 		// the portability subset allows no stride of 0 (nor an attribute
 		// beyond the stride without vertexAttributeAccessBeyondStride): those
@@ -237,9 +262,9 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		// the stride. Every draw that has such a binding has one instance,
 		// the first, so they read the same bytes (effects draws, whose
 		// firstInstance is their record, have none)
-		for ( i = 1; i < 4; i++ ) {
+		for ( i = 1; i < 5; i++ ) {
 			if ( !bindings[i].stride ) {
-				bindings[i].stride = i == 1 ? sizeof( float ) * 4 : sizeof( float ) * 2;
+				bindings[i].stride = i == 1 ? sizeof( float ) * 4 : i == 4 ? sizeof( float ) * 3 : sizeof( float ) * 2;
 				bindings[i].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 			}
 		}
@@ -249,8 +274,8 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	if ( !( bits & VK_PIPE_SKINNED ) ) {
 		// skinned draws read their vertexes from storage buffers; only
-		// effects draws have normals
-		vertexInput.vertexBindingDescriptionCount = ( bits & VK_PIPE_EFFECTS ) ? 5 : 4;
+		// effects draws and the temporal path's have normals
+		vertexInput.vertexBindingDescriptionCount = ( bits & VK_PIPE_EFFECTS ) || temporal ? 5 : 4;
 		vertexInput.pVertexBindingDescriptions = bindings;
 		vertexInput.vertexAttributeDescriptionCount = vertexInput.vertexBindingDescriptionCount;
 		vertexInput.pVertexAttributeDescriptions = attributes;
@@ -344,17 +369,17 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	// nothing there (blending reads the target anyway).
 	colorMask = VK_FIELD( bits, VK_PIPE_COLORMASK_SHIFT, 7 );
 
-	Com_Memset( &blendAttachment, 0, sizeof( blendAttachment ) );
+	Com_Memset( blendAttachments, 0, sizeof( blendAttachments ) );
 	if ( srcBlend || dstBlend ) {
-		blendAttachment.blendEnable = VK_TRUE;
-		blendAttachment.srcColorBlendFactor = VK_SrcBlendFactor( srcBlend );
-		blendAttachment.dstColorBlendFactor = VK_DstBlendFactor( dstBlend );
-		blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-		blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-		blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-		blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+		blendAttachments[0].blendEnable = VK_TRUE;
+		blendAttachments[0].srcColorBlendFactor = VK_SrcBlendFactor( srcBlend );
+		blendAttachments[0].dstColorBlendFactor = VK_DstBlendFactor( dstBlend );
+		blendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+		blendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		blendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		blendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
 	}
-	blendAttachment.colorWriteMask = ( ( colorMask & 1 ) ? VK_COLOR_COMPONENT_R_BIT : 0 )
+	blendAttachments[0].colorWriteMask = ( ( colorMask & 1 ) ? VK_COLOR_COMPONENT_R_BIT : 0 )
 		| ( ( colorMask & 2 ) ? VK_COLOR_COMPONENT_G_BIT : 0 )
 		| ( ( colorMask & 4 ) ? VK_COLOR_COMPONENT_B_BIT : 0 )
 		| ( colorMask == 7 && ( vk.samples != VK_SAMPLE_COUNT_1_BIT || !( srcBlend || dstBlend ) ) ? VK_COLOR_COMPONENT_A_BIT : 0 );
@@ -362,7 +387,20 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	Com_Memset( &blend, 0, sizeof( blend ) );
 	blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	blend.attachmentCount = 1;
-	blend.pAttachments = &blendAttachment;
+	blend.pAttachments = blendAttachments;
+	if ( temporal ) {
+		// the motion vectors and the normals: written by the surfaces that
+		// write depth without blending, those that hide what is behind
+		// them; the others leave those of what they are drawn over
+		if ( specData.temporalMotion ) {
+			blendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+		}
+		if ( specData.temporalNormals ) {
+			blendAttachments[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT
+				| VK_COLOR_COMPONENT_A_BIT;
+		}
+		blend.attachmentCount = 3;
+	}
 
 	dynamicStates[0] = VK_DYNAMIC_STATE_VIEWPORT;
 	dynamicStates[1] = VK_DYNAMIC_STATE_SCISSOR;
@@ -392,8 +430,8 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	createInfo.pDepthStencilState = &depthStencil;
 	createInfo.pColorBlendState = &blend;
 	createInfo.pDynamicState = &dynamicState;
-	createInfo.layout = vk.pipelineLayout;
-	createInfo.renderPass = vk.renderPass;
+	createInfo.layout = temporal ? vkt.pipelineLayout : vk.pipelineLayout;
+	createInfo.renderPass = temporal ? vkt.renderPass : vk.renderPass;
 	createInfo.subpass = 0;
 
 	start = VK_Microseconds();
@@ -590,7 +628,14 @@ static int				vk_numRecordedKeys;		// read at startup
 
 // what VK_BuildPipelineKey can make on this device
 static qboolean VK_KeyValid( uint64_t bits ) {
-	if ( ( bits >> 46 ) & ~( VK_PIPE_DEPTHCLAMP >> 46 ) ) {
+	if ( ( bits >> 46 ) & ~( ( VK_PIPE_DEPTHCLAMP | VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_MOTION ) >> 46 ) ) {
+		return qfalse;
+	}
+	if ( ( bits & ( VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_MOTION ) ) && !vkt.enabled ) {
+		return qfalse;
+	}
+	// normals and motion only for the temporal path's pipelines that write them
+	if ( ( bits & ( VK_PIPE_NORMALS | VK_PIPE_MOTION ) ) && ( !( bits & VK_PIPE_TEMPORAL ) || !VK_TemporalWritesBuffers( bits ) ) ) {
 		return qfalse;
 	}
 	if ( ( bits & VK_PIPE_DEPTHCLAMP ) && !vk.enabledFeatures.depthClamp ) {
@@ -763,7 +808,7 @@ INIT / SHUTDOWN
 ====================================================================
 */
 
-static VkShaderModule VK_CreateShaderModule( const uint32_t *code, size_t size ) {
+VkShaderModule VK_CreateShaderModule( const uint32_t *code, size_t size ) {
 	VkShaderModuleCreateInfo info;
 	VkShaderModule module;
 

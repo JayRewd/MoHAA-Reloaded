@@ -520,18 +520,28 @@ origin in its space before them
 */
 static qboolean RB_SkinEntity( unsigned int serial ) {
 	trRefEntity_t *ent = backEnd.currentEntity;
-	int numBones, numMorphs, first;
+	int numBones, numMorphs, first, prevWords;
 	uint32_t *data;
 
-	if ( ent->skinSerial == serial && ent->skinBonestart == ent->e.bonestart ) {
+	// in the temporal path's scene, the last frame's bones and morph
+	// weights first (VK_SKIN_PREV_WORDS, tr_temporal.c): its shaders read
+	// them, so data made without them is made again
+	prevWords = backEnd.temporalScene ? VK_SKIN_PREV_WORDS : 0;
+	if ( ent->skinSerial == serial && ent->skinBonestart == ent->e.bonestart && ( ent->skinPrev || !prevWords ) ) {
 		return qtrue;
 	}
 
 	numBones = ri.TIKI_GetNumChannels( ent->e.tiki );
 	numMorphs = ent->e.hasMorph ? ent->numMorphs : 0;
-	first = vk_alloc_skin_frame( 4 + numBones * 16 + numMorphs, &data );
+	first = vk_alloc_skin_frame( prevWords + 4 + numBones * 16 + numMorphs, &data );
 	if ( first < 0 ) {
 		return qfalse;
+	}
+	if ( prevWords ) {
+		RB_TemporalSkin( numBones, ent->e.hasMorph, &data[0], &data[1] );
+		data[2] = data[3] = 0;
+		data += prevWords;
+		first += prevWords;
 	}
 	Com_Memcpy( data, backEnd.ori.viewOrigin, sizeof( vec3_t ) );
 	data[3] = 0;
@@ -540,9 +550,13 @@ static qboolean RB_SkinEntity( unsigned int serial ) {
 
 	ent->skinSerial = serial;
 	ent->skinBonestart = ent->e.bonestart;
+	ent->skinPrev = prevWords != 0;
 	ent->skinBones = first + 4;
 	ent->skinMorphs = ent->e.hasMorph ? first + 4 + numBones * 16 : VK_SKIN_NONE;
 	ent->skinLights = VK_SKIN_NONE;
+	if ( prevWords ) {
+		RB_TemporalRecordSkin( numBones, ent->skinBones, ent->skinMorphs );
+	}
 	return qtrue;
 }
 

@@ -48,6 +48,7 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/tr_sun_flare.cpp
     ${SOURCE_DIR}/renderervk/tr_surface.c
     ${SOURCE_DIR}/renderervk/tr_swipe.cpp
+    ${SOURCE_DIR}/renderervk/tr_temporal.c
     ${SOURCE_DIR}/renderervk/tr_terrain.c
     ${SOURCE_DIR}/renderervk/tr_util.cpp
     ${SOURCE_DIR}/renderervk/tr_vis.cpp
@@ -58,7 +59,9 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/vk_instance.c
     ${SOURCE_DIR}/renderervk/vk_pipeline.c
     ${SOURCE_DIR}/renderervk/vk_shaders.c
+    ${SOURCE_DIR}/renderervk/vk_shaders_temporal.c
     ${SOURCE_DIR}/renderervk/vk_submit.c
+    ${SOURCE_DIR}/renderervk/vk_temporal.c
 )
 
 # The window (sdl_vkimp.c) and the gamma ramp (sdl_gamma.c)

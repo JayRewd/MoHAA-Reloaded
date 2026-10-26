@@ -204,6 +204,14 @@ void RB_DrawSprite( const refSprite_t *spr ) {
     tess.xyz[tess.numVertexes + 3][1] = points[3][1];
     tess.xyz[tess.numVertexes + 3][2] = points[3][2];
 
+    if (backEnd.temporalScene) {
+        // no normal: the temporal path derives it from the depth
+        VectorClear(tess.normal[tess.numVertexes]);
+        VectorClear(tess.normal[tess.numVertexes + 1]);
+        VectorClear(tess.normal[tess.numVertexes + 2]);
+        VectorClear(tess.normal[tess.numVertexes + 3]);
+    }
+
     tess.indexes[tess.numIndexes] = tess.numVertexes + 2;
     tess.indexes[tess.numIndexes + 1] = tess.numVertexes + 1;
     tess.indexes[tess.numIndexes + 2] = tess.numVertexes;

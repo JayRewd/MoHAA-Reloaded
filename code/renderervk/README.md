@@ -618,6 +618,46 @@ below are done.
   17.5), a click 3.1 instead of 6.1; at 250 with `cl_movefps 125` forward
   3.7 instead of 5.5; no command waits any more; at 250 with
   `cl_movefps 100` nothing changes (see Performance, Command rate)
+- the temporal path (2026-10-26, Plan 41, the renderer; the user's request:
+  what modern ambient occlusion and anti-aliasing need first): with
+  `r_temporal 1` (latched, off by default) the 3D views of a frame are
+  drawn into an RGBA16F scene beside normals (from the draws; their readers
+  derive the missing ones from the depth) and the motion vectors of what
+  moves (moving entities, skeletal models' bones and morphs; their readers
+  work out the camera's motion of the rest from the depth), with a depth
+  pyramid of view distances (min and max) made when a reader needs it and
+  the last frame's color and pyramid, then into the frame before the 2D
+  drawing; `r_temporalJitter 1` jitters the projection (Halton 2, 3).
+  Temporal anti-aliasing reads them since Plan 42 (below); AO goes in at
+  `VK_TemporalConsumers` too, with the helpers of
+  `shaders/temporal_common.glsl`. With `r_temporal 0` the
+  frames are the build before's to the bit. Cost on an NVIDIA GPU, GPU
+  time a frame, in the user's `dm/mohdm6` view (a light one: 10700 frames
+  a second): 0.043 to 0.121 ms at 2560x1440 (the first version 0.259),
+  0.027 to 0.07 ms at 1920x1080 (0.143); the pyramid adds 0.04 ms at
+  2560x1440 when it is made. See Implementation notes, Temporal path
+- temporal anti-aliasing (2026-10-26, Plan 42, the renderer; the user's
+  request: better anti-aliasing): with `r_temporal 1`, `r_taa 1` (archived,
+  off by default, switched live) jitters the 3D views and blends each frame
+  with the last frames' result, moved by the motion vectors, the history
+  clipped to the colors around each pixel and dropped where the last frame
+  didn't see the surface; `r_taaSharpen` (0.8) sharpens what is shown,
+  `r_taaFeedback` (0.75) is the history's weight (the user's choice: fine
+  at 60 frames a second, good at 125, excellent at 250). The 2D drawing is not
+  touched. With `r_taa 0` and with `r_temporal 0` the frames are the build
+  before's to the bit. This frame's color is made at each pixel's center
+  from its 3 x 3 (the jitter doesn't show through, at any frame rate): in a
+  still view 0.39 % of the pixels change between frames by more than 4 of
+  255 (the jitter alone: 25.6 %; 1.25 % at the defaults). Cost on an NVIDIA
+  RTX 4070 Ti, GPU time a frame, in the same `dm/mohdm6` view, after its
+  optimization the same day (the user's request; the frames as before):
+  the temporal path 0.043 to 0.123 ms at 2560x1440, with the
+  anti-aliasing 0.344 ms (0.388 before); at 1920x1080 0.185 ms (0.227).
+  The pass makes the level of the depth pyramid it reads itself, the
+  filter's weights come from the CPU. The scene and the history stay
+  RGBA16F, for HDR to come (8-bit and 10-bit formats were 0.055 ms less
+  with a little more shimmer, and clip at 1). See Implementation notes,
+  Temporal anti-aliasing
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -638,14 +678,17 @@ below are done.
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file, the pipelines created before their first draw and the file of keys created after a load (`vkpipelines.keys`) |
 | `vk_framelog.c` | the frame log (`r_vkFrameLog`, `vkframelog`): the per-frame exports timed, the backend's counters and GPU time of every frame, the dump (see Performance, Frame spikes) |
 | `vk_submit.c` | the submit thread (`r_vkSubmitThread 1`): submits and presents the frames, acquires the swapchain image of the next frame after each present, copies a frame drawn offscreen (see Implementation notes, Submit thread) |
+| `vk_temporal.c` | the temporal path (`r_temporal 1`): the scene's images, render passes and pipeline layout, the depth pyramid, the composite into the frame (see Implementation notes, Temporal path) |
+| `tr_temporal.c` | the temporal path's views and history: the scene begins and ends, the camera's and the entities' last frame, the skinned entities' last bones (see Implementation notes, Temporal path) |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
 | `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces (added when a model is registered), the frame data of each entity, the skinned batches (see Implementation notes) |
 | `tr_pipelines.c` | the pipelines of a registration's shaders, worked out from their stages as the stage iterators draw them and created at its end (see Implementation notes, Pipelines) |
 | `shaders/generic.vert`, `shaders/generic.frag` | the shaders of every pipeline; the vertex shader is built with and without `gl_ClipDistance`, the fragment stage is specialized per pipeline |
 | `shaders/skinned.vert` | the vertex shader of skinned draws (skinning, `rgbGen lightingSpherical` and `tcGen environment`/`environmentmodel`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/effects.vert` | the vertex shader of the static geometry's draws with effects (deforms, `tcGen` and `tcMod`, `distFade`, static models' dynamic lights; see Implementation notes, Effects shader), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
-| `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` with `glslc` |
-| `vk_shaders.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
+| `shaders/hiz_build.comp`, `shaders/taa_resolve.comp`, `shaders/temporal_composite.*`, `shaders/temporal_common.glsl` | the temporal path's passes after the scene (`hiz_build.comp` built three times: `PREPARE`, the default, `TAIL`; `taa_resolve.comp` the anti-aliasing) and what they and the passes to come that read its buffers share (included); `generic.*`, `skinned.vert` and `effects.vert` are also built with `TEMPORAL` defined for its scene |
+| `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` and `vk_shaders_temporal.c` with `glslc` (an argument, `main` or `temporal`, writes only that one) |
+| `vk_shaders.c`, `vk_shaders_temporal.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | build-against-build screenshot comparison and performance scripts, view lists, the OpenGL check (see Testing) |
 | `WINDOWS_TESTING.md` | a tester's checklist for Windows: commands, cvars, what to send back |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
@@ -780,6 +823,13 @@ Cvars of the backend:
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
+| `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors, normals, a depth pyramid and the last frame's color and depth, for temporal anti-aliasing (`r_taa`) and ambient occlusion to come; off with multisampling (see Implementation notes, Temporal path) |
+| `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
+| `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
+| `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
+| `r_temporalJitter` (default 0) | with `r_temporal 1`: the 3D views' projection moves by a sub-pixel offset every frame (Halton 2, 3; `r_temporalJitterSamples`, default 8). For the anti-aliasing (`r_taa` turns it on itself): without it the image shakes |
+| `r_temporalCutDist` (default 256) | with `r_temporal 1`: a camera or entity that moves farther in a frame has no motion (a cut, a teleport) |
+| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it) |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
@@ -8053,6 +8103,240 @@ selects the sample count (see Implementation notes).
   fences, see Presentation semaphores and swapchains), then the present
   fences and everything else, including the instance; `vid_restart`
   recreates the window, so the backend starts from scratch.
+- **Temporal path (Plan 41).** `r_temporal 1` (`vk_temporal.c`,
+  `tr_temporal.c`), what temporal anti-aliasing and screen space ambient
+  occlusion need from a frame; the anti-aliasing reads it (Plan 42, below).
+  - *Scene.* The back end starts every 3D view of the world with
+    `vk_begin_scene` (`RB_TemporalBeginView`); the first of a frame begins
+    the scene: its render passes have four attachments: the color
+    (`R16G16B16A16_SFLOAT`: room above 1 for HDR to come; the frame's 8-bit
+    format, tried in Plan 42's optimization, gave the frames without the
+    path to the bit, where RGBA16F differs by one in up to a tenth of the
+    pixels, and cost 0.03 ms less at 2560x1440; two images that alternate:
+    this frame's and the last frame's), the motion vectors (`R16G16_SFLOAT`), the normals
+    (`A2B10G10R10_UNORM`) and the usual depth image, then created with
+    `SAMPLED` usage too. The scene's first render pass clears the color and
+    the normals with its load operations and doesn't load the motion
+    vectors (`vkt.renderPassClear`, from the undefined layout: no barrier or
+    clear command), the others keep them (`vkt.renderPass`); the two differ
+    in load operations and initial layouts only, so they are compatible.
+    The scene's images are never storage images (which can cost them their
+    compression). Its draws use pipelines of their own (`VK_PIPE_TEMPORAL`:
+    that render pass, a pipeline layout with 240 bytes of push constants
+    (`vkTemporalPush_t` after `vkPushConstants_t`) and a set 2 that adds the
+    last frame's frame data, the shaders built with `TEMPORAL`);
+    `vk_prebuild_pipeline` builds those. The scene ends (`vk_end_scene`) at
+    `Set2DWindow`, at a view without the world, at a color readback or at
+    the end of the frame. One scene a frame: a world view after it is drawn
+    as without the path. Portals, mirrors and the sky portal are views of
+    the scene.
+  - *What is written.* The pipelines that write depth without blending
+    (`VK_TemporalWritesBuffers`) write the normals; of them those that draw
+    what moves (`VK_PIPE_MOTION`: a skeletal model, or an entity with a last
+    frame, `vkt.objectMotion`) write the motion vectors too
+    (`independentBlend`). The others mask them, so a translucent surface
+    leaves those of what is behind it, and skip their work: specialization
+    constants 11 (`TEMPORAL_NORMALS`) and 12 (`TEMPORAL_MOTION`) of the
+    temporal shaders leave out the normals and the clip positions, and the
+    second skinning with the last bones. Only the pipelines that write
+    normals read them per vertex (`VK_PIPE_NORMALS`; the others read (0, 0,
+    0), `vkt.zeroBuffer`), so a batch's normals are copied for the pass
+    that writes them only. A normal is in view space, octahedral (rg),
+    facing the eye; b has the flags (`TEMPORAL_FLAG_NORMAL`: a draw gave
+    the normal; `TEMPORAL_FLAG_MOTION`: the motion vector is a draw's), the
+    2 alpha bits the class: 0 nothing that hides what is behind it, 1
+    surface, 2 the view weapon (its depth hack range, which depth alone
+    can't tell apart without `r_depthClamp`), 3 sky (depth range [1, 1];
+    the sky shaders write no depth, so the sky is what no draw wrote at
+    depth 1). Motion vectors are this frame's position minus the last
+    frame's, unjittered, in units of the viewport (x right, y down).
+  - *What the readers work out* (`shaders/temporal_common.glsl`, with the
+    primary view `vkt.view`, `TemporalView`): without
+    `TEMPORAL_FLAG_MOTION` the camera's motion from the view distance
+    (`TemporalCameraMotion`, the sky as a direction), without
+    `TEMPORAL_FLAG_NORMAL` the normal from the view distances around the
+    pixel (`TemporalDerivedNormal`: of the neighbours on each axis the
+    nearer one in depth, so a normal at an edge belongs to its own
+    surface), and the view distances from the depth buffer
+    (`TemporalViewDistance`, with `vk_depth_floor` undone). Until the first
+    version's review they were written by the scene's draws and a pass over
+    every pixel: their writes and that pass cost most of the path.
+  - *Motion.* The primary view (not a portal or the sky portal) keeps its
+    projection and view matrix; the next frame's has a last frame unless
+    the camera moved more than `r_temporalCutDist` or the field of view
+    changed (`R_TemporalPrimary`). A draw's last position is its vertexes
+    through the last projection and the last modelview: for entities of
+    type `RT_MODEL` with a game entity number their last frame's model
+    matrix (`vk_set_prev_modelview`, found by entity number, model and the
+    order among the scene's entities with both; not after a jump of more
+    than `r_temporalCutDist`), else the camera's motion times the modelview
+    (a surface that doesn't move). Skeletal models skinned on the GPU skin
+    the vertex again with the last frame's bones and morph weights: the
+    frame data of the skinned draws is a ring of three buffers with the path
+    on (the two frame slots' and one more; two frames in flight: the last
+    frame's must stay while the next is written), and an entity's data in
+    the scene starts with the words of `VK_SKIN_PREV_WORDS` (where its bones
+    and morph weights are in the last frame's buffer; `skinPrev` makes the
+    data again when it was made without them, which the temporal shaders
+    would read out of bounds). Not moved: CPU deforms, the effects
+    shader's deforms, skeletal models skinned on the CPU, the terrain's
+    geomorphs. Portal views have no motion of their own.
+  - *After the scene* (`VK_TemporalResolve`): the depth pyramid
+    (`R32G32_SFLOAT`, min and max view distance, level 0 half the
+    framebuffer's size; the weapon and the sky at the far distance: they
+    hide nothing; a texel of an odd size's last row or column covers three
+    of the level before), when a reader needs it (`VK_TEMPORAL_READ_DEPTH`
+    in `vkt.readers`, or `r_temporalShow`'s views; `vkt.hizSerial` says
+    which frame made a pyramid, or its level 0; the anti-aliasing reads
+    only the last frame's level 0 and makes this frame's itself, see
+    below): `hiz_build.comp` with `PREPARE` makes
+    levels 0 and 1 from the depth buffer (an invocation per texel of level
+    0, 2 x 2 pixels in one gather, 8 x 8 a workgroup, which makes 4 x 4 of
+    level 1 through shared memory; a texel of level 1 that reaches into the
+    next workgroup's texels makes those again itself), then two levels per
+    dispatch the same way, then what is left of a level of 128 or less in
+    one workgroup with barriers between the levels (`TAIL`): 3 or 4
+    dispatches (one invocation per texel of level 1, looping over 4 x 4
+    pixels, took twice the time: latency; a tail from 256 was slower too:
+    one workgroup). The last frame's pyramid (level 0: the last frame's
+    depth) is kept. The descriptor sets of the pyramid and the composite are
+    written once per image pair; only the prepare pass's (the depth image's
+    view can change) is written in each frame, with one barrier call per
+    pass. `VK_TemporalConsumers` is where TAA (below) and AO go; then the scene is
+    drawn into the frame's color target over the rectangle of its views
+    (`temporal_composite.frag`, or what `r_temporalShow` shows), where the
+    2D drawing follows.
+  - *Jitter* (`r_temporalJitter 1`): the perspective projections of the
+    scene's draws get a Halton (2, 3) offset of up to half a pixel, per
+    frame (`vkt.jitterPixels` in pixels); the vertex shaders take it out of
+    the motion vectors' current position.
+  - *Primary view.* The first view of the scene that is neither a portal
+    nor the sky portal gives `vkt.view` (a later one, if any, doesn't
+    replace it).
+  - *Cost* (NVIDIA, GPU time a frame, measured by leaving parts out), in
+    the user's `dm/mohdm6` view at 2560x1440 (0.043 ms without the path):
+    0.121 ms in all; the composite 0.035 ms, the RGBA16F color 0.03 ms
+    against RGBA8 (B10G11R11 would halve it, with 5 or 6 bits of mantissa:
+    banding in the 8-bit content), the normals 0.03 ms (their writes, not
+    the shaders' work: with constant outputs the time was the same), the
+    pyramid 0.04 ms when it is made (the prepare pass 0.027, about reading
+    the depth buffer; the depth image's layout changes cost nothing
+    measurable). Not measured: AMD, where the sampled depth image may be
+    slower to draw into, as the readable one was (see Render target).
+  - *Off* with multisampling, or when the device has less than 240 bytes of
+    push constants, no `shaderStorageImageExtendedFormats` or
+    `independentBlend`, or can't use the formats; the console says why.
+    `vk_shaders.c` is unchanged: the temporal shaders are in
+    `vk_shaders_temporal.c`.
+- **Temporal anti-aliasing (Plan 42).** `r_taa 1` with the temporal path
+  (`VK_TemporalConsumers`, `shaders/taa_resolve.comp`).
+  - *When.* `vk_begin_scene` latches `r_taa` for the frame's scene
+    (`vkt.taaOn`) and jitters it then (`vkt.jitter`, also without
+    `r_temporalJitter`). The resolve needs the depth image and the last
+    frame's level 0 of the pyramid (the last depth): when no other reader
+    needs the pyramid (`VK_TemporalReaders`) its pass makes this frame's
+    level 0 itself and the pyramid's passes are left out
+    (`VK_TemporalResolve`), unless the views don't cover the framebuffer
+    (its dispatch covers the views only).
+  - *History.* Its own images, `vkt.taa[2]` (RGBA16F storage images,
+    `vkt.taaFormat`; `GENERAL` between frames), alternating with `vkt.current` like the
+    scene's color: the scene's last color is not the last result. The
+    result of the frame before is the history when `vkt.taaSerial` says
+    so and the view has a last frame (`vkt.view.params[2]`: no cut, no
+    teleport, no field of view change); else, as after a load, a
+    `vid_restart` or `r_taa` turned on again, the frame is the scene as
+    it is.
+  - *Resolve.* One dispatch over the scene's views (`vkt.rect`), 16 x 16
+    pixels a workgroup, which loads its pixels and the ring around them
+    (18 x 18: YCoCg color, view distance with the weapon's sign, one `vec4`)
+    into shared memory first (each pixel reading its 3 x 3 itself took a
+    quarter longer, 8 x 8 workgroups 5 %); 8 x 8 of its invocations then
+    make level 0 of this frame's pyramid from those distances when no pass
+    makes the pyramid (as `hiz_build.comp`'s `PREPARE`: the same frames to
+    the bit, also at 1001x601, where a texel of the last row and column
+    covers three pixels). Per pixel: of the 3 x 3 the nearest
+    surface gives the motion (its motion vector when it moves, else the
+    camera's, `TemporalCameraMotion`), so the edges of what moves carry its
+    motion; outside the views last frame: no history. This frame's color
+    is the 3 x 3 weighted by each sample's distance to the pixel's center
+    (`exp(-2.29 d^2)`, close to Blackman-Harris; the samples are at their
+    pixel's center minus `vkt.jitterPixels`; the 9 weights are the same for
+    every pixel: `VK_TemporalConsumers` makes them, normalized, for the push
+    constants): the pixel itself, as at first,
+    moved with the jitter and shimmered through the blend (the opposite
+    sign shimmers more). A surface that doesn't move and whose last frame's
+    distance (`reproject`, the clip position the camera's motion was worked
+    out with) is outside the min and max of the last
+    pyramid's level 0 around it (its 2 x 2 texels nearest to the point, two
+    gathers: 4 x 4 pixels; 3 % and 1 unit of tolerance) was hidden there:
+    no history. With only the texel under the point a thin surface (a
+    ladder's rung) was in it or not as the last frame's jitter had it and
+    lost its history every few frames (the weapon and the sky are
+    at the far distance in the pyramid, so what the weapon covered takes
+    none either). The history is read with Catmull-Rom (5 bilinear taps,
+    `vkt.linearSampler`), clipped in YCoCg toward the box of mean ± the
+    deviation of the 3 x 3 (within their min and max), and blended with
+    weights divided by 1 + luma (no flicker from bright pixels that come
+    and go); the history's weight `r_taaFeedback` less up to a quarter for
+    pixels that move 16 pixels or more a frame (resampling blurs). The
+    descriptor set is written in each frame (`vkt.taaSets`: the depth
+    image's view can change), the composite's are static
+    (`vkt.compositeTaaSets` show `taa[current]`).
+  - *Sharpening* (`r_taaSharpen`) in `temporal_composite.frag`: the pixel
+    away from the mean of its 4 neighbours, clamped to their min and max (no
+    halos); the result stays unsharpened as the next frame's history.
+  - *Barriers.* `taa[current]` from undefined to `GENERAL` in the call that
+    gives the scene's images to their readers (it was last read by the
+    composite two frames before and the resolve one frame before), the
+    dispatch's writes to the composite and the next frame's resolve in the
+    call that gives the depth image back to the draws: two calls in all.
+  - *Cost* (NVIDIA RTX 4070 Ti, GPU time a frame, the `dm/mohdm6` view of
+    the temporal path, measured by leaving parts out): at 2560x1440 0.121
+    ms without it, 0.36 ms with it: the pyramid 0.04, the tile load and the
+    write 0.085, Catmull-Rom 0.03 against one bilinear tap, the depth test
+    0.024, the rest (motion, clip, blend) about 0.07; at 1920x1080 0.069 to
+    0.208 ms. The centered color and the wider depth test then 0.03 ms
+    more: 0.39 and 0.225 ms. The optimization the same day (the user's
+    request: the pass is limited by its bytes and its arithmetic, each
+    change measured on its own): the weights from the CPU (9 `exp` a pixel
+    before) and one reprojection for the motion and the depth test 0.027,
+    level 0 made by the pass instead of the pyramid's 3 dispatches and
+    barriers 0.015: 0.388 to 0.344 ms, at 1920x1080 0.227 to 0.185. The
+    scene in the frame's 8-bit format (0.03) and the history in
+    `A2B10G10R10` (0.025) were in for a commit (0.286 ms) and taken out
+    again for HDR to come (the user's choice): they clip at 1 and added
+    a little shimmer (below). Then, with them in, at 2560x1440: the fixed part
+    (dispatch, barriers, the depth image's layouts, the composite's
+    sharpening, 0.006 of it) 0.025, the tile load, level 0 and the write
+    0.054, the arithmetic 0.113 (Catmull-Rom 0.019 against one bilinear
+    tap, the clip box 0.025, the depth test 0.014, the luma weights
+    0.004). Tried and left: one `vec4` read of the tile instead of two
+    (nothing, kept: simpler), the weapon from the depth alone in the tile
+    (nothing: the flags are read again at the nearest pixel), a 1-byte
+    buffer of the flags and the class instead of the normals (0.004 ms:
+    the scene's writes cost by the render target, not by its bytes; 0.025
+    without that target, which would need the motion flag elsewhere), a
+    10-bit scene (`A2B10G10R10`; the alpha isn't read: destination alpha
+    blends are ONE and ZERO, `vk_pipeline.c`; no added shimmer, but 0.05 ms
+    instead of 0.08 saved: 0.336 ms).
+  - *Shimmer* (8 frames of a still `dm/mohdm6` view at 640x480, the share
+    of pixels whose luma changes by more than 4 of 255 between them; more
+    than 16 in brackets): no jitter 0 %, the jitter alone 25.6 (2.95),
+    the first version 1.16 (0.25) and with `r_taaFeedback 0.5` and
+    `r_taaSharpen 0.8` 12.2 (1.13); the centered color 0.73 (0.26), the
+    wider depth test 0.39 (0.06), with 0.5 and 0.8 2.29 (0.31). A wider
+    clip box (1.25 and 1.5 deviations) changed nothing; without the depth
+    test 0.21 (0). At the defaults (`r_taaFeedback 0.75`, `r_taaSharpen
+    0.8`): 1.25 (0.16), with the 8-bit scene 1.30 (0.16), with the 10-bit
+    history too 1.44 (0.16); a 10-bit scene with the RGBA16F history 1.23
+    (0.16). Those builds compared with the jitter on one position
+    (`r_temporalJitterSamples 1`: otherwise the frame count since the
+    start, which the loading time changes, picks it, and two runs of the
+    same build differ by one in a fifth of the pixels): the formats change
+    a third to half of the pixels by one (a few hundred by 4 to 15, a few
+    by up to 63), no shift (under 0.04 of a level on average, 0.1 to 0.27
+    on average apart); the rest of the optimization changes 0.003 to 0.1 %
+    of the pixels, by one but for a handful (the CPU's `expf`).
 
 ## GL1 quirks kept on purpose
 
@@ -8936,6 +9220,110 @@ Done:
     frames a second half of all commands no longer wait 7 ms at the
     defaults, at 250 with `cl_movefps 125` half or more no longer wait 4
     ms; at 250 with `cl_movefps 100` nothing changes.
+41. The temporal path (2026-10-26, the user's request: motion vectors,
+    the last frame's color and depth, a jitter sequence, a depth pyramid
+    and normals, for ambient occlusion and anti-aliasing later; see
+    Status and Implementation notes, Temporal path): `r_temporal 1`. With
+    it off, the views of `mohdm1`, `mp_mohdm1` (skinned soldiers),
+    `mohdm2_fog`, `m2l1_skyportal` and `mohdm1_dlight` are the build
+    before's to the bit (the few pixels of `m1_spawn` and the sky portal's
+    `s2_a` and `s2_b` that differed in one run differ between two runs of
+    the build before as well). With it on: no motion with a still camera,
+    sideways when turning, parallax when strafing, outwards when moving
+    forward, the running soldiers' limbs on their own, the sky by the
+    camera's rotation; `r_temporalShow` 2 to 6 look right. No validation
+    message (the validation layer of Steam's runtime, with `r_vkFallbacks
+    8`, which it needs) through map loads, `vid_restart`, a switch to
+    multisampling and back and the soldiers' scene, and none of
+    synchronization validation but 7 `SYNC-HAZARD-WRITE-AFTER-READ` on the
+    skin data's uploads that the build before has too. Not done: the
+    effects shader's deforms and CPU deforms have no motion of their own,
+    and nothing measured on AMD yet.
+    A review the same day (the user's request): render passes compatible
+    only with identical dependencies (the clearing one had its own,
+    caught by validation), a second primary view no longer replaces the
+    first's projection, skinned frame data made outside the scene is made
+    again inside it (its shaders would read the last frame's bones from
+    the wrong words), sprites write no stale normals, the view weapon's
+    view distance by its own depth range, `VK_PIPE_NORMALS` only with
+    `VK_PIPE_TEMPORAL`, no duplicated helpers (`VK_CreateImage`,
+    `VK_FormatHasFeatures`, `VK_CreateShaderModule` shared). Performance:
+    blended passes skip the temporal work (specialization constant), the
+    normals are copied for the writing pass only, one fused full-size
+    pass and two-level and tail dispatches (4 instead of 12 at 1920x1080,
+    the full-size `R32G32` level replaced by an `R32` view distance and a
+    half-size level 0), static descriptor sets (one set written a frame
+    instead of about 90 descriptors), the scene cleared by its render pass,
+    one barrier call per pass, the two frame slots' skin buffers in the ring
+    (4 MB less host-visible memory). GPU time 0.307 to 0.279 ms, renderer
+    time 0.335 to 0.294 ms at 1920x1080; the views as before, parity with
+    `r_temporal 0` and validation as before (`mohdm4_decals` added).
+    Then the user's view of `dm/mohdm6` (668 -355 -24, 10 -137 0), from
+    10700 to 3300 frames a second at 2560x1440 (GPU time 0.043 to 0.259
+    ms; the pass over every pixel 0.106 ms): the motion vectors only from
+    what moves, the camera's and the missing normals worked out by the
+    readers (`temporal_common.glsl`), so the fill went and the scene's
+    images are no storage images any more; the full-size view distances
+    went (the readers have the depth buffer, the history is the pyramid's
+    level 0); the pyramid's first pass an invocation per 2 x 2 pixels with
+    a gather and shared memory for level 1; the pyramid only when a reader
+    needs it. 5840 frames a second, GPU time 0.121 ms (0.161 with the
+    pyramid); at 1920x1080 0.143 to 0.07 ms. Parity, validation and the
+    views as before.
+42. Temporal anti-aliasing (2026-10-26, the user's request: TAA for better
+    anti-aliasing; see Status and Implementation notes, Temporal
+    anti-aliasing): `r_taa 1`, `r_taaFeedback`, `r_taaSharpen`,
+    `r_temporalShow 8`. With `r_temporal 0`, and with `r_temporal 1` and
+    `r_taa 0`, the views of `mohdm6` are the build before's to the bit.
+    With it on the edges of the views (roof and ceiling edges, ladders,
+    railings) lose their steps and the textures keep their detail; no
+    ghost or trail in frames taken while strafing past a railing and
+    turning at 400 degrees a second. No validation message with
+    synchronization validation (`r_vkValidation 2`) through the `mohdm6`
+    views, `r_taa` switched off and on, a `vid_restart`, `r_temporalShow 8`
+    and `r_taaSharpen` 0 and 1. GPU time in the user's `dm/mohdm6` view
+    0.121 to 0.36 ms at 2560x1440, 0.069 to 0.208 ms at 1920x1080 (see
+    Implementation notes, Temporal anti-aliasing, Cost). Not checked: the
+    view weapon's animation and moving players (no weapon in the scripted
+    runs, no match demo on this machine), AMD.
+    The same day (the user's report: below 250 frames a second the image
+    jittered): this frame's color made at the pixel's center from its 3 x 3
+    and the depth test over 4 x 4 pixels (see Implementation notes, Temporal
+    anti-aliasing, Shimmer): the pixels that change between frames of a
+    still view from 1.16 to 0.39 %, with the user's `r_taaFeedback 0.5`
+    and `r_taaSharpen 0.8` from 12.2 to 2.29 %. No ghost while strafing or
+    turning, the edges as smooth, no validation message with
+    synchronization validation through the toggle run; 0.03 ms more.
+    Then the user's defaults: `r_taaFeedback` 0.75 and `r_taaSharpen` 0.8
+    (from 0.9 and 0.3; fine at 60 frames a second, good at 125, excellent
+    at 250 by the user's eye): 1.25 % of the pixels of the still view
+    change between frames (0.16 % by more than 16).
+    Then its optimization (the user's request: 87.5 % of the frames a
+    second lost with the path and the anti-aliasing on; at first without a
+    loss of quality, then a very minor one allowed): measured part by part
+    (see Implementation notes, Temporal anti-aliasing, Cost): the scene in
+    the frame's 8-bit format, the history in 10 bits, the filter's weights
+    from the CPU, one reprojection, level 0 of the pyramid made by the pass,
+    two barrier calls. GPU time at 2560x1440 0.388 to 0.286 ms (0.096
+    without the anti-aliasing, from 0.122), at 1920x1080 0.227 to 0.164
+    (0.059 from 0.068); with the path off the same. The two formats were
+    taken out again in the next commit (the user's choice, for HDR to come:
+    they clip at 1): 0.344 ms at 2560x1440, 0.185 at 1920x1080, the
+    temporal path 0.123; the frames those of the optimization without them
+    (the same to the bit with the jitter on one position), shimmer 1.25 %
+    as before, no validation message with synchronization validation
+    through the same run. What follows describes the commit with them. With `r_temporal 0` and
+    with `r_temporal 1` and `r_taa 0` the views of `mohdm6`, `mohdm1`,
+    `mp_mohdm1`, `m2l1_skyportal` and `mohdm4_decals` are those of the
+    build before without the path to the bit (but for pixels that differ
+    between two runs of it: animated content); with the anti-aliasing the
+    shimmer of the still view from 1.25 to 1.44 % of the pixels (0.16 %
+    by more than 16 as before) and changes by one in a third to half of the
+    pixels, no shift; level 0 made by the pass gives the frames of the
+    pyramid's to the bit, also at 1001x601. No validation message with
+    synchronization validation through `r_temporalShow` 4 and 7 (the
+    pyramid beside the anti-aliasing), `r_taa` off and on, a `vid_restart`,
+    at 640x480 and 1001x601.
 
 Remaining:
 
