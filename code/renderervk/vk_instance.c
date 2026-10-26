@@ -522,6 +522,7 @@ static void VK_CreateLogicalDevice( void ) {
 	vk.enabledFeatures.samplerAnisotropy = supported.samplerAnisotropy;
 	vk.enabledFeatures.textureCompressionBC = supported.textureCompressionBC;	// DDS textures
 	vk.enabledFeatures.shaderClipDistance = supported.shaderClipDistance;	// portal clip plane
+	vk.enabledFeatures.depthClamp = supported.depthClamp;					// solid surfaces nearer than r_znear (VK_PIPE_DEPTHCLAMP)
 
 	VK_CHECK( qvkEnumerateDeviceExtensionProperties( vk.physicalDevice, NULL, &numAvailable, NULL ) );
 	available = ri.Hunk_AllocateTempMemory( sizeof( *available ) * ( numAvailable + 1 ) );

@@ -449,11 +449,96 @@ void RB_EnableTexCoordArray( qboolean enable ) {
 }
 
 /*
+** RB_ShaderDepthClamp
+**
+** Whether the surfaces of a shader can be drawn with depth clamp
+** (vk_set_depth_clamp). Near clipping cuts away the part of a surface that is
+** nearer than r_znear, so a view leaning into a wall would see through it, or
+** a pane of glass would end in a hard edge at the near plane; depth clamp
+** keeps the surface whole. That goes for the solid surfaces (they write
+** depth) and for the translucent ones of the map (glass, marks), but not for
+** sprites and effects, which a view passes through: they keep the near
+** clipping, or one in front of the camera would fill the screen. The shader
+** decides, so that every pass of a surface gets the same, or the depth equal
+** passes after the first one wouldn't match its depth where it is clamped
+*/
+typedef enum { RB_CLAMP_NONE, RB_CLAMP_SOLID, RB_CLAMP_TRANSLUCENT } rbClampClass_t;
+
+static rbClampClass_t RB_ShaderClampClass( const shader_t *shader ) {
+	int i;
+
+	if ( !shader || shader->isSky || shader->sort < SS_OPAQUE ) {
+		return RB_CLAMP_NONE;
+	}
+	if ( shader->sort <= SS_BANNER ) {
+		return RB_CLAMP_SOLID;
+	}
+	if ( shader->sort >= SS_UNDERWATER && shader->sort <= SS_BLEND6 ) {
+		// a sort of a shader file, or the default of blended stages: still
+		// solid when a stage writes depth
+		for ( i = 0; i < MAX_SHADER_STAGES && shader->unfoggedStages[i]; i++ ) {
+			if ( ( shader->unfoggedStages[i]->stateBits & GLS_DEPTHMASK_TRUE ) && !( shader->unfoggedStages[i]->stateBits & GLS_DEPTHTEST_DISABLE ) ) {
+				return RB_CLAMP_SOLID;
+			}
+		}
+		return RB_CLAMP_TRANSLUCENT;
+	}
+	return RB_CLAMP_NONE;
+}
+
+qboolean RB_ShaderDepthClamp( const shader_t *shader ) {
+	return r_depthClamp->integer && RB_ShaderClampClass( shader ) != RB_CLAMP_NONE;
+}
+
+// the batch being drawn is of sprites (RB_RenderSpriteSurfList, SF_SPRITE)
+static qboolean rb_spriteBatch;
+
+/*
+** RB_DrawClamped
+**
+** r_depthClamp 1: the world's own surfaces (brushes, terrain, polys). 2: also
+** static models and entities (brush models, models), whose translucent
+** surfaces stay unclamped
+*/
+static qboolean RB_DrawClamped( void ) {
+	rbClampClass_t	class;
+	qboolean		world;
+
+	if ( backEnd.in2D || ( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) || rb_spriteBatch ) {
+		return qfalse;
+	}
+	class = r_depthClamp->integer ? RB_ShaderClampClass( tess.shader ) : RB_CLAMP_NONE;
+	if ( class == RB_CLAMP_NONE ) {
+		return qfalse;
+	}
+	world = !backEnd.currentStaticModel && backEnd.currentEntity == &tr.worldEntity;
+	if ( world ) {
+		return qtrue;
+	}
+	if ( r_depthClamp->integer < 2 ) {
+		return qfalse;
+	}
+	// static models also have glass and the like; other entities' translucent
+	// surfaces are effects
+	return class == RB_CLAMP_SOLID || backEnd.currentStaticModel != NULL;
+}
+
+/*
 ** RB_DrawElements
 **
 ** Draws triangles from the current vertex arrays
 */
+static void RB_SubmitElements( int numVertexes, int numIndexes, const glIndex_t *indexes );
+
 void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes ) {
+	// the view weapon's depth hack turns it off in vk_draw
+	vk_set_depth_clamp( RB_DrawClamped() );
+	RB_SubmitElements( numVertexes, numIndexes, indexes );
+	// not for the immediate mode draws
+	vk_set_depth_clamp( qfalse );
+}
+
+static void RB_SubmitElements( int numVertexes, int numIndexes, const glIndex_t *indexes ) {
 	drawGeometry_t geometry;
 	int i;
 
@@ -712,6 +797,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				if (oldShader != NULL) {
 					RB_EndSurface();
 				}
+				rb_spriteBatch = *drawSurf->surface == SF_SPRITE;
 				RB_BeginSurface( shader );
 				oldShader = shader;
 				oldDlightMap = dlightMap;
@@ -766,7 +852,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			//
 			if ( oldDepthRange != depthRange ) {
 				if ( depthRange ) {
-					vk_set_depth_range (0, 0.3);
+					vk_set_depth_range (0, VK_DEPTH_HACK_MAX);
 				} else {
 					vk_set_depth_range (0, 1.0);
 				}
@@ -884,6 +970,7 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
 
     backEnd.currentEntity = &tr.worldEntity;
     backEnd.currentStaticModel = 0;
+	rb_spriteBatch = qtrue;
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
 	backEnd.ori = backEnd.viewParms.world;
@@ -911,7 +998,7 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
         if (oldDepthRange != depthRange)
         {
 			if (depthRange) {
-				vk_set_depth_range(0.0, 0.3);
+				vk_set_depth_range(0.0, VK_DEPTH_HACK_MAX);
 			} else {
                 vk_set_depth_range(0.0, 1.0);
 			}
@@ -928,6 +1015,8 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
 	if (oldShader) {
 		RB_EndSurface();
 	}
+
+	rb_spriteBatch = qfalse;
 
     // go back to the world modelview matrix
     RB_SetModelview(backEnd.viewParms.world.modelMatrix);

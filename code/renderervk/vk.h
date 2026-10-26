@@ -210,6 +210,9 @@ void		vk_set_texenv( int tmu, texEnv_t env );
 
 void		vk_set_cull( cullFace_t face );
 void		vk_set_depth_range( float zNear, float zFar );
+void		vk_set_depth_clamp( qboolean enable );
+#define VK_DEPTH_HACK_MAX	0.3f	// the depth range of the view weapon is [0, VK_DEPTH_HACK_MAX]
+float		vk_depth_floor( void );	// the smallest depth of the full range [0, 1] draws
 // depth bias for filled polygons only (not lines)
 void		vk_set_polygon_offset( qboolean enable, float factor, float units );
 void		vk_set_color_mask( qboolean red, qboolean green, qboolean blue, qboolean alpha );
@@ -350,6 +353,7 @@ typedef struct {
 	qboolean		polygonOffset;
 	qboolean		fog;
 	qboolean		clipPlane;
+	qboolean		depthClamp;			// as given to vk_set_depth_clamp (with the full depth range)
 	texEnv_t		texEnv[NUM_TEXTURE_BUNDLES];
 	image_t			*image[NUM_TEXTURE_BUNDLES];	// bound to the unit; NULL: the geometry has no texture coordinates for it
 	int				dlightTmu;			// vk_set_lightmap_dlights' unit, -1 for none

@@ -288,6 +288,7 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	// with the y flip of the viewport, counter-clockwise matches GL
 	rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterization.depthBiasEnable = ( bits & VK_PIPE_DEPTHBIAS ) ? VK_TRUE : VK_FALSE;
+	rasterization.depthClampEnable = ( bits & VK_PIPE_DEPTHCLAMP ) ? VK_TRUE : VK_FALSE;
 	rasterization.lineWidth = 1.0f;
 	if ( vk.bresenhamLines && ( lines || rasterization.polygonMode == VK_POLYGON_MODE_LINE ) ) {
 		// GL's line rasterization, with stippling
@@ -589,7 +590,10 @@ static int				vk_numRecordedKeys;		// read at startup
 
 // what VK_BuildPipelineKey can make on this device
 static qboolean VK_KeyValid( uint64_t bits ) {
-	if ( bits >> 46 ) {
+	if ( ( bits >> 46 ) & ~( VK_PIPE_DEPTHCLAMP >> 46 ) ) {
+		return qfalse;
+	}
+	if ( ( bits & VK_PIPE_DEPTHCLAMP ) && !vk.enabledFeatures.depthClamp ) {
 		return qfalse;
 	}
 	if ( ( bits & VK_PIPE_STIPPLE ) && !vk.lineStipple ) {

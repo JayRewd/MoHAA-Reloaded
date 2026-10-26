@@ -1535,6 +1535,7 @@ extern cvar_t	*r_verbose;				// used for verbose debug spew
 extern cvar_t	*r_ignoreFastPath;		// allows us to ignore our Tess fast paths
 
 extern cvar_t	*r_znear;				// near Z clip plane
+extern cvar_t	*r_depthClamp;			// 0 off, 1 world surfaces, 2 also models: solid surfaces nearer than r_znear aren't clipped (RB_ShaderDepthClamp)
 
 extern cvar_t	*r_stencilbits;			// number of desired stencil bits
 extern cvar_t	*r_depthbits;			// number of desired depth bits
@@ -1824,6 +1825,7 @@ void	RB_EnableColorArray( qboolean enable );
 void	RB_SetTexCoordArray( const float *st, int stride );
 void	RB_EnableTexCoordArray( qboolean enable );
 void	RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes );
+qboolean RB_ShaderDepthClamp( const shader_t *shader );
 
 // immediate mode emulation (tr_immediate.c), for debug and 2D drawing
 typedef enum {

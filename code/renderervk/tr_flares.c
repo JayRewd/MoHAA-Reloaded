@@ -260,6 +260,8 @@ void RB_TestFlare( flare_t *f ) {
 			break;
 		}
 		if ( status == DEPTHREAD_DONE ) {
+			// the full depth range starts at vk_depth_floor
+			depth = Com_Clamp( 0.0f, 1.0f, ( depth - vk_depth_floor() ) / ( 1.0f - vk_depth_floor() ) );
 			screenZ = r->proj14 / ( ( 2*depth - 1 ) * r->proj11 - r->proj10 );
 			visible = ( -r->eyeZ - -screenZ ) < 24;
 		}

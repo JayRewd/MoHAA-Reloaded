@@ -79,6 +79,7 @@ typedef struct {
 	qboolean		polygonOffset;
 	float			offsetFactor, offsetUnits;
 	float			depthMin, depthMax;
+	qboolean		depthClamp;			// vk_set_depth_clamp
 	int				viewport[4];		// window coordinates, origin at the bottom-left
 	int				scissor[4];
 	float			projection[16];
@@ -2314,6 +2315,39 @@ void vk_set_depth_range( float zNear, float zFar ) {
 	vk_dirty |= VK_DIRTY_VIEWPORT;
 }
 
+/*
+===============
+vk_depth_floor
+
+With depth clamp, what is nearer than r_znear gets the smallest depth of the
+range, which would hide the view weapon: its depth hack range is [0, 0.3] and
+it passes the depth test only where nothing is in front of it. The full range
+of the other draws therefore starts where the weapon's ends, so the weapon is
+never hidden by the near surfaces the clamp keeps. Whoever reads the depth
+buffer back undoes it (tr_flares.c)
+===============
+*/
+
+/*
+===============
+vk_set_depth_clamp
+
+Whether the next draws clamp their depth to the viewport's depth range
+instead of being clipped by the near and far planes, so that a solid
+surface nearer than r_znear (a wall the view leans into) still hides what
+is behind it. Applies only with the full depth range [0, 1]: the depth hack
+of the view weapon ([0, 0.3]), the sky ([1, 1]) and the debug lines ([0, 0])
+keep clipping
+===============
+*/
+float vk_depth_floor( void ) {
+	return r_depthClamp && r_depthClamp->integer ? VK_DEPTH_HACK_MAX : 0.0f;
+}
+
+void vk_set_depth_clamp( qboolean enable ) {
+	vks.depthClamp = enable;
+}
+
 void vk_set_polygon_offset( qboolean enable, float factor, float units ) {
 	vks.polygonOffset = enable;
 	vks.offsetFactor = factor;
@@ -2639,6 +2673,9 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 		viewport.height = -(float)Q_max( vks.viewport[3], 1 );
 		viewport.minDepth = vks.depthMin;
 		viewport.maxDepth = vks.depthMax;
+		if ( viewport.minDepth == 0.0f && viewport.maxDepth == 1.0f ) {
+			viewport.minDepth = vk_depth_floor();
+		}
 		qvkCmdSetViewport( cmd, 0, 1, &viewport );
 	}
 
@@ -2840,6 +2877,9 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primT
 	}
 	if ( s->clipPlaneEnabled ) {
 		bits |= VK_PIPE_CLIPPLANE;
+	}
+	if ( s->depthClamp && vk.enabledFeatures.depthClamp && s->depthMin == 0.0f && s->depthMax == 1.0f ) {
+		bits |= VK_PIPE_DEPTHCLAMP;
 	}
 
 	if ( s->stencilTest ) {
@@ -3310,6 +3350,8 @@ qboolean vk_prebuild_pipeline( const vkDrawState_t *state ) {
 	s.colorMask[0] = s.colorMask[1] = s.colorMask[2] = s.colorMask[3] = qtrue;
 	s.fog = state->fog;
 	s.clipPlaneEnabled = state->clipPlane;
+	s.depthClamp = state->depthClamp;
+	s.depthMax = 1.0f;	// the full depth range, see vk_set_depth_clamp
 	s.dlightTmu = state->dlightTmu;
 	s.dlightBacks = state->dlightBacks;
 

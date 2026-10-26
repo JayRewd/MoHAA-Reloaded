@@ -93,6 +93,14 @@ static texEnv_t R_StateTexEnv( unsigned long stateBits ) {
 	return TEXENV_MODULATE;
 }
 
+// world surfaces (faces, grids, terrain, brush models) have a lightmap or
+// vertex colors, the models' surfaces (R_RegisterShaders) none; what
+// RE_RegisterShader and RE_RegisterShaderNoMip register (the 2D pictures,
+// and cgame's effects, sprites and marks) is LIGHTMAP_2D
+static qboolean R_ShaderIsWorld( const shader_t *shader ) {
+	return shader->lightmapIndex >= 0 || shader->lightmapIndex == LIGHTMAP_BY_VERTEX || shader->lightmapIndex == LIGHTMAP_WHITEIMAGE;
+}
+
 static cullFace_t R_ShaderCull( const shader_t *shader ) {
 	switch ( shader->cullType ) {
 	case CT_TWO_SIDED:
@@ -257,7 +265,7 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 	int place, n = 0;
 
 	for ( place = PB_2D; place <= PB_EFFECTS; place <<= 1 ) {
-		int dlightTmu = -1, cull, numCulls, lights;
+		int dlightTmu = -1, cull, numCulls, lights, clamp, numClamps;
 
 		if ( !( where & place ) ) {
 			continue;
@@ -302,22 +310,37 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 			}
 		}
 
+		// depth clamp in 3D views (RB_DrawElements); a model can also be
+		// the view weapon, whose depth hack has none
+		numClamps = 1;
+		ds.depthClamp = place != PB_2D && RB_ShaderDepthClamp( shader );
+		// (level 1: only world entity draws are clamped, other entities and
+		// static models are not)
+		if ( ds.depthClamp && ( r_depthClamp->integer < 2 || ( !R_ShaderIsWorld( shader ) && ( place == PB_CPU || place == PB_SKINNED ) ) ) ) {
+			numClamps = 2;
+		}
+
 		// Set2DWindow sets no cull behind R_Cull's back
 		numCulls = place == PB_2D && R_ShaderCull( shader ) != CULL_NONE ? 2 : 1;
-		for ( cull = 0; cull < numCulls; cull++ ) {
-			ds.cull = cull ? CULL_NONE : R_ShaderCull( shader );
-			for ( lights = 0; lights < ( dlightTmu >= 0 && place != PB_2D ? 3 : 1 ); lights++ ) {
-				if ( lights == 2 && r_dlightBacks->integer ) {
-					break;
-				}
-				ds.dlightTmu = lights ? dlightTmu : -1;
-				ds.dlightBacks = lights == 2;
+		for ( clamp = 0; clamp < numClamps; clamp++ ) {
+			if ( clamp ) {
+				ds.depthClamp = qfalse;
+			}
+			for ( cull = 0; cull < numCulls; cull++ ) {
+				ds.cull = cull ? CULL_NONE : R_ShaderCull( shader );
+				for ( lights = 0; lights < ( dlightTmu >= 0 && place != PB_2D ? 3 : 1 ); lights++ ) {
+					if ( lights == 2 && r_dlightBacks->integer ) {
+						break;
+					}
+					ds.dlightTmu = lights ? dlightTmu : -1;
+					ds.dlightBacks = lights == 2;
 
-				if ( !multitexture && pStage->bundle[0].vertexLightmap && r_vertexLight->integer && r_lightmap->integer ) {
-					ds.image[0] = tr.whiteImage;
-					n += R_PrebuildFog( &ds, pStage->stateBits );
-				} else {
-					n += R_PrebuildImages( &ds, &pStage->bundle[0], multitexture ? &pStage->bundle[1] : NULL, pStage->stateBits );
+					if ( !multitexture && pStage->bundle[0].vertexLightmap && r_vertexLight->integer && r_lightmap->integer ) {
+						ds.image[0] = tr.whiteImage;
+						n += R_PrebuildFog( &ds, pStage->stateBits );
+					} else {
+						n += R_PrebuildImages( &ds, &pStage->bundle[0], multitexture ? &pStage->bundle[1] : NULL, pStage->stateBits );
+					}
 				}
 			}
 		}
@@ -345,6 +368,7 @@ static int R_PrebuildLightmappedMultitexture( const shader_t *shader ) {
 	ds.texEnv[0] = R_StateTexEnv( ds.stateBits );
 	ds.texEnv[1] = r_lightmap->integer ? TEXENV_REPLACE : TEXENV_MODULATE;
 	ds.cull = R_ShaderCull( shader );
+	ds.depthClamp = RB_ShaderDepthClamp( shader );
 
 	for ( lights = 0; lights < ( pStage->bundle[1].isLightmap ? 3 : 1 ); lights++ ) {
 		if ( lights == 2 && r_dlightBacks->integer ) {
@@ -386,6 +410,7 @@ static int R_PrebuildDlightPass( const shader_t *shader ) {
 	ds.image[0] = tr.dlightImage;
 	ds.dlightTmu = -1;
 	ds.colorArray = qtrue;
+	ds.depthClamp = RB_ShaderDepthClamp( shader );
 	for ( i = 0; i < 2; i++ ) {
 		ds.stateBits = stateBits[i];
 		n += R_PrebuildFog( &ds, stateBits[i] );
@@ -445,11 +470,7 @@ static int R_PrebuildShader( const shader_t *shader ) {
 		return n;
 	}
 
-	// world surfaces (faces, grids, terrain, brush models) have a lightmap
-	// or vertex colors, the models' surfaces (R_RegisterShaders) none; what
-	// RE_RegisterShader and RE_RegisterShaderNoMip register (the 2D
-	// pictures, and cgame's effects, sprites and marks) is LIGHTMAP_2D
-	world = shader->lightmapIndex >= 0 || shader->lightmapIndex == LIGHTMAP_BY_VERTEX || shader->lightmapIndex == LIGHTMAP_WHITEIMAGE;
+	world = R_ShaderIsWorld( shader );
 	if ( shader->lightmapIndex == LIGHTMAP_2D ) {
 		where = PB_2D | PB_CPU;
 	} else {

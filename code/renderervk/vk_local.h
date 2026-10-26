@@ -675,6 +675,7 @@ void		VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed );
 #define VK_PIPE_DLIGHT_BACKS		( 1ull << 44 )	// no dynamic light from behind the triangle
 #define VK_PIPE_SKINNED				( 1ull << 45 )	// skinned draw: shaders/skinned.vert, no vertex input
 #define VK_PIPE_EFFECTS				( 1ull << 46 )	// static geometry with effects: shaders/effects.vert, normals in binding 4
+#define VK_PIPE_DEPTHCLAMP			( 1ull << 47 )	// depth clamp instead of near/far clipping (vk_set_depth_clamp)
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
