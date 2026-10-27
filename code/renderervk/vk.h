@@ -306,6 +306,12 @@ qboolean	vk_temporal_enabled( void );
 qboolean	vk_begin_scene( const vkSceneView_t *view );
 // ends the scene if one is being drawn (see above)
 void		vk_end_scene( void );
+// whether the primary view's ambient occlusion (r_ao) is still to come in
+// this scene, and then it: between the view's opaque surfaces and what is
+// blended over them; the fog of the view's draws, NULL for none: start,
+// end, r, g, b (vk_set_fog_range, vk_set_fog_color)
+qboolean	vk_ao_pending( void );
+void		vk_ao_scene( const float *fog );
 // the last frame's modelview of the following draws while the modelview is
 // the current one (vk_set_modelview); NULL: the camera's motion only
 void		vk_set_prev_modelview( const float *matrix );

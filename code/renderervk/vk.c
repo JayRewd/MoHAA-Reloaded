@@ -4577,12 +4577,15 @@ qboolean vk_begin_scene( const vkSceneView_t *view ) {
 		vkt.active = qtrue;
 		vkt.clearPending = qtrue;
 		vkt.sceneSerial = vk.frameSerial;
+		vkt.aoRan = qfalse;
+		// the readers on for this scene, their images made or freed
+		VK_TemporalUpdateFeatures();
 		Com_Memset( vkt.rect, 0, sizeof( vkt.rect ) );
 		Com_Memset( &vkt.view, 0, sizeof( vkt.view ) );
 		vkt.primarySet = qfalse;
 
 		// the jitter of the frame: anti-aliasing needs it
-		vkt.taaOn = r_taa->integer != 0;
+		vkt.taaOn = r_taa->integer && ( vkt.groups & VK_TEMPORAL_GROUP_TAA );
 		vkt.jitter = r_temporalJitter->integer != 0 || vkt.taaOn;
 		sample = (int)( vk.frameSerial % (uint64_t)Q_max( r_temporalJitterSamples->integer, 1 ) ) + 1;
 		vkt.jitterPixels[0] = vkt.jitter ? VK_Halton( sample, 2 ) - 0.5f : 0.0f;
@@ -4675,6 +4678,46 @@ void vk_end_scene( void ) {
 
 	// the composite's pipeline, layout and dynamic state replaced the
 	// bindings of the draws
+	Com_Memset( &vkb, 0, sizeof( vkb ) );
+	vk_dirty = VK_DIRTY_ALL;
+}
+
+qboolean vk_ao_pending( void ) {
+	return vk.device && vk.frame && VK_TemporalAoWanted();
+}
+
+/*
+===============
+vk_ao_scene
+
+The primary view's ambient occlusion (VK_TemporalAo), between its opaque
+surfaces and what is blended over them: the scene's render pass ends, the
+compute passes read what it drew, and the next one (nothing cleared) blends
+the result into the color first; the draws that follow bind everything
+again
+===============
+*/
+void vk_ao_scene( const float *fog ) {
+	VkCommandBuffer cmd;
+
+	if ( !vk_ao_pending() ) {
+		return;
+	}
+	VK_EndRenderPass();
+	// a scene without a render pass yet still clears its images first
+	if ( vkt.clearPending ) {
+		VK_BeginRenderPass();
+		VK_EndRenderPass();
+	}
+	cmd = vk.frame->mainCmd;
+	VK_TemporalAo( cmd, fog );
+	if ( vkt.aoRan ) {
+		VK_BeginRenderPass();
+		VK_TemporalAoApply( cmd );
+	}
+	// once a scene, whether it ran or not
+	vkt.aoRan = qtrue;
+
 	Com_Memset( &vkb, 0, sizeof( vkb ) );
 	vk_dirty = VK_DIRTY_ALL;
 }

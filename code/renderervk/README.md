@@ -628,8 +628,8 @@ below are done.
   pyramid of view distances (min and max) made when a reader needs it and
   the last frame's color and pyramid, then into the frame before the 2D
   drawing; `r_temporalJitter 1` jitters the projection (Halton 2, 3).
-  Temporal anti-aliasing reads them since Plan 42 (below); AO goes in at
-  `VK_TemporalConsumers` too, with the helpers of
+  Temporal anti-aliasing reads them since Plan 42 (below), ambient
+  occlusion since Plan 44, with the helpers of
   `shaders/temporal_common.glsl`. With `r_temporal 0` the
   frames are the build before's to the bit. Cost on an NVIDIA GPU, GPU
   time a frame, in the user's `dm/mohdm6` view (a light one: 10700 frames
@@ -705,6 +705,18 @@ below are done.
   clips as in SDR (`dm/mohdm1`, the user's defaults: the sky's mean 170 to
   176 of 255, the other views up to 1). Off, the frames are the build
   before's to the bit
+- the temporal path's images per reader (2026-10-27, Plan 45, the
+  renderer; the user's request: each part of the path on only while
+  something that reads it is): the anti-aliasing's history and the depth
+  pyramid are made when `r_taa` is on (the pyramid also for
+  `r_temporalShow`'s views that read it), the ambient occlusion's images
+  when `r_ao` is, the last scene's color only for `r_temporalShow 5`, and
+  freed when nothing reads them; the scene's color, motion vectors and
+  normals stay (the HDR look reads the normals). At 2560x1440 about 270 MB
+  with everything on, 44 MB with neither (`r_temporal 1` for the HDR look
+  or `r_saturation`), 132 MB less with the anti-aliasing alone. A change of
+  those cvars waits for the GPU once (a few milliseconds), the frames are
+  the build before's to the bit. See Implementation notes, Temporal path
 - `r_saturation` (2026-10-26, Plan 43, the renderer; the user's request):
   the 3D view's color saturation with `r_temporal 1`, in SDR and with HDR
   output (archived, default 1.1, the user's, in linear light about BT.709 luma, in
@@ -712,6 +724,47 @@ below are done.
   can't be told from the 3D view, so nothing). The frames of `r_temporal
   1` change with it (in `dm/mohdm6` at 1.125 67 to 95 % of the pixels, by
   up to 15); with `r_saturation 1` they are the build before's to the bit
+- ambient occlusion (2026-10-27, Plan 44, the renderer; the user's
+  request: AAA quality ground truth ambient occlusion): with
+  `r_temporal 1`, `r_ao 1` (archived, off by default, switched live) adds
+  GTAO (Jimenez et al. 2016, as Intel's XeGTAO does it): the contact
+  shadows of corners, creases and what stands on a floor, from the
+  horizons around each pixel in the depth, cosine weighted, with its own
+  blending over frames (a noise that changes every frame, the history
+  moved by the motion vectors, dropped where the depth says the surface
+  wasn't there, clamped to what is around the pixel) and an edge-aware
+  blur, so it is clean with and without `r_taa`. It darkens the opaque
+  surfaces only: the primary view's render pass is broken after them and
+  before the first blended surface, so smoke, muzzle flashes, glass and
+  the lamps' glows in front of a corner keep their brightness; under fog
+  it is applied to the surface's color before the fog, exactly. The
+  normals are the depth's (`r_aoNormals 0`): the stock models smooth
+  their normals across hard corners (the desks of `dm/mohdm6`), which
+  then occluded themselves in black triangles. `r_aoQuality` 0 to 3
+  (default 2: 3 directions of 3 samples a side), `r_aoRadius` (48 world
+  units), `r_aoStrength` (1.5, a power), `r_aoFalloff`, `r_aoThickness`,
+  `r_aoTemporal` (16 frames), `r_aoMultiBounce` (0.4); `r_temporalShow`
+  9 and 10 show it. With `r_ao 0` (and `r_temporal 0`) the frames are
+  the build before's to the bit. Cost on the RTX 4070 Ti, GPU time a
+  frame in `dm/mohdm6` (the room at 448 -160 108), the temporal path
+  0.162 ms: with it 0.96 ms at 2560x1440 (quality 0 to 3: 0.66, 0.76,
+  0.96, 1.96), 0.53 at 1920x1080 (0.37, 0.42, 0.53, 1.09). The same day
+  (the user's report: a wall right in front of the eye went black): the
+  coarse levels of the view distances had never been made (0: a wall at
+  the eye, which occluded what was nearer than the radius), and are now
+  the mean of 1 / d at the texel's center; samples off the view are left
+  out instead of clamped to its edge; the view distances are 32-bit
+  again (in half floats a wall at a grazing angle went dark in stripes).
+  Then (the user's reports: walking into a wall, the occlusion wobbled,
+  its noise streaking with the movement keys) the blur's edges are worked
+  out unquantized and the history is read from the 2 x 2 texels its
+  weights are for (a gather's came back a texel off under a thousandth of
+  a pixel's motion). Then a review and optimization (the user's request):
+  the main pass's loops unrolled (slices and steps as specialization
+  constants), the blend over frames and the blur in one pass: quality 2
+  0.82 to 0.69 ms over the path at 2560x1440, 0.45 to 0.38 at 1920x1080,
+  the frames the same but for one level in up to 4 % of the pixels.
+  See Implementation notes, Ambient occlusion
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -879,13 +932,22 @@ Cvars of the backend:
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
-| `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors, normals, a depth pyramid and the last frame's color and depth, for temporal anti-aliasing (`r_taa`) and ambient occlusion to come; off with multisampling (see Implementation notes, Temporal path) |
+| `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
+| `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
+| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80 |
+| `r_aoRadius` (archived, default 48, 4 to 256) | with `r_ao 1`: how far occluders reach, in world units |
+| `r_aoStrength` (archived, default 1.5, 0 to 4) | with `r_ao 1`: the visibility to this power (1: as computed) |
+| `r_aoFalloff` (archived, default 0.6, 0.05 to 1) | with `r_ao 1`: the share of the radius over which occluders fade out |
+| `r_aoThickness` (archived, default 0.25, 0 to 4) | with `r_ao 1`: XeGTAO's thin occluder compensation: what is in front along the view fades out sooner (less dark halos behind thin objects) |
+| `r_aoTemporal` (archived, default 16, 1 to 64) | with `r_ao 1`: the most frames blended (a quarter of it for what moves); 1: none, the noise stays put and the blur works alone |
+| `r_aoNormals` (archived, default 0) | with `r_ao 1`: 0 the normals of the depth; 1 the draws' where they are within about 25 degrees of those (smoother curved models) |
+| `r_aoMultiBounce` (archived, default 0.4, 0 to 0.9) | with `r_ao 1`: the albedo of Jimenez's multi-bounce fit: the light occluders bounce back lightens the occlusion; 0 none |
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
 | `r_temporalJitter` (default 0) | with `r_temporal 1`: the 3D views' projection moves by a sub-pixel offset every frame (Halton 2, 3; `r_temporalJitterSamples`, default 8). For the anti-aliasing (`r_taa` turns it on itself): without it the image shakes |
 | `r_temporalCutDist` (default 256) | with `r_temporal 1`: a camera or entity that moves farther in a frame has no motion (a cut, a teleport) |
-| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it) |
+| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
@@ -8162,6 +8224,31 @@ selects the sample count (see Implementation notes).
 - **Temporal path (Plan 41).** `r_temporal 1` (`vk_temporal.c`,
   `tr_temporal.c`), what temporal anti-aliasing and screen space ambient
   occlusion need from a frame; the anti-aliasing reads it (Plan 42, below).
+  - *Images per reader* (Plan 45, `VK_TemporalUpdateFeatures`). Made with
+    the path: the scene's color (one image), motion vectors and normals,
+    and a 1 x 1 placeholder. The rest in groups (`VK_TEMPORAL_GROUP_*`,
+    `vkt.groups`), made while a reader needs them: the anti-aliasing's
+    history (`taa[2]`, `r_taa`), the depth pyramid (`hiz[2]`: `r_taa`, and
+    `r_temporalShow` 1, 2, 4, 6, 7), the ambient occlusion's (`r_ao`) and
+    the last scene's color (`color[1]`, `r_temporalShow` 5: with it the
+    two color images alternate as before, the framebuffers made again).
+    At 2560x1440: the color 30 MB, the motion vectors and the normals 15
+    each, the history 59, the pyramid 20, the ambient occlusion 102, the
+    last color 30. At the start of a frame's scene (`vk_begin_scene`,
+    before anything of it is recorded) the cvars are latched for the
+    scene (`vkt.taaOn`, `vkt.aoOn`, `vkt.showMode`: one changed in the
+    middle of a frame can't reach an image not made) and the groups made
+    or freed to match: then the submit thread is drained and the GPU
+    waited for (`vk_finish`), the new images cleared in the frame, and the
+    static sets written again, the placeholder (`GENERAL`) in the slots of
+    the groups not made (the composite reads every binding in one view or
+    another). Checked: the views of `mohdm6` the build before's to the bit
+    with the path alone, with the anti-aliasing, with the ambient
+    occlusion, with both, and in `r_temporalShow` 4, 5 and 9; toggled in
+    a run (the anti-aliasing, then the ambient occlusion, each off again,
+    the views 5, 4 and 9), the GPU's memory followed (about 2830 MiB used
+    with nothing, +60 to 80 with the anti-aliasing, +95 with the ambient
+    occlusion, back to 2800 at the end).
   - *Scene.* The back end starts every 3D view of the world with
     `vk_begin_scene` (`RB_TemporalBeginView`); the first of a frame begins
     the scene: its render passes have four attachments: the color
@@ -8393,6 +8480,130 @@ selects the sample count (see Implementation notes).
     by up to 63), no shift (under 0.04 of a level on average, 0.1 to 0.27
     on average apart); the rest of the optimization changes 0.003 to 0.1 %
     of the pixels, by one but for a handful (the CPU's `expf`).
+- **Ambient occlusion (Plan 44).** `r_ao 1` with the temporal path
+  (`VK_TemporalAo`, `shaders/ao_common.glsl`, `ao_prefilter.comp`,
+  `gtao_main.comp`, `ao_temporal.comp`, `ao_denoise.comp`,
+  `ao_apply.frag`).
+  - *Where.* `RB_RenderDrawSurfList` calls `RB_TemporalAo` in the primary
+    view before the first batch whose shader sorts at `SS_UNDERWATER` or
+    later (after the opaque surfaces, decals, see-through and banners),
+    or after the list when it has none; once a scene (`vkt.aoRan`).
+    `vk_ao_scene` ends the scene's render pass (a scene that hasn't begun
+    one clears its images first), records the passes, begins
+    `vkt.renderPass` again (nothing cleared) and draws the apply pass
+    first; the draws that follow bind everything again. Portals and the
+    sky portal are drawn before the primary view, sprites
+    (`RB_SpriteSurfs`) after it: neither is occluded. With every pass left
+    out the break cost 0.002 ms.
+  - *Images* (`GENERAL` always, made while `r_ao` is on, Temporal path,
+    Images per reader: 102 MB at 2560x1440): `aoDepth[2]` view distances
+    (R32F, 5 levels, the weapon's negative, the sky at `AoFar`; this
+    frame's and the last one's), `aoRaw` (R8: one frame's visibility), `aoHistory[2]` (RG16F: the blended
+    visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: what the
+    apply pass blends). One descriptor set and push constant block
+    (`vkAoPush_t`, 208 bytes) for the compute passes, written each frame.
+  - *Barriers.* One call before: the depth image to
+    `DEPTH_STENCIL_READ_ONLY`, the normals and the motion vectors to
+    `SHADER_READ_ONLY`, the shader writes before visible; one between the
+    passes; one after: those back to attachments and the result to the
+    apply pass.
+  - *View distances* (`ao_prefilter.comp`): 8 x 8 invocations, 2 x 2
+    pixels each from a gather of the depth and one of the normals' class;
+    levels 1 to 4 through shared memory with XeGTAO's weights (the nearer
+    values lose weight past the radius, so a coarse level keeps the
+    surface behind a thin one), of 1 / d: linear across a plane in screen
+    space, so a plane's texel is the plane at the texel's center (the
+    mean of d bent a wall close to the eye toward it); the weapon is
+    averaged only where a texel has nothing else.
+  - *Occlusion* (`gtao_main.comp`): XeGTAO's main pass, a pipeline per
+    `r_aoQuality` with the slices and steps as specialization constants
+    (`VK_TemporalAoMainPipeline`: the loops unroll and a slice's depth
+    fetches go out together; from the push constants the pass took 0.06
+    ms longer), the view positions as (pixel * mul + add) * d worked out
+    once a pixel. The normal from the depth (as `TemporalDerivedNormal`,
+    the neighbours in 2 gathers);
+    noise from the pixel's index on a 64 x 64 Hilbert curve and the R2
+    sequence, shifted with the frame (not with `r_aoTemporal 1`); per
+    slice the samples squared toward the pixel, the level by their
+    distance (log2 of the pixels - 3.3; a coarse level's sample at its
+    texel's center), those off the view left out (clamped to its edge
+    they left the slice, and a point of the same wall beside it can be
+    above the slice's horizon: close to a wall the radius is thousands of
+    pixels and it went dark), the weapon and the world not
+    occluding each other, faded over the last `r_aoFalloff` of the radius
+    with the thin occluder compensation; the visible arcs on both sides
+    integrated against the normal projected into the slice. Less where
+    the radius covers under 10 pixels.
+  - *Over frames and blur* (`ao_temporal.comp`, one pass of 16 x 16
+    pixels a workgroup: the raw occlusion and the view distances of its
+    pixels and 2 around them into shared memory, the blend of its pixels
+    and 1 around them (the ring blended twice, in the neighbouring
+    workgroups too), then the blur from there: the same values as a pass
+    each, 0.1 ms less than the two passes). The blend: the motion of the
+    pixel (the draw's motion vector where it moves, a weapon without one
+    none, else the camera's); the last result read bilinear among the 2 x
+    2 texels whose last view distance is the surface's (3 %, 10 % for
+    what moves, and 1 unit), the texels picked by the shader and fetched
+    one by one (a gather's are picked from the coordinate with 8 bits
+    below the texel: a point a thousandth of a pixel before a texel center,
+    as the camera of a player pushing into a wall puts it, came back as
+    the texels one further, under weights worked out for these, and the
+    history moved a pixel a frame: the noise streaked in the direction of
+    that motion), clamped to this frame's 3 x 3 widened by 0.05; blended
+    by 1 / frames up to `r_aoTemporal` (a quarter for what moves); written
+    out before the blur (it doesn't pile up). No history after a cut, a
+    field of view change, a load or `r_ao` turned on. The blur (`AoBlur`,
+    `ao_common.glsl`): XeGTAO's 3 x 3 between edges both ways (`AoEdges`,
+    from the view distances of the pixel's 3 x 3 and the 4 two away,
+    unquantized: XeGTAO's 2 bits an edge flipped where an edge was near a
+    step whenever the depth was rounded anew, every frame with the
+    anti-aliasing's jitter and in the camera's sub-unit motion of a player
+    pushing into a wall, and the occlusion wobbled in bands), the center
+    weighted 1.2 (0.24 for the first of two) times 1 + a quarter of the
+    frames blended past the first. Two blurs at quality 3 and without
+    history: the first into `aoBlur`, the second `ao_denoise.comp`'s.
+    The last makes the result (`AoResult`): the visibility to
+    `r_aoStrength`, the multi-bounce fit, to the scene's encoding (1 /
+    2.2: the game draws gamma-encoded values), and the fog's part: the
+    scene is C f + fog (1 - f) (the draws' linear fog of the view
+    distance, `RB_SetupFog`'s range and color), so rgb = fog (1 - f)(1 -
+    a), blended `ONE`, `SRC_ALPHA`: dst a + rgb. The apply pass discards
+    pixels whose factor rounds to 1.
+  - *Normals.* The draws' normals buffer was the first choice: the stock
+    static models smooth their normals across 90 degree corners (a desk's
+    face goes from one corner's average to the other's), which put black
+    triangles on them; the depth's normals have none. `r_aoNormals 1`
+    takes the draw's where it is within about 25 degrees of the depth's.
+  - *Look.* At `r_aoRadius 32` and `r_aoStrength 1` the occlusion was
+    hard to see (the scene's encoding lightens it: a visibility of 0.5 is
+    0.73); 48 and 1.5 ground the lockers, desks, crates and barrels of
+    `dm/mohdm6`. Alpha-tested foliage gets busy, blotchy occlusion, as in
+    any screen space method.
+  - *Cost* (RTX 4070 Ti, GPU time a frame, the room of `dm/mohdm6` at
+    2560x1440, measured by leaving passes out, quality 2), after the
+    review: 0.69 ms over the path's 0.162, the occlusion 0.43, the blend
+    and the blur 0.17, the view distances 0.03, the apply pass 0.03 (left
+    out, the view distances leave their images empty and the occlusion
+    takes its shortcuts: the 0.12 below was that). The occlusion waits on
+    its 18 scattered depth fetches a pixel: worked out without `pow`,
+    without a `sin` and `cos` a slice (a rotation) and without a
+    square root a step it took the same time. Fewer samples, with 16
+    frames blended (converged views of `mohdm6`, quality 2 against itself
+    the same to the bit): 9 slices change 1 % of the pixels by more than
+    2 levels, 2 slices of 3 steps 4 to 12 % (none by more than 8: more
+    noise left, 0.1 ms less), 3 of 2 and 2 of 2 6 to 22 % (up to 10 % by
+    more than 8): quality 2 stays 3 of 3. Before the review: 0.68 ms in
+    all, the occlusion 0.41, the blending over frames 0.14, the blur
+    0.13, the view distances 0.12, the apply pass 0.04 (before the fix
+    below; after it 0.80 in all). The RGBA8 result instead of RGBA16F
+    and R16F view distances were 0.07 ms less; R16F was taken out again
+    the same day: a wall close to the eye or at a grazing angle stepped
+    from pixel to pixel in half floats, each step a ledge that occluded
+    the next (dark stripes). Tried and left (no change): gathers instead of single fetches in
+    every pass (kept: fewer instructions), the blur's inputs sampled
+    instead of loaded as storage images (kept), the view distances without
+    the normals' class; one pixel an invocation in the view distances'
+    pass was 0.03 ms slower, its level 0 written in 8 x 8 blocks the same.
 - **HDR output (Plan 43).** `r_hdrOutput` (latched; `vk_output.c`,
   `shaders/output.frag`).
   - *Why not HDR rendering.* The plan before it kept the lightmaps in
@@ -9536,6 +9747,82 @@ Done:
     synchronization validation through `r_temporalShow` 4 and 7 (the
     pyramid beside the anti-aliasing), `r_taa` off and on, a `vid_restart`,
     at 640x480 and 1001x601.
+44. Ambient occlusion (2026-10-27, the user's request: an implementation
+    of AAA studio quality ground truth ambient occlusion; see Status and
+    Implementation notes, Ambient occlusion): `r_ao 1` and its cvars,
+    `r_temporalShow` 9 and 10. With `r_temporal 0`, with `r_temporal 1`
+    and with `r_taa 1` (`r_temporalJitterSamples 1`), `r_ao 0`, the views
+    of `mohdm6` are the build before's to the bit (`d6_sky` differs in 28
+    pixels between two runs of the build before too). With it on, in
+    `mohdm6`, `mohdm4_fog` and `hud` (the view weapon drawn with
+    `cg_drawviewmodel 2`): corners, the lockers, desks, crates and barrels
+    on the floor occluded, the lamps' glows not darkened, nothing in the
+    fogged distance, no halo around the weapon (its own creases only).
+    The SPIR-V of `vk_shaders_temporal.c` from libshaderc (the same
+    compiler that gave the committed arrays to the byte). Not checked:
+    validation (no validation layer on this machine), motion (ghosting
+    behind moving players, turning fast) in a running game, AMD.
+    The same day (the user's report: a wall right in front of the eye
+    went black, otherwise it looked great): levels 2 to 4 of the view
+    distances were read from the wrong shared memory (a step of 2 where 1
+    was due) and stayed 0: every coarse sample was a wall at the eye,
+    which fully occluded surfaces nearer than the radius. Fixed, with the
+    coarse levels the mean of 1 / d sampled at their texels' centers,
+    samples off the view left out, and the view distances in R32F again.
+    Walking into a wall of `mohdm6` (8 steps of 40 units to touching it)
+    the wall stays white in `r_temporalShow 9`; the room's look at the
+    defaults is as before. GPU time at quality 2 0.84 to 0.96 ms at
+    2560x1440, 0.47 to 0.53 at 1920x1080.
+    Then (the user's report: walking into a wall or a railing, the
+    occlusion wobbled, the noise moving with the strafe): the camera of a
+    player pushing into a wall moves by a ten-thousandth of a unit in most
+    frames (prediction), the depth is rounded anew, and the blur's edges,
+    packed in 2 bits as XeGTAO's, flipped by a third where they were near a
+    step. Reproduced in a scripted run launched as the user plays (their
+    config at startup, fullscreen, 2 s of forward and right into the corner
+    of the `mohdm6` boiler room, then 2 s still): pixels of
+    `r_temporalShow 9` changing by 16 or more between captures 200 ms
+    apart, 35000 pushing and 20000 still before, 86 and 47 with the edges
+    worked out unquantized in the blur from the view distances; 0.01 ms
+    more GPU time.
+    The wobble wasn't gone (the user's test in the game: the noise
+    streaked, upward with forward and right, to the left with forward;
+    the user's screenshots showed it): the history was read with weights
+    for one 2 x 2 texels from a gather whose texels the hardware picks
+    from the coordinate with 8 bits below the texel; under a thousandth
+    of a pixel's motion the gather came back a texel further, and the
+    history moved a pixel a frame along the sign of that motion, which the
+    movement keys and the view angles set. The texels are picked in the
+    shader now.
+    Then a review and optimization (the user's request; up to 1 to 2 % of
+    the look for a meaningful gain, as long as it stays stable): the main
+    pass's slices and steps as specialization constants (a pipeline per
+    quality: its loops unroll, 0.49 to 0.43 ms), its view positions and
+    slice directions worked out once (no change), the blend over frames
+    and the blur in one pass with shared memory (0.28 to 0.17 ms), the
+    blur and the result shared (`AoBlur`, `AoResult`). Quality 2 0.82 to
+    0.69 ms over the path at 2560x1440 (quality 0 to 3: 0.43, 0.51, 0.69,
+    1.62), 0.45 to 0.38 at 1920x1080 (0.23, 0.28, 0.38, 0.80). With
+    `r_ao 0`, with and without the path and with the anti-aliasing, the
+    views of `mohdm6` are the build before's to the bit; with it on, the
+    frames of the build before the review but for one level in 0.7 to
+    3.6 % of the pixels (the occlusion: one level in 3 to 15 %, a few
+    pixels up to 22 through the history), the two blurs' path (quality 3,
+    `r_aoTemporal 1`) one level at most. Fewer samples at quality 2 were
+    measured and left (see Implementation notes, Ambient occlusion, Cost):
+    2 slices of 3 steps keep more noise in 4 to 12 % of the pixels.
+45. The temporal path's images per reader (2026-10-27, the user's
+    request: every part of the temporal path on only while something that
+    depends on it is; see Status and Implementation notes, Temporal path,
+    Images per reader): the anti-aliasing's history, the depth pyramid,
+    the ambient occlusion's images and the last scene's color made and
+    freed with the cvars that read them, the static sets pointing at a
+    placeholder in between. The frames of the build before to the bit
+    (`mohdm6` with the path alone, with the anti-aliasing, the ambient
+    occlusion, both, and `r_temporalShow` 4, 5, 9; the views that differed
+    in one run differ between two runs of the build before as well), the
+    cvars toggled live without a hitch beyond the GPU wait, the GPU's
+    memory following them.
 
 Remaining:
 

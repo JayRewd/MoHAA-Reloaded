@@ -806,6 +806,12 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				if (oldShader != NULL) {
 					RB_EndSurface();
 				}
+				// the temporal path's ambient occlusion: after the opaque
+				// surfaces, decals and see-through ones, before what is
+				// blended over them (tr_temporal.c)
+				if (shader->sort >= SS_UNDERWATER && backEnd.temporalPrimary) {
+					RB_TemporalAo();
+				}
 				rb_spriteBatch = *drawSurf->surface == SF_SPRITE;
 				RB_BeginSurface( shader );
 				oldShader = shader;
@@ -942,6 +948,11 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	RB_SetModelview( backEnd.viewParms.world.modelMatrix );
 	if ( depthRange ) {
 		vk_set_depth_range (0, 1.0);
+	}
+
+	// the ambient occlusion of a view without blended surfaces
+	if ( backEnd.temporalPrimary ) {
+		RB_TemporalAo();
 	}
 
 	RB_ShadowFinish();

@@ -26,8 +26,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // r_taa u_color is the anti-aliased result (taa_resolve.comp), which is
 // sharpened here (r_taaSharpen: it stays unsharpened as the history).
 // With HDR output (r_hdrOutput, vk_output.c) the scene is expanded toward
-// the display's peak (HdrExpand). Ambient occlusion is to come.
-// r_temporalShow shows one of the
+// the display's peak (HdrExpand). The ambient occlusion (r_ao) is in the
+// scene already (ao_apply.frag). r_temporalShow shows one of the
 // buffers instead, with what temporal_common.glsl gives their readers (the
 // camera's motion, the derived normals) from level 0 of the depth pyramid:
 // at half the resolution, for a look.
@@ -43,6 +43,8 @@ layout(set = 0, binding = 3) uniform sampler2D u_hiz;		// this frame's depth pyr
 layout(set = 0, binding = 4) uniform sampler2D u_history;	// the last frame's scene color
 layout(set = 0, binding = 5) uniform sampler2D u_prevHiz;	// the last frame's depth pyramid
 layout(set = 0, binding = 6) uniform sampler2D u_scene;		// this frame's scene color, unresolved
+layout(set = 0, binding = 7) uniform sampler2D u_ao;		// the ambient occlusion's factor (alpha, ao_denoise.comp)
+layout(set = 0, binding = 8) uniform sampler2D u_aoRaw;		// and its occlusion before the blending and the blur (r)
 
 layout(push_constant) uniform Push {
 	TemporalView	view;
@@ -193,6 +195,12 @@ void main() {
 		c = texelFetch( u_history, p, 0 ).rgb;
 	} else if ( pc.mode == 8 ) {
 		c = texelFetch( u_scene, p, 0 ).rgb;
+	} else if ( pc.mode == 9 ) {
+		// the factor the scene was multiplied with (gamma-encoded)
+		c = vec3( texelFetch( u_ao, p, 0 ).a );
+	} else if ( pc.mode == 10 ) {
+		// the visibility of one frame, before the blending and the blur
+		c = vec3( texelFetch( u_aoRaw, p, 0 ).r );
 	} else {
 		c = texelFetch( u_color, p, 0 ).rgb;
 		if ( pc.sharpen > 0.0 ) {

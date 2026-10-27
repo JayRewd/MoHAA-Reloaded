@@ -864,6 +864,16 @@ extern const uint32_t	vk_spirv_hiz_tail_comp[];
 extern const size_t		vk_spirv_hiz_tail_comp_size;
 extern const uint32_t	vk_spirv_taa_resolve_comp[];
 extern const size_t		vk_spirv_taa_resolve_comp_size;
+extern const uint32_t	vk_spirv_ao_prefilter_comp[];
+extern const size_t		vk_spirv_ao_prefilter_comp_size;
+extern const uint32_t	vk_spirv_gtao_main_comp[];
+extern const size_t		vk_spirv_gtao_main_comp_size;
+extern const uint32_t	vk_spirv_ao_temporal_comp[];
+extern const size_t		vk_spirv_ao_temporal_comp_size;
+extern const uint32_t	vk_spirv_ao_denoise_comp[];
+extern const size_t		vk_spirv_ao_denoise_comp_size;
+extern const uint32_t	vk_spirv_ao_apply_frag[];
+extern const size_t		vk_spirv_ao_apply_frag_size;
 
 /*
 ====================================================================
@@ -889,12 +899,21 @@ with shaders/temporal_common.glsl.
 #define VK_TEMPORAL_MAX_PASSES	12		// dispatches of the pyramid after its levels 0 and 1
 #define VK_TEMPORAL_TAIL_SIZE	128		// a level no larger: the rest in one dispatch (hiz_build.comp, TAIL); 256 was slower: one workgroup
 #define VK_TEMPORAL_TAIL_IMAGES	8		// bindings of that dispatch: that level and up to 7 more
+#define VK_TEMPORAL_MAX_BINDINGS	18	// of a pass's descriptor set (the ambient occlusion's)
+#define VK_TEMPORAL_AO_LEVELS	5		// of the ambient occlusion's view distances (ao_common.glsl, AO_LEVELS)
 #define VK_SKIN_RING			( VK_MAX_FRAMES + 1 )	// frame data of the skinned draws with the temporal path: see vk_alloc_skin_frame
 
 // what the passes that read the scene's buffers need besides them
 // (vkTemporal_t::readers): the depth image (readable) and the depth pyramid;
 // without a reader that needs them the pyramid isn't made
 #define VK_TEMPORAL_READ_DEPTH	1
+
+// the images only some readers of the scene need, made while one of them is
+// on and freed when none is (VK_TemporalUpdateFeatures, vkTemporal_t::groups)
+#define VK_TEMPORAL_GROUP_TAA		1	// taa[2]: the anti-aliasing (r_taa)
+#define VK_TEMPORAL_GROUP_PYRAMID	2	// hiz[2]: the anti-aliasing, r_temporalShow's views 1, 2, 4, 6, 7
+#define VK_TEMPORAL_GROUP_AO		4	// the ambient occlusion's (r_ao)
+#define VK_TEMPORAL_GROUP_PREVCOLOR	8	// color[1], the last scene's color: r_temporalShow 5
 
 // a dispatch of the depth pyramid after the prepare pass (hiz_build.comp)
 typedef struct {
@@ -930,7 +949,16 @@ typedef struct {
 	int				current;		// the images of VK_TEMPORAL_HISTORY this frame's scene writes
 
 	VkFormat		colorFormat, velocityFormat, normalFormat, hizFormat, taaFormat;
-	vkTemporalImage_t	color[VK_TEMPORAL_HISTORY];		// RGBA16F
+	// VK_TEMPORAL_GROUP_*: the groups of images made; their slots of the
+	// static sets (the composite's, the ambient occlusion's apply pass) show
+	// placeholder (1 x 1) while a group isn't
+	int				groups;
+	vkTemporalImage_t	placeholder;
+	// latched for the frame's scene (vk_begin_scene, VK_TemporalUpdateFeatures)
+	int				colorIndex;		// the scene's color image: current with the last scene's kept (VK_TEMPORAL_GROUP_PREVCOLOR), else 0
+	int				showMode;		// r_temporalShow
+	qboolean		aoOn;			// r_ao
+	vkTemporalImage_t	color[VK_TEMPORAL_HISTORY];		// RGBA16F; color[1] only with VK_TEMPORAL_GROUP_PREVCOLOR
 	vkTemporalImage_t	velocity;						// written by what moves (TEMPORAL_FLAG_MOTION)
 	vkTemporalImage_t	normal;
 	vkTemporalImage_t	hiz[VK_TEMPORAL_HISTORY];		// the pyramid, RG32F (min, max), level 0 at half size
@@ -987,6 +1015,26 @@ typedef struct {
 	VkPipeline		taaPipeline;
 	VkDescriptorSet	taaSets[VK_MAX_FRAMES];	// written in each frame (the depth image's view can change)
 
+	// ambient occlusion (r_ao, VK_TemporalAo: ao_*.comp, gtao_main.comp):
+	// computed and blended into the scene between the primary view's
+	// opaque surfaces and its blended ones; its images are GENERAL always
+	qboolean		aoRan;			// this frame's scene has it
+	vkTemporalImage_t	aoDepth[VK_TEMPORAL_HISTORY];	// R32F view distances (the weapon's negative), VK_TEMPORAL_AO_LEVELS levels; the other one the last frame's
+	VkImageView		aoDepthLevel[VK_TEMPORAL_HISTORY][VK_TEMPORAL_AO_LEVELS];
+	uint64_t		aoDepthSerial[VK_TEMPORAL_HISTORY];	// the frame each was made in, 0 for none
+	vkTemporalImage_t	aoRaw;			// R8: one frame's visibility
+	vkTemporalImage_t	aoHistory[VK_TEMPORAL_HISTORY];	// RG16F: visibility blended over frames, their count
+	uint64_t		aoSerial[VK_TEMPORAL_HISTORY];
+	vkTemporalImage_t	aoBlur;			// RG16F: the first blur of two
+	vkTemporalImage_t	aoResult;		// RGBA8: what the apply pass blends (the fog's part, the factor)
+	VkDescriptorSetLayout aoSetLayout, aoApplySetLayout;
+	VkPipelineLayout	aoLayout, aoApplyLayout;
+	VkShaderModule	aoPrefilterShader, aoMainShader, aoTemporalShader, aoDenoiseShader, aoApplyShader;
+	VkPipeline		aoPrefilterPipeline, aoTemporalPipeline, aoDenoisePipeline, aoApplyPipeline;
+	VkPipeline		aoMainPipelines[4];	// r_aoQuality: slices and steps as specialization constants
+	VkDescriptorSet	aoSets[VK_MAX_FRAMES];	// written in each frame
+	VkDescriptorSet	aoApplySet;
+
 	// the frame data of the skinned draws: a ring of VK_SKIN_RING buffers
 	// instead of one per frame slot (the frame slots' and one more), so the
 	// last frame's is still there while the next frame writes its own
@@ -1022,11 +1070,15 @@ void		VK_TemporalCheckDevice( void );
 void		VK_TemporalCreateTargets( void );
 void		VK_TemporalDestroyTargets( void );
 void		VK_TemporalDepthChanged( void );
+void		VK_TemporalUpdateFeatures( void );
 void		VK_TemporalInitPipelines( void );
 void		VK_TemporalShutdownPipelines( void );
 void		VK_TemporalBeginFrame( vkFrame_t *frame, VkBuffer skinData );
 void		VK_TemporalResolve( VkCommandBuffer cmd );
 void		VK_TemporalComposite( VkCommandBuffer cmd );
+qboolean	VK_TemporalAoWanted( void );
+void		VK_TemporalAo( VkCommandBuffer cmd, const float *fog );
+void		VK_TemporalAoApply( VkCommandBuffer cmd );
 qboolean	VK_TemporalWritesBuffers( uint64_t bits );
 
 // cvars
@@ -1045,3 +1097,4 @@ extern cvar_t	*r_taa;
 extern cvar_t	*r_taaFeedback;
 extern cvar_t	*r_taaSharpen;
 extern cvar_t	*r_saturation;
+extern cvar_t	*r_ao;

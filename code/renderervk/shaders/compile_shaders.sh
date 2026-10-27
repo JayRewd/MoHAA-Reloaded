@@ -36,7 +36,12 @@ temporal_composite_frag:temporal_composite.frag:
 hiz_prepare_comp:hiz_build.comp:-DPREPARE
 hiz_build_comp:hiz_build.comp:
 hiz_tail_comp:hiz_build.comp:-DTAIL
-taa_resolve_comp:taa_resolve.comp:"
+taa_resolve_comp:taa_resolve.comp:
+ao_prefilter_comp:ao_prefilter.comp:
+gtao_main_comp:gtao_main.comp:
+ao_temporal_comp:ao_temporal.comp:
+ao_denoise_comp:ao_denoise.comp:
+ao_apply_frag:ao_apply.frag:"
 HDR_SHADERS="output_frag:output.frag:"
 
 # write <output file> <what it holds> <shader list>

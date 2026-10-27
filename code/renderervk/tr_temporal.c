@@ -306,6 +306,33 @@ void RB_TemporalEndScene( void ) {
 	vk_end_scene();
 }
 
+/*
+===============
+RB_TemporalAo
+
+In the primary view, before its first blended surface (RB_RenderDrawSurfList):
+the ambient occlusion (r_ao) of what is drawn so far, once a scene, with the
+view's fog (RB_SetupFog), which it is applied under
+===============
+*/
+void RB_TemporalAo( void ) {
+	float fog[5];
+
+	if ( !backEnd.temporalPrimary || !vk_ao_pending() ) {
+		return;
+	}
+	if ( glState.externalSetState & GLS_FOG ) {
+		fog[0] = glState.fogStart;
+		fog[1] = glState.fogEnd;
+		fog[2] = glState.fFogColor[0];
+		fog[3] = glState.fFogColor[1];
+		fog[4] = glState.fFogColor[2];
+		vk_ao_scene( fog );
+	} else {
+		vk_ao_scene( NULL );
+	}
+}
+
 static rbTemporalEntity_t *RB_TemporalCurrentEntity( rbTemporalEntity_t **list ) {
 	int index;
 

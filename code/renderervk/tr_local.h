@@ -2230,6 +2230,7 @@ void RB_SkinDraw( drawGeometry_t *geometry );
 void R_TemporalInit( void );
 void RB_TemporalBeginView( void );
 void RB_TemporalEndScene( void );
+void RB_TemporalAo( void );
 void RB_TemporalModelview( void );
 void RB_TemporalSkin( int numBones, qboolean hasMorph, uint32_t *prevBones, uint32_t *prevMorphs );
 void RB_TemporalRecordSkin( int numBones, uint32_t bones, uint32_t morphs );

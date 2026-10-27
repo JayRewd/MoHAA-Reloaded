@@ -60,6 +60,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // color image, pyramid and anti-aliased image hold the last frame's: the
 // history (level 0 of the pyramid is the last frame's depth).
 //
+// Before that, in the primary view between its opaque surfaces and what is
+// blended over them, the ambient occlusion (r_ao, VK_TemporalAo, called by
+// vk_ao_scene): the scene's render pass ends, compute passes make view
+// distances (shaders/ao_prefilter.comp), the occlusion (gtao_main.comp),
+// blend it with the last frames' (ao_temporal.comp) and blur it
+// (ao_denoise.comp), and the next render pass blends it into the color
+// first (ao_apply.frag); its images stay GENERAL.
+//
 // Layouts between scenes: the color, motion vector and normal images
 // SHADER_READ_ONLY_OPTIMAL, the pyramids and taa GENERAL, the depth image
 // DEPTH_STENCIL_ATTACHMENT_OPTIMAL as always. The images the scene draws
@@ -79,6 +87,15 @@ cvar_t	*r_taa;
 cvar_t	*r_taaFeedback;
 cvar_t	*r_taaSharpen;
 cvar_t	*r_saturation;
+cvar_t	*r_ao;
+cvar_t	*r_aoQuality;
+cvar_t	*r_aoRadius;
+cvar_t	*r_aoStrength;
+cvar_t	*r_aoFalloff;
+cvar_t	*r_aoThickness;
+cvar_t	*r_aoTemporal;
+cvar_t	*r_aoNormals;
+cvar_t	*r_aoMultiBounce;
 
 // push constants of the passes, see the shaders
 typedef struct {
@@ -111,11 +128,23 @@ typedef struct {
 	float	weights[12];	// of the 3 x 3 (9), for this frame's color at the pixel's center
 } vkTaaPush_t;
 
+// the ambient occlusion's passes (ao_common.glsl, Push)
+typedef struct {
+	vkTemporalView_t	view;
+	float	ao[4];			// the radius, the falloff's share of it, the thin occluder compensation, r_aoStrength
+	float	ao2[4];			// the multi-bounce albedo, 1: the history is the frame before's, the most frames blended, the blur's center weight
+	float	fogColor[4];	// rgb, 1 when the view is fogged
+	float	fogParams[4];	// the fog factor's scale and offset, 1: the draws' normals, 1: the last view distances are the frame before's
+	int		ints[4];		// slices, steps per side, the noise's frame index, the blur pass
+} vkAoPush_t;
+
 #define VK_TEMPORAL_PREPARE_BINDINGS	4	// depth, normals (sampled), levels 0 and 1 (storage)
-#define VK_TEMPORAL_COMPOSITE_BINDINGS	7
+#define VK_TEMPORAL_COMPOSITE_BINDINGS	9
 #define VK_TEMPORAL_TAA_BINDINGS		8	// color, motion vectors, normals, depth, history, last pyramid (sampled), result, this pyramid's level 0 (storage)
 #define VK_TEMPORAL_TAA_HISTORY_BINDING	4	// read with the bilinear sampler
 #define VK_TEMPORAL_TAA_GROUP			16	// the workgroup's width and height (taa_resolve.comp, GROUP)
+#define VK_TEMPORAL_AO_BINDINGS		18	// ao_common.glsl: 9 sampled, 9 storage
+#define VK_TEMPORAL_AO_SAMPLED			9
 
 void VK_TemporalRegisterCvars( void ) {
 	r_temporal = ri.Cvar_Get( "r_temporal", "0", CVAR_ARCHIVE | CVAR_LATCH );
@@ -125,8 +154,8 @@ void VK_TemporalRegisterCvars( void ) {
 	r_temporalJitterSamples = ri.Cvar_Get( "r_temporalJitterSamples", "8", 0 );
 	ri.Cvar_CheckRange( r_temporalJitterSamples, 1, 64, qtrue );
 	r_temporalShow = ri.Cvar_Get( "r_temporalShow", "0", CVAR_CHEAT );
-	ri.Cvar_SetDescription( r_temporalShow, "with r_temporal 1, instead of the 3D view: 1 motion vectors, 2 normals, 3 classes, 4 depth pyramid level r_temporalShowMip, 5 last frame's color, 6 view distances, 7 last frame's view distances, 8 the scene without anti-aliasing" );
-	ri.Cvar_CheckRange( r_temporalShow, 0, 8, qtrue );
+	ri.Cvar_SetDescription( r_temporalShow, "with r_temporal 1, instead of the 3D view: 1 motion vectors, 2 normals, 3 classes, 4 depth pyramid level r_temporalShowMip, 5 last frame's color, 6 view distances, 7 last frame's view distances, 8 the scene without anti-aliasing, 9 the ambient occlusion, 10 one frame's ambient occlusion before denoising" );
+	ri.Cvar_CheckRange( r_temporalShow, 0, 10, qtrue );
 	r_temporalShowMip = ri.Cvar_Get( "r_temporalShowMip", "0", CVAR_CHEAT );
 	ri.Cvar_CheckRange( r_temporalShowMip, 0, VK_TEMPORAL_MAX_MIPS - 1, qtrue );
 	r_temporalShowScale = ri.Cvar_Get( "r_temporalShowScale", "20", CVAR_CHEAT );
@@ -141,6 +170,32 @@ void VK_TemporalRegisterCvars( void ) {
 	r_saturation = ri.Cvar_Get( "r_saturation", "1.1", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_saturation, "with r_temporal 1: the 3D view's color saturation (not the HUD's), 1 unchanged; in SDR and with HDR output" );
 	ri.Cvar_CheckRange( r_saturation, 0.0f, 2.0f, qfalse );
+	r_ao = ri.Cvar_Get( "r_ao", "0", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_ao, "with r_temporal 1: ambient occlusion (ground truth ambient occlusion, GTAO), the contact shadows of corners, creases and what stands on a floor" );
+	r_aoQuality = ri.Cvar_Get( "r_aoQuality", "2", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoQuality, "with r_ao 1: 0 low, 1 medium, 2 high, 3 ultra (directions and samples per pixel)" );
+	ri.Cvar_CheckRange( r_aoQuality, 0, 3, qtrue );
+	r_aoRadius = ri.Cvar_Get( "r_aoRadius", "48", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoRadius, "with r_ao 1: how far occluders reach, in world units" );
+	ri.Cvar_CheckRange( r_aoRadius, 4.0f, 256.0f, qfalse );
+	r_aoStrength = ri.Cvar_Get( "r_aoStrength", "1.5", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoStrength, "with r_ao 1: the occlusion's strength (a power of the visibility), 1 as computed" );
+	ri.Cvar_CheckRange( r_aoStrength, 0.0f, 4.0f, qfalse );
+	r_aoFalloff = ri.Cvar_Get( "r_aoFalloff", "0.6", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoFalloff, "with r_ao 1: the share of the radius over which occluders fade out" );
+	ri.Cvar_CheckRange( r_aoFalloff, 0.05f, 1.0f, qfalse );
+	r_aoThickness = ri.Cvar_Get( "r_aoThickness", "0.25", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoThickness, "with r_ao 1: the thin occluder compensation: occluders in front along the view fade sooner (less dark halos behind thin objects)" );
+	ri.Cvar_CheckRange( r_aoThickness, 0.0f, 4.0f, qfalse );
+	r_aoTemporal = ri.Cvar_Get( "r_aoTemporal", "16", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoTemporal, "with r_ao 1: the most frames blended (less noise, slower to react); 1: none" );
+	ri.Cvar_CheckRange( r_aoTemporal, 1, 64, qtrue );
+	r_aoNormals = ri.Cvar_Get( "r_aoNormals", "0", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoNormals, "with r_ao 1: 0 the normals of the depth, 1 the draws' normals where they are close to those (smoother curved models)" );
+	ri.Cvar_CheckRange( r_aoNormals, 0, 1, qtrue );
+	r_aoMultiBounce = ri.Cvar_Get( "r_aoMultiBounce", "0.4", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_aoMultiBounce, "with r_ao 1: the albedo of the light bounced back by occluders (lightens the occlusion), 0 none" );
+	ri.Cvar_CheckRange( r_aoMultiBounce, 0.0f, 0.9f, qfalse );
 }
 
 /*
@@ -179,8 +234,9 @@ must be sampled too)
 */
 void VK_TemporalCheckDevice( void ) {
 	const VkFormatFeatureFlags attachment = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-	const uint32_t pushSize = Q_max( Q_max( Q_max( VK_TEMPORAL_PUSH_END, (uint32_t)sizeof( vkPreparePush_t ) ), (uint32_t)sizeof( vkCompositePush_t ) ),
-		(uint32_t)sizeof( vkTaaPush_t ) );
+	const uint32_t pushSize = Q_max( Q_max( Q_max( Q_max( VK_TEMPORAL_PUSH_END, (uint32_t)sizeof( vkPreparePush_t ) ), (uint32_t)sizeof( vkCompositePush_t ) ),
+		(uint32_t)sizeof( vkTaaPush_t ) ), (uint32_t)sizeof( vkAoPush_t ) );
+	const VkFormatFeatureFlags storage = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 	const char *missing = NULL;
 
 	Com_Memset( &vkt, 0, sizeof( vkt ) );
@@ -221,6 +277,9 @@ void VK_TemporalCheckDevice( void ) {
 		missing = "RGBA16F can't hold the anti-aliasing's history";
 	} else if ( !VK_FormatHasFeatures( vk.depthFormat, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ) ) {
 		missing = "the depth format can't be sampled";
+	} else if ( !VK_FormatHasFeatures( VK_FORMAT_R32_SFLOAT, storage ) || !VK_FormatHasFeatures( VK_FORMAT_R8_UNORM, storage )
+		|| !VK_FormatHasFeatures( VK_FORMAT_R16G16_SFLOAT, storage ) || !VK_FormatHasFeatures( VK_FORMAT_R8G8B8A8_UNORM, storage ) ) {
+		missing = "R32F, R8, RG16F and RGBA8 can't hold the ambient occlusion";
 	}
 
 	if ( missing ) {
@@ -353,7 +412,8 @@ static void VK_TemporalCreateDepthObjects( void ) {
 	vkt.depthView = VK_TemporalLevelView( vk.depthImage, vk.depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 0 );
 
 	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
-		views[0] = vkt.color[i].view;
+		// one color image, or two that alternate when the last scene's is kept
+		views[0] = vkt.color[( vkt.groups & VK_TEMPORAL_GROUP_PREVCOLOR ) ? i : 0].view;
 		views[1] = vkt.velocity.view;
 		views[2] = vkt.normal.view;
 		views[3] = vk.depthView;
@@ -433,14 +493,113 @@ static void VK_TemporalPlanPyramid( void ) {
 	}
 }
 
+// the images of the groups (VK_TEMPORAL_GROUP_*), recorded in cmd: they
+// start cleared (black, no history: their serials are 0)
+static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
+	static const float black[4] = { 0, 0, 0, 1 };
+	static const float zero[4] = { 0, 0, 0, 0 };
+	static const float aoClear[4] = { 0, 0, 0, 1 };	// the ambient occlusion's result: nothing added, factor 1
+	const VkImageUsageFlags storage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	int i, l;
+
+	switch ( group ) {
+	case VK_TEMPORAL_GROUP_TAA:
+		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+			VK_TemporalCreateImage( &vkt.taa[i], vkt.taaFormat, storage, vk.width, vk.height, 1 );
+			VK_TemporalClearImage( cmd, vkt.taa[i].image, VK_IMAGE_LAYOUT_GENERAL, black );
+		}
+		Com_Memset( vkt.taaSerial, 0, sizeof( vkt.taaSerial ) );
+		break;
+	case VK_TEMPORAL_GROUP_PYRAMID:
+		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+			VK_TemporalCreateImage( &vkt.hiz[i], vkt.hizFormat, storage, vkt.hizWidth, vkt.hizHeight, vkt.hizLevels );
+			for ( l = 0; l < vkt.hizLevels; l++ ) {
+				vkt.hizLevel[i][l] = VK_TemporalLevelView( vkt.hiz[i].image, vkt.hizFormat, VK_IMAGE_ASPECT_COLOR_BIT, l );
+			}
+			VK_TemporalClearImage( cmd, vkt.hiz[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		}
+		Com_Memset( vkt.hizSerial, 0, sizeof( vkt.hizSerial ) );
+		break;
+	case VK_TEMPORAL_GROUP_AO:
+		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+			VK_TemporalCreateImage( &vkt.aoDepth[i], VK_FORMAT_R32_SFLOAT, storage, vk.width, vk.height, VK_TEMPORAL_AO_LEVELS );
+			for ( l = 0; l < VK_TEMPORAL_AO_LEVELS; l++ ) {
+				vkt.aoDepthLevel[i][l] = VK_TemporalLevelView( vkt.aoDepth[i].image, VK_FORMAT_R32_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, l );
+			}
+			VK_TemporalCreateImage( &vkt.aoHistory[i], VK_FORMAT_R16G16_SFLOAT, storage, vk.width, vk.height, 1 );
+			VK_TemporalClearImage( cmd, vkt.aoDepth[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
+			VK_TemporalClearImage( cmd, vkt.aoHistory[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		}
+		VK_TemporalCreateImage( &vkt.aoRaw, VK_FORMAT_R8_UNORM, storage, vk.width, vk.height, 1 );
+		VK_TemporalCreateImage( &vkt.aoBlur, VK_FORMAT_R16G16_SFLOAT, storage, vk.width, vk.height, 1 );
+		VK_TemporalCreateImage( &vkt.aoResult, VK_FORMAT_R8G8B8A8_UNORM, storage, vk.width, vk.height, 1 );
+		VK_TemporalClearImage( cmd, vkt.aoRaw.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.aoBlur.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.aoResult.image, VK_IMAGE_LAYOUT_GENERAL, aoClear );
+		Com_Memset( vkt.aoSerial, 0, sizeof( vkt.aoSerial ) );
+		Com_Memset( vkt.aoDepthSerial, 0, sizeof( vkt.aoDepthSerial ) );
+		break;
+	case VK_TEMPORAL_GROUP_PREVCOLOR:
+		VK_TemporalCreateImage( &vkt.color[1], vkt.colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+			| VK_IMAGE_USAGE_TRANSFER_DST_BIT, vk.width, vk.height, 1 );
+		VK_TemporalClearImage( cmd, vkt.color[1].image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, black );
+		break;
+	}
+	vkt.groups |= group;
+}
+
+// when nothing uses them anymore (the GPU idle)
+static void VK_TemporalDestroyGroup( int group ) {
+	int i, l;
+
+	switch ( group ) {
+	case VK_TEMPORAL_GROUP_TAA:
+		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+			VK_TemporalDestroyImage( &vkt.taa[i] );
+		}
+		break;
+	case VK_TEMPORAL_GROUP_PYRAMID:
+		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+			for ( l = 0; l < VK_TEMPORAL_MAX_MIPS; l++ ) {
+				if ( vkt.hizLevel[i][l] ) {
+					qvkDestroyImageView( vk.device, vkt.hizLevel[i][l], NULL );
+					vkt.hizLevel[i][l] = VK_NULL_HANDLE;
+				}
+			}
+			VK_TemporalDestroyImage( &vkt.hiz[i] );
+		}
+		break;
+	case VK_TEMPORAL_GROUP_AO:
+		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+			for ( l = 0; l < VK_TEMPORAL_AO_LEVELS; l++ ) {
+				if ( vkt.aoDepthLevel[i][l] ) {
+					qvkDestroyImageView( vk.device, vkt.aoDepthLevel[i][l], NULL );
+					vkt.aoDepthLevel[i][l] = VK_NULL_HANDLE;
+				}
+			}
+			VK_TemporalDestroyImage( &vkt.aoDepth[i] );
+			VK_TemporalDestroyImage( &vkt.aoHistory[i] );
+		}
+		VK_TemporalDestroyImage( &vkt.aoRaw );
+		VK_TemporalDestroyImage( &vkt.aoBlur );
+		VK_TemporalDestroyImage( &vkt.aoResult );
+		break;
+	case VK_TEMPORAL_GROUP_PREVCOLOR:
+		VK_TemporalDestroyImage( &vkt.color[1] );
+		break;
+	}
+	vkt.groups &= ~group;
+}
+
 /*
 ===============
 VK_TemporalCreateTargets
 
-The scene's images, render passes and framebuffers; at the end of
-VK_CreateRenderTargets, in its frame. The color images and the pyramids
-start black (the history); the motion vectors and the normals are written by
-every scene before anything reads them
+The scene's images (the color, the motion vectors, the normals), render
+passes and framebuffers; at the end of VK_CreateRenderTargets, in its frame.
+The readers' own images are made when one of them is on
+(VK_TemporalUpdateFeatures). The color starts black; the motion vectors and
+the normals are written by every scene before anything reads them
 ===============
 */
 void VK_TemporalCreateTargets( void ) {
@@ -449,7 +608,7 @@ void VK_TemporalCreateTargets( void ) {
 	const VkImageUsageFlags attachment = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	VkSamplerCreateInfo samplerInfo;
 	VkCommandBuffer cmd;
-	int i, l, size;
+	int size;
 
 	if ( !vkt.enabled ) {
 		return;
@@ -463,21 +622,13 @@ void VK_TemporalCreateTargets( void ) {
 	}
 	VK_TemporalPlanPyramid();
 
-	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
-		VK_TemporalCreateImage( &vkt.color[i], vkt.colorFormat, attachment | VK_IMAGE_USAGE_TRANSFER_DST_BIT, vk.width, vk.height, 1 );
-		VK_TemporalCreateImage( &vkt.hiz[i], vkt.hizFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			vkt.hizWidth, vkt.hizHeight, vkt.hizLevels );
-		for ( l = 0; l < vkt.hizLevels; l++ ) {
-			vkt.hizLevel[i][l] = VK_TemporalLevelView( vkt.hiz[i].image, vkt.hizFormat, VK_IMAGE_ASPECT_COLOR_BIT, l );
-		}
-	}
+	// the images every scene draws; the readers' own come with them
+	// (VK_TemporalUpdateFeatures)
+	VK_TemporalCreateImage( &vkt.color[0], vkt.colorFormat, attachment | VK_IMAGE_USAGE_TRANSFER_DST_BIT, vk.width, vk.height, 1 );
 	VK_TemporalCreateImage( &vkt.velocity, vkt.velocityFormat, attachment, vk.width, vk.height, 1 );
 	VK_TemporalCreateImage( &vkt.normal, vkt.normalFormat, attachment, vk.width, vk.height, 1 );
-	// the anti-aliasing's results
-	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
-		VK_TemporalCreateImage( &vkt.taa[i], vkt.taaFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-			vk.width, vk.height, 1 );
-	}
+	VK_TemporalCreateImage( &vkt.placeholder, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 1, 1, 1 );
+	vkt.groups = 0;
 
 	vkt.renderPass = VK_TemporalCreateRenderPass( qfalse );
 	vkt.renderPassClear = VK_TemporalCreateRenderPass( qtrue );
@@ -506,17 +657,13 @@ void VK_TemporalCreateTargets( void ) {
 	// the layouts between scenes
 	VK_BeginFrameIfNeeded();
 	cmd = vk.frame->mainCmd;
-	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
-		VK_TemporalClearImage( cmd, vkt.color[i].image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, black );
-		VK_TemporalClearImage( cmd, vkt.hiz[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
-		VK_TemporalClearImage( cmd, vkt.taa[i].image, VK_IMAGE_LAYOUT_GENERAL, black );
-	}
+	VK_TemporalClearImage( cmd, vkt.color[0].image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, black );
+	VK_TemporalClearImage( cmd, vkt.placeholder.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 
 	vkt.current = 0;
+	vkt.colorIndex = 0;
 	vkt.sceneSerial = 0;
 	vkt.historySerial = 0;
-	Com_Memset( vkt.hizSerial, 0, sizeof( vkt.hizSerial ) );
-	Com_Memset( vkt.taaSerial, 0, sizeof( vkt.taaSerial ) );
 
 	ri.Printf( PRINT_ALL, "Vulkan temporal path (r_temporal): %dx%d, depth pyramid of %d levels from %dx%d in %d dispatches\n",
 		vk.width, vk.height, vkt.hizLevels, vkt.hizWidth, vkt.hizHeight, vkt.numHizPasses + 1 );
@@ -524,23 +671,19 @@ void VK_TemporalCreateTargets( void ) {
 
 // called when nothing uses them anymore
 void VK_TemporalDestroyTargets( void ) {
-	int i, l;
+	int i;
 
 	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
 		if ( vkt.framebuffers[i] ) {
 			qvkDestroyFramebuffer( vk.device, vkt.framebuffers[i], NULL );
 			vkt.framebuffers[i] = VK_NULL_HANDLE;
 		}
-		for ( l = 0; l < VK_TEMPORAL_MAX_MIPS; l++ ) {
-			if ( vkt.hizLevel[i][l] ) {
-				qvkDestroyImageView( vk.device, vkt.hizLevel[i][l], NULL );
-				vkt.hizLevel[i][l] = VK_NULL_HANDLE;
-			}
-		}
-		VK_TemporalDestroyImage( &vkt.color[i] );
-		VK_TemporalDestroyImage( &vkt.hiz[i] );
-		VK_TemporalDestroyImage( &vkt.taa[i] );
 	}
+	for ( i = 1; i <= VK_TEMPORAL_GROUP_PREVCOLOR; i <<= 1 ) {
+		VK_TemporalDestroyGroup( i );
+	}
+	VK_TemporalDestroyImage( &vkt.color[0] );
+	VK_TemporalDestroyImage( &vkt.placeholder );
 	VK_TemporalDestroyImage( &vkt.velocity );
 	VK_TemporalDestroyImage( &vkt.normal );
 	if ( vkt.depthView ) {
@@ -577,7 +720,7 @@ PIPELINES
 
 // count bindings of one descriptor each, of types[i]
 static VkDescriptorSetLayout VK_TemporalSetLayout( const VkDescriptorType *types, int count, VkShaderStageFlags stages ) {
-	VkDescriptorSetLayoutBinding bindings[VK_TEMPORAL_TAIL_IMAGES];
+	VkDescriptorSetLayoutBinding bindings[VK_TEMPORAL_MAX_BINDINGS];
 	VkDescriptorSetLayoutCreateInfo info;
 	VkDescriptorSetLayout layout;
 	int i;
@@ -621,7 +764,8 @@ static VkPipelineLayout VK_TemporalSimpleLayout( VkDescriptorSetLayout set, VkSh
 	return VK_TemporalPipelineLayout( &set, 1, &range, 1 );
 }
 
-static VkPipeline VK_TemporalComputePipeline( VkShaderModule module, VkPipelineLayout layout ) {
+// with spec (NULL for none) the shader's specialization constants
+static VkPipeline VK_TemporalComputePipelineSpec( VkShaderModule module, VkPipelineLayout layout, const VkSpecializationInfo *spec ) {
 	VkComputePipelineCreateInfo info;
 	VkPipeline pipeline;
 
@@ -631,9 +775,35 @@ static VkPipeline VK_TemporalComputePipeline( VkShaderModule module, VkPipelineL
 	info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
 	info.stage.module = module;
 	info.stage.pName = "main";
+	info.stage.pSpecializationInfo = spec;
 	info.layout = layout;
 	VK_CHECK( qvkCreateComputePipelines( vk.device, vk.pipelineCache, 1, &info, NULL, &pipeline ) );
 	return pipeline;
+}
+
+static VkPipeline VK_TemporalComputePipeline( VkShaderModule module, VkPipelineLayout layout ) {
+	return VK_TemporalComputePipelineSpec( module, layout, NULL );
+}
+
+// the ambient occlusion's main pass at r_aoQuality q: slices and steps a
+// side (XeGTAO's low, medium, high and ultra) as specialization constants
+static const int vk_aoQuality[4][2] = { { 1, 2 }, { 2, 2 }, { 3, 3 }, { 9, 3 } };
+
+static VkPipeline VK_TemporalAoMainPipeline( int q ) {
+	VkSpecializationMapEntry entries[2];
+	VkSpecializationInfo spec;
+
+	entries[0].constantID = 0;
+	entries[0].offset = 0;
+	entries[0].size = sizeof( int );
+	entries[1].constantID = 1;
+	entries[1].offset = sizeof( int );
+	entries[1].size = sizeof( int );
+	spec.mapEntryCount = 2;
+	spec.pMapEntries = entries;
+	spec.dataSize = sizeof( vk_aoQuality[q] );
+	spec.pData = vk_aoQuality[q];
+	return VK_TemporalComputePipelineSpec( vkt.aoMainShader, vkt.aoLayout, &spec );
 }
 
 // the scene into the frame's color target: a triangle over the framebuffer
@@ -728,6 +898,100 @@ static VkPipeline VK_TemporalCompositePipeline( void ) {
 	return pipeline;
 }
 
+/*
+===============
+VK_TemporalAoApplyPipeline
+
+The ambient occlusion into the scene: a triangle over the framebuffer in the
+scene's render pass (vkt.renderPass), no depth test; the color blended ONE,
+SRC_ALPHA (dst a + rgb, ao_denoise.comp), its alpha kept, the motion vectors
+and the normals not written
+===============
+*/
+static VkPipeline VK_TemporalAoApplyPipeline( void ) {
+	VkPipelineShaderStageCreateInfo stages[2];
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly;
+	VkPipelineViewportStateCreateInfo viewportState;
+	VkPipelineRasterizationStateCreateInfo rasterization;
+	VkPipelineMultisampleStateCreateInfo multisample;
+	VkPipelineDepthStencilStateCreateInfo depthStencil;
+	VkPipelineColorBlendAttachmentState blendAttachments[3];
+	VkPipelineColorBlendStateCreateInfo blend;
+	VkDynamicState dynamicStates[2];
+	VkPipelineDynamicStateCreateInfo dynamicState;
+	VkGraphicsPipelineCreateInfo info;
+	VkPipeline pipeline;
+
+	Com_Memset( stages, 0, sizeof( stages ) );
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vkt.compositeVertexShader;
+	stages[0].pName = "main";
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = vkt.aoApplyShader;
+	stages[1].pName = "main";
+
+	Com_Memset( &vertexInput, 0, sizeof( vertexInput ) );
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	Com_Memset( &inputAssembly, 0, sizeof( inputAssembly ) );
+	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	Com_Memset( &viewportState, 0, sizeof( viewportState ) );
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+	Com_Memset( &rasterization, 0, sizeof( rasterization ) );
+	rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterization.cullMode = VK_CULL_MODE_NONE;
+	rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterization.lineWidth = 1.0f;
+	Com_Memset( &multisample, 0, sizeof( multisample ) );
+	multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	Com_Memset( &depthStencil, 0, sizeof( depthStencil ) );
+	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.maxDepthBounds = 1.0f;
+	Com_Memset( blendAttachments, 0, sizeof( blendAttachments ) );
+	blendAttachments[0].blendEnable = VK_TRUE;
+	blendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	blendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	blendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+	blendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	blendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	blendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+	blendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+	Com_Memset( &blend, 0, sizeof( blend ) );
+	blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	blend.attachmentCount = 3;
+	blend.pAttachments = blendAttachments;
+	dynamicStates[0] = VK_DYNAMIC_STATE_VIEWPORT;
+	dynamicStates[1] = VK_DYNAMIC_STATE_SCISSOR;
+	Com_Memset( &dynamicState, 0, sizeof( dynamicState ) );
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount = 2;
+	dynamicState.pDynamicStates = dynamicStates;
+
+	Com_Memset( &info, 0, sizeof( info ) );
+	info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	info.stageCount = 2;
+	info.pStages = stages;
+	info.pVertexInputState = &vertexInput;
+	info.pInputAssemblyState = &inputAssembly;
+	info.pViewportState = &viewportState;
+	info.pRasterizationState = &rasterization;
+	info.pMultisampleState = &multisample;
+	info.pDepthStencilState = &depthStencil;
+	info.pColorBlendState = &blend;
+	info.pDynamicState = &dynamicState;
+	info.layout = vkt.aoApplyLayout;
+	info.renderPass = vkt.renderPass;
+	VK_CHECK( qvkCreateGraphicsPipelines( vk.device, vk.pipelineCache, 1, &info, NULL, &pipeline ) );
+	return pipeline;
+}
+
 static void VK_TemporalAllocateSets( VkDescriptorSetLayout layout, VkDescriptorSet *sets, int count ) {
 	VkDescriptorSetLayout layouts[VK_TEMPORAL_MAX_PASSES];
 	VkDescriptorSetAllocateInfo info;
@@ -749,8 +1013,8 @@ static void VK_TemporalAllocateSets( VkDescriptorSetLayout layout, VkDescriptorS
 static void VK_TemporalWriteSet( VkDescriptorSet set, const VkDescriptorType *types, const VkImageView *views,
 	const VkImageLayout *layouts, int count, int linear )
 {
-	VkDescriptorImageInfo infos[VK_TEMPORAL_TAIL_IMAGES];
-	VkWriteDescriptorSet writes[VK_TEMPORAL_TAIL_IMAGES];
+	VkDescriptorImageInfo infos[VK_TEMPORAL_MAX_BINDINGS];
+	VkWriteDescriptorSet writes[VK_TEMPORAL_MAX_BINDINGS];
 	int i;
 
 	Com_Memset( writes, 0, sizeof( writes ) );
@@ -779,8 +1043,18 @@ static const VkDescriptorType vk_hizTypes[VK_TEMPORAL_TAIL_IMAGES] = {
 static const VkDescriptorType vk_compositeTypes[VK_TEMPORAL_COMPOSITE_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 };
+static const VkDescriptorType vk_aoTypes[VK_TEMPORAL_AO_BINDINGS] = {
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+};
+static const VkDescriptorType vk_aoApplyTypes[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
 static const VkDescriptorType vk_taaTypes[VK_TEMPORAL_TAA_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -791,20 +1065,26 @@ static const VkDescriptorType vk_taaTypes[VK_TEMPORAL_TAA_BINDINGS] = {
 ===============
 VK_TemporalWriteStaticSets
 
-The sets that don't change until the targets are created again: those of
-the pyramid's dispatches and of the composite, one of each per current
-image. Frames in flight may bind them: they are never written again
+The sets that don't change until the targets are created again or a group
+of images is made or freed (VK_TemporalUpdateFeatures, the GPU idle): those
+of the pyramid's dispatches and of the composite, one of each per current
+image, and the ambient occlusion's apply pass's. Frames in flight may bind
+them: they are written only then
 ===============
 */
 static void VK_TemporalWriteStaticSets( void ) {
-	VkImageView views[VK_TEMPORAL_TAIL_IMAGES];
-	VkImageLayout layouts[VK_TEMPORAL_TAIL_IMAGES];
+	const VkImageView placeholder = vkt.placeholder.view;
+	const qboolean pyramid = ( vkt.groups & VK_TEMPORAL_GROUP_PYRAMID ) != 0;
+	const qboolean ao = ( vkt.groups & VK_TEMPORAL_GROUP_AO ) != 0;
+	const qboolean prevColor = ( vkt.groups & VK_TEMPORAL_GROUP_PREVCOLOR ) != 0;
+	VkImageView views[VK_TEMPORAL_MAX_BINDINGS];
+	VkImageLayout layouts[VK_TEMPORAL_MAX_BINDINGS];
 	int cur, i, l;
 
 	for ( cur = 0; cur < VK_TEMPORAL_HISTORY; cur++ ) {
 		// the levels a dispatch reads and writes, the last repeated in the
 		// bindings it doesn't use
-		for ( i = 0; i < vkt.numHizPasses; i++ ) {
+		for ( i = 0; pyramid && i < vkt.numHizPasses; i++ ) {
 			const vkHizPass_t *pass = &vkt.hizPasses[i];
 
 			for ( l = 0; l < VK_TEMPORAL_TAIL_IMAGES; l++ ) {
@@ -814,23 +1094,32 @@ static void VK_TemporalWriteStaticSets( void ) {
 			VK_TemporalWriteSet( vkt.hizSets[cur][i], vk_hizTypes, views, layouts, VK_TEMPORAL_TAIL_IMAGES, -1 );
 		}
 
-		views[0] = vkt.color[cur].view;
+		// the composite reads all of them in one view or another: the
+		// placeholder (GENERAL) for those of the groups not made
+		views[0] = vkt.color[prevColor ? cur : 0].view;
 		views[1] = vkt.velocity.view;
 		views[2] = vkt.normal.view;
-		views[3] = vkt.hiz[cur].view;
-		views[4] = vkt.color[cur ^ 1].view;
-		views[5] = vkt.hiz[cur ^ 1].view;
-		views[6] = vkt.color[cur].view;
+		views[3] = pyramid ? vkt.hiz[cur].view : placeholder;
+		views[4] = prevColor ? vkt.color[cur ^ 1].view : placeholder;
+		views[5] = pyramid ? vkt.hiz[cur ^ 1].view : placeholder;
+		views[6] = views[0];
+		views[7] = ao ? vkt.aoResult.view : placeholder;
+		views[8] = ao ? vkt.aoRaw.view : placeholder;
 		for ( l = 0; l < VK_TEMPORAL_COMPOSITE_BINDINGS; l++ ) {
-			layouts[l] = l == 3 || l == 5 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			layouts[l] = views[l] == placeholder || l == 3 || l == 5 || l >= 7 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
 		VK_TemporalWriteSet( vkt.compositeSets[cur], vk_compositeTypes, views, layouts, VK_TEMPORAL_COMPOSITE_BINDINGS, -1 );
 
 		// the same, showing the anti-aliased scene
-		views[0] = vkt.taa[cur].view;
+		views[0] = ( vkt.groups & VK_TEMPORAL_GROUP_TAA ) ? vkt.taa[cur].view : placeholder;
 		layouts[0] = VK_IMAGE_LAYOUT_GENERAL;
 		VK_TemporalWriteSet( vkt.compositeTaaSets[cur], vk_compositeTypes, views, layouts, VK_TEMPORAL_COMPOSITE_BINDINGS, -1 );
 	}
+
+	// the ambient occlusion's apply pass
+	views[0] = ao ? vkt.aoResult.view : placeholder;
+	layouts[0] = VK_IMAGE_LAYOUT_GENERAL;
+	VK_TemporalWriteSet( vkt.aoApplySet, vk_aoApplyTypes, views, layouts, 1, -1 );
 }
 
 /*
@@ -915,18 +1204,39 @@ void VK_TemporalInitPipelines( void ) {
 	vkt.taaShader = VK_CreateShaderModule( vk_spirv_taa_resolve_comp, vk_spirv_taa_resolve_comp_size );
 	vkt.taaPipeline = VK_TemporalComputePipeline( vkt.taaShader, vkt.taaLayout );
 
-	// per frame slot: set 2 of the scene, the prepare pass's and the
-	// anti-aliasing's sets; per current image: the pyramid's dispatches' and
-	// the composite's two
+	// the ambient occlusion: one set and layout for its compute passes
+	vkt.aoSetLayout = VK_TemporalSetLayout( vk_aoTypes, VK_TEMPORAL_AO_BINDINGS, VK_SHADER_STAGE_COMPUTE_BIT );
+	vkt.aoLayout = VK_TemporalSimpleLayout( vkt.aoSetLayout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof( vkAoPush_t ) );
+	vkt.aoApplySetLayout = VK_TemporalSetLayout( vk_aoApplyTypes, 1, VK_SHADER_STAGE_FRAGMENT_BIT );
+	vkt.aoApplyLayout = VK_TemporalPipelineLayout( &vkt.aoApplySetLayout, 1, NULL, 0 );
+	vkt.aoPrefilterShader = VK_CreateShaderModule( vk_spirv_ao_prefilter_comp, vk_spirv_ao_prefilter_comp_size );
+	vkt.aoMainShader = VK_CreateShaderModule( vk_spirv_gtao_main_comp, vk_spirv_gtao_main_comp_size );
+	vkt.aoTemporalShader = VK_CreateShaderModule( vk_spirv_ao_temporal_comp, vk_spirv_ao_temporal_comp_size );
+	vkt.aoDenoiseShader = VK_CreateShaderModule( vk_spirv_ao_denoise_comp, vk_spirv_ao_denoise_comp_size );
+	vkt.aoApplyShader = VK_CreateShaderModule( vk_spirv_ao_apply_frag, vk_spirv_ao_apply_frag_size );
+	vkt.aoPrefilterPipeline = VK_TemporalComputePipeline( vkt.aoPrefilterShader, vkt.aoLayout );
+	for ( i = 0; i < 4; i++ ) {
+		vkt.aoMainPipelines[i] = VK_TemporalAoMainPipeline( i );
+	}
+	vkt.aoTemporalPipeline = VK_TemporalComputePipeline( vkt.aoTemporalShader, vkt.aoLayout );
+	vkt.aoDenoisePipeline = VK_TemporalComputePipeline( vkt.aoDenoiseShader, vkt.aoLayout );
+	vkt.aoApplyPipeline = VK_TemporalAoApplyPipeline();
+
+	// per frame slot: set 2 of the scene, the prepare pass's, the
+	// anti-aliasing's and the ambient occlusion's sets; per current image:
+	// the pyramid's dispatches' and the composite's two; the ambient
+	// occlusion's apply pass's
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	poolSizes[0].descriptorCount = VK_MAX_FRAMES * 4;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 ) + VK_TEMPORAL_HISTORY * 2 * VK_TEMPORAL_COMPOSITE_BINDINGS;
+	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 + VK_TEMPORAL_AO_SAMPLED )
+		+ VK_TEMPORAL_HISTORY * 2 * VK_TEMPORAL_COMPOSITE_BINDINGS + 1;
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[2].descriptorCount = VK_MAX_FRAMES * 4 + VK_TEMPORAL_HISTORY * VK_TEMPORAL_MAX_PASSES * VK_TEMPORAL_TAIL_IMAGES;
+	poolSizes[2].descriptorCount = VK_MAX_FRAMES * ( 4 + VK_TEMPORAL_AO_BINDINGS - VK_TEMPORAL_AO_SAMPLED )
+		+ VK_TEMPORAL_HISTORY * VK_TEMPORAL_MAX_PASSES * VK_TEMPORAL_TAIL_IMAGES;
 	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.maxSets = VK_MAX_FRAMES * 3 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 2 );
+	poolInfo.maxSets = VK_MAX_FRAMES * 4 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 2 ) + 1;
 	poolInfo.poolSizeCount = ARRAY_LEN( poolSizes );
 	poolInfo.pPoolSizes = poolSizes;
 	VK_CHECK( qvkCreateDescriptorPool( vk.device, &poolInfo, NULL, &vkt.pool ) );
@@ -936,6 +1246,8 @@ void VK_TemporalInitPipelines( void ) {
 	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeSets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeTaaSets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.taaSetLayout, vkt.taaSets, VK_MAX_FRAMES );
+	VK_TemporalAllocateSets( vkt.aoSetLayout, vkt.aoSets, VK_MAX_FRAMES );
+	VK_TemporalAllocateSets( vkt.aoApplySetLayout, &vkt.aoApplySet, 1 );
 	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
 		if ( vkt.numHizPasses ) {
 			VK_TemporalAllocateSets( vkt.hizSetLayout, vkt.hizSets[i], vkt.numHizPasses );
@@ -958,12 +1270,15 @@ void VK_TemporalShutdownPipelines( void ) {
 		&vkt.vertexShader, &vkt.vertexShaderClip, &vkt.skinVertexShader, &vkt.skinVertexShaderClip,
 		&vkt.effectsVertexShader, &vkt.effectsVertexShaderClip, &vkt.fragmentShader,
 		&vkt.prepareShader, &vkt.hizShader, &vkt.hizTailShader, &vkt.compositeVertexShader, &vkt.compositeFragmentShader,
-		&vkt.taaShader
+		&vkt.taaShader, &vkt.aoPrefilterShader, &vkt.aoMainShader, &vkt.aoTemporalShader, &vkt.aoDenoiseShader, &vkt.aoApplyShader
 	};
-	VkPipeline *pipelines[] = { &vkt.preparePipeline, &vkt.hizPipeline, &vkt.hizTailPipeline, &vkt.compositePipeline, &vkt.taaPipeline };
-	VkPipelineLayout *pipelineLayouts[] = { &vkt.pipelineLayout, &vkt.prepareLayout, &vkt.hizLayout, &vkt.compositeLayout, &vkt.taaLayout };
+	VkPipeline *pipelines[] = { &vkt.preparePipeline, &vkt.hizPipeline, &vkt.hizTailPipeline, &vkt.compositePipeline, &vkt.taaPipeline,
+		&vkt.aoPrefilterPipeline, &vkt.aoMainPipelines[0], &vkt.aoMainPipelines[1], &vkt.aoMainPipelines[2], &vkt.aoMainPipelines[3],
+		&vkt.aoTemporalPipeline, &vkt.aoDenoisePipeline, &vkt.aoApplyPipeline };
+	VkPipelineLayout *pipelineLayouts[] = { &vkt.pipelineLayout, &vkt.prepareLayout, &vkt.hizLayout, &vkt.compositeLayout, &vkt.taaLayout,
+		&vkt.aoLayout, &vkt.aoApplyLayout };
 	VkDescriptorSetLayout *setLayouts[] = { &vkt.graphicsSetLayout, &vkt.prepareSetLayout, &vkt.hizSetLayout, &vkt.compositeSetLayout,
-		&vkt.taaSetLayout };
+		&vkt.taaSetLayout, &vkt.aoSetLayout, &vkt.aoApplySetLayout };
 	unsigned int i;
 
 	if ( !vk.device ) {
@@ -1006,6 +1321,8 @@ void VK_TemporalShutdownPipelines( void ) {
 	Com_Memset( vkt.compositeSets, 0, sizeof( vkt.compositeSets ) );
 	Com_Memset( vkt.compositeTaaSets, 0, sizeof( vkt.compositeTaaSets ) );
 	Com_Memset( vkt.taaSets, 0, sizeof( vkt.taaSets ) );
+	Com_Memset( vkt.aoSets, 0, sizeof( vkt.aoSets ) );
+	vkt.aoApplySet = VK_NULL_HANDLE;
 }
 
 /*
@@ -1102,13 +1419,16 @@ in vkt.readers (set it when the reader is created) the depth image
 (vkt.depthView, read only) and this frame's depth pyramid, and the last
 frame's when vkt.hizSerial says it was made in the frame before.
 
+The ambient occlusion (r_ao) is not here: it is in the scene before what is
+blended over its opaque surfaces (VK_TemporalAo, vk_ao_scene).
+
 Temporal anti-aliasing (VK_TemporalTaa, which needs the depth): this frame's
 scene and the last frame's result (taa[current ^ 1], when it is the frame
 before's and the view has a last frame) into taa[current], which the
 composite shows then (vkt.taaRan); with level0 it also makes level 0 of this
 frame's pyramid, which no pass made then (its only reader is the next
 frame's anti-aliasing). VK_TemporalResolve puts taa[current] into GENERAL
-before and makes its writes visible after. Ambient occlusion is to come.
+before and makes its writes visible after.
 ===============
 */
 static void VK_TemporalConsumers( VkCommandBuffer cmd, qboolean level0 ) {
@@ -1122,7 +1442,7 @@ static void VK_TemporalConsumers( VkCommandBuffer cmd, qboolean level0 ) {
 
 	// the depth image's view can change between frames; this frame slot's
 	// last use of the set is done
-	views[0] = vkt.color[cur].view;
+	views[0] = vkt.color[vkt.colorIndex].view;
 	views[1] = vkt.velocity.view;
 	views[2] = vkt.normal.view;
 	views[3] = vkt.depthView;
@@ -1186,10 +1506,10 @@ the draws left to the readers, the pyramid itself). The anti-aliasing's
 which it makes itself when nothing else needs the pyramid
 ===============
 */
-static int VK_TemporalReaders( void ) {
+static int VK_TemporalReadersFor( int showMode ) {
 	int readers = vkt.readers;
 
-	switch ( r_temporalShow->integer ) {
+	switch ( showMode ) {
 	case 1: case 2: case 4: case 6: case 7:
 		readers |= VK_TEMPORAL_READ_DEPTH;
 		break;
@@ -1197,9 +1517,283 @@ static int VK_TemporalReaders( void ) {
 	return readers;
 }
 
+// for this scene (r_temporalShow latched)
+static int VK_TemporalReaders( void ) {
+	return VK_TemporalReadersFor( vkt.showMode );
+}
+
+/*
+===============
+VK_TemporalUpdateFeatures
+
+At the start of a frame's scene (vk_begin_scene, outside of a render pass,
+before anything of the scene is recorded): which readers of the scene are on
+(r_taa, r_ao, r_temporalShow's views), latched for the scene, and the groups
+of images only they read made or freed to match (VK_TEMPORAL_GROUP_*): about
+270 MB at 2560x1440 with all of them, 44 without (the color, the motion
+vectors, the normals). A change waits for the GPU (nothing in flight may use
+what goes, or the static sets rewritten): a few milliseconds when a cvar
+changes, never otherwise
+===============
+*/
+void VK_TemporalUpdateFeatures( void ) {
+	static const char *names[] = { "anti-aliasing (r_taa)", "depth pyramid", "ambient occlusion (r_ao)", "last scene's color (r_temporalShow 5)" };
+	int mode = r_temporalShow->integer;
+	int need = 0, change, group, i;
+
+	if ( r_taa->integer ) {
+		need |= VK_TEMPORAL_GROUP_TAA | VK_TEMPORAL_GROUP_PYRAMID;	// the last frame's depth
+	}
+	if ( r_ao->integer ) {
+		need |= VK_TEMPORAL_GROUP_AO;
+	}
+	if ( VK_TemporalReadersFor( mode ) & VK_TEMPORAL_READ_DEPTH ) {
+		need |= VK_TEMPORAL_GROUP_PYRAMID;
+	}
+	if ( mode == 5 ) {
+		need |= VK_TEMPORAL_GROUP_PREVCOLOR;
+	}
+
+	change = need ^ vkt.groups;
+	if ( change ) {
+		vk_finish();
+		for ( group = 1, i = 0; group <= VK_TEMPORAL_GROUP_PREVCOLOR; group <<= 1, i++ ) {
+			if ( !( change & group ) ) {
+				continue;
+			}
+			if ( need & group ) {
+				VK_TemporalCreateGroup( group, vk.frame->mainCmd );
+			} else {
+				VK_TemporalDestroyGroup( group );
+			}
+			ri.Printf( PRINT_DEVELOPER, "r_temporal: the images of the %s %s\n", names[i], ( need & group ) ? "made" : "freed" );
+		}
+		if ( change & VK_TEMPORAL_GROUP_PREVCOLOR ) {
+			// the framebuffers: one color image, or two that alternate
+			for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
+				qvkDestroyFramebuffer( vk.device, vkt.framebuffers[i], NULL );
+				vkt.framebuffers[i] = VK_NULL_HANDLE;
+			}
+			qvkDestroyImageView( vk.device, vkt.depthView, NULL );
+			vkt.depthView = VK_NULL_HANDLE;
+			VK_TemporalCreateDepthObjects();
+		}
+		VK_TemporalWriteStaticSets();
+	}
+
+	vkt.showMode = mode;
+	vkt.aoOn = r_ao->integer && ( vkt.groups & VK_TEMPORAL_GROUP_AO );
+	vkt.colorIndex = ( vkt.groups & VK_TEMPORAL_GROUP_PREVCOLOR ) ? vkt.current : 0;
+}
+
 // whether the anti-aliasing resolves this scene
 static qboolean VK_TemporalTaa( void ) {
 	return vkt.taaOn && vkt.rect[2] && vkt.rect[3];
+}
+
+// the view's depth range and far distance, as the scene's draws used them
+static void VK_TemporalViewDepth( void ) {
+	vkt.view.depth[0] = vkt.projection[10];
+	vkt.view.depth[1] = vkt.projection[14];
+	vkt.view.depth[2] = vk_depth_floor();
+	vkt.view.depth[3] = VK_TemporalFar();
+}
+
+/*
+====================================================================
+
+AMBIENT OCCLUSION
+
+====================================================================
+*/
+
+// whether this scene's ambient occlusion is still to come (r_ao)
+qboolean VK_TemporalAoWanted( void ) {
+	return vkt.enabled && vkt.active && vkt.aoOn && !vkt.aoRan && vkt.aoSets[0];
+}
+
+/*
+===============
+VK_TemporalAo
+
+Ground truth ambient occlusion of the primary view, outside of a render
+pass, after the view's opaque surfaces (vk_ao_scene; the scene's images are
+in their attachment layouts): the depth buffer to view distances
+(ao_prefilter.comp), the occlusion (gtao_main.comp), blended with the last
+frames' (ao_temporal.comp), blurred into what the apply pass blends
+(ao_denoise.comp, once or twice). The depth, normal and motion images are
+the passes' to read in between, then attachments again. fog: the view's
+draws' (start, end, r, g, b), NULL for none. Sets vkt.aoRan when it ran
+===============
+*/
+void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
+	const int cur = vkt.current;
+	const VkDescriptorSet set = vkt.aoSets[vk.frameIndex];
+	const VkPipelineStageFlags depthStages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	const int *rect = vkt.view.rect;
+	VkImageView views[VK_TEMPORAL_AO_BINDINGS];
+	VkImageLayout layouts[VK_TEMPORAL_AO_BINDINGS];
+	VkImageMemoryBarrier barriers[3];
+	VkMemoryBarrier memory;
+	vkAoPush_t push;
+	qboolean history, twoBlurs;
+	int q, i, groupsX, groupsY;
+
+	if ( !rect[2] || !rect[3] ) {
+		return;
+	}
+	VK_TemporalViewDepth();
+
+	// the depth image's view can change between frames; this frame slot's
+	// last use of the set is done
+	views[0] = vkt.depthView;
+	views[1] = vkt.normal.view;
+	views[2] = vkt.velocity.view;
+	views[3] = vkt.aoDepth[cur].view;
+	views[4] = vkt.aoDepth[cur ^ 1].view;
+	views[5] = vkt.aoRaw.view;
+	views[6] = vkt.aoHistory[cur ^ 1].view;
+	for ( i = 0; i < VK_TEMPORAL_AO_LEVELS; i++ ) {
+		views[7 + i] = vkt.aoDepthLevel[cur][i];
+	}
+	views[12] = vkt.aoRaw.view;
+	views[13] = vkt.aoHistory[cur].view;
+	views[14] = vkt.aoBlur.view;
+	views[15] = vkt.aoResult.view;
+	views[16] = vkt.aoHistory[cur].view;
+	views[17] = vkt.aoBlur.view;
+	for ( i = 0; i < VK_TEMPORAL_AO_BINDINGS; i++ ) {
+		layouts[i] = VK_IMAGE_LAYOUT_GENERAL;
+	}
+	layouts[0] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	layouts[1] = layouts[2] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VK_TemporalWriteSet( set, vk_aoTypes, views, layouts, VK_TEMPORAL_AO_BINDINGS, -1 );
+
+	Com_Memset( &push, 0, sizeof( push ) );
+	push.view = vkt.view;
+	q = Q_min( Q_max( r_aoQuality->integer, 0 ), 3 );
+	history = vkt.aoSerial[cur ^ 1] && vkt.aoSerial[cur ^ 1] + 1 == vk.frameSerial && vkt.view.params[2] != 0.0f && r_aoTemporal->integer > 1;
+	push.ao[0] = r_aoRadius->value;
+	push.ao[1] = r_aoFalloff->value;
+	push.ao[2] = r_aoThickness->value;
+	push.ao[3] = r_aoStrength->value;
+	push.ao2[0] = r_aoMultiBounce->value;
+	push.ao2[1] = history ? 1.0f : 0.0f;
+	push.ao2[2] = (float)r_aoTemporal->integer;
+	push.ao2[3] = 1.2f;		// XeGTAO's DenoiseBlurBeta
+	if ( fog ) {
+		// as the draws' (vk.c: Mesa's optimized fog parameters)
+		float scale = fog[1] == fog[0] ? 1.0f : -1.0f / ( fog[1] - fog[0] );
+
+		push.fogParams[0] = scale;
+		push.fogParams[1] = fog[1] * -scale;
+		push.fogColor[0] = Com_Clamp( 0.0f, 1.0f, fog[2] );
+		push.fogColor[1] = Com_Clamp( 0.0f, 1.0f, fog[3] );
+		push.fogColor[2] = Com_Clamp( 0.0f, 1.0f, fog[4] );
+		push.fogColor[3] = 1.0f;
+	}
+	push.fogParams[2] = r_aoNormals->integer ? 1.0f : 0.0f;
+	push.fogParams[3] = vkt.aoDepthSerial[cur ^ 1] && vkt.aoDepthSerial[cur ^ 1] + 1 == vk.frameSerial ? 1.0f : 0.0f;
+	push.ints[0] = vk_aoQuality[q][0];
+	push.ints[1] = vk_aoQuality[q][1];
+	// the noise moves with the frames only when they are blended
+	push.ints[2] = r_aoTemporal->integer > 1 ? (int)( vk.frameSerial & 63 ) : 0;
+	twoBlurs = q == 3 || !history;
+	push.ints[3] = twoBlurs ? 0 : 1;	// AO_PASS_HISTORY_TO_BLUR, AO_PASS_HISTORY_TO_RESULT
+
+	// what the scene drew so far, to the passes; the ambient occlusion's
+	// images were last read by the last frame's passes and composite
+	VK_TemporalImageBarrier( &barriers[0], vk.depthImage, vk.depthAspect, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
+	VK_TemporalImageBarrier( &barriers[1], vkt.normal.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
+	VK_TemporalImageBarrier( &barriers[2], vkt.velocity.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
+	Com_Memset( &memory, 0, sizeof( memory ) );
+	memory.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | depthStages | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+		| VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memory, 0, NULL, 3, barriers );
+
+	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoLayout, 0, 1, &set, 0, NULL );
+	qvkCmdPushConstants( cmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+
+	// the view distances of the whole framebuffer (the levels line up with
+	// it), 16 x 16 pixels a workgroup
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoPrefilterPipeline );
+	qvkCmdDispatch( cmd, ( vk.width + 15 ) / 16, ( vk.height + 15 ) / 16, 1 );
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+	// the others over the primary view, 8 x 8 pixels a workgroup
+	groupsX = ( rect[2] + 7 ) / 8;
+	groupsY = ( rect[3] + 7 ) / 8;
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoMainPipelines[q] );
+	qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+	// blended over frames and blurred, 16 x 16 pixels a workgroup: into the
+	// result, or, at r_aoQuality 3 and without history (the first frames
+	// after a cut are the noisiest), into o_blur for a second blur
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoTemporalPipeline );
+	qvkCmdDispatch( cmd, ( rect[2] + 15 ) / 16, ( rect[3] + 15 ) / 16, 1 );
+	if ( twoBlurs ) {
+		VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+		push.ints[3] = 2;	// AO_PASS_BLUR_TO_RESULT
+		qvkCmdPushConstants( cmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoDenoisePipeline );
+		qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
+	}
+
+	// the scene's images back to the draws; the result to the apply pass
+	// (and the composite's r_temporalShow views)
+	VK_TemporalImageBarrier( &barriers[0], vk.depthImage, vk.depthAspect, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0,
+		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT );
+	VK_TemporalImageBarrier( &barriers[1], vkt.normal.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
+	VK_TemporalImageBarrier( &barriers[2], vkt.velocity.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT );
+	memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | depthStages | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		0, 1, &memory, 0, NULL, 3, barriers );
+
+	vkt.aoDepthSerial[cur] = vk.frameSerial;
+	vkt.aoSerial[cur] = vk.frameSerial;
+	vkt.aoRan = qtrue;
+}
+
+/*
+===============
+VK_TemporalAoApply
+
+In the scene's render pass, after VK_TemporalAo: its result blended into
+the scene's color over the primary view (ao_apply.frag). The caller rebinds
+what it draws with next
+===============
+*/
+void VK_TemporalAoApply( VkCommandBuffer cmd ) {
+	VkViewport viewport;
+	VkRect2D scissor;
+
+	viewport.x = 0;
+	viewport.y = 0;
+	viewport.width = vk.width;
+	viewport.height = vk.height;
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+	scissor.offset.x = vkt.view.rect[0];
+	scissor.offset.y = vkt.view.rect[1];
+	scissor.extent.width = vkt.view.rect[2];
+	scissor.extent.height = vkt.view.rect[3];
+
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyPipeline );
+	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyLayout, 0, 1, &vkt.aoApplySet, 0, NULL );
+	qvkCmdSetViewport( cmd, 0, 1, &viewport );
+	qvkCmdSetScissor( cmd, 0, 1, &scissor );
+	qvkCmdDraw( cmd, 3, 1, 0, 0 );
 }
 
 /*
@@ -1242,7 +1836,7 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
 		VK_TemporalImageBarrier( &barriers[1], vkt.velocity.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
-		VK_TemporalImageBarrier( &barriers[2], vkt.color[cur].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_TemporalImageBarrier( &barriers[2], vkt.color[vkt.colorIndex].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
 		qvkCmdPipelineBarrier( cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, readers, 0, 0, NULL, 0, NULL, 3, barriers );
 		return;
@@ -1250,11 +1844,7 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 	// this frame's level 0 at least (the anti-aliasing's or the prepare pass's)
 	vkt.hizSerial[cur] = vk.frameSerial;
 
-	// the view's depth range and far distance, as the scene's draws used them
-	vkt.view.depth[0] = vkt.projection[10];
-	vkt.view.depth[1] = vkt.projection[14];
-	vkt.view.depth[2] = vk_depth_floor();
-	vkt.view.depth[3] = VK_TemporalFar();
+	VK_TemporalViewDepth();
 
 	if ( pyramid ) {
 		// the prepare pass's set: the depth image's view can change between
@@ -1279,7 +1869,7 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
 	VK_TemporalImageBarrier( &barriers[2], vkt.velocity.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
-	VK_TemporalImageBarrier( &barriers[3], vkt.color[cur].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	VK_TemporalImageBarrier( &barriers[3], vkt.color[vkt.colorIndex].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
 	VK_TemporalImageBarrier( &barriers[4], vkt.hiz[cur].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT );
@@ -1385,7 +1975,7 @@ void VK_TemporalComposite( VkCommandBuffer cmd ) {
 
 	Com_Memset( &push, 0, sizeof( push ) );
 	push.view = vkt.view;
-	push.mode = r_temporalShow->integer;
+	push.mode = vkt.showMode;
 	push.mip = r_temporalShowMip->integer;
 	push.scale = r_temporalShowScale->value;
 	push.sharpen = vkt.taaRan ? r_taaSharpen->value : 0.0f;
