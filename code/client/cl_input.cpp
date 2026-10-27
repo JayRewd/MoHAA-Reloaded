@@ -30,6 +30,7 @@ static int	old_look_frameTime;	// com_frameTime of the last CL_ApplyLook
 
 cvar_t		*cl_movefps;			// usercmds a second, whatever the frame rate; 0: one per frame
 static cvar_t	*cl_movesubgrid;	// a shot's or a jump's usercmd at the half step (CL_SubGridStep)
+static cvar_t	*cl_nullbinds;		// opposing movement and lean keys: the newest press wins (CL_NullbindKey)
 
 /*
 =================
@@ -260,6 +261,87 @@ float CL_KeyState( kbutton_t *key ) {
 
 
 
+/*
+===============================================================================
+
+NULLBINDS
+
+Opposing movement and lean keys never cancel out: the newest press wins while
+the other side's key stays held, and releasing it hands control back. kbutton_t
+already tracks the keys holding a button separately from its effective state,
+so only active, the partial-frame msec and wasPressed are adjusted here.
+
+===============================================================================
+*/
+
+static qboolean CL_NullbindHeld( const kbutton_t *b ) {
+	return (qboolean)( b->down[0] || b->down[1] );
+}
+
+static void CL_NullbindSuppress( kbutton_t *b, unsigned time ) {
+	unsigned	elapsed;
+
+	if ( !b->active ) {
+		return;
+	}
+	b->active = qfalse;
+
+	if ( !time || !b->downtime ) {
+		b->msec += frame_msec / 2;
+		return;
+	}
+
+	// unsigned subtraction handles timer wrap; a delta with the high bit set
+	// is an out-of-order timestamp, so credit no phantom movement
+	elapsed = time - b->downtime;
+	if ( elapsed < 0x80000000u ) {
+		b->msec += elapsed;
+	}
+}
+
+static void CL_NullbindKey( kbutton_t *b, kbutton_t *opposite, qboolean down ) {
+	int			holders[2] = { b->down[0], b->down[1] };
+	qboolean	suppressed = (qboolean)( !b->active && CL_NullbindHeld( b ) );
+	unsigned	msec = b->msec;
+	unsigned	time;
+
+	if ( down ) {
+		IN_KeyDown( b );
+	} else {
+		IN_KeyUp( b );
+	}
+
+	if ( b->down[0] == holders[0] && b->down[1] == holders[1] ) {
+		return;		// repeat, third key, or release without a matching press
+	}
+	if ( down && !cl_nullbinds->integer ) {
+		return;		// stock: both sides held cancel out
+	}
+
+	// sub-frame taps belong to the winning side, so a usercmd never carries
+	// both sides of a button pair
+	time = atoi( Cmd_Argv( 2 ) );
+	if ( down ) {
+		// the newest press wins
+		CL_NullbindSuppress( opposite, time );
+		opposite->wasPressed = qfalse;
+		return;
+	}
+
+	if ( suppressed ) {
+		// IN_KeyUp credits a suppressed button from its stale downtime, but
+		// that time was already settled when the button was suppressed
+		b->msec = msec;
+	}
+
+	// releasing the winner hands control back to a side still held
+	if ( !CL_NullbindHeld( b ) && CL_NullbindHeld( opposite ) && !opposite->active ) {
+		opposite->downtime = time;
+		opposite->active = qtrue;
+		b->wasPressed = qfalse;
+	}
+}
+
 void IN_UpDown(void) {IN_KeyDown(&in_up);}
 void IN_UpUp(void) {IN_KeyUp(&in_up);}
 void IN_DownDown(void) {IN_KeyDown(&in_down);}
@@ -268,28 +350,28 @@ void IN_LeftDown(void) {IN_KeyDown(&in_left);}
 void IN_LeftUp(void) {IN_KeyUp(&in_left);}
 void IN_RightDown(void) {IN_KeyDown(&in_right);}
 void IN_RightUp(void) {IN_KeyUp(&in_right);}
-void IN_ForwardDown(void) {IN_KeyDown(&in_forward);}
-void IN_ForwardUp(void) {IN_KeyUp(&in_forward);}
-void IN_BackDown(void) {IN_KeyDown(&in_back);}
-void IN_BackUp(void) {IN_KeyUp(&in_back);}
+void IN_ForwardDown(void) {CL_NullbindKey(&in_forward, &in_back, qtrue);}
+void IN_ForwardUp(void) {CL_NullbindKey(&in_forward, &in_back, qfalse);}
+void IN_BackDown(void) {CL_NullbindKey(&in_back, &in_forward, qtrue);}
+void IN_BackUp(void) {CL_NullbindKey(&in_back, &in_forward, qfalse);}
 void IN_LookupDown(void) {IN_KeyDown(&in_lookup);}
 void IN_LookupUp(void) {IN_KeyUp(&in_lookup);}
 void IN_LookdownDown(void) {IN_KeyDown(&in_lookdown);}
 void IN_LookdownUp(void) {IN_KeyUp(&in_lookdown);}
-void IN_MoveleftDown(void) {IN_KeyDown(&in_moveleft);}
-void IN_MoveleftUp(void) {IN_KeyUp(&in_moveleft);}
-void IN_MoverightDown(void) {IN_KeyDown(&in_moveright);}
-void IN_MoverightUp(void) {IN_KeyUp(&in_moveright);}
+void IN_MoveleftDown(void) {CL_NullbindKey(&in_moveleft, &in_moveright, qtrue);}
+void IN_MoveleftUp(void) {CL_NullbindKey(&in_moveleft, &in_moveright, qfalse);}
+void IN_MoverightDown(void) {CL_NullbindKey(&in_moveright, &in_moveleft, qtrue);}
+void IN_MoverightUp(void) {CL_NullbindKey(&in_moveright, &in_moveleft, qfalse);}
 void IN_AttackPrimaryDown(void) { IN_KeyDown(&in_buttons[0]);}
 void IN_AttackPrimaryUp(void) { IN_KeyUp(&in_buttons[0]); }
 void IN_AttackSecondaryDown(void) { IN_KeyDown(&in_buttons[1]); }
 void IN_AttackSecondaryUp(void) { IN_KeyUp(&in_buttons[1]); }
 void IN_UseDown(void) { IN_KeyDown(&in_buttons[3]); }
 void IN_UseUp(void) { IN_KeyUp(&in_buttons[3]); }
-void IN_LeanLeftDown(void) { IN_KeyDown(&in_buttons[4]); }
-void IN_LeanLeftUp(void) { IN_KeyUp(&in_buttons[4]); }
-void IN_LeanRightDown(void) { IN_KeyDown(&in_buttons[5]); }
-void IN_LeanRightUp(void) { IN_KeyUp(&in_buttons[5]); }
+void IN_LeanLeftDown(void) { CL_NullbindKey(&in_buttons[4], &in_buttons[5], qtrue); }
+void IN_LeanLeftUp(void) { CL_NullbindKey(&in_buttons[4], &in_buttons[5], qfalse); }
+void IN_LeanRightDown(void) { CL_NullbindKey(&in_buttons[5], &in_buttons[4], qtrue); }
+void IN_LeanRightUp(void) { CL_NullbindKey(&in_buttons[5], &in_buttons[4], qfalse); }
 
 void IN_SpeedDown(void) {IN_KeyDown(&in_speed);}
 void IN_SpeedUp(void) {IN_KeyUp(&in_speed);}
@@ -318,10 +400,10 @@ void IN_Button2Down(void) {IN_KeyDown(&in_buttons[2]);}
 void IN_Button2Up(void) {IN_KeyUp(&in_buttons[2]);}
 void IN_Button3Down(void) {IN_KeyDown(&in_buttons[3]);}
 void IN_Button3Up(void) {IN_KeyUp(&in_buttons[3]);}
-void IN_Button4Down(void) {IN_KeyDown(&in_buttons[4]);}
-void IN_Button4Up(void) {IN_KeyUp(&in_buttons[4]);}
-void IN_Button5Down(void) {IN_KeyDown(&in_buttons[5]);}
-void IN_Button5Up(void) {IN_KeyUp(&in_buttons[5]);}
+void IN_Button4Down(void) {CL_NullbindKey(&in_buttons[4], &in_buttons[5], qtrue);}
+void IN_Button4Up(void) {CL_NullbindKey(&in_buttons[4], &in_buttons[5], qfalse);}
+void IN_Button5Down(void) {CL_NullbindKey(&in_buttons[5], &in_buttons[4], qtrue);}
+void IN_Button5Up(void) {CL_NullbindKey(&in_buttons[5], &in_buttons[4], qfalse);}
 void IN_Button6Down(void) {IN_KeyDown(&in_buttons[6]);}
 void IN_Button6Up(void) {IN_KeyUp(&in_buttons[6]);}
 void IN_Button7Down(void) {IN_KeyDown(&in_buttons[7]);}
@@ -1610,6 +1692,7 @@ void CL_InitInput( void ) {
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
 	cl_movefps = Cvar_Get ("cl_movefps", "100", CVAR_ARCHIVE);
 	cl_movesubgrid = Cvar_Get ("cl_movesubgrid", "1", CVAR_ARCHIVE);
+	cl_nullbinds = Cvar_Get ("cl_nullbinds", "0", CVAR_ARCHIVE);
 }
 
 /*
