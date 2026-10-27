@@ -725,6 +725,8 @@ static void R_QueueScreenshot( int x, int y, int width, int height, char *name, 
 		return;
 	}
 	cmd->commandId = RC_SCREENSHOT;
+	// HDR output: this frame is saved as SDR
+	vk_sdr_frame();
 
 	cmd->x = x;
 	cmd->y = y;

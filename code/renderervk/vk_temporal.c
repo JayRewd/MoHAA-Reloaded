@@ -78,6 +78,7 @@ cvar_t	*r_temporalShowScale;
 cvar_t	*r_taa;
 cvar_t	*r_taaFeedback;
 cvar_t	*r_taaSharpen;
+cvar_t	*r_saturation;
 
 // push constants of the passes, see the shaders
 typedef struct {
@@ -100,6 +101,7 @@ typedef struct {
 	float	scale;
 	float	sharpen;		// r_taaSharpen when it shows the anti-aliased scene
 	int		rect[4];		// the scene's views (vkt.rect)
+	float	hdr[8];			// HDR output's expansion (VK_OutputExpansion)
 } vkCompositePush_t;
 
 typedef struct {
@@ -136,6 +138,9 @@ void VK_TemporalRegisterCvars( void ) {
 	r_taaSharpen = ri.Cvar_Get( "r_taaSharpen", "0.8", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_taaSharpen, "with r_taa 1: sharpens the anti-aliased image, 0 off to 1" );
 	ri.Cvar_CheckRange( r_taaSharpen, 0.0f, 1.0f, qfalse );
+	r_saturation = ri.Cvar_Get( "r_saturation", "1.1", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_saturation, "with r_temporal 1: the 3D view's color saturation (not the HUD's), 1 unchanged; in SDR and with HDR output" );
+	ri.Cvar_CheckRange( r_saturation, 0.0f, 2.0f, qfalse );
 }
 
 /*
@@ -634,6 +639,9 @@ static VkPipeline VK_TemporalComputePipeline( VkShaderModule module, VkPipelineL
 // the scene into the frame's color target: a triangle over the framebuffer
 // in vk.renderPass, no vertex input, no depth test, no blending
 static VkPipeline VK_TemporalCompositePipeline( void ) {
+	VkSpecializationMapEntry specEntry;
+	VkSpecializationInfo specInfo;
+	VkBool32 hdrExpand;
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly;
@@ -657,6 +665,16 @@ static VkPipeline VK_TemporalCompositePipeline( void ) {
 	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 	stages[1].module = vkt.compositeFragmentShader;
 	stages[1].pName = "main";
+	// HDR output: the scene expanded toward the display's peak
+	hdrExpand = vko.enabled ? VK_TRUE : VK_FALSE;
+	specEntry.constantID = 0;
+	specEntry.offset = 0;
+	specEntry.size = sizeof( hdrExpand );
+	specInfo.mapEntryCount = 1;
+	specInfo.pMapEntries = &specEntry;
+	specInfo.dataSize = sizeof( hdrExpand );
+	specInfo.pData = &hdrExpand;
+	stages[1].pSpecializationInfo = &specInfo;
 
 	Com_Memset( &vertexInput, 0, sizeof( vertexInput ) );
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -1372,6 +1390,7 @@ void VK_TemporalComposite( VkCommandBuffer cmd ) {
 	push.scale = r_temporalShowScale->value;
 	push.sharpen = vkt.taaRan ? r_taaSharpen->value : 0.0f;
 	Com_Memcpy( push.rect, vkt.rect, sizeof( push.rect ) );
+	VK_OutputExpansion( push.hdr );
 
 	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.compositePipeline );
 	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.compositeLayout, 0, 1,

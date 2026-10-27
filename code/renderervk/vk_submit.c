@@ -240,7 +240,7 @@ the swapchain is out of date the frame is submitted and not presented.
 ===============
 */
 static VkResult VK_ThreadCopyAndPresent( vkSubmitJob_t *job, vkFrame_t *frame ) {
-	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkPipelineStageFlags waitStage = VK_PresentCopyStage();
 	VkSubmitInfo submits[2];
 	VkSemaphore acquired;
 	uint32_t imageIndex;

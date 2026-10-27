@@ -741,6 +741,10 @@ static void VK_SelectTarget( void ) {
 		VK_CollectSubmitJobs();
 	}
 
+	// HDR output: this frame's levels; a change of the window's HDR state
+	// makes the swapchain out of date
+	VK_OutputUpdate();
+
 	// recreate the swapchain when the window changed; there is none while
 	// the window has no area (minimized)
 	VK_GetDrawableSize( &width, &height );
@@ -1027,6 +1031,16 @@ VkResult VK_RecordPresentCopy( vkFrame_t *frame, VkCommandBuffer cmd, VkImage im
 		qvkCmdWriteTimestamp( cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame->queryPool, VK_TS_PRESENT_START );
 	}
 
+	if ( vko.enabled ) {
+		// HDR output: the output pass instead of the blit (vk_output.c)
+		VK_OutputRecord( frame, cmd, image );
+		if ( frame->queryPool ) {
+			qvkCmdWriteTimestamp( cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame->queryPool, VK_TS_PRESENT_END );
+			frame->timestampsWritten |= ( 1u << VK_TS_PRESENT_START ) | ( 1u << VK_TS_PRESENT_END );
+		}
+		return qvkEndCommandBuffer( cmd );
+	}
+
 	VK_ImageBarrier( cmd, vk.colorImage, VK_IMAGE_ASPECT_COLOR_BIT,
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -1065,6 +1079,18 @@ VkResult VK_RecordPresentCopy( vkFrame_t *frame, VkCommandBuffer cmd, VkImage im
 		frame->timestampsWritten |= ( 1u << VK_TS_PRESENT_START ) | ( 1u << VK_TS_PRESENT_END );
 	}
 	return qvkEndCommandBuffer( cmd );
+}
+
+/*
+===============
+VK_PresentCopyStage
+
+The stage of VK_RecordPresentCopy's commands that waits for the acquired
+image: the blit's, or the output pass's color writes
+===============
+*/
+VkPipelineStageFlags VK_PresentCopyStage( void ) {
+	return vko.enabled ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
 }
 
 /*
@@ -1111,11 +1137,15 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	imageIndex = vk.heldIndex;
 
 	cmd = frame->presentCmd;
+	if ( vko.enabled ) {
+		// the swapchain may have been made again above
+		VK_OutputFillPush( &frame->outputPush );
+	}
 	VK_CHECK( VK_RecordPresentCopy( frame, cmd, vk.swapchainImages[imageIndex] ) );
 
 	Com_Memset( &submit, 0, sizeof( submit ) );
 	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	VK_WaitForHeldImage( &submit, &waitStage, VK_PIPELINE_STAGE_TRANSFER_BIT );
+	VK_WaitForHeldImage( &submit, &waitStage, VK_PresentCopyStage() );
 	submit.commandBufferCount = 1;
 	submit.pCommandBuffers = &cmd;
 	submit.signalSemaphoreCount = 1;
@@ -1785,6 +1815,16 @@ static void VK_CreateRenderTargets( void ) {
 		&& VK_FormatHasFeatures( vk.swapchainFormat, VK_TARGET_FORMAT_FEATURES ) ) {
 		vk.colorFormat = vk.swapchainFormat;
 	}
+	// HDR output: RGBA16F, read by the output pass (vk_output.c), whatever
+	// the swapchain's format, which changes with the window's HDR state
+	if ( vko.enabled ) {
+		if ( VK_FormatHasFeatures( VK_FORMAT_R16G16B16A16_SFLOAT, VK_TARGET_FORMAT_FEATURES | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+			| VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) ) {
+			vk.colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+		} else {
+			ri.Printf( PRINT_ALL, S_COLOR_YELLOW "HDR output: the frame is 8-bit, RGBA16F can't be its color target\n" );
+		}
+	}
 	if ( !VK_FormatHasFeatures( vk.colorFormat, VK_TARGET_FORMAT_FEATURES ) ) {
 		ri.Error( ERR_FATAL, "Vulkan: VK_FORMAT_R8G8B8A8_UNORM can't be rendered to" );
 	}
@@ -1810,7 +1850,8 @@ static void VK_CreateRenderTargets( void ) {
 	VK_TemporalCheckDevice();
 
 	VK_CreateTargetImage( vk.colorFormat, VK_SAMPLE_COUNT_1_BIT,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+		| ( vko.enabled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0 ),
 		VK_IMAGE_ASPECT_COLOR_BIT, &vk.colorImage, &vk.colorMemory, &vk.colorView );
 	// readable from the start with multisampling: the draws use the
 	// multisampled depth image, which is never copied from
@@ -1876,6 +1917,11 @@ void VK_CreateSwapchainTargets( void ) {
 	uint32_t i;
 
 	VK_DestroySwapchainTargets();
+	// HDR output: never drawn into directly, the output pass draws them
+	if ( vko.enabled ) {
+		VK_OutputCreateTargets();
+		return;
+	}
 	// a swapchain of another size than the render target (window resized
 	// before the vid_restart) gets the offscreen image's copy
 	if ( !vk.swapchain || !vk.renderPass || vk.swapchainFormat != vk.colorFormat
@@ -1902,6 +1948,8 @@ void VK_CreateSwapchainTargets( void ) {
 // called when nothing uses them anymore
 void VK_DestroySwapchainTargets( void ) {
 	int i;
+
+	VK_OutputDestroyTargets();
 
 	for ( i = 0; i < VK_MAX_SWAPCHAIN_IMAGES; i++ ) {
 		if ( vk.swapchainFramebuffers[i] ) {
@@ -2118,8 +2166,10 @@ void vk_initialize( void ) {
 	r_fastSync = ri.Cvar_Get( "r_fastSync", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_SetDescription( r_fastSync, "1: without vsync (r_swapInterval 0) the mailbox present mode instead of immediate: no tearing, every refresh shows the newest finished frame, for a few ms more input to display (immediate where there is no mailbox)" );
 	VK_TemporalRegisterCvars();
+	VK_OutputRegisterCvars();
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
+	Com_Memset( &vko, 0, sizeof( vko ) );
 	VK_ResetState();
 	// 0 is the segment of new textures, which no draw has used
 	vk.segment = 1;
@@ -2178,6 +2228,7 @@ void vk_shutdown( void ) {
 		VK_DestroyBuffer( &vk_skin.buffer );
 		Com_Memset( &vk_skin, 0, sizeof( vk_skin ) );
 		VK_TemporalShutdownPipelines();
+		VK_OutputShutdown();
 		VK_ShutdownPipelines();
 		VK_DestroyFrames();
 		VK_DestroyRenderTargets();
@@ -2244,6 +2295,13 @@ void vk_end_frame( void ) {
 
 	// a scene not ended by the 2D drawing
 	vk_end_scene();
+
+	// HDR output: what the output pass of this frame is given (also on the
+	// submit thread); the next frame's scene is expanded again
+	if ( vko.enabled ) {
+		VK_OutputFillPush( &frame->outputPush );
+		vko.sdrFrame = qfalse;
+	}
 
 	if ( vk.submitThread ) {
 		VK_QueueThreadFrame( frame );
@@ -4236,7 +4294,7 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		texelSize = 4;
+		texelSize = vk.colorFormat == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
 	} else {
 		VK_ResolveDepth();
 		image = vk.depthImage;
@@ -4292,6 +4350,21 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 
 		switch ( format ) {
 		case READ_RGB8:
+			if ( texelSize == 8 ) {
+				// HDR output's RGBA16F frame: the frame read back is drawn
+				// without the expansion (vk_sdr_frame), clamped and rounded
+				// as an 8-bit target stores it
+				const uint16_t *half = (const uint16_t *)src;
+				int c;
+
+				for ( col = 0; col < w * 3; col++ ) {
+					float v = VK_HalfToFloat( half[( col / 3 ) * 4 + col % 3] );
+
+					c = (int)( Com_Clamp( 0.0f, 1.0f, v ) * 255.0f + 0.5f );
+					dst[col] = (byte)c;
+				}
+				break;
+			}
 			for ( col = 0; col < w; col++ ) {
 				dst[col * 3 + 0] = src[col * 4 + red];
 				dst[col * 3 + 1] = src[col * 4 + 1];

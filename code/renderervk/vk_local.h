@@ -190,7 +190,8 @@ FUNCTION POINTERS
 #define VK_DEVICE_FUNCTIONS_OPTIONAL( X ) \
 	X( vkCmdSetLineStippleEXT ) \
 	X( vkCreateRenderPass2KHR ) \
-	X( vkReleaseSwapchainImagesEXT )
+	X( vkReleaseSwapchainImagesEXT ) \
+	X( vkSetHdrMetadataEXT )
 
 #define VK_DECLARE_FUNCTION( name ) extern PFN_##name q##name;
 VK_GLOBAL_FUNCTIONS( VK_DECLARE_FUNCTION )
@@ -279,6 +280,26 @@ typedef struct {
 	float	scale;
 } vkDlightGPU_t;
 
+// how the output pass (r_hdrOutput, vk_output.c) encodes the frame for the
+// swapchain
+typedef enum {
+	VK_HDR_SDR,		// an 8-bit SDR swapchain: the frame clamped at 1
+	VK_HDR_PQ,		// HDR10: BT.2020 primaries, ST 2084 (PQ)
+	VK_HDR_SCRGB	// scRGB: BT.709 primaries, linear, 1 = 80 nits
+} vkHdrMode_t;
+
+// the output pass's push constants (shaders/output.frag), made on the main
+// thread at the end of the frame for the submit thread
+typedef struct {
+	int		mode;			// vkHdrMode_t of the swapchain
+	int		test;			// r_hdrOutputTest
+	float	paperWhite;		// nits of the frame's 1.0
+	float	peak;			// the display's peak over paper white, in linear light (1 in SDR)
+	float	invExtent[2];	// 1 / the swapchain's size
+	float	black;			// r_hdrBlack, 0 in SDR
+	float	unused;
+} vkOutputPush_t;
+
 typedef struct {
 	VkCommandPool	commandPool;
 	VkCommandBuffer	uploadCmd;		// texture uploads that need no ordering with draws, submitted first
@@ -315,6 +336,8 @@ typedef struct {
 	uint64_t		resultSerial;	// frame whose results are in depthResults, 0 for none
 	int				numDepthResults;
 	float			depthResults[VK_MAX_DEPTH_READS];
+
+	vkOutputPush_t	outputPush;		// the output pass of this frame (r_hdrOutput)
 } vkFrame_t;
 
 // counters for the vkinfo command (vk.c), accumulated since the device was
@@ -614,6 +637,64 @@ void		VK_ImageBarrier( VkCommandBuffer cmd, VkImage image, VkImageAspectFlags as
 				VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
 				VkPipelineStageFlags dstStage, VkAccessFlags dstAccess );
 VkResult	VK_RecordPresentCopy( vkFrame_t *frame, VkCommandBuffer cmd, VkImage image );
+VkPipelineStageFlags VK_PresentCopyStage( void );
+
+/*
+====================================================================
+
+OUTPUT PASS (vk_output.c)
+
+r_hdrOutput (latched) with VK_EXT_swapchain_colorspace: the frame's color
+target is RGBA16F, holding the values the game draws (gamma encoded, 1.0 =
+paper white; the 3D scene's expansion goes above 1, temporal_composite.frag),
+and every frame goes to the swapchain through the output pass instead of
+the blit: clamped at 1 for an SDR swapchain, encoded as PQ (HDR10) or scRGB
+when the surface offers it and the window is in HDR (SDL)
+
+====================================================================
+*/
+
+typedef struct {
+	qboolean		enabled;		// r_hdrOutput latched on, and the instance has VK_EXT_swapchain_colorspace
+	qboolean		metadata;		// VK_EXT_hdr_metadata is enabled
+	vkHdrMode_t		mode;			// the swapchain's
+	qboolean		windowHdr;		// SDL's HDR state of the window when the swapchain was chosen
+	qboolean		listed;			// the surface's HDR formats were printed
+	const char		*reason;		// why the swapchain is SDR (printed when it changes)
+	float			paperWhite;		// nits, this frame's (VK_OutputUpdate)
+	float			peakNits;
+	float			metadataWhite, metadataPeak;	// what vkSetHdrMetadataEXT was given last, 0 for nothing
+	qboolean		sdrFrame;		// the frame is read back (screenshot, video): no expansion
+	qboolean		noSceneNote;	// the note that r_temporal 0 has no expansion was printed
+
+	VkFormat		passFormat;		// of the render pass and the pipeline
+	VkRenderPass	renderPass;
+	VkPipeline		pipeline;
+	VkPipelineLayout	layout;
+	VkDescriptorSetLayout	setLayout;
+	VkDescriptorPool	pool;
+	VkDescriptorSet	set;
+	VkImageView		setView;		// the color view the set holds
+	VkSampler		sampler;
+	VkShaderModule	vertexShader, fragmentShader;
+	VkImageView		views[VK_MAX_SWAPCHAIN_IMAGES];
+	VkFramebuffer	framebuffers[VK_MAX_SWAPCHAIN_IMAGES];
+} vkOutput_t;
+
+extern vkOutput_t	vko;
+
+void		VK_OutputRegisterCvars( void );
+qboolean	VK_OutputWanted( void );
+qboolean	VK_OutputChooseFormat( const VkSurfaceFormatKHR *formats, uint32_t count, VkSurfaceFormatKHR *chosen );
+void		VK_OutputSwapchainCreated( void );
+void		VK_OutputUpdate( void );
+void		VK_OutputFillPush( vkOutputPush_t *push );
+void		VK_OutputExpansion( float *params );
+void		VK_OutputCreateTargets( void );
+void		VK_OutputDestroyTargets( void );
+void		VK_OutputRecord( const vkFrame_t *frame, VkCommandBuffer cmd, VkImage image );
+void		VK_OutputShutdown( void );
+float		VK_HalfToFloat( uint16_t h );
 
 // vk_submit.c: the submit thread (r_vkSubmitThread)
 qboolean	VK_StartSubmitThread( void );
@@ -751,6 +832,10 @@ extern const uint32_t	vk_spirv_effects_vert[];
 extern const size_t		vk_spirv_effects_vert_size;
 extern const uint32_t	vk_spirv_effects_clip_vert[];
 extern const size_t		vk_spirv_effects_clip_vert_size;
+
+// vk_shaders_hdr.c
+extern const uint32_t	vk_spirv_output_frag[];
+extern const size_t		vk_spirv_output_frag_size;
 
 // vk_shaders_temporal.c
 extern const uint32_t	vk_spirv_generic_temporal_vert[];
@@ -959,3 +1044,4 @@ extern cvar_t	*r_temporalShowScale;
 extern cvar_t	*r_taa;
 extern cvar_t	*r_taaFeedback;
 extern cvar_t	*r_taaSharpen;
+extern cvar_t	*r_saturation;

@@ -569,6 +569,10 @@ typedef enum {
 // the frame, RB_TakePendingScreenshots). Depth and stencil read as 0 until
 // the depth buffer is readable, see vk_want_depth_reads.
 void		vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer );
+// the frame being recorded will be read back (a screenshot, a video frame):
+// with HDR output its 3D scene is drawn without the expansion, so the
+// readback is the SDR frame (vk_output.c)
+void		vk_sdr_frame( void );
 
 // Depth and stencil reads (vk_read_pixels with READ_DEPTH_FLOAT or
 // READ_STENCIL8, vk_queue_depth_reads) need a depth buffer that some

@@ -57,9 +57,11 @@ set(RENDERER_VULKAN_SOURCES
     ${SOURCE_DIR}/renderervk/vk_framelog.c
     ${SOURCE_DIR}/renderervk/vk_image.c
     ${SOURCE_DIR}/renderervk/vk_instance.c
+    ${SOURCE_DIR}/renderervk/vk_output.c
     ${SOURCE_DIR}/renderervk/vk_pipeline.c
     ${SOURCE_DIR}/renderervk/vk_shaders.c
     ${SOURCE_DIR}/renderervk/vk_shaders_temporal.c
+    ${SOURCE_DIR}/renderervk/vk_shaders_hdr.c
     ${SOURCE_DIR}/renderervk/vk_submit.c
     ${SOURCE_DIR}/renderervk/vk_temporal.c
 )

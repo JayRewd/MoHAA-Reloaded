@@ -549,6 +549,8 @@ void RE_TakeVideoFrame( int width, int height,
 	}
 
 	cmd->commandId = RC_VIDEOFRAME;
+	// HDR output: the video gets the SDR frame
+	vk_sdr_frame();
 
 	cmd->width = width;
 	cmd->height = height;

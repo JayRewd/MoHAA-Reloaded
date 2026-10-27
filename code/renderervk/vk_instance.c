@@ -261,6 +261,18 @@ static void VK_CreateInstance( void ) {
 		}
 	}
 
+	// HDR output (r_hdrOutput, vk_output.c): the HDR10 and scRGB color spaces
+	// of the surface formats
+	vko.enabled = qfalse;
+	if ( VK_OutputWanted() ) {
+		if ( VK_HasExtension( available, numAvailable, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME ) ) {
+			VK_AddExtension( extensions, &numExtensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME );
+			vko.enabled = qtrue;
+		} else {
+			ri.Printf( PRINT_ALL, S_COLOR_YELLOW "HDR output: off, the Vulkan loader has no %s\n", VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME );
+		}
+	}
+
 	// validation layer
 	numLayers = 0;
 	debugUtils = qfalse;
@@ -657,6 +669,12 @@ static void VK_CreateLogicalDevice( void ) {
 		VK_AddExtension( extensions, &numExtensions, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME );
 		vk.depthStencilResolve = qtrue;
 	}
+	// HDR output: the display's luminance for the compositor
+	vko.metadata = qfalse;
+	if ( vko.enabled && VK_HasExtension( available, numAvailable, VK_EXT_HDR_METADATA_EXTENSION_NAME ) ) {
+		VK_AddExtension( extensions, &numExtensions, VK_EXT_HDR_METADATA_EXTENSION_NAME );
+		vko.metadata = qtrue;
+	}
 	ri.Hunk_FreeTempMemory( available );
 
 	Com_Memset( &queueInfo, 0, sizeof( queueInfo ) );
@@ -793,6 +811,13 @@ static VkSurfaceFormatKHR VK_ChooseSurfaceFormat( void ) {
 	}
 	formats = ri.Hunk_AllocateTempMemory( sizeof( *formats ) * numFormats );
 	VK_CHECK( qvkGetPhysicalDeviceSurfaceFormatsKHR( vk.physicalDevice, vk.surface, &numFormats, formats ) );
+
+	// HDR output: an HDR format when the surface has one and the window is
+	// in HDR (vk_output.c)
+	if ( vko.enabled && VK_OutputChooseFormat( formats, numFormats, &chosen ) ) {
+		ri.Hunk_FreeTempMemory( formats );
+		return chosen;
+	}
 
 	// a plain 8-bit UNORM format, like the GL framebuffer (no sRGB encoding)
 	chosen.format = VK_FORMAT_UNDEFINED;
@@ -1169,14 +1194,22 @@ void VK_CreateSwapchain( void ) {
 		return;
 	}
 
-	if ( !( caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) ) {
-		ri.Error( ERR_FATAL, "Vulkan: swapchain images can't be transfer destinations" );
-	}
-	// drawn to directly and read back when possible, blitted to otherwise
-	vk.swapchainUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	if ( ( caps.supportedUsageFlags & ( VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) )
-		== ( VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) ) {
-		vk.swapchainUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	if ( vko.enabled ) {
+		// HDR output: drawn by the output pass
+		if ( !( caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ) ) {
+			ri.Error( ERR_FATAL, "Vulkan: swapchain images can't be color attachments (r_hdrOutput)" );
+		}
+		vk.swapchainUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	} else {
+		if ( !( caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) ) {
+			ri.Error( ERR_FATAL, "Vulkan: swapchain images can't be transfer destinations" );
+		}
+		// drawn to directly and read back when possible, blitted to otherwise
+		vk.swapchainUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		if ( ( caps.supportedUsageFlags & ( VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) )
+			== ( VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) ) {
+			vk.swapchainUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 	}
 
 	format = VK_ChooseSurfaceFormat();
@@ -1255,6 +1288,9 @@ void VK_CreateSwapchain( void ) {
 	}
 	VK_CHECK( qvkGetSwapchainImagesKHR( vk.device, vk.swapchain, &vk.swapchainImageCount, vk.swapchainImages ) );
 	VK_CreatePresentSemaphores();
+	if ( vko.enabled ) {
+		VK_OutputSwapchainCreated();
+	}
 
 	// views and framebuffers, once the render pass exists
 	VK_CreateSwapchainTargets();

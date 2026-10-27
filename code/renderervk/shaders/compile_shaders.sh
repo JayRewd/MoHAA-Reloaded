@@ -1,14 +1,15 @@
 #!/bin/sh
 #
 # Compiles the GLSL shaders in this directory to SPIR-V and writes them as
-# C arrays to ../vk_shaders.c (the renderer's shaders) and
-# ../vk_shaders_temporal.c (those of the temporal path, r_temporal), so that
-# normal builds don't need glslc. Run it after changing a shader and commit
-# the regenerated files. Another glslc (its spirv-opt) can make other SPIR-V
-# from the same source: with an argument only that file is written, main or
-# temporal, and the other one's arrays stay as they are.
+# C arrays to ../vk_shaders.c (the renderer's shaders),
+# ../vk_shaders_temporal.c (those of the temporal path, r_temporal) and
+# ../vk_shaders_hdr.c (HDR output, r_hdrOutput), so that normal builds don't
+# need glslc. Run it after changing a shader and commit the regenerated
+# files. Another glslc (its spirv-opt) can make other SPIR-V from the same
+# source: with an argument only that file is written, main, temporal or
+# hdr, and the others' arrays stay as they are.
 #
-# Usage: code/renderervk/shaders/compile_shaders.sh [main|temporal]   (GLSLC=/path/to/glslc to override)
+# Usage: code/renderervk/shaders/compile_shaders.sh [main|temporal|hdr]   (GLSLC=/path/to/glslc to override)
 
 set -eu
 
@@ -36,6 +37,7 @@ hiz_prepare_comp:hiz_build.comp:-DPREPARE
 hiz_build_comp:hiz_build.comp:
 hiz_tail_comp:hiz_build.comp:-DTAIL
 taa_resolve_comp:taa_resolve.comp:"
+HDR_SHADERS="output_frag:output.frag:"
 
 # write <output file> <what it holds> <shader list>
 write() {
@@ -90,9 +92,13 @@ EOF
 	echo "wrote $(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
 }
 
-if [ "${1:-}" != temporal ]; then
+ONLY=${1:-}
+if [ -z "$ONLY" ] || [ "$ONLY" = main ]; then
 	write ../vk_shaders.c "the shaders" "$SHADERS"
 fi
-if [ "${1:-}" != main ]; then
+if [ -z "$ONLY" ] || [ "$ONLY" = temporal ]; then
 	write ../vk_shaders_temporal.c "the temporal path's shaders (r_temporal)" "$TEMPORAL_SHADERS"
+fi
+if [ -z "$ONLY" ] || [ "$ONLY" = hdr ]; then
+	write ../vk_shaders_hdr.c "the shaders of HDR output (r_hdrOutput)" "$HDR_SHADERS"
 fi

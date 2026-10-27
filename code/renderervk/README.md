@@ -658,6 +658,60 @@ below are done.
   RGBA16F, for HDR to come (8-bit and 10-bit formats were 0.055 ms less
   with a little more shimmer, and clip at 1). See Implementation notes,
   Temporal anti-aliasing
+- HDR output (2026-10-26, Plan 43, the renderer; the user's request: SDR
+  shown on an HDR display, the 3D view expanded toward its peak, the look
+  set by cvars): `r_hdrOutput 1` (archived, latched: `vid_restart`, off
+  by default) uses
+  an HDR10 or scRGB swapchain when the window's surface offers one and SDL
+  says the window is in HDR, on any Wayland compositor (the driver's WSI
+  speaks `wp_color_manager_v1`) and on Windows alike, and changes mode
+  when the window's HDR state changes; SDR otherwise, the console says
+  why (`3` and `4` force HDR10 and scRGB, for tests; `2` is the HDR look
+  in SDR, below). The frame is RGBA16F
+  and goes to the swapchain through an output pass instead of the blit:
+  the game's white at `r_hdrPaperWhite` nits (0: the system's SDR white,
+  else 203): the brightness of the whole picture, the menus, the HUD and
+  the 3D view, which the expansion starts from. With `r_temporal 1` the 3D view's bright parts are
+  expanded toward `r_hdrPeak` (1000 nits; 0: what the system reports,
+  often less than the display shows: 418 for the user's AW2725D, sold as
+  a 1000-nit display), keeping their hue
+  (`r_hdrExpand` 0.15, the user's choice after calibrating: a light lift
+  of the bright parts, stacked effects above them toward the peak; `r_hdrExpandKnee` 0.1, the user's: the stock maps' sunlit
+  surfaces are 0.15 to 0.45 in linear light, below the first version's
+  0.6, which left all but the sky as they were; `r_hdrSkyBoost` 1,
+  `r_hdrEffectsBoost` 1); `r_hdrBlack` (0) deepens or lifts the darkest
+  shades only (the menus and the HUD too); screenshots and video frames
+  are saved as SDR. Calibration as in other HDR games, in game and in
+  the menus, without cheats: `r_hdrOutputTest 1` black (a near-black box:
+  `r_hdrBlack` until it is barely visible), `2` peak (a box at `r_hdrPeak` on the largest
+  signal: `r_hdrPeak` until the box is gone), `3` patches of 100 to 4000
+  nits and a ramp; the console says what to do. With
+  `r_hdrOutput 0` the frames are the build before's to the bit (with
+  `r_temporal 1` and `r_saturation 1`). Cost on
+  the RTX 4070 Ti, `dm/mohdm6`, 2560x1440, `r_temporal 1`: GPU time a
+  frame 0.233 ms instead of 0.139, of which the output pass 0.034. The
+  stock maps' lightmaps hold no range above 1 (their bytes stop at 127,
+  254/255 after the overbright shift), so the range comes from the
+  expansion and from stacked additive effects. See Implementation notes,
+  HDR output
+- the HDR look on SDR displays (2026-10-27, Plan 43, the renderer; the
+  user's request: the same filter in SDR if a player wants it):
+  `r_hdrOutput 2` (the user's choice: one cvar for the mode) with
+  `r_temporal 1` expands the 3D view as HDR output would
+  toward `r_hdrPeak` over `r_hdrPaperWhite` (1000 and 203 nits for 0) and
+  puts it back into SDR with a soft shoulder from 0.5 (linear) to the
+  expanded white, which stays white; `r_hdrBlack` sets the black level,
+  the HUD is not touched. Bright mids get brighter, what is above white
+  clips as in SDR (`dm/mohdm1`, the user's defaults: the sky's mean 170 to
+  176 of 255, the other views up to 1). Off, the frames are the build
+  before's to the bit
+- `r_saturation` (2026-10-26, Plan 43, the renderer; the user's request):
+  the 3D view's color saturation with `r_temporal 1`, in SDR and with HDR
+  output (archived, default 1.1, the user's, in linear light about BT.709 luma, in
+  the composite: the HUD keeps its colors; without `r_temporal` the HUD
+  can't be told from the 3D view, so nothing). The frames of `r_temporal
+  1` change with it (in `dm/mohdm6` at 1.125 67 to 95 % of the pixels, by
+  up to 15); with `r_saturation 1` they are the build before's to the bit
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -678,6 +732,7 @@ below are done.
 | `vk_pipeline.c` | pipeline cache keyed on the state that is baked into pipelines, pipeline creation, the `VkPipelineCache` file, the pipelines created before their first draw and the file of keys created after a load (`vkpipelines.keys`) |
 | `vk_framelog.c` | the frame log (`r_vkFrameLog`, `vkframelog`): the per-frame exports timed, the backend's counters and GPU time of every frame, the dump (see Performance, Frame spikes) |
 | `vk_submit.c` | the submit thread (`r_vkSubmitThread 1`): submits and presents the frames, acquires the swapchain image of the next frame after each present, copies a frame drawn offscreen (see Implementation notes, Submit thread) |
+| `vk_output.c` | HDR output (`r_hdrOutput`): the window's HDR state (Vulkan surface formats, SDL), the swapchain's mode, paper white and peak, the 3D view's expansion parameters, the output pass (see Implementation notes, HDR output) |
 | `vk_temporal.c` | the temporal path (`r_temporal 1`): the scene's images, render passes and pipeline layout, the depth pyramid, the composite into the frame (see Implementation notes, Temporal path) |
 | `tr_temporal.c` | the temporal path's views and history: the scene begins and ends, the camera's and the entities' last frame, the skinned entities' last bones (see Implementation notes, Temporal path) |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
@@ -687,8 +742,9 @@ below are done.
 | `shaders/skinned.vert` | the vertex shader of skinned draws (skinning, `rgbGen lightingSpherical` and `tcGen environment`/`environmentmodel`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/effects.vert` | the vertex shader of the static geometry's draws with effects (deforms, `tcGen` and `tcMod`, `distFade`, static models' dynamic lights; see Implementation notes, Effects shader), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/hiz_build.comp`, `shaders/taa_resolve.comp`, `shaders/temporal_composite.*`, `shaders/temporal_common.glsl` | the temporal path's passes after the scene (`hiz_build.comp` built three times: `PREPARE`, the default, `TAIL`; `taa_resolve.comp` the anti-aliasing) and what they and the passes to come that read its buffers share (included); `generic.*`, `skinned.vert` and `effects.vert` are also built with `TEMPORAL` defined for its scene |
-| `shaders/compile_shaders.sh` | regenerates `vk_shaders.c` and `vk_shaders_temporal.c` with `glslc` (an argument, `main` or `temporal`, writes only that one) |
-| `vk_shaders.c`, `vk_shaders_temporal.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
+| `shaders/output.frag` | HDR output's pass: the frame into the swapchain image, SDR, HDR10 (PQ) or scRGB, and the test patches; its vertex shader is `temporal_composite.vert` |
+| `shaders/compile_shaders.sh` | regenerates `vk_shaders.c`, `vk_shaders_temporal.c` and `vk_shaders_hdr.c` with `glslc` (an argument, `main`, `temporal` or `hdr`, writes only that one) |
+| `vk_shaders.c`, `vk_shaders_temporal.c`, `vk_shaders_hdr.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | build-against-build screenshot comparison and performance scripts, view lists, the OpenGL check (see Testing) |
 | `WINDOWS_TESTING.md` | a tester's checklist for Windows: commands, cvars, what to send back |
 | `tr_immediate.c` | `glBegin`/`glEnd` emulation for debug and 2D drawing, emits indexed triangles or lines |
@@ -8337,6 +8393,162 @@ selects the sample count (see Implementation notes).
     by up to 63), no shift (under 0.04 of a level on average, 0.1 to 0.27
     on average apart); the rest of the optimization changes 0.003 to 0.1 %
     of the pixels, by one but for a handful (the CPU's `expf`).
+- **HDR output (Plan 43).** `r_hdrOutput` (latched; `vk_output.c`,
+  `shaders/output.frag`).
+  - *Why not HDR rendering.* The plan before it kept the lightmaps in
+    RGBA16F, unnormalized, as the scene's range above 1, and was taken out
+    again: the lightmap bytes of the stock maps stop at 127 (`dm/mohdm1`,
+    2, 6, `obj/obj_team1`, `m1l1`; `m2l3` has a handful up to 177), 254/255
+    after the overbright shift of `r_mapOverBrightBits 1`, so the frames
+    differed by one in 1 to 3 % of the pixels and nothing went above 1.
+    The range above SDR white comes from the expansion below and from
+    additive effects that stack in the scene's RGBA16F.
+  - *Detection.* Asked of Vulkan and SDL, the same code on every system:
+    the instance gets `VK_EXT_swapchain_colorspace` when `r_hdrOutput` is
+    set (else the console says so and the frames are SDR), the device
+    `VK_EXT_hdr_metadata` when it has it. `VK_ChooseSurfaceFormat` asks
+    `VK_OutputChooseFormat` first: an `A2B10G10R10` or `A2R10G10B10`
+    format with `HDR10_ST2084`, else `RGBA16F` with
+    `EXTENDED_SRGB_LINEAR`, that can be a color attachment, when SDL says
+    the window is in HDR (`SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN`; some
+    Windows drivers list HDR10 on SDR displays too) or `r_hdrOutput` 3 or
+    4 forces the mode. On Wayland the driver's WSI does the protocol
+    (`wp_color_manager_v1`: scRGB through `create_windows_scrgb`, HDR10
+    through a parametric image description with BT.2020 primaries and
+    PQ), on Windows DXGI. The console lists the surface's HDR formats once
+    and prints the mode, paper white and peak whenever the mode changes.
+    `VK_OutputUpdate` (at `VK_SelectTarget`, every frame) reads SDL's
+    state: a change makes the swapchain out of date, and it is made again
+    in the other mode (an SDL window starts not in HDR on niri: the first
+    frames are SDR, then HDR10 once the compositor has told SDL). On the
+    dev machine (niri 26.04, NVIDIA 615) the surface offers HDR10 in both
+    10-bit formats and scRGB; SDL reports an SDR white level of 1 (none)
+    and a headroom of 2.06.
+  - *Frame.* `vk.colorFormat` is RGBA16F (`SAMPLED` too) whatever the
+    swapchain's format, which can change at any frame: it holds the values
+    the game draws (gamma encoded, 1.0 = paper white), the 2D drawing as
+    before. The swapchain images are never the color target
+    (`VK_CreateSwapchainTargets` makes the output pass's views and
+    framebuffers instead) and need only `COLOR_ATTACHMENT` usage.
+  - *Output pass* (`VK_RecordPresentCopy`, `VK_OutputRecord`; also on the
+    submit thread, whose acquire semaphore waits at the color attachment
+    stage, `VK_PresentCopyStage`): the frame image to
+    `SHADER_READ_ONLY`, a render pass of the swapchain's format (nothing
+    loaded, `PRESENT_SRC` at its end) drawing `temporal_composite.vert`'s
+    triangle, the frame sampled bilinear (texel centers at the same size,
+    as the blit with another size), the frame image back. `output.frag`:
+    SDR clamps at 1; otherwise decode (2.2), clip at the peak, HDR10 times
+    paper white in nits, BT.709 to BT.2020, PQ; scRGB times paper white /
+    80. Its push constants (`vkOutputPush_t`) are made on the main thread
+    at the end of the frame (`frame->outputPush`). Metadata (BT.709
+    primaries, max luminance and content light level the peak, frame
+    average paper white) at every swapchain and when the levels change
+    (the submit thread drained first).
+  - *Levels.* Paper white `r_hdrPaperWhite`, else SDL's SDR white level
+    times 80 when it is above 1, else 203 nits (ITU-R BT.2408, and
+    Wayland's default reference); peak `r_hdrPeak` (1000), with 0 SDL's
+    headroom times paper white when it is above 1, else 1000 nits; never
+    below paper white. P, the peak over paper white, is 1 with an SDR
+    swapchain. The system's peak is not the default: on the dev machine
+    the compositor reports 418 nits (the monitor's EDID in its True Black
+    400 mode) while the display shows more, as games that send up to 1000
+    nits do; most HDR displays handle what is above their peak themselves.
+    The game's white in the 3D view lands at paper white + `r_hdrExpand`
+    (peak - paper white): both cvars move it.
+  - *Expansion* (`temporal_composite.frag`'s `HdrExpand`, a
+    specialization constant of the composite set with `r_hdrOutput`, its
+    parameters from `VK_OutputExpansion`): in linear light, the pixel's
+    largest channel m; above the knee k (`r_hdrExpandKnee`) k + (1 - k)(t +
+    b t^2) with t = (m - k) / (1 - k), continuous in value and slope at k;
+    the game's white lands at H = 1 + `r_hdrExpand` (P - 1), so b = (H - 1)
+    / (1 - k). The knee was 0.15 (about 0.42 encoded), 0.1 since the
+    user's calibration (with `r_hdrExpand` 0.15, also theirs); measured
+    on SDR
+    screenshots of `dm/mohdm1` and `dm/mohdm6`, 99.9 % of the pixels of
+    sunlit views are at most 0.45 in linear light, and with the first
+    version's 0.6 only the sky was expanded, so paper white was the only
+    way to brighten the view. With knee 0.15, `r_hdrExpand` 0.75, 203 nits
+    paper white and a 1000-nit peak a surface at 0.3 went from 61 to 80
+    nits, 0.45 from 91 to 166, 0.65 (the sky) from 132 to 339, white to
+    801. The sky (class 3 of the normals buffer) with `r_hdrExpand`
+    times `r_hdrSkyBoost`. Only the pixel up to the game's white is
+    expanded, each channel clamped at 1 (the color SDR shows), scaled by
+    the ratio (its hue kept); what is above 1 (overexposed surfaces,
+    stacked effects) is added as gray of its BT.709 luma, times the
+    expanded white and `r_hdrEffectsBoost`. Scaling the whole pixel, as
+    the first version did, showed an overexposed surface's own hue where
+    SDR clips each channel to white (`dm/mohdm1`'s sky, red and green
+    above 1 and blue under it: pale yellow instead of white), which the
+    user saw as more saturation than in SDR. Then its
+    saturation (`r_saturation`, about BT.709 luma; the composite applies
+    it without the expansion too, in SDR), clamped at P and encoded
+    again, with gamma 2.2 (an SDR monitor's; the output pass decodes with
+    it too). A first `r_hdrGamma` for the black calibration was taken out
+    the same day: a higher gamma darkened the midtones and raised their
+    saturation, the user then raised paper white to make up for it (600
+    nits) and the picture got a hard contrast; `r_hdrBlack` (below)
+    changes the darkest shades only. After TAA and its sharpening: the history is not
+    expanded. Off with an SDR swapchain, with `r_temporalShow`, and in a
+    frame that is read back. Without `r_temporal` the 3D view is shown at
+    paper white (the console says so): the HUD is drawn into the same
+    frame and can't be told from it afterwards.
+  - *Calibration* (`r_hdrOutputTest`, drawn by the output pass over the
+    whole image, so in game and in the menus alike; not a cheat; the
+    console prints what to do when it changes). Not clipped at the peak,
+    so what shows is the limit of the display and of what is between
+    (compositor, driver). `1` black: a box of the game's value 8/255 on
+    black through `r_hdrBlack`: the output pass scales every pixel by (m
+    / (m + 0.005))^`r_hdrBlack`, m its largest channel in linear light of
+    paper white (0.005 is 1 nit at 203), so a crush (above 0) or a lift
+    (below 0) under about a nit and next to nothing above (0.2, a
+    midtone, 2.4 % darker at 1, 1.2 % brighter at -0.5); the box is 0.098
+    nits at 0, 0.009 at 1, 0.33 at -0.5 (203 nits paper white).
+    `r_hdrBlack` until it is barely visible. `2` peak: a box at `r_hdrPeak` on 10000 nits (the
+    largest PQ signal, 125 in scRGB): below the display's limit the box
+    is darker than the clipped background, at or above it the two are
+    the same, so `r_hdrPeak` is the lowest value where the box is gone.
+    `3` patches of 100, 203, 400, 600, 1000, 1500, 2000 and 4000 nits and
+    a ramp to twice `r_hdrPeak` with a mark at it (the first version
+    clipped the patches at the peak, so the ramp went flat at the game's
+    clip instead of the display's). Paper white keeps the system's
+    value (or `r_hdrPaperWhite`): the brightness of the whole picture, a
+    matter of taste.
+  - *The HDR look in SDR* (`r_hdrOutput 2`, `SdrLook` in
+    `temporal_composite.frag`, mode 2 of `VK_OutputExpansion`): no HDR
+    output (no extension, no RGBA16F frame, no output pass: the SDR
+    path's cost but the composite's few instructions), the console says
+    when `r_temporal` is off. With `r_hdrOutput 1` on an SDR display the
+    frames are plain SDR. The expansion
+    as above with P from the cvars (no system levels in SDR), then P set
+    to the expanded white (the larger of the sky's and the rest's), and
+    on the largest channel a shoulder 0.5 + 0.5 u (1 + u / w^2) / (1 +
+    u), u = (m - 0.5) / 0.5, w = (P - 0.5) / 0.5 (Reinhard's extended
+    curve: continuous in value and slope at 0.5, P lands at 1), the
+    saturation, `r_hdrBlack`'s black level as in the output pass,
+    clamped at 1. A shoulder up to the virtual peak (P = `r_hdrPeak` /
+    paper white, 4.9) instead pulled white down to 0.85 at the user's
+    `r_hdrExpand` 0.15: a gray sky. A runtime branch on the mode, not a
+    specialization constant: it can change at any frame.
+  - *Turning it off.* `r_hdrOutput` changes the instance's extensions and
+    the frame's format: latched, it takes effect at `vid_restart` (the
+    user's choice; a version that queued the restart itself was taken
+    out the same day).
+  - *Screenshots and video.* `R_QueueScreenshot` and the video frame
+    command call `vk_sdr_frame`: that frame's scene is not expanded, and
+    `vk_read_pixels` turns the RGBA16F frame into bytes as an 8-bit target
+    stores them (clamped, rounded). On an HDR display that frame is shown
+    without the expansion.
+  - *Frames.* With `r_hdrOutput 0` the build before's to the bit
+    (`dm/mohdm6`: plain, `r_temporal 1`, and `r_taa 1` with
+    `r_temporalJitterSamples 1`; with the temporal path `r_saturation 1`,
+    its default 1.125 changes the 3D view). With `r_hdrOutput 1` the screenshots
+    differ from the build before's by one in 4 to 15 % of the pixels (a
+    pixel by 2 or 3), from blending in float instead of 8 bits, in SDR and
+    in HDR; the console's notify lines differ (the HDR output messages).
+  - *Cost* (RTX 4070 Ti, `dm/mohdm6` at 2560x1440 with `r_temporal 1`, GPU
+    time a frame): 0.139 ms without, 0.233 with HDR output, the output
+    pass 0.034 of it, the rest the RGBA16F frame (the 2D drawing's
+    blending and writes) and no frame drawn into the swapchain directly.
 
 ## GL1 quirks kept on purpose
 
