@@ -49,6 +49,7 @@ cvar_t *cg_debugAnim;
 cvar_t *cg_debugAnimWatch;
 cvar_t *cg_errorDecay;
 cvar_t *cg_nopredict;
+cvar_t *cg_splean;
 cvar_t *cg_showmiss;
 cvar_t *cg_addMarks;
 cvar_t *cg_maxMarks;
@@ -143,6 +144,9 @@ void CG_RegisterCvars(void)
     cg_debugAnimWatch             = cgi.Cvar_Get("cg_debuganimwatch", "0", CVAR_CHEAT);
     cg_errorDecay                 = cgi.Cvar_Get("cg_errordecay", "100", 0);
     cg_nopredict                  = cgi.Cvar_Get("cg_nopredict", "0", 0);
+    // Added in OPM
+    //  The game's cvar, for lean prediction
+    cg_splean                     = cgi.Cvar_Get("g_splean", "0", 0);
     cg_showmiss                   = cgi.Cvar_Get("cg_showmiss", "0", 0);
     cg_stats                      = cgi.Cvar_Get("cg_stats", "0", 0);
     cg_hidetempmodels             = cgi.Cvar_Get("cg_hidetempmodels", "0", 0);

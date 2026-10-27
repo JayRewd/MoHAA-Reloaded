@@ -413,6 +413,7 @@ Enable this feature with `set sv_netoptimize 2`.
 - Improved portable turret placement
 - Increased the DM message limit in multiplayer
 - Nocliping when dead no longer makes the player animation sketchy
+- Leaning in the Allied Assault single-player campaign can be allowed with `g_splean`
 
 ## Planned features
 

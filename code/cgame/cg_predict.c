@@ -522,7 +522,9 @@ void CG_PredictPlayerState(void)
             cg_pmove.leanMax = 40.f;
         } else {
             // Don't allow lean in single-player, like in the original game
-            cg_pmove.leanMax = 0;
+            // Changed in OPM
+            //  Unless g_splean is set, as in Player::SetMoveInfo
+            cg_pmove.leanMax = cg_splean->integer ? 40.f : 0;
         }
 
         cg_pmove.leanAdd = 10.f;
