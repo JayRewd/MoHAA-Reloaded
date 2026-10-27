@@ -41,7 +41,9 @@ ao_prefilter_comp:ao_prefilter.comp:
 gtao_main_comp:gtao_main.comp:
 ao_temporal_comp:ao_temporal.comp:
 ao_denoise_comp:ao_denoise.comp:
-ao_apply_frag:ao_apply.frag:"
+ao_apply_frag:ao_apply.frag:
+motion_blur_tiles_comp:motion_blur.comp:
+motion_blur_neighbor_comp:motion_blur.comp:-DNEIGHBOR"
 HDR_SHADERS="output_frag:output.frag:"
 
 # write <output file> <what it holds> <shader list>

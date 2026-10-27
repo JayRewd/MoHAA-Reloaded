@@ -4583,6 +4583,7 @@ qboolean vk_begin_scene( const vkSceneView_t *view ) {
 		Com_Memset( vkt.rect, 0, sizeof( vkt.rect ) );
 		Com_Memset( &vkt.view, 0, sizeof( vkt.view ) );
 		vkt.primarySet = qfalse;
+		vkt.frameMsec = 0.0f;
 
 		// the jitter of the frame: anti-aliasing needs it
 		vkt.taaOn = r_taa->integer && ( vkt.groups & VK_TEMPORAL_GROUP_TAA );
@@ -4636,6 +4637,7 @@ qboolean vk_begin_scene( const vkSceneView_t *view ) {
 		vkt.view.params[1] = vkt.jitter ? vkt.jitterNdc[1] : 0.0f;
 		vkt.view.params[2] = vkt.viewHistory ? 1.0f : 0.0f;
 		vkt.view.params[3] = VK_DEPTH_HACK_MAX;
+		vkt.frameMsec = vkt.viewHistory ? view->frameMsec : 0.0f;
 		if ( vkt.viewHistory ) {
 			VK_MultiplyMatrix( vkt.prevProjection, vkt.cameraDelta, vkt.view.reproject );
 		}

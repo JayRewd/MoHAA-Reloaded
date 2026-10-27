@@ -765,6 +765,29 @@ below are done.
   0.82 to 0.69 ms over the path at 2560x1440, 0.45 to 0.38 at 1920x1080,
   the frames the same but for one level in up to 4 % of the pixels.
   See Implementation notes, Ambient occlusion
+- motion blur (2026-10-27, Plan 46, the renderer; the user's request: a
+  velocity motion blur from the motion vectors and the depth): with
+  `r_temporal 1`, `r_motionBlur 1` (archived, off by default, switched
+  live) blurs the 3D view along each pixel's motion, the draws' motion
+  vectors where something moves and the camera's from the depth elsewhere
+  (McGuire et al. 2012's tiles and reconstruction filter, with Jimenez's
+  2014 refinements: the depths compared softly, so what moves streaks over
+  what is behind it and uncovers it, and nothing behind streaks over what
+  is in front). The user's choices: the camera's motion blurs too
+  (`r_motionBlurCamera`, 1; 0 only what moves); the blur is an exposure
+  of a fixed time, the same at any frame rate (`r_motionBlurShutter` 0.5
+  of a frame at `r_motionBlurFps` 60: 1/120 s; `r_motionBlurFps 0` the
+  frame's own motion); the view weapon moves with the camera and blurs
+  only by its own motion vectors, and nothing streaks over it.
+  `r_motionBlurQuality` 0 to 2 (8, 12, 16 samples, default 1);
+  `r_temporalShow` 11 and 12 show the blur. It runs after the
+  anti-aliasing (whose history stays sharp) and before the sharpening's
+  result is expanded for HDR; the HUD is not touched. With `r_motionBlur
+  0`, and with it on in a still view, the frames are the build before's
+  to the bit. Cost on the RTX 4070 Ti, GPU time a frame in `dm/mohdm6`
+  at 2560x1440: 0.07 ms in a still view (its two passes), 0.14 turning
+  (0.12 and 0.18 at quality 0 and 2), 0.21 turning with the
+  anti-aliasing. See Implementation notes, Motion blur
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -932,7 +955,7 @@ Cvars of the backend:
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
-| `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
+| `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
 | `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
 | `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80 |
 | `r_aoRadius` (archived, default 48, 4 to 256) | with `r_ao 1`: how far occluders reach, in world units |
@@ -945,9 +968,14 @@ Cvars of the backend:
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
+| `r_motionBlur` (archived, default 0) | with `r_temporal 1`: motion blur of the camera's motion and of what moves, from the motion vectors and the depth (see Implementation notes, Motion blur) |
+| `r_motionBlurShutter` (archived, default 0.5, 0 to 2) | with `r_motionBlur 1`: the exposure, in frames at `r_motionBlurFps` (0.5 at 60: 1/120 s); the blur is the motion over that time |
+| `r_motionBlurFps` (archived, default 60, 0 to 1000) | with `r_motionBlur 1`: the frame rate whose frames `r_motionBlurShutter` counts, so the blur is as long at any frame rate; 0: the frames as they come (`r_motionBlurShutter` of each frame's motion: shorter the higher the frame rate) |
+| `r_motionBlurCamera` (archived, default 1, 0 to 1) | with `r_motionBlur 1`: the share of the camera's motion (turning, moving) in the blur; 0: only what moves |
+| `r_motionBlurQuality` (archived, default 1, 0 to 2) | with `r_motionBlur 1`: 8, 12 or 16 samples a pixel where something moves |
 | `r_temporalJitter` (default 0) | with `r_temporal 1`: the 3D views' projection moves by a sub-pixel offset every frame (Halton 2, 3; `r_temporalJitterSamples`, default 8). For the anti-aliasing (`r_taa` turns it on itself): without it the image shakes |
 | `r_temporalCutDist` (default 256) | with `r_temporal 1`: a camera or entity that moves farther in a frame has no motion (a cut, a teleport) |
-| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur |
+| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur, 11 the motion blur of each pixel (mode 1's colors, 1 the longest: half a streak of a tile's side), 12 the longest motion blur around each tile |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
@@ -8231,7 +8259,9 @@ selects the sample count (see Implementation notes).
     history (`taa[2]`, `r_taa`), the depth pyramid (`hiz[2]`: `r_taa`, and
     `r_temporalShow` 1, 2, 4, 6, 7), the ambient occlusion's (`r_ao`) and
     the last scene's color (`color[1]`, `r_temporalShow` 5: with it the
-    two color images alternate as before, the framebuffers made again).
+    two color images alternate as before, the framebuffers made again),
+    the motion blur's (`r_motionBlur`, `r_temporalShow` 11 and 12: 30 MB at
+    2560x1440).
     At 2560x1440: the color 30 MB, the motion vectors and the normals 15
     each, the history 59, the pyramid 20, the ambient occlusion 102, the
     last color 30. At the start of a frame's scene (`vk_begin_scene`,
@@ -8604,6 +8634,96 @@ selects the sample count (see Implementation notes).
     instead of loaded as storage images (kept), the view distances without
     the normals' class; one pixel an invocation in the view distances'
     pass was 0.03 ms slower, its level 0 written in 8 x 8 blocks the same.
+- **Motion blur (Plan 46).** `r_motionBlur 1` with the temporal path
+  (`VK_TemporalMotionBlur`, `shaders/motion_blur.comp`, the gather in
+  `shaders/temporal_composite.frag`). McGuire, Hennessy, Bukowski and
+  Osman, "A Reconstruction Filter for Plausible Motion Blur" (2012), as
+  Jimenez refined it for Call of Duty: Advanced Warfare ("Next Generation
+  Post Processing in Call of Duty", SIGGRAPH 2014).
+  - *When.* `VK_TemporalUpdateFeatures` latches it for the scene
+    (`vkt.mbOn`: the passes, also for `r_temporalShow` 11 and 12;
+    `vkt.mbBlur`: the gather) and makes its group of images
+    (`VK_TEMPORAL_GROUP_MOTIONBLUR`, `GENERAL` always): `mbVelocity`
+    (RGBA16F, the framebuffer's size) and `mbTile`, `mbNeighbor` (RG16F, a
+    texel a tile). `VK_TemporalResolve` runs its two passes after the
+    anti-aliasing; the composite then binds `compositeBlurPipeline` (the
+    spec constant `MOTION_BLUR`) instead of `compositePipeline`. Alone,
+    it needs the depth image readable as the anti-aliasing does, but
+    neither the pyramid nor its barrier (the pyramid's group may not be
+    there): `VK_TemporalResolve` gives the scene's images to their readers
+    then without them.
+  - *Exposure.* The motion vectors are a frame's motion; the blur is that
+    of an exposure of `r_motionBlurShutter` frames at `r_motionBlurFps`:
+    times `shutter x 1000 / (fps x dt)`, where dt is the game time between
+    the motion vectors' two frames in milliseconds (`R_TemporalPrimary`:
+    the primary view's `backEnd.refdef.time` delta, smoothed over about 8
+    frames, 1 to 100; `vkSceneView_t.frameMsec`; none without a last
+    frame). With `fixedtime 8` against `fixedtime 16`, a turn's blur in
+    `r_temporalShow 11` is as long (a mean of 79.9 against 79.3 of 255 in
+    the middle of a 1600x900 view); with `r_motionBlurFps 0` half (38.7).
+  - *Tiles* (`motion_blur.comp`, a 16 x 16 workgroup a tile of K x K
+    pixels; K = max(16, height / 40): 23 at 900, 27 at 1080, 36 at 1440,
+    54 at 2160, so the blur's reach is the same share of the view at any
+    resolution). Per pixel of the views: its motion, the draw's motion
+    vector where it moves (`TEMPORAL_FLAG_MOTION`), less the camera's
+    part that `r_motionBlurCamera` leaves out (the camera's motion of that
+    point as `TemporalCameraMotion` gives it), else the camera's times
+    that share; the view weapon its own motion vector or none (it moves
+    with the camera). In pixels, times the exposure, halved (the blur
+    reaches as far on each side), no longer than K; with its view
+    distance (the weapon's divided by 1024: in front of everything, as the
+    depth hack draws it, in its own order; at most 65000, which a half
+    float holds) into `mbVelocity`. The workgroup keeps the longest of the
+    tile (a reduction in shared memory) in `mbTile`. Then (`NEIGHBOR`, an
+    invocation a tile) the longest of the 3 x 3 tiles around each into
+    `mbNeighbor`: every pixel a blur of K or less can reach.
+  - *Gather* (`MotionBlur` in the composite, after the sharpening, before
+    the HDR expansion and the saturation). Where the longest blur around
+    the pixel's tile is under half a pixel the pixel is left as it is (a
+    still view is the build before's to the bit, with and without the
+    anti-aliasing). Else 4, 6 or 8 pairs of samples (`r_motionBlurQuality`)
+    on both sides of the pixel along it, at offsets moved by an
+    interleaved gradient noise fixed per pixel (nothing blends it over
+    frames after the composite: a noise that changed would flicker), every
+    other pair along the pixel's own blur when that points more than about
+    25 degrees away. A sample counts where it is behind the pixel and the
+    pixel's blur reaches it (what the pixel's motion uncovers) or in front
+    of it and its own blur reaches the pixel (what moves over it), the
+    depths compared over 5 % of the nearer and 1 unit, the reach with half
+    a pixel of slack (a still pixel reaches only itself: with Jimenez's
+    whole pixel the still pixels of a tile where something moved took a
+    little of their neighbours, and the tiles showed around the running
+    soldiers); the pair's mirror (a nearer sample that hides what the
+    farther one shows gives both the farther one's weight) estimates the
+    background behind what moves from the other side. The samples' colors
+    are summed in linear light (gamma 2.2) and what they don't cover is the
+    pixel's own color.
+  - *Checked* (1600x900, `fixedtime 16`, screenshots taken while the game
+    runs): turning streaks the world sideways, more toward the edges,
+    the sky by the rotation; strafing by the parallax; the soldiers'
+    running limbs blur with the camera still and the courtyard behind
+    them stays as it is; with `r_motionBlurCamera 0` a turn is the frame
+    without blur but for the soldiers' own motion (no tiles around them
+    since the half pixel of slack). The rifle in hand doesn't blur while
+    turning and the wall's streaks stop at its edge (its receiver is the
+    frame without blur's to the bit). With the anti-aliasing the same
+    look. Toggled live with the anti-aliasing and the ambient occlusion
+    and through a `vid_restart`, its images are made and freed with it.
+  - *Cost* (RTX 4070 Ti, GPU time a frame, the `dm/mohdm6` room at
+    2560x1440, `perf.py`, 3 runs; turning: `--exec '+right'`, 2.24
+    degrees a frame at `fixedtime 16`): still 0.163 to 0.236 ms (the
+    passes run whatever moves; the gather reads one texel a pixel there),
+    turning 0.134 to 0.278 (quality 0 and 2: 0.256, 0.310), with the
+    anti-aliasing turning 0.330 to 0.544. Split with `r_temporalShow 12`
+    (the passes without the gather) against a view that reads nothing: the
+    passes 0.07 ms, still or turning, with or without the anti-aliasing
+    (the tiles pass reads the depth and the normals and writes 8 bytes a
+    pixel); the gather 0.09 turning, 0.16 with the anti-aliasing, whose
+    result it reads then: a storage image in `GENERAL`, which its samples
+    seem to read slower than the scene's color attachment (not looked
+    into). Not optimized yet: the samples need only the blur's length and
+    the distance, so 4 bytes a pixel (the direction packed) would halve
+    what both passes move.
 - **HDR output (Plan 43).** `r_hdrOutput` (latched; `vk_output.c`,
   `shaders/output.frag`).
   - *Why not HDR rendering.* The plan before it kept the lightmaps in
@@ -9823,6 +9943,13 @@ Done:
     in one run differ between two runs of the build before as well), the
     cvars toggled live without a hitch beyond the GPU wait, the GPU's
     memory following them.
+46. Motion blur (2026-10-27, the user's request: a velocity motion blur
+    from the motion vector image and the depth; see Status and
+    Implementation notes, Motion blur): `r_motionBlur`, the user's
+    choices: the camera's motion too, the same exposure at any frame rate,
+    the view weapon by its own motion only. With it off, and on in still
+    views, the views of `mohdm6` are the build before's to the bit, also
+    with the anti-aliasing; in motion as described there.
 
 Remaining:
 

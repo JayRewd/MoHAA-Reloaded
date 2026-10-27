@@ -28,7 +28,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // (vk_begin_scene). The primary view (not a portal, not the sky portal)
 // keeps its camera for the next frame; a view of the next frame then has a
 // last frame when the camera didn't jump (r_temporalCutDist, the field of
-// view). Portal views have none: no motion.
+// view). Portal views have none: no motion. The game time between the two
+// frames, smoothed, sets the motion blur's exposure (vkSceneView_t.frameMsec).
 //
 // Entities: each frame the primary view keeps, per entity of the scene,
 // its model matrix and, for skeletal models skinned on the GPU, where its
@@ -69,6 +70,11 @@ static struct {
 	float				view[16], projection[16];
 	vec3_t				origin;
 	float				fovX, fovY;
+	int					time;				// backEnd.refdef.time
+
+	// the game time between frames in milliseconds, smoothed over about 8
+	// frames; 0 until there is one
+	float				frameMsec;
 
 	// this frame's primary view (frameSerial): whether it has a last
 	// frame, then that frame's projection and view and the camera's motion
@@ -189,7 +195,7 @@ static void R_TemporalPrimary( unsigned serial ) {
 	rbTemporalEntity_t *table, *last;
 	float invView[16];
 	vec3_t delta;
-	float cut;
+	float cut, dt;
 	int i, prevTable;
 
 	cut = r_temporalCutDist->value;
@@ -203,7 +209,16 @@ static void R_TemporalPrimary( unsigned serial ) {
 		Com_Memcpy( rbt.prevView, rbt.view, sizeof( rbt.prevView ) );
 		R_TemporalInvertRigid( view, invView );
 		R_TemporalMultiply( rbt.prevView, invView, rbt.cameraDelta );
+
+		// the motion vectors cover dt; a paused game (dt 0) keeps the last
+		// value, its motion is none anyway
+		dt = (float)( backEnd.refdef.time - rbt.time );
+		if ( dt > 0.0f ) {
+			dt = Com_Clamp( 1.0f, 100.0f, dt );
+			rbt.frameMsec = rbt.frameMsec > 0.0f ? rbt.frameMsec + ( dt - rbt.frameMsec ) * 0.125f : dt;
+		}
 	}
+	rbt.time = backEnd.refdef.time;
 	Com_Memcpy( rbt.view, view, sizeof( rbt.view ) );
 	Com_Memcpy( rbt.projection, backEnd.viewParms.projectionMatrix, sizeof( rbt.projection ) );
 	VectorCopy( backEnd.viewParms.ori.origin, rbt.origin );
@@ -287,6 +302,7 @@ void RB_TemporalBeginView( void ) {
 	if ( primary && rbt.history ) {
 		view.prevProjection = rbt.prevProjection;
 		view.cameraDelta = rbt.cameraDelta;
+		view.frameMsec = rbt.frameMsec;
 	}
 	backEnd.temporalScene = vk_begin_scene( &view );
 	backEnd.temporalPrimary = backEnd.temporalScene && primary;

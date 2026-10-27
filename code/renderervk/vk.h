@@ -297,6 +297,9 @@ typedef struct {
 	const float		*prevProjection;
 	const float		*cameraDelta;
 	qboolean		primary;			// the main view (not a portal or the sky portal)
+	// the game time between the last frame and this one in milliseconds,
+	// smoothed (the motion blur's exposure); 0 without a last frame
+	float			frameMsec;
 } vkSceneView_t;
 
 // whether the temporal path is on (r_temporal and the device)

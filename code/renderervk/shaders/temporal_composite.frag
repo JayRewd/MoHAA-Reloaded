@@ -27,7 +27,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // sharpened here (r_taaSharpen: it stays unsharpened as the history).
 // With HDR output (r_hdrOutput, vk_output.c) the scene is expanded toward
 // the display's peak (HdrExpand). The ambient occlusion (r_ao) is in the
-// scene already (ao_apply.frag). r_temporalShow shows one of the
+// scene already (ao_apply.frag). With r_motionBlur the scene is blurred
+// here (MOTION_BLUR, MotionBlur) along what motion_blur.comp made, after the
+// anti-aliasing (its history stays sharp). r_temporalShow shows one of the
 // buffers instead, with what temporal_common.glsl gives their readers (the
 // camera's motion, the derived normals) from level 0 of the depth pyramid:
 // at half the resolution, for a look.
@@ -45,6 +47,8 @@ layout(set = 0, binding = 5) uniform sampler2D u_prevHiz;	// the last frame's de
 layout(set = 0, binding = 6) uniform sampler2D u_scene;		// this frame's scene color, unresolved
 layout(set = 0, binding = 7) uniform sampler2D u_ao;		// the ambient occlusion's factor (alpha, ao_denoise.comp)
 layout(set = 0, binding = 8) uniform sampler2D u_aoRaw;		// and its occlusion before the blending and the blur (r)
+layout(set = 0, binding = 9) uniform sampler2D u_mbVelocity;	// the motion blur's: each pixel's half vector in pixels, its view distance (motion_blur.comp)
+layout(set = 0, binding = 10) uniform sampler2D u_mbNeighbor;	// the longest half vector of the 3 x 3 tiles around each tile
 
 layout(push_constant) uniform Push {
 	TemporalView	view;
@@ -55,10 +59,13 @@ layout(push_constant) uniform Push {
 	ivec4	rect;		// the scene's views: x, y, width, height in framebuffer pixels
 	vec4	hdrA;		// HDR output's expansion: knee, b, the sky's b, the peak over paper white
 	vec4	hdrB;		// the boost of what is above 1, r_saturation, 1 HDR expansion / 2 the HDR look in SDR / 0 none, r_hdrBlack for the look (VK_OutputExpansion)
+	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality)
 } pc;
 
 // HDR output: the pipeline expands the scene (vk_output.c)
 layout(constant_id = 0) const bool HDR_EXPAND = false;
+// r_motionBlur: the pipeline blurs the scene (vk_temporal.c, compositeBlurPipeline)
+layout(constant_id = 1) const bool MOTION_BLUR = false;
 
 layout(location = 0) out vec4 out_color;
 
@@ -136,6 +143,91 @@ vec3 SdrLook( vec3 c, bool sky ) {
 	return pow( clamp( lin, 0.0, 1.0 ), vec3( 1.0 / GAMMA ) );
 }
 
+// the motion blur's gather: McGuire et al., "A Reconstruction Filter for
+// Plausible Motion Blur" (2012), as Jimenez refined it for Call of Duty:
+// Advanced Warfare ("Next Generation Post Processing in Call of Duty", 2014).
+// Where the longest blur around the pixel's tile is half a pixel or more,
+// pairs of samples on both sides of the pixel along it, at offsets moved by
+// a noise fixed per pixel (nothing blends it over frames after this), every
+// other pair along the pixel's own blur when it goes another way. A sample
+// adds its color where it is behind the pixel and the pixel's blur reaches
+// it (what the pixel's motion uncovers), or in front of the pixel and its
+// own blur reaches the pixel (what moves over it), the depths compared
+// softly; a pair whose nearer sample hides what the farther one shows takes
+// the farther one's weight for both (the mirror: the background behind what
+// moves is estimated from the other side). What the samples don't cover is
+// the pixel's own color. Summed in linear light
+
+const float MB_SOFT_DEPTH = 0.05;	// the depths a comparison fades over: this share of the nearer one, plus 1 unit
+
+float MbNoise( vec2 pixel ) {
+	return fract( 52.9829189 * fract( dot( pixel, vec2( 0.06711056, 0.00583715 ) ) ) );
+}
+
+vec3 MbLinear( vec3 c ) {
+	return pow( max( c, vec3( 0.0 ) ), vec3( GAMMA ) );
+}
+
+// x: the sample is behind the center, y: in front of it
+vec2 MbDepthCompare( float center, float s ) {
+	float extent = MB_SOFT_DEPTH * min( center, s ) + 1.0;
+
+	return clamp( 0.5 + vec2( 1.0, -1.0 ) * ( s - center ) / extent, 0.0, 1.0 );
+}
+
+// whether blurs of these half lengths (the center's, the sample's) reach the
+// offset, over half a pixel: a still pixel (under half a pixel) reaches only
+// itself, so in a tile where something moves what doesn't stays as it is
+// (with a pixel, as Jimenez has it, the neighbours of still pixels there
+// blended in a little: the tiles showed)
+vec2 MbSpread( float offset, vec2 spread ) {
+	return clamp( spread - offset + 0.5, 0.0, 1.0 );
+}
+
+vec3 MotionBlur( ivec2 p, vec3 center ) {
+	ivec2 lo = pc.rect.xy, hi = pc.rect.xy + pc.rect.zw - 1;
+	vec2 vn = texelFetch( u_mbNeighbor, p / pc.mb.x, 0 ).xy;
+	float nLen = length( vn );
+
+	if ( nLen < 0.5 ) {
+		return center;
+	}
+
+	vec4 cv = texelFetch( u_mbVelocity, p, 0 );
+	vec2 vc = cv.xy;
+	float cLen = length( vc );
+	float cd = cv.z;
+	int pairs = pc.mb.y;
+	float jitter = MbNoise( gl_FragCoord.xy ) - 0.5;
+	// its own blur differs from the tile's by more than about 25 degrees
+	bool own = cLen >= 0.5 && dot( vc, vn ) < 0.9 * cLen * nLen;
+	vec4 sum = vec4( 0.0 );
+
+	for ( int i = 0; i < pairs; i++ ) {
+		vec2 v = own && ( i & 1 ) != 0 ? vc : vn;
+		vec2 offset = v * ( ( float( i ) + 0.5 + jitter ) / float( pairs ) );
+		float offsetLen = length( offset );
+		ivec2 p1 = clamp( ivec2( gl_FragCoord.xy + offset ), lo, hi );
+		ivec2 p2 = clamp( ivec2( gl_FragCoord.xy - offset ), lo, hi );
+		vec4 s1 = texelFetch( u_mbVelocity, p1, 0 );
+		vec4 s2 = texelFetch( u_mbVelocity, p2, 0 );
+		float l1 = length( s1.xy ), l2 = length( s2.xy );
+		float w1 = dot( MbDepthCompare( cd, s1.z ), MbSpread( offsetLen, vec2( cLen, l1 ) ) );
+		float w2 = dot( MbDepthCompare( cd, s2.z ), MbSpread( offsetLen, vec2( cLen, l2 ) ) );
+		bvec2 mirror = bvec2( s1.z > s2.z, l2 > l1 );
+
+		w1 = all( mirror ) ? w2 : w1;
+		w2 = any( mirror ) ? w2 : w1;
+		sum += w1 * vec4( MbLinear( texelFetch( u_color, p1, 0 ).rgb ), 1.0 );
+		sum += w2 * vec4( MbLinear( texelFetch( u_color, p2, 0 ).rgb ), 1.0 );
+	}
+	if ( sum.a <= 0.0 ) {
+		return center;
+	}
+	sum /= float( 2 * pairs );
+	return pow( max( sum.rgb + ( 1.0 - sum.a ) * MbLinear( center ), vec3( 0.0 ) ), vec3( 1.0 / GAMMA ) );
+}
+
 void main() {
 	ivec2 p = ivec2( gl_FragCoord.xy );
 	vec2 pixel = gl_FragCoord.xy;
@@ -201,6 +293,13 @@ void main() {
 	} else if ( pc.mode == 10 ) {
 		// the visibility of one frame, before the blending and the blur
 		c = vec3( texelFetch( u_aoRaw, p, 0 ).r );
+	} else if ( pc.mode == 11 || pc.mode == 12 ) {
+		// the motion blur's half vector of the pixel, or the longest around
+		// its tile, in mode 1's colors: 1 the longest (a tile's side)
+		float k = float( max( pc.mb.x, 1 ) );
+		vec2 v = ( pc.mode == 11 ? texelFetch( u_mbVelocity, p, 0 ).xy : texelFetch( u_mbNeighbor, p / max( pc.mb.x, 1 ), 0 ).xy ) / k;
+
+		c = vec3( max( v.x, 0.0 ), max( v.y, 0.0 ), max( -v.x, 0.0 ) + max( -v.y, 0.0 ) );
 	} else {
 		c = texelFetch( u_color, p, 0 ).rgb;
 		if ( pc.sharpen > 0.0 ) {
@@ -215,6 +314,9 @@ void main() {
 			vec3 nmax = max( max( max( l, r ), max( u, d ) ), c );
 
 			c = clamp( c + ( c - 0.25 * ( l + r + u + d ) ) * pc.sharpen, nmin, nmax );
+		}
+		if ( MOTION_BLUR ) {
+			c = MotionBlur( p, c );
 		}
 		if ( HDR_EXPAND && pc.hdrB.z > 0.5 && pc.hdrB.z < 1.5 ) {
 			out_color = vec4( HdrExpand( c, TemporalClass( texelFetch( u_normal, p, 0 ) ) == TEMPORAL_CLASS_SKY ), 1.0 );

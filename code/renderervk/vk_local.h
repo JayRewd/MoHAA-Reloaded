@@ -874,6 +874,10 @@ extern const uint32_t	vk_spirv_ao_denoise_comp[];
 extern const size_t		vk_spirv_ao_denoise_comp_size;
 extern const uint32_t	vk_spirv_ao_apply_frag[];
 extern const size_t		vk_spirv_ao_apply_frag_size;
+extern const uint32_t	vk_spirv_motion_blur_tiles_comp[];
+extern const size_t		vk_spirv_motion_blur_tiles_comp_size;
+extern const uint32_t	vk_spirv_motion_blur_neighbor_comp[];
+extern const size_t		vk_spirv_motion_blur_neighbor_comp_size;
 
 /*
 ====================================================================
@@ -889,7 +893,8 @@ make the depth pyramid, and the scene is drawn into the frame's color
 target. The color and the pyramid of the last frame are kept: two of each,
 the frames alternate. What the buffers don't hold (the camera's motion of
 what doesn't move, the normals the draws didn't give) their readers work out
-with shaders/temporal_common.glsl.
+with shaders/temporal_common.glsl. Its readers: temporal anti-aliasing
+(r_taa), ambient occlusion (r_ao) and motion blur (r_motionBlur).
 
 ====================================================================
 */
@@ -914,6 +919,8 @@ with shaders/temporal_common.glsl.
 #define VK_TEMPORAL_GROUP_PYRAMID	2	// hiz[2]: the anti-aliasing, r_temporalShow's views 1, 2, 4, 6, 7
 #define VK_TEMPORAL_GROUP_AO		4	// the ambient occlusion's (r_ao)
 #define VK_TEMPORAL_GROUP_PREVCOLOR	8	// color[1], the last scene's color: r_temporalShow 5
+#define VK_TEMPORAL_GROUP_MOTIONBLUR	16	// mbVelocity, mbTile, mbNeighbor: the motion blur (r_motionBlur), r_temporalShow 11, 12
+#define VK_TEMPORAL_GROUP_LAST		VK_TEMPORAL_GROUP_MOTIONBLUR
 
 // a dispatch of the depth pyramid after the prepare pass (hiz_build.comp)
 typedef struct {
@@ -996,6 +1003,7 @@ typedef struct {
 	VkPipelineLayout	prepareLayout, hizLayout, compositeLayout;
 	VkShaderModule	prepareShader, hizShader, hizTailShader, compositeVertexShader, compositeFragmentShader;
 	VkPipeline		preparePipeline, hizPipeline, hizTailPipeline, compositePipeline;
+	VkPipeline		compositeBlurPipeline;	// the same with the motion blur's gather (MOTION_BLUR)
 	VkDescriptorPool	pool;
 	VkDescriptorSet	prepareSets[VK_MAX_FRAMES];
 	VkDescriptorSet	hizSets[VK_TEMPORAL_HISTORY][VK_TEMPORAL_MAX_PASSES];
@@ -1034,6 +1042,26 @@ typedef struct {
 	VkPipeline		aoMainPipelines[4];	// r_aoQuality: slices and steps as specialization constants
 	VkDescriptorSet	aoSets[VK_MAX_FRAMES];	// written in each frame
 	VkDescriptorSet	aoApplySet;
+
+	// motion blur (r_motionBlur, VK_TemporalMotionBlur: motion_blur.comp,
+	// the gather in temporal_composite.frag): each pixel's blur, its half
+	// vector in pixels and its view distance, the longest half vector of each
+	// tile of mbTileSize x mbTileSize pixels and of the 3 x 3 tiles around it;
+	// its images are GENERAL always
+	qboolean		mbOn;			// for this frame's scene (VK_TemporalUpdateFeatures): its passes run (r_motionBlur, r_temporalShow 11, 12)
+	qboolean		mbBlur;			// and the composite blurs (r_motionBlur)
+	qboolean		mbRan;			// the passes ran in this scene
+	float			frameMsec;		// the primary view's game time since its last frame, smoothed (vkSceneView_t)
+	int				mbTileSize;		// the longest half streak in pixels: max( 16, height / 40 )
+	int				mbTilesX, mbTilesY;
+	vkTemporalImage_t	mbVelocity;		// RGBA16F: the half vector (xy), the view distance (z; the weapon's scaled down, in front of all)
+	vkTemporalImage_t	mbTile;			// RG16F, a texel a tile
+	vkTemporalImage_t	mbNeighbor;		// RG16F, a texel a tile
+	VkDescriptorSetLayout mbSetLayout;
+	VkPipelineLayout	mbLayout;
+	VkShaderModule	mbTilesShader, mbNeighborShader;
+	VkPipeline		mbTilesPipeline, mbNeighborPipeline;
+	VkDescriptorSet	mbSets[VK_MAX_FRAMES];	// written in each frame (the depth image's view can change)
 
 	// the frame data of the skinned draws: a ring of VK_SKIN_RING buffers
 	// instead of one per frame slot (the frame slots' and one more), so the
@@ -1098,3 +1126,4 @@ extern cvar_t	*r_taaFeedback;
 extern cvar_t	*r_taaSharpen;
 extern cvar_t	*r_saturation;
 extern cvar_t	*r_ao;
+extern cvar_t	*r_motionBlur;
