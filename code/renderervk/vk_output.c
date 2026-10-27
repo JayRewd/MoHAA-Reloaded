@@ -54,9 +54,14 @@ cvar_t	*r_hdrSkyBoost;
 cvar_t	*r_hdrEffectsBoost;
 cvar_t	*r_hdrBlack;
 cvar_t	*r_hdrOutputTest;
+cvar_t	*r_hdrOutputTestPage;
 
 #define VK_HDR_DEFAULT_WHITE	203.0f		// nits of paper white without SDL's (ITU-R BT.2408)
 #define VK_HDR_DEFAULT_PEAK		1000.0f
+// the calibration's peak sliders (the client's menus, UI_HDR_PEAK_MIN and
+// MAX in cl_ui.cpp)
+#define VK_HDR_CAL_PEAK_MIN		100.0f
+#define VK_HDR_CAL_PEAK_MAX		10000.0f
 
 void VK_OutputRegisterCvars( void ) {
 	r_hdrOutput = ri.Cvar_Get( "r_hdrOutput", "0", CVAR_ARCHIVE | CVAR_LATCH );
@@ -66,7 +71,7 @@ void VK_OutputRegisterCvars( void ) {
 	ri.Cvar_SetDescription( r_hdrPaperWhite, "with HDR output: the brightness of the whole picture, in nits of the game's white (the menus, the HUD and the 3D view; the expansion goes from there toward r_hdrPeak); 0 the system's SDR white level" );
 	ri.Cvar_CheckRange( r_hdrPaperWhite, 0.0f, 1000.0f, qfalse );
 	r_hdrPeak = ri.Cvar_Get( "r_hdrPeak", "1000", CVAR_ARCHIVE );
-	ri.Cvar_SetDescription( r_hdrPeak, "with HDR output: the brightest the 3D view goes, in nits (find your display's with r_hdrOutputTest 1); 0 what the system reports, which is often lower than the display can show" );
+	ri.Cvar_SetDescription( r_hdrPeak, "with HDR output: the brightest the 3D view goes, in nits (calibrate with r_hdrOutputTest 1); 0 what the system reports, which is often lower than the display can show" );
 	ri.Cvar_CheckRange( r_hdrPeak, 0.0f, 10000.0f, qfalse );
 	r_hdrExpand = ri.Cvar_Get( "r_hdrExpand", "0.15", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_hdrExpand, "with HDR output and r_temporal 1: how far the 3D view's bright parts go toward the peak, 0 none (SDR at paper white) to 1 (the game's white at the peak)" );
@@ -84,14 +89,49 @@ void VK_OutputRegisterCvars( void ) {
 	ri.Cvar_SetDescription( r_hdrBlack, "with HDR output: the black level (calibrate with r_hdrOutputTest 1); higher deepens the darkest shades, lower lifts them, the midtones stay" );
 	ri.Cvar_CheckRange( r_hdrBlack, -0.5f, 1.0f, qfalse );
 	r_hdrOutputTest = ri.Cvar_Get( "r_hdrOutputTest", "0", 0 );
-	ri.Cvar_SetDescription( r_hdrOutputTest, "with HDR output, calibration screens: 1 black (adjust r_hdrBlack until the box is barely visible), 2 peak (raise r_hdrPeak until the box disappears), 3 patches of 100 to 4000 nits and a ramp to twice r_hdrPeak; 0 off" );
-	ri.Cvar_CheckRange( r_hdrOutputTest, 0, 3, qtrue );
+	ri.Cvar_SetDescription( r_hdrOutputTest, "1: HDR calibration on screen, the black level (r_hdrBlack, Next) then the peak (r_hdrPeak, Finish); it goes back to 0 at the end" );
+	ri.Cvar_CheckRange( r_hdrOutputTest, 0, 1, qtrue );
+	// which calibration screen the client's menu shows (cl_ui.cpp): 1 black,
+	// 2 peak, 0 none
+	r_hdrOutputTestPage = ri.Cvar_Get( "r_hdrOutputTestPage", "0", CVAR_ROM );
 }
 
 // HDR output: r_hdrOutput 1, 3 or 4 (2 is the HDR look in SDR, which needs
 // no output pass)
 qboolean VK_OutputWanted( void ) {
 	return r_hdrOutput && r_hdrOutput->integer != 0 && r_hdrOutput->integer != 2;
+}
+
+// r_hdrOutput 2: the output pass for the calibration screens (vko.sdrPass)
+qboolean VK_OutputSdrPassWanted( void ) {
+	return r_hdrOutput && r_hdrOutput->integer == 2;
+}
+
+// the output pass's objects exist: HDR output, or the HDR look's calibration
+qboolean VK_OutputPassAvailable( void ) {
+	return vko.enabled || vko.sdrPass;
+}
+
+// the calibration pattern to draw: the client's menu's (r_hdrOutputTestPage,
+// 1 black, 2 peak)
+static int VK_OutputPage( void ) {
+	if ( !r_hdrOutputTest || !r_hdrOutputTest->integer ) {
+		return 0;
+	}
+	return r_hdrOutputTestPage->integer;
+}
+
+// the frame is drawn offscreen for the output pass, not into the swapchain
+// image: the HDR look's calibration screens (its other frames need no pass)
+qboolean VK_OutputNeedsOffscreen( void ) {
+	return vko.sdrPass && VK_OutputPage() != 0;
+}
+
+// the frame goes to the swapchain through the output pass, else the blit:
+// HDR output's frames, the HDR look's calibration screens (when the
+// swapchain could take the pass's framebuffers)
+qboolean VK_OutputDrawsFrame( const vkFrame_t *frame ) {
+	return vko.enabled || ( vko.sdrPass && frame->outputPush.test && vko.framebuffers[0] );
 }
 
 /*
@@ -312,6 +352,26 @@ void VK_OutputUpdate( void ) {
 		vko.noSceneNote = qtrue;
 		ri.Printf( PRINT_ALL, "HDR look (r_hdrOutput 2): off, it needs r_temporal 1\n" );
 	}
+	// calibration needs an HDR swapchain, or the HDR look (with the temporal
+	// path, which draws it); the client closes its menu when r_hdrOutputTest
+	// is 0
+	if ( r_hdrOutputTest->integer ) {
+		const char *why = NULL;
+
+		if ( vko.sdrPass ) {
+			if ( !vk_temporal_enabled() ) {
+				why = "the HDR look (r_hdrOutput 2) needs r_temporal 1";
+			}
+		} else if ( !vko.enabled ) {
+			why = "it needs r_hdrOutput 1 (HDR output) or 2 (the HDR look)";
+		} else if ( vko.mode == VK_HDR_SDR ) {
+			why = vko.reason ? vko.reason : "the window is SDR";
+		}
+		if ( why ) {
+			ri.Printf( PRINT_ALL, "HDR calibration: off, %s\n", why );
+			ri.Cvar_Set( "r_hdrOutputTest", "0" );
+		}
+	}
 	if ( !vko.enabled ) {
 		return;
 	}
@@ -325,33 +385,75 @@ void VK_OutputUpdate( void ) {
 		VK_DrainSubmitThread();
 		VK_OutputSetMetadata();
 	}
-	// the calibration screens' instructions, when one is chosen
-	if ( r_hdrOutputTest->modified ) {
-		r_hdrOutputTest->modified = qfalse;
-		if ( vko.mode == VK_HDR_SDR && r_hdrOutputTest->integer ) {
-			ri.Printf( PRINT_ALL, "HDR calibration: the window is SDR (%s), the screens mean nothing there\n", vko.reason ? vko.reason : "" );
-		}
-		switch ( r_hdrOutputTest->integer ) {
-		case 1:
-			ri.Printf( PRINT_ALL, "HDR calibration, black: change r_hdrBlack (now %g, -0.5 to 1) until the box in the middle is barely visible on the black: lower shows it, higher hides it. Then r_hdrOutputTest 2 for the peak, 0 to finish\n",
-				r_hdrBlack->value );
-			break;
-		case 2:
-			ri.Printf( PRINT_ALL, "HDR calibration, peak: raise r_hdrPeak (now %g nits) until the box in the middle can't be told from the background, and keep the lowest value where it is gone. Then r_hdrOutputTest 0\n",
-				r_hdrPeak->value );
-			break;
-		case 3:
-			ri.Printf( PRINT_ALL, "HDR test: patches of 100, 203, 400, 600, 1000, 1500, 2000 and 4000 nits, a ramp to twice r_hdrPeak marked at r_hdrPeak\n" );
-			break;
-		default:
-			break;
-		}
-	}
-
 	if ( !vk_temporal_enabled() && !vko.noSceneNote && vko.mode != VK_HDR_SDR ) {
 		vko.noSceneNote = qtrue;
 		ri.Printf( PRINT_ALL, "HDR output: the 3D view is shown at paper white; r_temporal 1 expands it (r_hdrExpand)\n" );
 	}
+}
+
+// the HDR look's virtual peak over paper white for a peak of peakNits: an SDR
+// display has no system levels, so the cvars' (203 nits of paper white for 0)
+static float VK_OutputLookPeak( float peakNits ) {
+	float white = r_hdrPaperWhite->value > 0.0f ? r_hdrPaperWhite->value : VK_HDR_DEFAULT_WHITE;
+
+	return Q_max( peakNits / white, 1.01f );
+}
+
+// the expansion's whites at a peak p over paper white: where the game's white
+// lands, the 3D view's (r_hdrExpand) and the sky's (times r_hdrSkyBoost)
+static void VK_OutputExpandedWhites( float p, float *h, float *hs ) {
+	*h = 1.0f + Com_Clamp( 0.0f, 1.0f, r_hdrExpand->value ) * ( p - 1.0f );
+	*hs = 1.0f + Com_Clamp( 0.0f, 1.0f, r_hdrExpand->value * r_hdrSkyBoost->value ) * ( p - 1.0f );
+}
+
+// the HDR look's curve for a gray m (temporal_composite.frag's Expand and
+// SdrLook) at a peak of peakNits, as VK_OutputExpansion makes its parameters
+static float VK_OutputLookGray( float m, float peakNits ) {
+	float k = r_hdrExpandKnee->value;
+	float h, hs, b, end;
+
+	VK_OutputExpandedWhites( VK_OutputLookPeak( peakNits ), &h, &hs );
+	b = ( h - 1.0f ) / ( 1.0f - k );
+	end = Q_max( Q_max( h, hs ), 1.01f );
+
+	if ( m > k ) {
+		float t = ( m - k ) / ( 1.0f - k );
+
+		m = Q_min( k + ( 1.0f - k ) * ( t + b * t * t ), end );
+	}
+	if ( m > 0.5f ) {
+		float u = ( m - 0.5f ) / 0.5f;
+		float w = ( end - 0.5f ) / 0.5f;
+
+		m = 0.5f + 0.5f * u * ( 1.0f + u / ( w * w ) ) / ( 1.0f + u );
+	}
+	return m;
+}
+
+/*
+===============
+VK_OutputSdrBox
+
+The HDR look's peak calibration screen (r_hdrOutput 2): the box on SDR
+white, in linear light. A bright surface (the game's 0.75) through the
+look's curve, placed on the slider's range (100 to 10000 nits, the client's
+menu): at its bottom the look's lift there, at its top white, so the box
+shows how far toward white the look lifts bright surfaces of what it can
+(the look itself keeps them under white)
+===============
+*/
+float VK_OutputSdrBox( void ) {
+	const float surface = powf( 0.75f, 2.2f );
+	float peak = r_hdrPeak->value > 0.0f ? r_hdrPeak->value : VK_HDR_DEFAULT_PEAK;
+	float low = VK_OutputLookGray( surface, VK_HDR_CAL_PEAK_MIN );
+	float high = VK_OutputLookGray( surface, VK_HDR_CAL_PEAK_MAX );
+	float y = VK_OutputLookGray( surface, Com_Clamp( VK_HDR_CAL_PEAK_MIN, VK_HDR_CAL_PEAK_MAX, peak ) );
+
+	if ( high - low < 1e-5f ) {
+		// no lift (r_hdrExpand 0): the slider moves nothing
+		return low;
+	}
+	return low + ( 1.0f - low ) * ( y - low ) / ( high - low );
 }
 
 // the display's peak over paper white in linear light, 1 for SDR
@@ -365,12 +467,17 @@ static float VK_OutputPeak( void ) {
 void VK_OutputFillPush( vkOutputPush_t *push ) {
 	Com_Memset( push, 0, sizeof( *push ) );
 	push->mode = vko.mode;
-	push->test = r_hdrOutputTest->integer;
+	push->test = VK_OutputPage();
 	push->paperWhite = vko.paperWhite > 0.0f ? vko.paperWhite : VK_HDR_DEFAULT_WHITE;
 	push->peak = VK_OutputPeak();
 	push->invExtent[0] = vk.swapchainExtent.width ? 1.0f / vk.swapchainExtent.width : 0.0f;
 	push->invExtent[1] = vk.swapchainExtent.height ? 1.0f / vk.swapchainExtent.height : 0.0f;
-	push->black = vko.mode != VK_HDR_SDR ? r_hdrBlack->value : 0.0f;
+	// the HDR look's calibration shows its black level too (its other frames
+	// don't go through the pass: the composite applies it)
+	push->black = vko.mode != VK_HDR_SDR || vko.sdrPass ? r_hdrBlack->value : 0.0f;
+	if ( vko.sdrPass ) {
+		push->sdrBox = VK_OutputSdrBox();
+	}
 }
 
 /*
@@ -382,8 +489,9 @@ linear light of paper white, applied to each pixel's largest channel: up to
 the knee k unchanged, above it k + (1 - k)(t + b t^2) with t = (x - k) / (1 -
 k): continuous in value and slope at k, and the game's white at H = 1 +
 r_hdrExpand (P - 1), P = peak / paper white, so b = (H - 1) / (1 - k); the
-sky with r_hdrExpand * r_hdrSkyBoost. What is above 1 (stacked additive
-effects) is scaled by r_hdrEffectsBoost first. Clamped at P.
+sky with r_hdrExpand * r_hdrSkyBoost. What is above 1 (overexposed
+surfaces, stacked additive effects) is added as gray, times the expanded
+white and r_hdrEffectsBoost. Clamped at P.
 params: knee, b, the sky's b, P, effects boost, r_saturation, the mode (1
 HDR, 2 the HDR look in SDR, 0 none), r_hdrBlack for the look (the output
 pass applies it in HDR). HDR with an HDR swapchain, but in a frame that is
@@ -405,14 +513,11 @@ void VK_OutputExpansion( float *params ) {
 	if ( hdr ) {
 		p = VK_OutputPeak();
 	} else if ( r_hdrOutput->integer == 2 ) {
-		p = ( r_hdrPeak->value > 0.0f ? r_hdrPeak->value : VK_HDR_DEFAULT_PEAK )
-			/ ( r_hdrPaperWhite->value > 0.0f ? r_hdrPaperWhite->value : VK_HDR_DEFAULT_WHITE );
-		p = Q_max( p, 1.01f );
+		p = VK_OutputLookPeak( r_hdrPeak->value > 0.0f ? r_hdrPeak->value : VK_HDR_DEFAULT_PEAK );
 	} else {
 		return;
 	}
-	h = 1.0f + Com_Clamp( 0.0f, 1.0f, r_hdrExpand->value ) * ( p - 1.0f );
-	hs = 1.0f + Com_Clamp( 0.0f, 1.0f, r_hdrExpand->value * r_hdrSkyBoost->value ) * ( p - 1.0f );
+	VK_OutputExpandedWhites( p, &h, &hs );
 	params[0] = k;
 	params[1] = ( h - 1.0f ) / ( 1.0f - k );
 	params[2] = ( hs - 1.0f ) / ( 1.0f - k );
@@ -655,7 +760,7 @@ void VK_OutputCreateTargets( void ) {
 	uint32_t i;
 
 	VK_OutputDestroyTargets();
-	if ( !vko.enabled || !vk.swapchain || !vk.colorView ) {
+	if ( !VK_OutputPassAvailable() || !vk.swapchain || !vk.colorView ) {
 		return;
 	}
 

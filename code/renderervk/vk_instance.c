@@ -264,6 +264,7 @@ static void VK_CreateInstance( void ) {
 	// HDR output (r_hdrOutput, vk_output.c): the HDR10 and scRGB color spaces
 	// of the surface formats
 	vko.enabled = qfalse;
+	vko.sdrPass = VK_OutputSdrPassWanted();
 	if ( VK_OutputWanted() ) {
 		if ( VK_HasExtension( available, numAvailable, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME ) ) {
 			VK_AddExtension( extensions, &numExtensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME );

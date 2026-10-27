@@ -33,12 +33,12 @@ layout(set = 0, binding = 0) uniform sampler2D u_frame;
 
 layout(push_constant) uniform Push {
 	int		mode;		// 0 SDR, 1 HDR10, 2 scRGB (vkHdrMode_t)
-	int		test;		// r_hdrOutputTest
+	int		test;		// the calibration screen (r_hdrOutputTestPage): 1 black, 2 peak, 0 none
 	float	paperWhite;	// nits of 1.0
 	float	peak;		// the display's peak over paper white, linear
 	vec2	invExtent;	// 1 / the swapchain image's size
 	float	black;		// r_hdrBlack: the black level's toe, 0 none
-	float	unused;
+	float	sdrBox;		// the HDR look's peak screen: the box, linear (VK_OutputSdrBox)
 } pc;
 
 layout(location = 0) out vec4 out_color;
@@ -59,9 +59,10 @@ vec3 PQ( vec3 nits ) {
 	return pow( ( 0.8359375 + 18.8515625 * y ) / ( 1.0 + 18.6875 * y ), vec3( 78.84375 ) );
 }
 
-// the box in the middle of the calibration screens
+// the box in the middle of the calibration screens' pattern (the top four
+// fifths: the client's menu is below, cl_ui.cpp)
 bool InBox( vec2 uv ) {
-	vec2 d = abs( uv - 0.5 ) * vec2( pc.invExtent.y / pc.invExtent.x, 1.0 );	// square
+	vec2 d = abs( uv - vec2( 0.5, 0.4 ) ) * vec2( pc.invExtent.y / pc.invExtent.x, 1.0 );	// square
 
 	return d.x < 0.1 && d.y < 0.1;
 }
@@ -76,37 +77,28 @@ vec3 BlackLevel( vec3 lin ) {
 	return pc.black == 0.0 || m <= 0.0 ? lin : lin * pow( m / ( m + 0.005 ), pc.black );
 }
 
-// r_hdrOutputTest, in linear light of paper white and not clipped at the
-// peak, so the display's own limits show. 1: black, a box of the game's
-// value 8/255 on black, through r_hdrBlack: r_hdrBlack until it is barely
-// visible. 2: peak, a box at r_hdrPeak on the largest signal (10000
-// nits): r_hdrPeak until the display clips both alike and the box is gone.
-// 3: patches of 100 to 4000 nits and a ramp to twice r_hdrPeak.
-// -1 where the frame shows
+// the calibration screens (r_hdrOutputTest), in linear light of paper
+// white and not clipped at the peak, so the display's own limits show; the
+// top four fifths of the screen, the menu's slider and button below. 1:
+// black, a box of the game's value 8/255 on black, through r_hdrBlack:
+// r_hdrBlack until it is barely visible. 2: peak, a box at r_hdrPeak on the
+// largest signal (10000 nits): r_hdrPeak until the display clips both
+// alike and the box is gone; with the HDR look (an SDR swapchain) a bright
+// surface lifted by the look on SDR white instead (VK_OutputSdrBox). -1
+// where the frame shows
 vec3 TestPattern( vec2 uv ) {
+	if ( uv.y >= 0.8 ) {
+		return vec3( -1.0 );
+	}
 	if ( pc.test == 1 ) {
 		return InBox( uv ) ? BlackLevel( vec3( pow( 8.0 / 255.0, 2.2 ) ) ) : vec3( 0.0 );
 	}
-	if ( pc.test == 2 ) {
-		return InBox( uv ) ? vec3( pc.peak ) : vec3( 10000.0 / pc.paperWhite );
+	if ( pc.mode == MODE_SDR ) {
+		// the HDR look (r_hdrOutput 2): a bright surface lifted by the look
+		// toward SDR white, the most it can show (white at the slider's top)
+		return InBox( uv ) ? BlackLevel( vec3( pc.sdrBox ) ) : vec3( 1.0 );
 	}
-	if ( uv.y >= 0.1 && uv.y < 0.35 ) {
-		// patches of 100, 203, 400, 600, 1000, 1500, 2000 and 4000 nits
-		int i = clamp( int( uv.x * 8.0 ), 0, 7 );
-		float nits = i == 0 ? 100.0 : i == 1 ? 203.0 : i == 2 ? 400.0 : i == 3 ? 600.0 : i == 4 ? 1000.0
-			: i == 5 ? 1500.0 : i == 6 ? 2000.0 : 4000.0;
-		float edge = fract( uv.x * 8.0 );
-
-		return edge < 0.04 || edge > 0.96 ? vec3( 0.0 ) : vec3( nits / pc.paperWhite );
-	}
-	if ( uv.y >= 0.45 && uv.y < 0.6 ) {
-		// a ramp to twice r_hdrPeak, a dark mark at r_hdrPeak (the middle)
-		if ( abs( uv.x - 0.5 ) < 0.002 ) {
-			return vec3( 0.0 );
-		}
-		return vec3( uv.x * 2.0 * pc.peak );
-	}
-	return vec3( -1.0 );
+	return InBox( uv ) ? vec3( pc.peak ) : vec3( 10000.0 / pc.paperWhite );
 }
 
 void main() {
@@ -125,7 +117,9 @@ void main() {
 	if ( pc.test != 0 ) {
 		vec3 t = TestPattern( uv );
 
-		if ( t.r >= 0.0 ) {
+		// the pattern where the menu left its black background: what it
+		// draws there (the mouse cursor) stays in front
+		if ( t.r >= 0.0 && max( c.r, max( c.g, c.b ) ) < 1.0 / 255.0 ) {
 			lin = t;
 		}
 	}

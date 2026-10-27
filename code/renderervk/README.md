@@ -682,10 +682,15 @@ below are done.
   `r_hdrEffectsBoost` 1); `r_hdrBlack` (0) deepens or lifts the darkest
   shades only (the menus and the HUD too); screenshots and video frames
   are saved as SDR. Calibration as in other HDR games, in game and in
-  the menus, without cheats: `r_hdrOutputTest 1` black (a near-black box:
-  `r_hdrBlack` until it is barely visible), `2` peak (a box at `r_hdrPeak` on the largest
-  signal: `r_hdrPeak` until the box is gone), `3` patches of 100 to 4000
-  nits and a ramp; the console says what to do. With
+  the menus, without cheats: `r_hdrOutputTest 1` opens the black screen
+  (a near-black box, a slider on `r_hdrBlack` until it is barely
+  visible, Next), then the peak screen (a box on the largest signal, a
+  slider on `r_hdrPeak` until the box is gone, Finish); with the HDR look
+  (`r_hdrOutput 2`) the black screen, then the peak's with the white box
+  scaled to SDR (SDR has no peak to find: a bright surface through the
+  look's curve on SDR white, `r_hdrPeak` lifting it toward the white);
+  it goes back to 0 at the end (2026-10-27, the user's request:
+  sliders and buttons instead of typed cvars and values 1 to 3). With
   `r_hdrOutput 0` the frames are the build before's to the bit (with
   `r_temporal 1` and `r_saturation 1`). Cost on
   the RTX 4070 Ti, `dm/mohdm6`, 2560x1440, `r_temporal 1`: GPU time a
@@ -818,7 +823,7 @@ below are done.
 | `shaders/skinned.vert` | the vertex shader of skinned draws (skinning, `rgbGen lightingSpherical` and `tcGen environment`/`environmentmodel`), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/effects.vert` | the vertex shader of the static geometry's draws with effects (deforms, `tcGen` and `tcMod`, `distFade`, static models' dynamic lights; see Implementation notes, Effects shader), built with and without `gl_ClipDistance`; its outputs are `generic.vert`'s |
 | `shaders/hiz_build.comp`, `shaders/taa_resolve.comp`, `shaders/temporal_composite.*`, `shaders/temporal_common.glsl` | the temporal path's passes after the scene (`hiz_build.comp` built three times: `PREPARE`, the default, `TAIL`; `taa_resolve.comp` the anti-aliasing) and what they and the passes to come that read its buffers share (included); `generic.*`, `skinned.vert` and `effects.vert` are also built with `TEMPORAL` defined for its scene |
-| `shaders/output.frag` | HDR output's pass: the frame into the swapchain image, SDR, HDR10 (PQ) or scRGB, and the test patches; its vertex shader is `temporal_composite.vert` |
+| `shaders/output.frag` | HDR output's pass: the frame into the swapchain image, SDR, HDR10 (PQ) or scRGB, and the calibration screens' patterns; its vertex shader is `temporal_composite.vert` |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c`, `vk_shaders_temporal.c` and `vk_shaders_hdr.c` with `glslc` (an argument, `main`, `temporal` or `hdr`, writes only that one) |
 | `vk_shaders.c`, `vk_shaders_temporal.c`, `vk_shaders_hdr.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | build-against-build screenshot comparison and performance scripts, view lists, the OpenGL check (see Testing) |
@@ -8823,27 +8828,67 @@ selects the sample count (see Implementation notes).
     frame that is read back. Without `r_temporal` the 3D view is shown at
     paper white (the console says so): the HUD is drawn into the same
     frame and can't be told from it afterwards.
-  - *Calibration* (`r_hdrOutputTest`, drawn by the output pass over the
-    whole image, so in game and in the menus alike; not a cheat; the
-    console prints what to do when it changes). Not clipped at the peak,
-    so what shows is the limit of the display and of what is between
-    (compositor, driver). `1` black: a box of the game's value 8/255 on
-    black through `r_hdrBlack`: the output pass scales every pixel by (m
-    / (m + 0.005))^`r_hdrBlack`, m its largest channel in linear light of
-    paper white (0.005 is 1 nit at 203), so a crush (above 0) or a lift
-    (below 0) under about a nit and next to nothing above (0.2, a
-    midtone, 2.4 % darker at 1, 1.2 % brighter at -0.5); the box is 0.098
-    nits at 0, 0.009 at 1, 0.33 at -0.5 (203 nits paper white).
-    `r_hdrBlack` until it is barely visible. `2` peak: a box at `r_hdrPeak` on 10000 nits (the
-    largest PQ signal, 125 in scRGB): below the display's limit the box
-    is darker than the clipped background, at or above it the two are
-    the same, so `r_hdrPeak` is the lowest value where the box is gone.
-    `3` patches of 100, 203, 400, 600, 1000, 1500, 2000 and 4000 nits and
-    a ramp to twice `r_hdrPeak` with a mark at it (the first version
-    clipped the patches at the peak, so the ramp went flat at the game's
-    clip instead of the display's). Paper white keeps the system's
-    value (or `r_hdrPaperWhite`): the brightness of the whole picture, a
-    matter of taste.
+  - *Calibration* (`r_hdrOutputTest 1`, not a cheat). Two menus built
+    into the client (`cl_ui.cpp`, loaded from C strings with
+    `UILayout::LoadBuffer` after the `ui/*.urc` files, so they exist
+    whatever the search path; a `ui/<name>.urc` of the same name
+    replaces one): `hdr_calibrate_black`, a stock `Slider` on
+    `r_hdrBlack` (-0.5 to 1, step 0.05) with its value and Next, and
+    `hdr_calibrate_peak`, a slider on `r_hdrPeak` (100 to 10000, step 50)
+    and Finish, and for the HDR look `hdr_calibrate_black_sdr` (the black
+    level's, Next) and `hdr_calibrate_peak_sdr` (`r_hdrPeak`, Finish);
+    their widgets in the bottom fifth of the screen,
+    the sliders 32 units tall. The stock slider put the value back to
+    where the press was when the mouse left it mid-drag (`MouseExited`,
+    `uilib/uislider.cpp`), so a hand that drifted out of its 16 units
+    reset it: it keeps the dragged value now, every slider of the game.
+    `UI_HdrCalibrationUpdate` (every frame, in `UI_Update`) opens the
+    first when `r_hdrOutputTest` becomes 1, sets it back to 0 when no
+    calibration menu is on top any more (Escape on the black screen),
+    closes them while it is 0 (Finish sets it, so do the console and the
+    renderer, which refuses without an HDR swapchain), and sets the
+    internal `r_hdrOutputTestPage` (read-only: 1 black, 2 peak) for the
+    renderer. With `r_hdrOutput 2` the output pass exists too
+    (`vko.sdrPass`: its pipeline for the 8-bit swapchain, the frame image
+    sampled) but draws only the frames of its calibration screens, which
+    are then drawn offscreen (`VK_OutputNeedsOffscreen`) and given
+    `r_hdrBlack` (the composite applies it to the other frames' 3D view);
+    the other frames go to the swapchain as before, to the bit
+    (`dm/mohdm1`, `r_temporal 1`). Next pushes the peak's menu on top of the black one, as
+    the stock menus chain theirs: a `pushmenu` right after a `popmenu` is
+    dropped, both lock the menus for their motion time, so the menus are
+    closed one a frame; Escape on the peak screen goes back to the
+    black. Widget `showcommand`s were no way to track it: they run as
+    widget events, not console commands. The output pass draws the
+    screen's pattern over the top four fifths of the image (the menu's
+    widgets show below) where the menu left its black background, so the
+    mouse cursor stays in front of it, not clipped at the peak, so what shows is the
+    limit of the display and of what is between (compositor, driver).
+    Black: a box of the game's value 8/255 on black through
+    `r_hdrBlack`: the output pass scales every pixel by (m / (m +
+    0.005))^`r_hdrBlack`, m its largest channel in linear light of paper
+    white (0.005 is 1 nit at 203), so a crush (above 0) or a lift (below
+    0) under about a nit and next to nothing above (0.2, a midtone, 2.4 %
+    darker at 1, 1.2 % brighter at -0.5); the box is 0.098 nits at 0,
+    0.009 at 1, 0.33 at -0.5 (203 nits paper white). Peak: a box at
+    `r_hdrPeak` on 10000 nits (the largest PQ signal, 125 in scRGB):
+    below the display's limit the box is darker than the clipped
+    background, at or above it the two are the same, so `r_hdrPeak` is
+    the lowest value where the box is gone. The HDR look's peak: SDR
+    white, the most it can show, around a box of the game's 0.75 (a sunlit
+    surface) through the look's own curve (`VK_OutputSdrBox`, the
+    composite's expansion and shoulder for a gray), placed on the
+    slider's range: its lift at 100 nits at the bottom, white at 10000
+    (the user's request: white at the top; the look itself keeps the
+    surface under white, 0.89 linear at 10000 with `r_hdrExpand` 0.15),
+    so the slider shows how far toward white of what it can the look
+    lifts bright surfaces. At `r_hdrExpand` 0.15: 191 of 255 at 100
+    nits, 212 at 1000, 240 at 4000, 255 at 10000; at 0.5 227 at 1000.
+    With `r_hdrExpand` 0 the look lifts nothing and the box stays. A
+    first version left the 3D view to judge by eye behind the menu. The patches and ramp of the
+    first version (`r_hdrOutputTest 3`) were taken out. Paper white keeps
+    the system's value (or `r_hdrPaperWhite`): the brightness of the
+    whole picture, a matter of taste.
   - *The HDR look in SDR* (`r_hdrOutput 2`, `SdrLook` in
     `temporal_composite.frag`, mode 2 of `VK_OutputExpansion`): no HDR
     output (no extension, no RGBA16F frame, no output pass: the SDR

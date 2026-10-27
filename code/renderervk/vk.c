@@ -708,7 +708,7 @@ format and can be drawn to and read back
 ===============
 */
 static qboolean VK_SwapchainFitsTarget( void ) {
-	return vk.swapchain && vk.swapchainDirect && !vk.swapchainOutOfDate
+	return vk.swapchain && vk.swapchainDirect && !vk.swapchainOutOfDate && !VK_OutputNeedsOffscreen()
 		&& (int)vk.swapchainExtent.width == vk.width && (int)vk.swapchainExtent.height == vk.height;
 }
 
@@ -1031,8 +1031,9 @@ VkResult VK_RecordPresentCopy( vkFrame_t *frame, VkCommandBuffer cmd, VkImage im
 		qvkCmdWriteTimestamp( cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame->queryPool, VK_TS_PRESENT_START );
 	}
 
-	if ( vko.enabled ) {
-		// HDR output: the output pass instead of the blit (vk_output.c)
+	if ( VK_OutputDrawsFrame( frame ) ) {
+		// HDR output, or the HDR look's calibration screens: the output pass
+		// instead of the blit (vk_output.c)
 		VK_OutputRecord( frame, cmd, image );
 		if ( frame->queryPool ) {
 			qvkCmdWriteTimestamp( cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame->queryPool, VK_TS_PRESENT_END );
@@ -1090,7 +1091,11 @@ image: the blit's, or the output pass's color writes
 ===============
 */
 VkPipelineStageFlags VK_PresentCopyStage( void ) {
-	return vko.enabled ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
+	if ( vko.enabled ) {
+		return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	}
+	// the HDR look: the blit, or the output pass while calibrating
+	return vko.sdrPass ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
 }
 
 /*
@@ -1137,7 +1142,7 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	imageIndex = vk.heldIndex;
 
 	cmd = frame->presentCmd;
-	if ( vko.enabled ) {
+	if ( VK_OutputPassAvailable() ) {
 		// the swapchain may have been made again above
 		VK_OutputFillPush( &frame->outputPush );
 	}
@@ -1851,7 +1856,7 @@ static void VK_CreateRenderTargets( void ) {
 
 	VK_CreateTargetImage( vk.colorFormat, VK_SAMPLE_COUNT_1_BIT,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-		| ( vko.enabled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0 ),
+		| ( VK_OutputPassAvailable() ? VK_IMAGE_USAGE_SAMPLED_BIT : 0 ),
 		VK_IMAGE_ASPECT_COLOR_BIT, &vk.colorImage, &vk.colorMemory, &vk.colorView );
 	// readable from the start with multisampling: the draws use the
 	// multisampled depth image, which is never copied from
@@ -1921,6 +1926,11 @@ void VK_CreateSwapchainTargets( void ) {
 	if ( vko.enabled ) {
 		VK_OutputCreateTargets();
 		return;
+	}
+	// the HDR look: the output pass for the calibration screens, the other
+	// frames drawn into the swapchain images as without it
+	if ( vko.sdrPass ) {
+		VK_OutputCreateTargets();
 	}
 	// a swapchain of another size than the render target (window resized
 	// before the vid_restart) gets the offscreen image's copy
@@ -2298,7 +2308,7 @@ void vk_end_frame( void ) {
 
 	// HDR output: what the output pass of this frame is given (also on the
 	// submit thread); the next frame's scene is expanded again
-	if ( vko.enabled ) {
+	if ( VK_OutputPassAvailable() ) {
 		VK_OutputFillPush( &frame->outputPush );
 		vko.sdrFrame = qfalse;
 	}

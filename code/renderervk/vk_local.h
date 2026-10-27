@@ -296,8 +296,8 @@ typedef struct {
 	float	paperWhite;		// nits of the frame's 1.0
 	float	peak;			// the display's peak over paper white, in linear light (1 in SDR)
 	float	invExtent[2];	// 1 / the swapchain's size
-	float	black;			// r_hdrBlack, 0 in SDR
-	float	unused;
+	float	black;			// r_hdrBlack; 0 with an SDR swapchain but for the HDR look's calibration
+	float	sdrBox;			// the HDR look's peak calibration screen: the box, linear (VK_OutputSdrBox)
 } vkOutputPush_t;
 
 typedef struct {
@@ -656,6 +656,10 @@ when the surface offers it and the window is in HDR (SDL)
 
 typedef struct {
 	qboolean		enabled;		// r_hdrOutput latched on, and the instance has VK_EXT_swapchain_colorspace
+	// r_hdrOutput 2 (the HDR look in SDR): the output pass exists for the
+	// calibration screens only; the other frames go to the swapchain as
+	// without HDR output
+	qboolean		sdrPass;
 	qboolean		metadata;		// VK_EXT_hdr_metadata is enabled
 	vkHdrMode_t		mode;			// the swapchain's
 	qboolean		windowHdr;		// SDL's HDR state of the window when the swapchain was chosen
@@ -685,11 +689,16 @@ extern vkOutput_t	vko;
 
 void		VK_OutputRegisterCvars( void );
 qboolean	VK_OutputWanted( void );
+qboolean	VK_OutputSdrPassWanted( void );
+qboolean	VK_OutputPassAvailable( void );
+qboolean	VK_OutputNeedsOffscreen( void );
+qboolean	VK_OutputDrawsFrame( const vkFrame_t *frame );
 qboolean	VK_OutputChooseFormat( const VkSurfaceFormatKHR *formats, uint32_t count, VkSurfaceFormatKHR *chosen );
 void		VK_OutputSwapchainCreated( void );
 void		VK_OutputUpdate( void );
 void		VK_OutputFillPush( vkOutputPush_t *push );
 void		VK_OutputExpansion( float *params );
+float		VK_OutputSdrBox( void );
 void		VK_OutputCreateTargets( void );
 void		VK_OutputDestroyTargets( void );
 void		VK_OutputRecord( const vkFrame_t *frame, VkCommandBuffer cmd, VkImage image );
