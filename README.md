@@ -101,6 +101,15 @@ seta r_fullscreen 1
 | `r_vkSubmitThread` | `0` | `1`: a thread of its own submits and presents the frames, for drivers that stall there (5 swapchain images, 3 with vsync). |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling. |
+| `r_temporal` | `0` | `1` is required for anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look (`r_hdrOutput`). It draws the 3D view with motion vectors, normals and the last frame's color, which those build on. Takes effect after `vid_restart`. With it and them off, the frames are the same as before. |
+| `r_taa` | `0` | With `r_temporal 1`: temporal anti-aliasing. |
+| `r_ao` | `0` | With `r_temporal 1`: ground truth ambient occlusion (GTAO), darkening corners and contact on solid surfaces only; smoke, flashes and glows keep their brightness. `r_aoQuality` `0` to `3` (default `2`). |
+| `r_motionBlur` | `0` | With `r_temporal 1`: motion blur along each pixel's motion, the same at any frame rate. `r_motionBlurQuality` `0` to `2`. The weapon in your hands and the HUD stay sharp. |
+| `r_hdrOutput` | `0` | `1`: **HDR output** (HDR10 or scRGB) when the display is in HDR mode; with `r_temporal 1` the 3D view's bright parts reach toward `r_hdrPeak` (`1000` nits). `2`: the same look on an SDR display. `r_hdrPaperWhite` and `r_hdrBlack` set white and black; takes effect after `vid_restart`. |
+| `r_hdrOutputTest` | `0` | `1` opens the HDR calibration screens: a slider for the black level, then one for the peak. |
+| `r_saturation` | `1.1` | The 3D view's saturation with `r_temporal 1`; `1` is unchanged. |
+| `cl_nullbinds` | `0` | `1`: opposing keys (forward and back, left and right, lean left and lean right) never cancel out: the newest press wins, and releasing it hands control back to the other. |
+| `g_splean` | `0` | `1` allows leaning in the Allied Assault single-player campaign, 40 degrees as in multiplayer. Nothing else changes. |
 
 ### Commands
 
