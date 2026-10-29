@@ -40,6 +40,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //   hidden while the game is in front (no Space animation when switching away or at vid_restart).
 // Both fullscreen modes go direct to display (the compositor is bypassed) and have no window shadow: a shadow needs
 // an offscreen pass over the layer, so the layer can't go direct.
+//
+// Direct to display, the WindowServer holds the game's flips while it handles other applications' frames on the
+// other displays, and frames are replaced before they show (docs/METAL_PORT_PLAN.md 2, session 26, session 39). With
+// r_blackOutDisplays 1 a still black window covers each other display while the game is in fullscreen and has the
+// keyboard (the Space only when each display has its own Spaces: otherwise the Space blanks the others itself); the
+// covered applications stop drawing, as they do for the Space. The covers never take the keyboard or a click, and
+// they come down when the game leaves fullscreen or the keyboard: Cmd+Tab, a dialog, minimize, vid_restart, quit.
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>	// kVK_Tab
@@ -80,6 +87,9 @@ typedef enum
 @interface MacOSWindowDelegate : NSObject <NSWindowDelegate>
 @end
 
+@interface MacOSCoverWindow : NSWindow
+@end
+
 static MacOSWindow			*mac_window;
 static MacOSView			*mac_view;
 static CAMetalLayer			*mac_layer;
@@ -91,15 +101,20 @@ static CGDisplayModeRef		mac_desktopMode;		// exclusive fullscreen: the display'
 static CGDisplayModeRef		mac_exclusiveMode;		// exclusive fullscreen: r_mode's mode, NULL if it is the desktop's
 static qboolean				mac_modeSwitched;		// mac_exclusiveMode is set on the display
 static qboolean				mac_exclusiveActive;	// the exclusive window is up (not minimized for a focus loss)
+static NSMutableArray<MacOSCoverWindow *>	*mac_covers;	// r_blackOutDisplays: one per other display, kept for reuse
+static qboolean				mac_inDialog;			// between MacOS_DialogBegin and MacOS_DialogEnd: no covers
 
 cvar_t *r_allowResize; // make window resizable
 cvar_t *r_centerWindow;
 cvar_t *r_displayIndex; // display to open the window on (0 = main)
 cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen, else 2)
 static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
+static cvar_t *r_blackOutDisplays; // 1 = the other displays covered black while the game is in fullscreen in front
 
 static void MTLimp_EnterExclusive( void );
 static void MTLimp_LeaveExclusive( qboolean minimize );
+static void MTLimp_UpdateCovers( void );
+static void MTLimp_HideCovers( void );
 
 @implementation MacOSWindow
 
@@ -112,6 +127,21 @@ static void MTLimp_LeaveExclusive( qboolean minimize );
 - (BOOL)canBecomeMainWindow
 {
 	return YES;
+}
+
+@end
+
+@implementation MacOSCoverWindow
+
+// never the keyboard's or the main window: the game keeps both
+- (BOOL)canBecomeKeyWindow
+{
+	return NO;
+}
+
+- (BOOL)canBecomeMainWindow
+{
+	return NO;
 }
 
 @end
@@ -309,18 +339,42 @@ static void MTLimp_LeaveExclusive( qboolean minimize );
 {
 	if( mac_windowMode == MAC_EXCLUSIVE )
 		MTLimp_EnterExclusive();
+	MTLimp_UpdateCovers();
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification
 {
 	if( mac_windowMode == MAC_EXCLUSIVE )
 		MTLimp_LeaveExclusive( qtrue );
+	MTLimp_UpdateCovers();
+}
+
+- (void)windowDidMiniaturize:(NSNotification *)notification
+{
+	MTLimp_UpdateCovers();
 }
 
 - (void)windowDidDeminiaturize:(NSNotification *)notification
 {
 	if( mac_windowMode == MAC_EXCLUSIVE )
 		MTLimp_EnterExclusive();
+	MTLimp_UpdateCovers();
+}
+
+// the Space: covered once it is entered, uncovered when it starts to close
+- (void)windowDidEnterFullScreen:(NSNotification *)notification
+{
+	MTLimp_UpdateCovers();
+}
+
+- (void)windowWillExitFullScreen:(NSNotification *)notification
+{
+	MTLimp_HideCovers();
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification
+{
+	MTLimp_UpdateCovers();
 }
 
 // borderless fullscreen's Space covers the menu bar too, even when the user's settings keep it in fullscreen apps
@@ -345,6 +399,12 @@ static void MTLimp_LeaveExclusive( qboolean minimize );
 {
 	if( mac_window.miniaturized )
 		[mac_window deminiaturize:nil];
+}
+
+// displays added, removed or rearranged, or a mode changed (exclusive fullscreen's own too): the covers follow
+- (void)applicationDidChangeScreenParameters:(NSNotification *)notification
+{
+	MTLimp_UpdateCovers();
 }
 
 @end
@@ -649,6 +709,7 @@ static void MTLimp_EnterExclusive( void )
 	mac_window.level = CGShieldingWindowLevel();
 	NSApp.presentationOptions = NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
 	[mac_window makeKeyAndOrderFront:nil];
+	MTLimp_UpdateCovers();
 }
 
 /*
@@ -666,11 +727,172 @@ static void MTLimp_LeaveExclusive( qboolean minimize )
 		return;
 
 	mac_exclusiveActive = qfalse;
+	MTLimp_HideCovers();
 	NSApp.presentationOptions = NSApplicationPresentationDefault;
 	MTLimp_SetDisplayMode( qfalse );
 	mac_window.level = NSNormalWindowLevel;
 	if( minimize )
 		[mac_window miniaturize:nil];
+}
+
+/*
+===============
+MTLimp_WantCovers
+
+r_blackOutDisplays: the other displays are covered while the game is in fullscreen in front: exclusive fullscreen up
+(not left for a focus loss or a dialog), the borderless window or the Space with the keyboard and not minimized. The
+Space only when each display has its own Spaces ("Displays have separate Spaces"): otherwise the Space blanks the
+other displays itself. Never a plain window: there the other displays are what the player wants to see.
+===============
+*/
+static qboolean MTLimp_WantCovers( void )
+{
+	if( !r_blackOutDisplays || !r_blackOutDisplays->integer || mac_window == nil || mac_inDialog )
+		return qfalse;
+	if( !mac_window.keyWindow || mac_window.miniaturized )
+		return qfalse;
+
+	switch( mac_windowMode )
+	{
+	case MAC_EXCLUSIVE:
+		return mac_exclusiveActive;
+	case MAC_DESKTOPWINDOW:
+		return qtrue;
+	case MAC_SPACE:
+		return ( mac_window.styleMask & NSWindowStyleMaskFullScreen ) && NSScreen.screensHaveSeparateSpaces;
+	default:
+		return qfalse;
+	}
+}
+
+/*
+===============
+MTLimp_NewCover
+
+A still black window for one display: opaque, no shadow, drawn once, at exclusive fullscreen's level (above every
+other application's windows, the Dock and the menu bar, and shown on displays a mode switch has captured), on every
+Space and with other applications' fullscreen Spaces, out of Mission Control's way and of the window cycle. It never
+becomes key or main (MacOSCoverWindow) and lets clicks through: the captured cursor never reaches it (it stays at the
+game window's center), and a free one (in_mouse 0) clicks what is under it, as without the cover.
+===============
+*/
+static MacOSCoverWindow *MTLimp_NewCover( void )
+{
+	MacOSCoverWindow *cover = [[MacOSCoverWindow alloc] initWithContentRect:NSMakeRect( 0, 0, 1, 1 )
+		styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+
+	if( cover == nil )
+		return nil;
+
+	cover.releasedWhenClosed = NO;
+	cover.restorable = NO;
+	cover.tabbingMode = NSWindowTabbingModeDisallowed;
+	cover.excludedFromWindowsMenu = YES;
+	cover.animationBehavior = NSWindowAnimationBehaviorNone;
+	cover.backgroundColor = [NSColor blackColor];
+	cover.opaque = YES;
+	cover.hasShadow = NO;
+	cover.ignoresMouseEvents = YES;
+	cover.level = CGShieldingWindowLevel();
+	cover.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary |
+		NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary |
+		NSWindowCollectionBehaviorFullScreenDisallowsTiling | NSWindowCollectionBehaviorCanJoinAllApplications;
+	return cover;
+}
+
+/*
+===============
+MTLimp_HideCovers
+===============
+*/
+static void MTLimp_HideCovers( void )
+{
+	for( MacOSCoverWindow *cover in mac_covers )
+	{
+		if( cover.visible )
+			[cover orderOut:nil];
+	}
+}
+
+/*
+===============
+MTLimp_UpdateCovers
+
+The covers up over every display but the game's (as MTLimp_GetDisplays lists them: no mirrors) when MTLimp_WantCovers
+says so, else down. Called at every change of the conditions (the delegate, exclusive fullscreen, a display change,
+r_blackOutDisplays itself); does nothing while r_blackOutDisplays is 0 and no cover was made.
+===============
+*/
+static void MTLimp_UpdateCovers( void )
+{
+	CGDirectDisplayID displays[ 16 ];
+	NSUInteger used = 0;
+	int numDisplays, i;
+
+	if( !MTLimp_WantCovers() )
+	{
+		MTLimp_HideCovers();
+		return;
+	}
+
+	@autoreleasepool
+	{
+		if( !mac_covers )
+			mac_covers = [NSMutableArray array];
+
+		numDisplays = MTLimp_GetDisplays( displays, ARRAY_LEN( displays ) );
+		for( i = 0; i < numDisplays; i++ )
+		{
+			MacOSCoverWindow *cover;
+			NSRect frame;
+
+			if( displays[ i ] == mac_display )
+				continue;
+
+			if( used < mac_covers.count )
+			{
+				cover = mac_covers[ used ];
+			}
+			else
+			{
+				cover = MTLimp_NewCover();
+				if( cover == nil )
+					break;
+				[mac_covers addObject:cover];
+			}
+			used++;
+
+			// CGDisplayBounds: right after a mode switch NSScreen may still have the old frames
+			frame = MTLimp_DisplayFrame( displays[ i ] );
+			if( !NSEqualRects( cover.frame, frame ) )
+				[cover setFrame:frame display:NO];
+			if( !cover.visible )
+				[cover orderFrontRegardless];
+		}
+
+		// fewer displays than before
+		while( mac_covers.count > used )
+		{
+			[mac_covers.lastObject orderOut:nil];
+			[mac_covers.lastObject close];
+			[mac_covers removeLastObject];
+		}
+	}
+}
+
+/*
+===============
+MTLimp_DestroyCovers
+===============
+*/
+static void MTLimp_DestroyCovers( void )
+{
+	for( MacOSCoverWindow *cover in mac_covers )
+	{
+		[cover orderOut:nil];
+		[cover close];
+	}
+	mac_covers = nil;
 }
 
 /*
@@ -701,6 +923,8 @@ MTLimp_DestroyWindow
 static void MTLimp_DestroyWindow( void )
 {
 	mbShutdown();
+
+	MTLimp_DestroyCovers();
 
 	if( mac_window != nil )
 	{
@@ -1071,6 +1295,9 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		mac_windowDelegate = [[MacOSWindowDelegate alloc] init];
 		[[NSNotificationCenter defaultCenter] addObserver:mac_windowDelegate
 			selector:@selector(applicationDidBecomeActive:) name:NSApplicationDidBecomeActiveNotification object:nil];
+		[[NSNotificationCenter defaultCenter] addObserver:mac_windowDelegate
+			selector:@selector(applicationDidChangeScreenParameters:)
+			name:NSApplicationDidChangeScreenParametersNotification object:nil];
 	}
 
 	// placed relative to its screen, as SDL places it: with global coordinates and no screen, AppKit opens the
@@ -1281,6 +1508,8 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_displayIndex = ri.Cvar_Get( "r_displayIndex", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	// not latched: MTLimp_EndFrame puts the covers up or down at once
+	r_blackOutDisplays = ri.Cvar_Get( "r_blackOutDisplays", "0", CVAR_ARCHIVE );
 
 	// Create the window and its Metal layer
 	if(MTLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
@@ -1338,6 +1567,12 @@ void MTLimp_EndFrame( void )
 {
 	mbEndFrame();
 
+	if( r_blackOutDisplays->modified )
+	{
+		r_blackOutDisplays->modified = qfalse;
+		MTLimp_UpdateCovers();
+	}
+
 	if( r_fullscreen->modified )
 	{
 		int wantFullscreen;
@@ -1370,8 +1605,9 @@ A dialog is coming (Sys_Dialog, sys_osx.m: a modal NSAlert, mostly Sys_Error's l
 clicked: exclusive fullscreen's window at the shielding level and the displays captured for a mode switch would
 cover it, and a captured cursor couldn't reach it. So the cursor goes back to the system (where it was parked, the
 window's center) and exclusive fullscreen is left: the desktop's mode back, the displays released, the window at the
-normal level under the dialog, not minimized. The alert takes the keyboard (windowDidResignKey then finds exclusive
-fullscreen left already).
+normal level under the dialog, not minimized. The covers of the other displays come down in every mode (the alert
+may open on any display). The alert takes the keyboard (windowDidResignKey then finds exclusive fullscreen left
+already).
 ===============
 */
 void MacOS_DialogBegin( void )
@@ -1382,6 +1618,8 @@ void MacOS_DialogBegin( void )
 	@autoreleasepool
 	{
 		MacOS_ReleaseMouse();
+		mac_inDialog = qtrue;
+		MTLimp_HideCovers();
 
 		if( mac_windowMode == MAC_EXCLUSIVE )
 			MTLimp_LeaveExclusive( qfalse );
@@ -1399,6 +1637,8 @@ again. Not while the game is in the background or minimized.
 */
 void MacOS_DialogEnd( void )
 {
+	mac_inDialog = qfalse;
+
 	if( mac_window == nil || mac_window.miniaturized || !NSApp.active )
 		return;
 
