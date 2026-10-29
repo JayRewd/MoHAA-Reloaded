@@ -264,17 +264,17 @@ A key of a pair, forward and back, the two strafes or the two leans:
 IN_KeyDown or IN_KeyUp, and with cl_nullbinds 1 the pair's nullbinds (idea:
 JayRewd's Vulkan port, from pstngh/openmohaa-client; Metal port). The two
 sides never cancel out: the newest press wins while the other side stays held,
-and that side stops counting as at a release at the press's time; releasing
-the winner gives the move back to a side still held, as at a press at the
-release's time. The button keeps the keys that hold it (down) apart from
-whether it counts (active), and the usercmds take each side's share of their
-window from those moments as from real presses and releases (CL_KeyState;
-CL_KeyStateNext for the open usercmd), so in both modes, one usercmd a frame
-and cl_movefps's grid, each change lands in the usercmd whose window holds
-it. A tap (wasPressed) counts only for the side that wins, so no usercmd has
-both leans. Releases do this at 0 too, so a side left out while it was on
-comes back; at 0 no held side is ever left out, as in stock, so the keys are
-IN_KeyDown's and IN_KeyUp's.
+and that side stops counting at the press's time; releasing the winner gives
+the move back to a side still held, as at a press at the release's time. The
+button keeps the keys that hold it (down) apart from whether it counts
+(active), and the usercmds take each side's share of their window from those
+moments as from real presses and releases (CL_KeyState; CL_KeyStateNext for
+the open usercmd), so in both modes, one usercmd a frame and cl_movefps's
+grid, each change lands in the usercmd whose window holds it. A tap
+(wasPressed) counts only for the side that wins, so no usercmd has both leans.
+Releases do this at 0 too, so a side left out while it was on comes back; at 0
+no held side is ever left out, as in stock, so the keys are IN_KeyDown's and
+IN_KeyUp's.
 ===============
 */
 static void CL_PairKey( kbutton_t *b, kbutton_t *other, qboolean down ) {
@@ -302,12 +302,14 @@ static void CL_PairKey( kbutton_t *b, kbutton_t *other, qboolean down ) {
 			return;		// stock: both sides count, and cancel out
 		}
 		if ( other->active ) {
-			// the other side stops counting, as IN_KeyUp's release would
+			// the other side stops counting: its time from when it last counted
+			// (JayRewd's: a key stamped before that, as the input's are by up to
+			// a millisecond, adds nothing; without a time, half a frame)
 			other->active = qfalse;
-			if ( time ) {
-				other->msec += time - other->downtime;
-			} else {
+			if ( !time || !other->downtime ) {
 				other->msec += frame_msec / 2;
+			} else if ( time - other->downtime < 0x80000000u ) {
+				other->msec += time - other->downtime;
 			}
 		}
 		other->wasPressed = qfalse;
