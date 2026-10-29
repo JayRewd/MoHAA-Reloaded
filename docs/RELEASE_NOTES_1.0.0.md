@@ -102,4 +102,4 @@ Thanks to the OpenMoHAA team for the engine this is built on, to JayRewd, whose 
 
 | File | SHA-256 |
 |---|---|
-| `openmohaa-metal-1.0.0-macos-arm64.zip` | `6cc36b8d0c2913f0414fb0df5ea22be8fb12a07425132ed69b8d151d49bf1fab` |
+| `openmohaa-metal-1.0.0-macos-arm64.zip` | `a8f0181ab377e98e8dc1701dc276fa15aa955a9ece64b7d018e62f879c14aa3a` |
