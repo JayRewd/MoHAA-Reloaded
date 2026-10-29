@@ -43,10 +43,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //
 // Direct to display, the WindowServer holds the game's flips while it handles other applications' frames on the
 // other displays, and frames are replaced before they show (docs/METAL_PORT_PLAN.md 2, session 26, session 39). With
-// r_blackOutDisplays 1 a still black window covers each other display while the game is in fullscreen and has the
-// keyboard (the Space only when each display has its own Spaces: otherwise the Space blanks the others itself); the
-// covered applications stop drawing, as they do for the Space. The covers never take the keyboard or a click, and
-// they come down when the game leaves fullscreen or the keyboard: Cmd+Tab, a dialog, minimize, vid_restart, quit.
+// r_blackOutDisplays 1 (the default) a still black window covers each other display while the game is in fullscreen
+// and has the keyboard (the Space only when each display has its own Spaces: otherwise the Space blanks the others
+// itself); nothing there is composited and the covered applications stop drawing, as for the Space (session 79: at
+// 480 next to a busy 4K, 21-23% of the frames replaced, 2-3% covered). The covers never take the keyboard or a click,
+// and they come down when the game leaves fullscreen or the keyboard: Cmd+Tab, a dialog, minimize, vid_restart, quit.
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>	// kVK_Tab
@@ -1531,7 +1532,7 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	// not latched: MTLimp_EndFrame puts the covers up or down at once
-	r_blackOutDisplays = ri.Cvar_Get( "r_blackOutDisplays", "0", CVAR_ARCHIVE );
+	r_blackOutDisplays = ri.Cvar_Get( "r_blackOutDisplays", "1", CVAR_ARCHIVE );
 
 	// Create the window and its Metal layer
 	if(MTLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
