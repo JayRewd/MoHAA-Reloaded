@@ -5,7 +5,7 @@
 | Branch | Renderer | Status |
 |---|---|---|
 | **`metal`** (this one) | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| `vulkan` | Vulkan | Coming soon |
+| [`vulkan`](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | Vulkan, Linux and Windows | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
 
 > [!IMPORTANT]
 > **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
