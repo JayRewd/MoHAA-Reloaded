@@ -55,6 +55,7 @@ static qboolean	cmd_subSend;		// the newest usercmd is an early one or the split
 static qboolean	cmd_eventSeen;		// a starting event since the last usercmd
 static int		cmd_prevNow;		// the server time of the frame before
 static qboolean	cmd_upHeld;			// the jump key held at the last usercmd
+static cvar_t	*cl_nullbinds;		// a pair's two keys never cancel out: the newest press wins (CL_PairKey)
 
 /*
 ===============================================================================
@@ -255,6 +256,76 @@ float CL_KeyState( kbutton_t *key ) {
 
 
 
+/*
+===============
+CL_PairKey
+
+A key of a pair, forward and back, the two strafes or the two leans:
+IN_KeyDown or IN_KeyUp, and with cl_nullbinds 1 the pair's nullbinds (idea:
+JayRewd's Vulkan port, from pstngh/openmohaa-client; Metal port). The two
+sides never cancel out: the newest press wins while the other side stays held,
+and that side stops counting as at a release at the press's time; releasing
+the winner gives the move back to a side still held, as at a press at the
+release's time. The button keeps the keys that hold it (down) apart from
+whether it counts (active), and the usercmds take each side's share of their
+window from those moments as from real presses and releases (CL_KeyState;
+CL_KeyStateNext for the open usercmd), so in both modes, one usercmd a frame
+and cl_movefps's grid, each change lands in the usercmd whose window holds
+it. A tap (wasPressed) counts only for the side that wins, so no usercmd has
+both leans. Releases do this at 0 too, so a side left out while it was on
+comes back; at 0 no held side is ever left out, as in stock, so the keys are
+IN_KeyDown's and IN_KeyUp's.
+===============
+*/
+static void CL_PairKey( kbutton_t *b, kbutton_t *other, qboolean down ) {
+	int			held[2];
+	unsigned	msec, time;
+	qboolean	out;
+
+	held[0] = b->down[0];
+	held[1] = b->down[1];
+	out = !b->active && ( held[0] || held[1] );	// held, but left out by the other side's press
+	msec = b->msec;
+
+	if ( down ) {
+		IN_KeyDown( b );
+	} else {
+		IN_KeyUp( b );
+	}
+	if ( b->down[0] == held[0] && b->down[1] == held[1] ) {
+		return;		// a repeat, a third key, or a release of a key that doesn't hold it
+	}
+
+	time = atoi( Cmd_Argv( 2 ) );
+	if ( down ) {
+		if ( !cl_nullbinds->integer ) {
+			return;		// stock: both sides count, and cancel out
+		}
+		if ( other->active ) {
+			// the other side stops counting, as IN_KeyUp's release would
+			other->active = qfalse;
+			if ( time ) {
+				other->msec += time - other->downtime;
+			} else {
+				other->msec += frame_msec / 2;
+			}
+		}
+		other->wasPressed = qfalse;
+		return;
+	}
+
+	if ( out ) {
+		// IN_KeyUp counted from when this side last counted, which its leaving out settled
+		b->msec = msec;
+	}
+	if ( !b->down[0] && !b->down[1] && !other->active && ( other->down[0] || other->down[1] ) ) {
+		// the winner's release: the side still held counts again from now
+		other->active = qtrue;
+		other->downtime = time;
+		b->wasPressed = qfalse;
+	}
+}
+
 void IN_UpDown(void) {IN_KeyDown(&in_up);}
 void IN_UpUp(void) {IN_KeyUp(&in_up);}
 void IN_DownDown(void) {IN_KeyDown(&in_down);}
@@ -263,28 +334,28 @@ void IN_LeftDown(void) {IN_KeyDown(&in_left);}
 void IN_LeftUp(void) {IN_KeyUp(&in_left);}
 void IN_RightDown(void) {IN_KeyDown(&in_right);}
 void IN_RightUp(void) {IN_KeyUp(&in_right);}
-void IN_ForwardDown(void) {IN_KeyDown(&in_forward);}
-void IN_ForwardUp(void) {IN_KeyUp(&in_forward);}
-void IN_BackDown(void) {IN_KeyDown(&in_back);}
-void IN_BackUp(void) {IN_KeyUp(&in_back);}
+void IN_ForwardDown(void) {CL_PairKey(&in_forward, &in_back, qtrue);}
+void IN_ForwardUp(void) {CL_PairKey(&in_forward, &in_back, qfalse);}
+void IN_BackDown(void) {CL_PairKey(&in_back, &in_forward, qtrue);}
+void IN_BackUp(void) {CL_PairKey(&in_back, &in_forward, qfalse);}
 void IN_LookupDown(void) {IN_KeyDown(&in_lookup);}
 void IN_LookupUp(void) {IN_KeyUp(&in_lookup);}
 void IN_LookdownDown(void) {IN_KeyDown(&in_lookdown);}
 void IN_LookdownUp(void) {IN_KeyUp(&in_lookdown);}
-void IN_MoveleftDown(void) {IN_KeyDown(&in_moveleft);}
-void IN_MoveleftUp(void) {IN_KeyUp(&in_moveleft);}
-void IN_MoverightDown(void) {IN_KeyDown(&in_moveright);}
-void IN_MoverightUp(void) {IN_KeyUp(&in_moveright);}
+void IN_MoveleftDown(void) {CL_PairKey(&in_moveleft, &in_moveright, qtrue);}
+void IN_MoveleftUp(void) {CL_PairKey(&in_moveleft, &in_moveright, qfalse);}
+void IN_MoverightDown(void) {CL_PairKey(&in_moveright, &in_moveleft, qtrue);}
+void IN_MoverightUp(void) {CL_PairKey(&in_moveright, &in_moveleft, qfalse);}
 void IN_AttackPrimaryDown(void) { IN_KeyDown(&in_buttons[0]);}
 void IN_AttackPrimaryUp(void) { IN_KeyUp(&in_buttons[0]); }
 void IN_AttackSecondaryDown(void) { IN_KeyDown(&in_buttons[1]); }
 void IN_AttackSecondaryUp(void) { IN_KeyUp(&in_buttons[1]); }
 void IN_UseDown(void) { IN_KeyDown(&in_buttons[3]); }
 void IN_UseUp(void) { IN_KeyUp(&in_buttons[3]); }
-void IN_LeanLeftDown(void) { IN_KeyDown(&in_buttons[4]); }
-void IN_LeanLeftUp(void) { IN_KeyUp(&in_buttons[4]); }
-void IN_LeanRightDown(void) { IN_KeyDown(&in_buttons[5]); }
-void IN_LeanRightUp(void) { IN_KeyUp(&in_buttons[5]); }
+void IN_LeanLeftDown(void) { CL_PairKey(&in_buttons[4], &in_buttons[5], qtrue); }
+void IN_LeanLeftUp(void) { CL_PairKey(&in_buttons[4], &in_buttons[5], qfalse); }
+void IN_LeanRightDown(void) { CL_PairKey(&in_buttons[5], &in_buttons[4], qtrue); }
+void IN_LeanRightUp(void) { CL_PairKey(&in_buttons[5], &in_buttons[4], qfalse); }
 
 void IN_SpeedDown(void) {IN_KeyDown(&in_speed);}
 void IN_SpeedUp(void) {IN_KeyUp(&in_speed);}
@@ -313,10 +384,10 @@ void IN_Button2Down(void) {IN_KeyDown(&in_buttons[2]);}
 void IN_Button2Up(void) {IN_KeyUp(&in_buttons[2]);}
 void IN_Button3Down(void) {IN_KeyDown(&in_buttons[3]);}
 void IN_Button3Up(void) {IN_KeyUp(&in_buttons[3]);}
-void IN_Button4Down(void) {IN_KeyDown(&in_buttons[4]);}
-void IN_Button4Up(void) {IN_KeyUp(&in_buttons[4]);}
-void IN_Button5Down(void) {IN_KeyDown(&in_buttons[5]);}
-void IN_Button5Up(void) {IN_KeyUp(&in_buttons[5]);}
+void IN_Button4Down(void) {CL_PairKey(&in_buttons[4], &in_buttons[5], qtrue);}
+void IN_Button4Up(void) {CL_PairKey(&in_buttons[4], &in_buttons[5], qfalse);}
+void IN_Button5Down(void) {CL_PairKey(&in_buttons[5], &in_buttons[4], qtrue);}
+void IN_Button5Up(void) {CL_PairKey(&in_buttons[5], &in_buttons[4], qfalse);}
 void IN_Button6Down(void) {IN_KeyDown(&in_buttons[6]);}
 void IN_Button6Up(void) {IN_KeyUp(&in_buttons[6]);}
 void IN_Button7Down(void) {IN_KeyDown(&in_buttons[7]);}
@@ -1766,6 +1837,7 @@ void CL_InitInput( void ) {
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
 	// a shot's or a jump's usercmd at the grid's half step (Metal port; on by default, the user's choice); 0: on the grid
 	cl_movesubgrid = Cvar_Get ("cl_movesubgrid", "1", CVAR_ARCHIVE);
+	cl_nullbinds = Cvar_Get ("cl_nullbinds", "0", CVAR_ARCHIVE);
 }
 
 /*
