@@ -216,6 +216,11 @@ qboolean	mbLatencyPoll( int *tag, long long *commitUsec, long long *gpuDoneUsec,
 // re.WakeGPU: a frame starts (right after the engine's frame limiter); wakes the GPU if it has been idle
 void		mbWakeGPU( void );
 
+// r_metalPacedPresent (registered by macos_window.m, which syncs the layer to the display for it): 1 = the frames
+// never present, a display link presents the newest one once per refresh; 2 = the same, the frame taken just before
+// the link's deadline. Read by mbInit.
+extern cvar_t	*r_metalPacedPresent;
+
 extern qboolean	mbMultitexture;				// ARB_multitexture equivalent (r_ext_multitexture)
 
 // Pipelines ahead of their first draw: when a shader is loaded, the front end describes the state each of its stages

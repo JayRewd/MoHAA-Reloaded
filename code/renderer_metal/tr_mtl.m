@@ -39,6 +39,17 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // otherwise the frame skips its present. With vsync on (r_swapInterval 1) the next drawable is acquired at the end
 // of the frame, blocking like GL1's swap.
 //
+// Paced presents (r_metalPacedPresent, an experiment, docs/METAL_PORT_PLAN.md 3.2 "Added in session 75"): the frames
+// never present. A CAMetalDisplayLink on its own thread asks once per refresh of the game's display for that
+// refresh's drawable (preferredFrameLatency 1, the lowest it takes), and the newest frame committed by then goes into
+// it, whole, at its refresh (the layer synced to the display), as GL1's composited fullscreen showed it: even motion
+// while other displays keep the WindowServer busy, for about a refresh of latency. The frame commits under
+// mb_pacedLock and leaves its number, gamma ramp and cl_latencyStats record there; the link's handler takes them and
+// enqueues its command buffer under the same lock, so its final pass reads that frame's scene (the next frame's scene
+// pass comes after it in the queue). A frame no present took before the next one ends is replaced, never presented.
+// The engine's loop runs as with vsync off: no frame waits for a drawable or a refresh, so com_maxfps and the
+// usercmds are unchanged. 2 = the frame taken r_metalPacedMargin us before the link's deadline instead of when it asks.
+//
 // Waking the GPU: after ~1.5 ms without work the GPU powers down, and a commit then waits ~0.3-0.5 ms for it to
 // start. The engine calls mbWakeGPU when a frame starts (right after its frame limiter), and a tiny command buffer
 // has the GPU up when that frame commits, ~0.3-0.6 ms later (r_metalWakeGPU).
@@ -63,6 +74,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // the frames that used them have completed.
 
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalDisplayLink.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <errno.h>
 #include <mach/mach_time.h>
@@ -129,11 +141,27 @@ static uint64_t						mb_wakeIdle;		// mach time: no wake-up within this of the l
 static id<MTLBuffer>				mb_wakeBuffer;		// what the wake-up's blit writes
 static void MB_CancelLatePresent( void );
 
+// paced presents (r_metalPacedPresent, see the top of the file)
+static int							mb_paced;			// at mbInit: 0 off, 1 the frame taken when the link asks, 2 at its deadline
+static pthread_t					mb_pacedThread;		// runs the display link's run loop
+static qboolean						mb_pacedThreadRunning;
+static dispatch_semaphore_t			mb_pacedReady;		// the link is on that run loop
+static CFRunLoopRef					mb_pacedRunLoop;
+static CFRunLoopSourceRef			mb_pacedStop;		// signaled: that run loop stops
+static mach_timebase_info_data_t	mb_timebase;		// the link's host times (seconds) to mach time
+static os_unfair_lock				mb_pacedLock = OS_UNFAIR_LOCK_INIT;
+static uint64_t						mb_pacedFrame;		// guarded by mb_pacedLock: frames committed
+static uint64_t						mb_pacedTaken;		// guarded: the frame the last present took
+static qboolean						mb_pacedHold;		// guarded: a frame committed part of its scene (a readback)
+static uint8_t						mb_pacedRamp[256][4];	// guarded: the newest frame's gamma ramp
+static uint64_t						mb_pacedLatency;	// guarded: the newest frame's cl_latencyStats record, 0 = none or taken
+
 static cvar_t	*r_metalFramesInFlight;
 static cvar_t	*r_metalPresentStats;
 static cvar_t	*r_metalLatePresent;
 static cvar_t	*r_metalPipelineCache;
 static cvar_t	*r_metalWakeGPU;
+static cvar_t	*r_metalPacedMargin;
 
 // r_metalPresentStats: drawables actually shown on screen (presentedTime > 0) vs. presented
 static _Atomic int	mb_statPresented, mb_statShown;
@@ -148,6 +176,12 @@ static int			mb_statPipelines, mb_statRingGrowths;
 static uint64_t		mb_statPipelineTime, mb_statPipelineMax;		// mach ticks creating pipelines (total, slowest)
 static int			mb_statPipelinesCached;						// of mb_statPipelines, found in the pipeline cache
 static int			mb_statPipelinesAhead, mb_statPipelinesAtDraw;	// compiled on Metal's threads ahead of their first draw, created at it
+static int			mb_statReplaced;						// paced: frames a newer one replaced before a present took them
+// paced, written by the link's thread and read once it has stopped: the link's updates, those with no new frame or a
+// readback's hold, those past their deadline when the frame was taken; the sums of (deadline - call) and
+// (presentation - deadline), seconds
+static int			mb_statPacedUpdates, mb_statPacedIdle, mb_statPacedHeld, mb_statPacedLate;
+static double		mb_statPacedAhead, mb_statPacedLead;
 
 // cl_latencyStats (mbLatencyTag/mbLatencyPoll): when each tagged frame was committed, finished on the GPU and
 // shown. Records are polled in frame order; the command buffer's completed handler and the drawable's presented
@@ -862,6 +896,12 @@ static void MB_FlushAndWait( void )
 	MB_EndPass( qtrue );
 	MB_CommitUploads();
 	if ( mb_cmd ) {
+		if ( mb_paced ) {
+			// the scene is only part done: no paced present takes it until the frame ends
+			os_unfair_lock_lock( &mb_pacedLock );
+			mb_pacedHold = qtrue;
+			os_unfair_lock_unlock( &mb_pacedLock );
+		}
 		[mb_cmd commit];
 		[mb_cmd waitUntilCompleted];
 		mb_cmd = nil;
@@ -1954,6 +1994,215 @@ static void *MB_AcquireThread( void *arg )
 }
 
 /*
+** MB_HostTimeToMach
+**
+** A host time in seconds (CACurrentMediaTime's clock, the display link's) as mach time.
+*/
+static uint64_t MB_HostTimeToMach( CFTimeInterval t )
+{
+	return (uint64_t)( t * 1e9 * mb_timebase.denom / mb_timebase.numer );
+}
+
+/*
+** MBPacer
+**
+** The display link's delegate (paced presents): once per refresh, the newest frame into the link's drawable.
+*/
+@interface MBPacer : NSObject <CAMetalDisplayLinkDelegate>
+{
+@public
+	CAMetalLayer	*layer;
+	id<MTLTexture>	scene;
+}
+@end
+
+@implementation MBPacer
+
+- (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update
+{
+	@autoreleasepool {
+		CFTimeInterval deadline = update.targetTimestamp;
+		id<MTLCommandBuffer> cmd = nil;
+		uint8_t ramp[256][4];
+		uint64_t latency = 0;
+
+		mb_statPacedUpdates++;
+		mb_statPacedAhead += deadline - CACurrentMediaTime();
+		mb_statPacedLead += update.targetPresentationTimestamp - deadline;
+
+		if ( mb_paced == 2 ) {
+			// the newest frame as late as the deadline allows (the margin read live: it is tuned while playing)
+			uint64_t at = MB_HostTimeToMach( deadline - Com_Clamp( 0, 8000, r_metalPacedMargin->value ) * 1e-6 );
+
+			if ( mach_absolute_time() < at ) {
+				mach_wait_until( at );
+			}
+		}
+		if ( CACurrentMediaTime() > deadline ) {
+			mb_statPacedLate++;
+		}
+
+		os_unfair_lock_lock( &mb_pacedLock );
+		if ( mb_pacedHold ) {
+			mb_statPacedHeld++;
+		} else if ( mb_pacedTaken == mb_pacedFrame ) {
+			mb_statPacedIdle++;		// nothing new: the screen keeps the frame it has
+		} else {
+			cmd = [mb_queue commandBuffer];
+			[cmd enqueue];			// its place in the queue: after the frame it takes, before the next one
+			mb_pacedTaken = mb_pacedFrame;
+			memcpy( ramp, mb_pacedRamp, sizeof( ramp ) );
+			latency = mb_pacedLatency;
+			mb_pacedLatency = 0;
+		}
+		os_unfair_lock_unlock( &mb_pacedLock );
+
+		if ( cmd ) {
+			cmd.label = @"paced present";
+			MB_EncodeFinal( cmd, update.drawable, scene, ramp, latency );
+			[cmd presentDrawable:update.drawable];
+			[cmd commit];
+		}
+	}
+}
+
+@end
+
+/*
+** MB_PacedStopPerform
+**
+** The stop source fired on the link's thread: its run loop returns.
+*/
+static void MB_PacedStopPerform( void *info )
+{
+	CFRunLoopStop( CFRunLoopGetCurrent() );
+}
+
+/*
+** MB_PacedThread
+**
+** The display link's thread: the link on this thread's run loop until MB_StopPacedPresents.
+*/
+static void *MB_PacedThread( void *arg )
+{
+	MBPacer *pacer = (__bridge_transfer MBPacer *)arg;
+	CFRunLoopSourceContext context = { 0 };
+
+	pthread_setname_np( "openmohaa presents" );
+
+	@autoreleasepool {
+		CAMetalDisplayLink *link = [[CAMetalDisplayLink alloc] initWithMetalLayer:pacer->layer];
+
+		context.perform = MB_PacedStopPerform;
+		mb_pacedStop = CFRunLoopSourceCreate( NULL, 0, &context );
+		mb_pacedRunLoop = (CFRunLoopRef)CFRetain( CFRunLoopGetCurrent() );
+		CFRunLoopAddSource( mb_pacedRunLoop, mb_pacedStop, kCFRunLoopDefaultMode );
+
+		link.delegate = pacer;
+		link.preferredFrameLatency = 1.0f;		// the lowest it takes (1 or 2); the rate is the display's
+		[link addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+		dispatch_semaphore_signal( mb_pacedReady );
+
+		CFRunLoopRun();
+
+		[link invalidate];
+	}
+
+	return NULL;
+}
+
+/*
+** MB_StartPacedPresents
+*/
+static qboolean MB_StartPacedPresents( void )
+{
+	MBPacer *pacer = [[MBPacer alloc] init];
+	pthread_attr_t attr;
+	void *arg;
+	int err;
+
+	pacer->layer = mb_layer;
+	pacer->scene = mb_sceneColor;
+	mb_pacedFrame = mb_pacedTaken = 0;
+	mb_pacedHold = qfalse;
+	mb_pacedLatency = 0;
+	mb_pacedReady = dispatch_semaphore_create( 0 );
+
+	pthread_attr_init( &attr );
+	pthread_attr_set_qos_class_np( &attr, QOS_CLASS_USER_INTERACTIVE, 0 );
+	arg = (__bridge_retained void *)pacer;
+	err = pthread_create( &mb_pacedThread, &attr, MB_PacedThread, arg );
+	pthread_attr_destroy( &attr );
+	if ( err ) {
+		(void)(__bridge_transfer MBPacer *)arg;
+		ri.Printf( PRINT_ALL, "mbInit: can't start the display link's thread (%d)\n", err );
+		mb_pacedReady = nil;
+		return qfalse;
+	}
+	mb_pacedThreadRunning = qtrue;
+
+	dispatch_semaphore_wait( mb_pacedReady, DISPATCH_TIME_FOREVER );
+	mb_pacedReady = nil;
+	return qtrue;
+}
+
+/*
+** MB_StopPacedPresents
+**
+** First thing at a shutdown, before anything else is committed: the link stops, and the newest frame, if no present
+** took it, was never presented.
+*/
+static void MB_StopPacedPresents( void )
+{
+	if ( !mb_pacedThreadRunning ) {
+		return;
+	}
+
+	CFRunLoopSourceSignal( mb_pacedStop );
+	CFRunLoopWakeUp( mb_pacedRunLoop );
+	pthread_join( mb_pacedThread, NULL );
+	mb_pacedThreadRunning = qfalse;
+
+	CFRunLoopSourceInvalidate( mb_pacedStop );
+	CFRelease( mb_pacedStop );
+	CFRelease( mb_pacedRunLoop );
+	mb_pacedStop = NULL;
+	mb_pacedRunLoop = NULL;
+
+	if ( mb_pacedLatency ) {
+		MB_LatencyNotPresented( mb_pacedLatency );
+		mb_pacedLatency = 0;
+	}
+}
+
+/*
+** MB_CommitPaced
+**
+** The frame's command buffer committed under mb_pacedLock, and the frame left for the next paced present (the one
+** before it replaced if none took it).
+*/
+static void MB_CommitPaced( uint64_t latency )
+{
+	uint64_t replaced;
+
+	os_unfair_lock_lock( &mb_pacedLock );
+	[mb_cmd commit];
+	if ( mb_pacedTaken != mb_pacedFrame ) {
+		mb_statReplaced++;
+	}
+	replaced = mb_pacedLatency;
+	mb_pacedFrame++;
+	mb_pacedHold = qfalse;
+	memcpy( mb_pacedRamp, mb_gammaRamp, sizeof( mb_pacedRamp ) );
+	mb_pacedLatency = latency;
+	os_unfair_lock_unlock( &mb_pacedLock );
+
+	if ( replaced ) {
+		MB_LatencyNotPresented( replaced );
+	}
+}
+
+/*
 ** MB_StartDrawableAcquisition
 */
 static qboolean MB_StartDrawableAcquisition( void )
@@ -1961,16 +2210,21 @@ static qboolean MB_StartDrawableAcquisition( void )
 	pthread_attr_t attr;
 	int err;
 
-	mb_vsync = mb_layer.displaySyncEnabled ? qtrue : qfalse;
-	mb_latePresent = !mb_vsync && r_metalLatePresent->integer ? qtrue : qfalse;
+	mb_paced = r_metalPacedPresent ? (int)Com_Clamp( 0, 2, r_metalPacedPresent->integer ) : 0;
+	mb_vsync = !mb_paced && mb_layer.displaySyncEnabled ? qtrue : qfalse;
+	mb_latePresent = !mb_paced && !mb_vsync && r_metalLatePresent->integer ? qtrue : qfalse;
 	if ( !mb_lateMargin ) {
 		mach_timebase_info_data_t tb;
 
 		mach_timebase_info( &tb );
 		mb_lateMargin = 2000000ull * tb.denom / tb.numer;	// 2 ms
 		mb_wakeIdle = 1000000ull * tb.denom / tb.numer;	// 1 ms
+		mb_timebase = tb;
 	}
 	mb_frameEnd = mb_frameInterval = 0;
+	if ( mb_paced ) {
+		return MB_StartPacedPresents();
+	}
 	if ( mb_vsync ) {
 		return qtrue;
 	}
@@ -2077,6 +2331,7 @@ qboolean mbInit( void *metalLayer )
 	r_metalLatePresent = ri.Cvar_Get( "r_metalLatePresent", "1", CVAR_LATCH );
 	r_metalPipelineCache = ri.Cvar_Get( "r_metalPipelineCache", "1", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalWakeGPU = ri.Cvar_Get( "r_metalWakeGPU", "1", 0 );
+	r_metalPacedMargin = ri.Cvar_Get( "r_metalPacedMargin", "1000", 0 );	// us, r_metalPacedPresent 2
 
 	if ( !mb_device ) {
 		mb_device = MTLCreateSystemDefaultDevice();
@@ -2128,9 +2383,10 @@ qboolean mbInit( void *metalLayer )
 		return qfalse;
 	}
 
-	ri.Printf( PRINT_ALL, "Metal: %s, %dx%d, %d frames in flight, %d drawables, vsync %s\n",
+	ri.Printf( PRINT_ALL, "Metal: %s, %dx%d, %d frames in flight, %d drawables, vsync %s%s\n",
 		mb_rendererString, mb_width, mb_height, mb_framesInFlight, (int)mb_layer.maximumDrawableCount,
-		mb_layer.displaySyncEnabled ? "on" : "off" );
+		mb_layer.displaySyncEnabled ? "on" : "off",
+		mb_paced == 2 ? ", paced presents at the deadline" : mb_paced ? ", paced presents" : "" );
 
 	return qtrue;
 }
@@ -2141,6 +2397,9 @@ qboolean mbInit( void *metalLayer )
 void mbShutdown( void )
 {
 	int i;
+
+	// no paced present may take a scene the shutdown commits half done
+	MB_StopPacedPresents();
 
 	// finish what was recorded, then wait for every frame in flight
 	MB_EndPass( qfalse );
@@ -2193,6 +2452,14 @@ void mbShutdown( void )
 				(double)mb_statCompletion / 1e6 / mb_statGPUFrames, (int)mb_statGPUFrames );
 		}
 		ri.Printf( PRINT_ALL, "Metal: %d GPU wake-ups before a frame (r_metalWakeGPU)\n", mb_statWakes );
+		if ( mb_paced && mb_statPacedUpdates ) {
+			ri.Printf( PRINT_ALL, "Metal: paced presents %d: %d link updates, %d presented, %d with no new frame, %d held by a "
+				"readback, %d past the deadline when the frame was taken; %d frames replaced before a present took them; "
+				"per update %.3f ms from the call to the deadline, %.3f ms from the deadline to the presentation\n",
+				mb_paced, mb_statPacedUpdates, mb_statPacedUpdates - mb_statPacedIdle - mb_statPacedHeld, mb_statPacedIdle,
+				mb_statPacedHeld, mb_statPacedLate, mb_statReplaced,
+				mb_statPacedAhead * 1e3 / mb_statPacedUpdates, mb_statPacedLead * 1e3 / mb_statPacedUpdates );
+		}
 	}
 	mb_statFrames = mb_statSkipped = 0;
 	mb_statLate = 0;
@@ -2203,6 +2470,10 @@ void mbShutdown( void )
 	mb_statGPUFrames = 0;
 	mb_statWakes = 0;
 	mb_statRingGrowths = 0;
+	mb_statReplaced = 0;
+	mb_statPacedUpdates = mb_statPacedIdle = mb_statPacedHeld = mb_statPacedLate = 0;
+	mb_statPacedAhead = mb_statPacedLead = 0.0;
+	mb_paced = 0;
 
 	mb_staticBuffer = nil;
 	mb_staticUsed = 0;
@@ -2323,7 +2594,7 @@ static void MB_LatencyTime( uint64_t seq, int which, CFTimeInterval t )
 /*
 ** MB_LatencyNotPresented
 **
-** A late present gave way to a newer frame: this frame was never presented.
+** A late present gave way to a newer frame, or a newer frame replaced a paced one: this frame was never presented.
 */
 static void MB_LatencyNotPresented( uint64_t seq )
 {
@@ -2429,9 +2700,9 @@ void mbEndFrame( void )
 		MB_EndPass( qfalse );
 		MB_BeginCommandBuffer();
 
-		// final pass into the drawable, if one is ready
+		// final pass into the drawable, if one is ready (paced presents: the display link's, later)
 		mb_statFrames++;
-		drawable = MB_TakeDrawable();
+		drawable = mb_paced ? nil : MB_TakeDrawable();
 		if ( mb_latePresent ) {
 			// the frame interval (smoothed), for late presents
 			uint64_t now = mach_absolute_time();
@@ -2471,11 +2742,15 @@ void mbEndFrame( void )
 			}];
 		}
 		MB_CommitUploads();
-		[mb_cmd commit];
+		if ( mb_paced ) {
+			MB_CommitPaced( latency );
+		} else {
+			[mb_cmd commit];
+		}
 		mb_lastSubmit = mach_absolute_time();
-		late = !drawable && MB_PostLatePresent( latency );
+		late = !drawable && !mb_paced && MB_PostLatePresent( latency );
 		if ( latency ) {
-			MB_LatencyCommitted( latency, drawable != nil || late );
+			MB_LatencyCommitted( latency, drawable != nil || late || mb_paced );
 		}
 		mb_lastCommitted = mb_cmd;
 		mb_cmd = nil;
