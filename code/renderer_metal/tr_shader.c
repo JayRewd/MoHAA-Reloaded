@@ -3342,6 +3342,27 @@ static shader_t *FinishShader( void ) {
 		}
 	}
 
+	// r_depthClamp (RB_DepthClampBatch; idea: JayRewd's Vulkan renderer): solid surfaces
+	// and the map's translucent ones (glass, marks) can be kept whole nearer than the near
+	// plane; the sky, portals and effects keep the near clipping. Per shader, so every pass
+	// of a surface gets the same and the depth-equal passes after the first one match
+	shader.depthClamp = DEPTHCLAMP_NONE;
+	if ( !shader.isSky && shader.sort >= SS_OPAQUE && shader.sort <= SS_BLEND6 ) {
+		if ( shader.sort <= SS_BANNER ) {
+			shader.depthClamp = DEPTHCLAMP_SOLID;
+		} else if ( shader.sort >= SS_UNDERWATER ) {
+			// blended by its sort, still solid when a stage writes depth
+			shader.depthClamp = DEPTHCLAMP_TRANSLUCENT;
+			for ( stage = 0; stage < shader.numUnfoggedPasses; stage++ ) {
+				if ( ( unfoggedStages[stage].stateBits & GLS_DEPTHMASK_TRUE )
+					&& !( unfoggedStages[stage].stateBits & GLS_DEPTHTEST_DISABLE ) ) {
+					shader.depthClamp = DEPTHCLAMP_SOLID;
+					break;
+				}
+			}
+		}
+	}
+
 	// determine which stage iterator function is appropriate
 	ComputeStageIteratorFunc();
 

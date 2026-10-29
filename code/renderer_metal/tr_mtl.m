@@ -359,6 +359,8 @@ static qboolean		mb_depthTest;
 static int			mb_depthFunc;
 static qboolean		mb_depthWrite;
 static double		mb_depthNear, mb_depthFar;
+static float		mb_depthFloor;						// mbDepthFloor
+static qboolean		mb_depthClamp;						// MB_DEPTH_CLAMP, applied with the full depth range only
 static qboolean		mb_alphaTest;
 static int			mb_alphaFunc;
 static float		mb_alphaRef;
@@ -431,6 +433,7 @@ static qboolean		mb_vsuClipPlaneOn, mb_vsuTransformValid;
 // what the current encoder has
 static uint32_t		mb_encPipelineKey;
 static void			*mb_encDepthStencil;
+static qboolean		mb_encDepthClamp;					// MTLDepthClipModeClamp (a new encoder clips)
 static mbFSUniforms_t	mb_encFSU;
 static qboolean		mb_encFSUValid;
 static void			*mb_encTexture[MB_MAX_UNITS], *mb_encSampler[MB_MAX_UNITS];
@@ -781,6 +784,7 @@ static void MB_InvalidateEncoderState( void )
 
 	mb_encPipelineKey = 0xffffffff;
 	mb_encDepthStencil = NULL;
+	mb_encDepthClamp = qfalse;
 	mb_encFSUValid = qfalse;
 	mb_encRing = nil;
 	mb_encSkin = nil;
@@ -1758,6 +1762,8 @@ static void MB_ResetState( void )
 	mb_depthWrite = qtrue;
 	mb_depthNear = 0.0;
 	mb_depthFar = 1.0;
+	mb_depthFloor = 0.0f;
+	mb_depthClamp = qfalse;
 	mb_alphaTest = qfalse;
 	mb_alphaFunc = MB_ALWAYS;
 	mb_alphaRef = 0.0f;
@@ -2899,6 +2905,9 @@ static void MB_SetCap( int cap, qboolean on )
 			mb_dirty |= MB_DIRTY_FSUNIFORMS;
 		}
 		break;
+	case MB_DEPTH_CLAMP:
+		mb_depthClamp = on;		// resolved per draw (MB_PrepareDraw)
+		break;
 	case MB_CLIP_PLANE0:
 		if ( mb_clipPlaneOn != on ) {
 			mb_clipPlaneOn = on;
@@ -2958,6 +2967,14 @@ void mbDepthRange( double zNear, double zFar )
 	if ( mb_depthNear != zNear || mb_depthFar != zFar ) {
 		mb_depthNear = zNear;
 		mb_depthFar = zFar;
+		mb_dirty |= MB_DIRTY_VIEWPORT;
+	}
+}
+
+void mbDepthFloor( float floor )
+{
+	if ( mb_depthFloor != floor ) {
+		mb_depthFloor = floor;
 		mb_dirty |= MB_DIRTY_VIEWPORT;
 	}
 }
@@ -3346,10 +3363,19 @@ static qboolean MB_PrepareDraw( void )
 		return qfalse;
 	}
 	if ( mb_dirty & MB_DIRTY_VIEWPORT ) {
-		MB_ApplyViewport( mb_depthNear, mb_depthFar );
+		MB_ApplyViewport( mb_depthNear == 0.0 && mb_depthFar == 1.0 ? mb_depthFloor : mb_depthNear, mb_depthFar );
 	}
 	if ( mb_dirty & MB_DIRTY_RASTER ) {
 		MB_ApplyRaster();
+	}
+	if ( mb_depthClamp || mb_encDepthClamp ) {
+		// clamped only with the full depth range, as r_depthClamp asks (the view weapon's and the sky's clip)
+		qboolean clamp = mb_depthClamp && mb_depthNear == 0.0 && mb_depthFar == 1.0;
+
+		if ( clamp != mb_encDepthClamp ) {
+			[mb_enc setDepthClipMode:clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
+			mb_encDepthClamp = clamp;
+		}
 	}
 	if ( mb_dirty & MB_DIRTY_STENCILREF ) {
 		[mb_enc setStencilReferenceValue:(uint32_t)mb_stencilRef & 0xff];
@@ -5121,6 +5147,7 @@ int mbDepthQuery( int x, int y, float depth )
 	position[0] = ( x + 0.5f ) * 2.0f / mb_width - 1.0f;
 	position[1] = ( y + 0.5f ) * 2.0f / mb_height - 1.0f;
 	position[2] = depth < 0.0f ? 0.0f : ( depth > 1.0f ? 1.0f : depth );
+	position[2] = mb_depthFloor + ( 1.0f - mb_depthFloor ) * position[2];	// the scene's full range (mbDepthFloor)
 	position[3] = 1.0f;
 
 	[mb_enc setRenderPipelineState:mb_queryPipeline];

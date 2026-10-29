@@ -106,6 +106,7 @@ extern "C" {
 #define MB_TEXTURE_2D					0x0DE1
 #define MB_CLIP_PLANE0					0x3000
 #define MB_POLYGON_OFFSET_FILL			0x8037
+#define MB_DEPTH_CLAMP					0x864F	// GL's depth clamp: only with the full depth range (mbDepthFloor)
 
 // client arrays
 #define MB_VERTEX_ARRAY					0x8074
@@ -240,6 +241,9 @@ void	mbBlendFunc( int sfactor, int dfactor );
 void	mbDepthFunc( int func );
 void	mbDepthMask( qboolean flag );
 void	mbDepthRange( double zNear, double zFar );
+// r_depthClamp: the full depth range [0, 1] starts at floor instead (the view weapon's depth hack range ends there),
+// so a surface MB_DEPTH_CLAMP keeps nearer than the near plane doesn't hide the weapon; depth queries follow it
+void	mbDepthFloor( float floor );
 void	mbAlphaFunc( int func, float ref );
 void	mbCullFace( int mode );
 void	mbPolygonMode( int face, int mode );

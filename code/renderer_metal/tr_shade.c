@@ -1946,6 +1946,7 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 */
 void RB_EndSurface( void ) {
 	shaderCommands_t *input;
+	qboolean clamp;
 
 	input = &tess;
 
@@ -2006,8 +2007,16 @@ void RB_EndSurface( void ) {
 
 	//
 	// call off to shader specific tess end function
+	// (r_depthClamp: surfaces nearer than the near plane kept whole, RB_DepthClampBatch)
 	//
+	clamp = r_depthClamp->integer && RB_DepthClampBatch();
+	if ( clamp ) {
+		mbEnable( MB_DEPTH_CLAMP );
+	}
 	tess.currentStageIteratorFunc();
+	if ( clamp ) {
+		mbDisable( MB_DEPTH_CLAMP );
+	}
 
 	if (!(tr.refdef.rdflags & RDF_NOWORLDMODEL) && !backEnd.in2D)
 	{

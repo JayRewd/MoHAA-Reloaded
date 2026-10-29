@@ -596,6 +596,40 @@ static void SetViewportAndScissor( void ) {
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
 }
 
+// the view weapon's depth range (RF_DEPTHHACK); with r_depthClamp the others' full range starts where it ends
+#define DEPTHHACK_FAR	0.3f
+
+// the batch being drawn is of sprites (RB_DepthClampBatch)
+static qboolean rb_spriteBatch;
+
+/*
+=================
+RB_DepthClampBatch
+
+Whether the batch RB_EndSurface draws is drawn with depth clamp (r_depthClamp; idea: JayRewd's
+Vulkan renderer). Near clipping cuts away what is nearer than r_znear, so a view leaning into a
+wall or a window would see through it; clamped, the surface stays whole at the nearest depth.
+1: the world's own surfaces (brushes, terrain), 2: also static models and entities, whose
+translucent surfaces other than static models' are effects. Never sprites, which a view passes
+through (one at the eye would fill the screen), the 2D drawing or views without the world. The
+view weapon's depth hack range isn't clamped (MB_DEPTH_CLAMP: the full range only)
+=================
+*/
+qboolean RB_DepthClampBatch( void ) {
+	int clamp = tess.shader->depthClamp;
+
+	if ( clamp == DEPTHCLAMP_NONE || backEnd.in2D || ( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) || rb_spriteBatch ) {
+		return qfalse;
+	}
+	if ( !backEnd.currentStaticModel && backEnd.currentEntity == &tr.worldEntity ) {
+		return qtrue;
+	}
+	if ( r_depthClamp->integer < 2 ) {
+		return qfalse;
+	}
+	return clamp == DEPTHCLAMP_SOLID || backEnd.currentStaticModel != NULL;
+}
+
 /*
 =================
 RB_BeginDrawingView
@@ -619,6 +653,9 @@ void RB_BeginDrawingView (void) {
 	// we will need to change the projection matrix before drawing
 	// 2D images again
 	backEnd.in2D = qfalse;
+
+	// a surface clamped to the nearest depth mustn't hide the view weapon (RB_DepthClampBatch)
+	mbDepthFloor( r_depthClamp->integer ? DEPTHHACK_FAR : 0.0f );
 
 	//
 	// set the modelview matrix for the viewer
@@ -754,6 +791,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			if (oldShader != NULL) {
 				RB_EndSurface();
 			}
+			rb_spriteBatch = *drawSurf->surface == SF_SPRITE;
 			RB_BeginSurface( shader );
 			oldShader = shader;
 			oldDlightMap = dlightMap;
@@ -807,7 +845,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			//
 			if ( oldDepthRange != depthRange ) {
 				if ( depthRange ) {
-					mbDepthRange (0, 0.3);
+					mbDepthRange (0, DEPTHHACK_FAR);
 				} else {
 					mbDepthRange (0, 1.0);
 				}
@@ -930,6 +968,7 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
 
     backEnd.currentEntity = &tr.worldEntity;
     backEnd.currentStaticModel = 0;
+	rb_spriteBatch = qtrue;
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
 	backEnd.ori = backEnd.viewParms.world;
@@ -957,7 +996,7 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
         if (oldDepthRange != depthRange)
         {
 			if (depthRange) {
-				mbDepthRange(0.0, 0.3);
+				mbDepthRange(0.0, DEPTHHACK_FAR);
 			} else {
                 mbDepthRange(0.0, 1.0);
 			}
@@ -974,6 +1013,7 @@ void RB_RenderSpriteSurfList(drawSurf_t* drawSurfs, int numDrawSurfs) {
 	if (oldShader) {
 		RB_EndSurface();
 	}
+	rb_spriteBatch = qfalse;
 
     // go back to the world modelview matrix
     mbLoadMatrixf(backEnd.viewParms.world.modelMatrix);

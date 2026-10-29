@@ -44,6 +44,7 @@ cvar_t	*r_ignore;
 cvar_t	*r_displayRefresh;
 
 cvar_t	*r_znear;
+cvar_t	*r_depthClamp;
 
 cvar_t	*r_skipBackEnd;
 
@@ -1281,6 +1282,9 @@ void R_Register( void )
 	r_flares = ri.Cvar_Get ("r_flares", "0", CVAR_ARCHIVE );
 	r_znear = ri.Cvar_Get( "r_znear", "4", CVAR_CHEAT );
 	ri.Cvar_CheckRange( r_znear, 0.001f, 200, qtrue );
+	// on and a cheat by default, as in the Vulkan renderer: no seeing through a wall the view leans into
+	r_depthClamp = ri.Cvar_Get( "r_depthClamp", "2", CVAR_CHEAT );
+	ri.Cvar_CheckRange( r_depthClamp, 0, 2, qtrue );
 	r_ignoreGLErrors = ri.Cvar_Get( "r_ignoreGLErrors", "1", CVAR_ARCHIVE );
 	r_fastsky = ri.Cvar_Get( "r_fastsky", "0", 0 );
 	r_fastdlights = ri.Cvar_Get("r_fastdlights", "0", CVAR_ARCHIVE | CVAR_LATCH);

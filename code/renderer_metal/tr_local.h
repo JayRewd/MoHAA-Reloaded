@@ -229,6 +229,11 @@ typedef struct image_s {
 
 //===============================================================================
 
+// shader_t.depthClamp
+#define DEPTHCLAMP_NONE			0		// near clipping kept: the sky, portals, effects
+#define DEPTHCLAMP_SOLID		1		// writes depth
+#define DEPTHCLAMP_TRANSLUCENT	2		// blended, of the map (glass, marks)
+
 typedef enum {
 	SS_BAD,
 	SS_PORTAL,			// mirrors, portals, viewscreens
@@ -538,6 +543,7 @@ typedef struct shader_s {
 	float		sort;					// lower numbered shaders draw before higher numbered
 	qboolean	alphaTestLast;			// SS_OPAQUE with an alpha-tested, depth-writing stage: sorted after
 										// the other SS_OPAQUE shaders (sort itself stays SS_OPAQUE)
+	int			depthClamp;				// DEPTHCLAMP_*: what r_depthClamp does with its surfaces (RB_DepthClampBatch)
 
 	qboolean	defaultShader;			// we want to return index 0 if the shader failed to
 										// load for some reason, but R_FindShader should
@@ -1449,6 +1455,7 @@ extern cvar_t	*r_verbose;				// used for verbose debug spew
 extern cvar_t	*r_ignoreFastPath;		// allows us to ignore our Tess fast paths
 
 extern cvar_t	*r_znear;				// near Z clip plane
+extern cvar_t	*r_depthClamp;			// 0 off, 1 the world's surfaces, 2 also models: kept whole nearer than r_znear (RB_DepthClampBatch)
 
 extern cvar_t	*r_colorbits;			// number of desired color bits, only relevant for fullscreen
 extern cvar_t	*r_textureDetails;
@@ -1952,6 +1959,7 @@ extern	shaderCommands_t	tess;
 
 void RB_BeginSurface(shader_t *shader );
 void RB_EndSurface(void);
+qboolean RB_DepthClampBatch( void );
 void RB_CheckOverflow( int verts, int indexes );
 #define RB_CHECKOVERFLOW(v,i) if (tess.numVertexes + (v) >= SHADER_MAX_VERTEXES || tess.numIndexes + (i) >= SHADER_MAX_INDEXES ) {RB_CheckOverflow(v,i);}
 
