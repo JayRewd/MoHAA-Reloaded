@@ -15,6 +15,7 @@
 - **Low input latency.** About 2 ms from reading the mouse to the screen, and smooth movement at any frame rate (`cl_movefps`, below).
 - **Fast.** On the benchmark demo the CPU's work per frame is 0.205 ms against GL1's 0.89–0.95 (4.5× less), the 99th percentile 0.48 ms against ~2.3.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's, except that backpedal and strafe move at the original game's speeds.
+- **Leaning in the campaign.** Allied Assault's single-player campaign lets you lean, as multiplayer does (the original game didn't).
 
 Needs an Apple Silicon Mac (M1 or later) with macOS 26 or later. Developed and measured on an M4 Mac mini with a 240 Hz display.
 
@@ -56,6 +57,8 @@ Change settings in the console (`seta name value`) or at launch (`--args +set na
 | `in_mouseRaw` | `1` | `1`: raw mouse deltas through GCMouse, no macOS acceleration. `0`: AppKit's mouse events. |
 | `r_borderlessWindow` | `0` | With `r_fullscreen 1` and `r_noborder 1`: `1` is a borderless window over the screen instead of a fullscreen Space (no slide animation when you switch apps). |
 | `cg_tauntsounds` | `1` | `0` mutes other players' taunts (the chat text stays, your own still play). |
+| `r_depthClamp` | `2` | **No seeing through walls you lean into.** The game cuts away whatever is nearer the eye than 4 units, so leaning into a wall or a window opened it up; now its surface stays whole. `1` the map's own surfaces only, `2` also doors, props and models, `0` stock. Effects and smoke are still cut. A cheat setting, as on the `vulkan` branch: it stays `2` online. |
+| `cl_nullbinds` | `0` | `1`: **the newest key wins** for forward and back, the two strafes and the two leans. Holding both no longer stops you: the key pressed last counts, and letting it go hands the move back to the one still held. Some communities count this as an unfair advantage (like Snap Tap keyboards): it's off unless you turn it on. |
 | `cl_latencyStats` | `0` | `1` prints input-to-screen times while you play. |
 
 **Upstream's, with new behavior or defaults:**
@@ -110,7 +113,7 @@ The install signs `install/lib/openmohaa/openmohaa.app` ad hoc (the game librari
 
 ## Looks and limits
 
-- **Looks like GL1**, except on purpose: foliage drawn after walls (a few tie pixels), all of 32+ dynamic lights lighting the world (MOHAA lit nothing on arm64), doors and lifts lit by every dynamic light, models at full detail, the chat and game messages kept clear of the compass at every resolution, and `r_gamma` applied in the final pass instead of the display's gamma table.
+- **Looks like GL1**, except on purpose: foliage drawn after walls (a few tie pixels), all of 32+ dynamic lights lighting the world (MOHAA lit nothing on arm64), doors and lifts lit by every dynamic light, models at full detail, walls and windows you lean into kept whole (`r_depthClamp`), the chat and game messages kept clear of the compass at every resolution, and `r_gamma` applied in the final pass instead of the display's gamma table.
 - **Tested on one Mac.** Reports from other Macs and ProMotion displays are welcome.
 - **Not notarized**, hence the quarantine step.
 - **At low frame caps** (about 60 or less) with `cl_movefps` on, the game keeps a CPU core busy between frames to send each command on time.
