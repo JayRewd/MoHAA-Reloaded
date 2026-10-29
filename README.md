@@ -83,6 +83,8 @@ seta r_fullscreen 1
 | `s_ambientvolume` | `1` | `0` turns the soundtrack off entirely: no song is opened or played. |
 | `cg_tauntsounds` | `1` (new) | `0` turns other players' taunts off: they aren't played at all (the chat text stays); your own still play. |
 | `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` (new) | The crosshair, drawn as boxes in HUD pixels: by default the stock image's shape, in one draw. |
+| `r_depthClamp` | `2` (new) | **No seeing through walls you lean into.** The game cut away whatever was nearer the eye than 4 units, so leaning into a wall or a window opened it up; now its surface stays whole. `1` only the map's own surfaces, `0` stock. A cheat setting: it stays `2` online. |
+| `cl_nullbinds` | `0` (new) | `1`: opposing keys (forward and back, left and right, lean left and lean right) never cancel out: the newest press wins, and releasing it hands control back to the other. Some communities count this as an unfair advantage (like Snap Tap keyboards). |
 | `ui_console` | `1` (`0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (`1`) | `1` plays the intro videos at startup. |
 
@@ -108,8 +110,7 @@ seta r_fullscreen 1
 | `r_hdrOutput` | `0` | `1`: **HDR output** (HDR10 or scRGB) when the display is in HDR mode; with `r_temporal 1` the 3D view's bright parts reach toward `r_hdrPeak` (`1000` nits). `2`: the same look on an SDR display. `r_hdrPaperWhite` and `r_hdrBlack` set white and black; takes effect after `vid_restart`. |
 | `r_hdrOutputTest` | `0` | `1` opens the HDR calibration screens: a slider for the black level, then one for the peak. |
 | `r_saturation` | `1.1` | The 3D view's saturation with `r_temporal 1`; `1` is unchanged. |
-| `cl_nullbinds` | `0` | `1`: opposing keys (forward and back, left and right, lean left and lean right) never cancel out: the newest press wins, and releasing it hands control back to the other. |
-| `g_splean` | `0` | `1` allows leaning in the Allied Assault single-player campaign, 40 degrees as in multiplayer. Nothing else changes. |
+| `g_splean` | `0` | `1` allows leaning in the Allied Assault single-player campaign, 40 degrees as in multiplayer. Nothing else changes. (On `metal` the campaign always allows it, with no setting.) |
 
 ### Commands
 
