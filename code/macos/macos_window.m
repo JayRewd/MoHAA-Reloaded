@@ -39,7 +39,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //   with r_borderlessWindow 1 a borderless window over the screen at the normal level, the dock and menu bar
 //   hidden while the game is in front (no Space animation when switching away or at vid_restart).
 // Both fullscreen modes go direct to display (the compositor is bypassed) and have no window shadow: a shadow needs
-// an offscreen pass over the layer, so the layer can't go direct.
+// an offscreen pass over the layer, so the layer can't go direct. r_metalComposited 1 (an experiment, docs/
+// METAL_PORT_PLAN.md 3.2 "Added in session 79") keeps the shadow, so the WindowServer composites the game as it
+// composited GL1's fullscreen; with r_metalPacedPresent that is GL1's way of showing frames, a refresh or so later.
 //
 // Direct to display, the WindowServer holds the game's flips while it handles other applications' frames on the
 // other displays, and frames are replaced before they show (docs/METAL_PORT_PLAN.md 2, session 26, session 39). With
@@ -113,6 +115,7 @@ cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 fo
 cvar_t *r_metalPacedPresent; // 1 = one present per refresh, the newest frame (tr_mtl.m); 2 = that frame taken at the deadline
 static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
 static cvar_t *r_blackOutDisplays; // 1 = the other displays covered black while the game is in fullscreen in front
+static cvar_t *r_metalComposited; // 1 = fullscreen through the compositor (the window's shadow kept), never direct
 
 static void MTLimp_EnterExclusive( void );
 static void MTLimp_LeaveExclusive( qboolean minimize );
@@ -1354,7 +1357,10 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	}
 	if( mac_windowMode != MAC_WINDOWED )
 	{
-		mac_window.hasShadow = NO;
+		// r_metalComposited: the shadow's offscreen pass keeps the layer from going direct to display
+		mac_window.hasShadow = r_metalComposited->integer ? YES : NO;
+		if( r_metalComposited->integer )
+			ri.Printf( PRINT_ALL, "r_metalComposited: through the compositor, not direct to display\n" );
 	}
 	if( mac_windowMode == MAC_EXCLUSIVE )
 	{
@@ -1535,6 +1541,7 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalPacedPresent = ri.Cvar_Get( "r_metalPacedPresent", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	r_metalComposited = ri.Cvar_Get( "r_metalComposited", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	// not latched: MTLimp_EndFrame puts the covers up or down at once
 	r_blackOutDisplays = ri.Cvar_Get( "r_blackOutDisplays", "0", CVAR_ARCHIVE );
 
