@@ -103,6 +103,8 @@ static qboolean				mac_modeSwitched;		// mac_exclusiveMode is set on the display
 static qboolean				mac_exclusiveActive;	// the exclusive window is up (not minimized for a focus loss)
 static NSMutableArray<MacOSCoverWindow *>	*mac_covers;	// r_blackOutDisplays: one per other display, kept for reuse
 static qboolean				mac_inDialog;			// between MacOS_DialogBegin and MacOS_DialogEnd: no covers
+static int					mac_coversLogged = -1;	// the number of covered displays last logged
+static qboolean				mac_spaceLogged;		// the Space's own blanking logged
 
 cvar_t *r_allowResize; // make window resizable
 cvar_t *r_centerWindow;
@@ -760,7 +762,19 @@ static qboolean MTLimp_WantCovers( void )
 	case MAC_DESKTOPWINDOW:
 		return qtrue;
 	case MAC_SPACE:
-		return ( mac_window.styleMask & NSWindowStyleMaskFullScreen ) && NSScreen.screensHaveSeparateSpaces;
+		if( !( mac_window.styleMask & NSWindowStyleMaskFullScreen ) )
+			return qfalse;
+		if( !NSScreen.screensHaveSeparateSpaces )
+		{
+			if( !mac_spaceLogged )
+			{
+				ri.Printf( PRINT_ALL, "r_blackOutDisplays: the Space blanks the other displays itself (the displays "
+					"share their Spaces)\n" );
+				mac_spaceLogged = qtrue;
+			}
+			return qfalse;
+		}
+		return qtrue;
 	default:
 		return qfalse;
 	}
@@ -879,6 +893,12 @@ static void MTLimp_UpdateCovers( void )
 			[mac_covers removeLastObject];
 		}
 	}
+
+	if( (int)used != mac_coversLogged )
+	{
+		ri.Printf( PRINT_ALL, "r_blackOutDisplays: %d other display%s covered\n", (int)used, used == 1 ? "" : "s" );
+		mac_coversLogged = (int)used;
+	}
 }
 
 /*
@@ -894,6 +914,8 @@ static void MTLimp_DestroyCovers( void )
 		[cover close];
 	}
 	mac_covers = nil;
+	mac_coversLogged = -1;
+	mac_spaceLogged = qfalse;
 }
 
 /*
