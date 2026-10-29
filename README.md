@@ -14,7 +14,7 @@
 - **Native macOS.** The window, keyboard and mouse are AppKit and GCMouse (raw mouse input), and the sound is the port's own mixer on Core Audio, playing MOHAA's sound as the PC original did. No SDL, no OpenAL.
 - **Low input latency.** About 2 ms from reading the mouse to the screen, and smooth movement at any frame rate (`cl_movefps`, below).
 - **Fast.** On the benchmark demo the CPU's work per frame is 0.205 ms against GL1's 0.89–0.95 (4.5× less), the 99th percentile 0.48 ms against ~2.3.
-- **Same game online.** The network protocol, the server-side game code and the data formats are upstream's.
+- **Same game online.** The network protocol, the server-side game code and the data formats are upstream's, except that backpedal and strafe move at the original game's speeds.
 
 Needs an Apple Silicon Mac (M1 or later) with macOS 26 or later. Developed and measured on an M4 Mac mini with a 240 Hz display.
 
@@ -81,6 +81,7 @@ In exclusive fullscreen, anything animating on another display costs frames (abo
 ## Online
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
+- Backpedal and strafe move at the original game's speeds (upstream OpenMoHAA's are 25% and 18% faster), in this client's prediction and on a server it hosts. Your movement then matches stock MOHAA servers and servers with the same fix ([openmohaa-server](https://github.com/pstngh/openmohaa-server)); on an upstream OpenMoHAA server, the server corrects you slightly while you backpedal or strafe, until upstream changes too.
 - With `cl_movefps` on, a server receives one command per step, each exactly one step long: the steps a stock client at that rate sends on average. A shot or jump with `cl_movesubgrid` splits one step in two (4 + 4 ms at 125, as a stock client at 250 frames a second sends all the time).
 - No GUID: this client sends no `cl_guid`, as the original game's clients don't. Servers that track players by GUID see you without one.
 - No dedicated server is shipped (`-DBUILD_SERVER=ON` builds `omohaaded` for local tests). For servers, use upstream's builds.
