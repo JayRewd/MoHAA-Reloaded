@@ -532,10 +532,13 @@ void CG_PredictPlayerState(void)
         cg_pmove.leanSpeed = 2.f;
     } else {
         cg_pmove.alwaysAllowLean = qtrue;
-        if (cgs.gametype != GT_SINGLE_PLAYER) {
+        if (cgs.gametype != GT_SINGLE_PLAYER || cgs.localServer) {
+            // Changed in the Metal port: single-player leans as multiplayer
+            // does on this build's own server (Player::SetMoveInfo)
             cg_pmove.leanMax = 40.f;
         } else {
-            // Don't allow lean in single-player, like in the original game
+            // Don't allow lean in single-player, like in the original game:
+            // a remote single-player server may be stock
             cg_pmove.leanMax = 0;
         }
 

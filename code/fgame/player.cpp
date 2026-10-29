@@ -3731,12 +3731,11 @@ void Player::SetMoveInfo(pmove_t *pm, usercmd_t *ucmd)
         pm->leanSpeed        = 2.f;
     } else {
         pm->alwaysAllowLean = qtrue;
-        if (g_gametype->integer != GT_SINGLE_PLAYER) {
-            pm->leanMax = 40.f;
-        } else {
-            // Don't allow lean in single-player, like in the original game
-            pm->leanMax = 0;
-        }
+        // The original game doesn't allow lean in single-player (leanMax 0).
+        // Changed in the Metal port (idea: JayRewd's g_splean): single-player
+        // leans as multiplayer does; cgame predicts it only while this server
+        // is local (cg_predict.c)
+        pm->leanMax = 40.f;
 
         pm->leanAdd          = 10.f;
         pm->leanRecoverSpeed = 15.f;
