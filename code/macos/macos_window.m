@@ -109,8 +109,7 @@ static qboolean				mac_spaceLogged;		// the Space's own blanking logged
 cvar_t *r_allowResize; // make window resizable
 cvar_t *r_centerWindow;
 cvar_t *r_displayIndex; // display to open the window on (0 = main)
-cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen or paced presents, else 2)
-cvar_t *r_metalPacedPresent; // 1 = one present per refresh, the newest frame (tr_mtl.m); 2 = that frame taken at the deadline
+cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen, else 2)
 static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
 static cvar_t *r_blackOutDisplays; // 1 = the other displays covered black while the game is in fullscreen in front
 
@@ -1382,15 +1381,12 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	mac_layer.opaque = YES;
 	// Fullscreen goes direct to display, and there vsync with 2 drawables ran the game at half the refresh rate
 	// (125 fps at 240 Hz: every frame waited ~7 ms for a drawable). 3 keep the full rate at the same latency.
-	// Without vsync 2 are better: with 3, more presented frames are never shown and latency goes up. Paced presents
-	// (r_metalPacedPresent) are synced to the display whatever r_swapInterval says, one present per refresh, so a
-	// third drawable queues nothing: it is there for the display link, which asks for the next refresh's drawable
-	// while the one on screen and the one presented for this refresh are both still held.
+	// Without vsync 2 are better: with 3, more presented frames are never shown and latency goes up.
 	if( r_metalDrawables->integer == 2 || r_metalDrawables->integer == 3 )
 		mac_layer.maximumDrawableCount = r_metalDrawables->integer;
 	else
-		mac_layer.maximumDrawableCount = r_metalPacedPresent->integer || ( fullscreen && r_swapInterval->integer ) ? 3 : 2;
-	mac_layer.displaySyncEnabled = r_swapInterval->integer || r_metalPacedPresent->integer ? YES : NO;
+		mac_layer.maximumDrawableCount = fullscreen && r_swapInterval->integer ? 3 : 2;
+	mac_layer.displaySyncEnabled = r_swapInterval->integer ? YES : NO;
 	mac_layer.presentsWithTransaction = NO;
 	mac_layer.drawableSize = CGSizeMake( drawableWidth, drawableHeight );
 
@@ -1533,7 +1529,6 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_centerWindow = ri.Cvar_Get( "r_centerWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_displayIndex = ri.Cvar_Get( "r_displayIndex", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_metalDrawables = ri.Cvar_Get( "r_metalDrawables", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	r_metalPacedPresent = ri.Cvar_Get( "r_metalPacedPresent", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	// not latched: MTLimp_EndFrame puts the covers up or down at once
 	r_blackOutDisplays = ri.Cvar_Get( "r_blackOutDisplays", "0", CVAR_ARCHIVE );
