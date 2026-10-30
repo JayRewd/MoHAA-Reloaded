@@ -9071,6 +9071,14 @@ selects the sample count (see Implementation notes).
     setup still reads the whole view's color (a tile without blur may be
     gathered by its neighbours: knowing which ones needs the tiles first),
     and the gather takes as many samples for a small blur as for a large one.
+    Then the view weapon told from the depth alone where there is a depth
+    floor (`r_depthClamp`, 2 by default: the weapon's depth range ends at
+    the floor), the normals read only without one: 0.574 to 0.560 ms with
+    the anti-aliasing, the frames (`mohdm6`, `hud` with the weapon) the
+    same to the bit. One view distance image made by the anti-aliasing for
+    the depth of field's passes (the plan) would have saved no more than
+    that read (0.014 ms, measured by leaving the class out) and added a
+    full resolution write: not made.
 - **HDR output (Plan 43).** `r_hdrOutput` (latched; `vk_output.c`,
   `shaders/output.frag`).
   - *Why not HDR rendering.* The plan before it kept the lightmaps in
@@ -10401,6 +10409,8 @@ Done:
     kept. Why its gather seemed slower reading the anti-aliased scene:
     not the image nor its layout (the same time reading the scene's
     color); nothing changed.
+    The depth of field's weapon from the depth where there is a depth
+    floor (no normals read): 0.574 to 0.560 ms, the frames to the bit.
     The anti-aliasing (see Implementation notes, Temporal anti-aliasing,
     Cost): the history's texel alone where a still camera puts it on a
     texel's center: 0.378 to 0.358 ms still, 0.338 to 0.329 turning; the
