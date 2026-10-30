@@ -8553,7 +8553,11 @@ selects the sample count (see Implementation notes).
     (nothing: the flags are read again at the nearest pixel), a 1-byte
     buffer of the flags and the class instead of the normals (0.004 ms:
     the scene's writes cost by the render target, not by its bytes; 0.025
-    without that target, which would need the motion flag elsewhere), a
+    without that target, which would need the motion flag elsewhere; Plan
+    49 tried that: without the normals target, every draw that writes depth
+    without blending writing the motion vectors instead (the motion flag
+    a value of them, the weapon from the depth floor), the frame took 0.015
+    ms longer still and 0.014 turning: not made), a
     10-bit scene (`A2B10G10R10`; the alpha isn't read: destination alpha
     blends are ONE and ZERO, `vk_pipeline.c`; no added shimmer, but 0.05 ms
     instead of 0.08 saved: 0.336 ms). Plan 49 (2560x1440, interleaved runs
@@ -8944,7 +8948,11 @@ selects the sample count (see Implementation notes).
     composite then shows `dofResult` (its binding 11) in the tiles whose
     3 x 3 have blur (`dofNeighbor`, binding 12; `Shown`, the tile size in
     `dof` of its push constants), the sharp scene elsewhere, and the
-    motion blur gathers the same: the defocused scene. The apply pass
+    motion blur gathers the same: the defocused scene. That choice is a
+    specialization constant of the composite (`DEPTH_OF_FIELD`,
+    `compositeDofPipeline`, `compositeDofBlurPipeline`): as a branch on
+    the push constants it made the motion blur's gather 0.022 ms slower
+    without the depth of field (2560x1440, turning). The apply pass
     writes those tiles only (before Plan 49 it copied the sharp scene into
     the others, which the composite then read). The sharpening
     (`r_taaSharpen`, 0.8 by default) stays in the composite, for the
@@ -10411,10 +10419,24 @@ Done:
     color); nothing changed.
     The depth of field's weapon from the depth where there is a depth
     floor (no normals read): 0.574 to 0.560 ms, the frames to the bit.
+    The depth of field's choice in the composite a specialization
+    constant: its first version, a branch on the push constants, made the
+    motion blur's gather 0.022 ms slower without the depth of field
+    (turning with the anti-aliasing 0.538 to 0.560 ms, found in the end
+    to end run), which the steps after it had hidden; as a constant
+    0.543 to 0.521 against the start of the plan.
     The anti-aliasing (see Implementation notes, Temporal anti-aliasing,
     Cost): the history's texel alone where a still camera puts it on a
     texel's center: 0.378 to 0.358 ms still, 0.338 to 0.329 turning; the
     tile packed in half floats measured slower, not kept.
+    The temporal path's normals target, for `r_aoNormals 0`: first
+    measured without it, the motion vectors written by every surface in
+    its place: 0.015 ms slower (see Implementation notes, Temporal
+    anti-aliasing, Cost); not made. On the way: the sky is never class 3
+    (`r_temporalShow 3`, `dm/mohdm6` looking up: a fifth of the view class
+    0, none 3: the sky shaders write no depth, so they write no class),
+    so HDR output's and the HDR look's sky expansion (`r_hdrSkyBoost`)
+    never applies; at its default 1 that changes nothing. Left as it is.
 
 Remaining:
 

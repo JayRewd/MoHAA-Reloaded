@@ -65,7 +65,7 @@ layout(push_constant) uniform Push {
 	vec4	hdrA;		// HDR output's expansion: knee, b, the sky's b, the peak over paper white
 	vec4	hdrB;		// the boost of what is above 1, r_saturation, 1 HDR expansion / 2 the HDR look in SDR / 0 none, r_hdrBlack for the look (VK_OutputExpansion)
 	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality), 0, 0
-	ivec4	dof;		// the depth of field's tile size (0: its passes didn't run), 1: r_temporalShow 13 (its result everywhere), 1: the ambient occlusion at half resolution (r_aoHalfRes), 0
+	ivec4	dof;		// the depth of field's tile size (DEPTH_OF_FIELD), 1: r_temporalShow 13 (its result everywhere), 1: the ambient occlusion at half resolution (r_aoHalfRes), 0
 	vec4	dofScale;	// 1 / its tile size, 0, 0, 0
 } pc;
 
@@ -73,6 +73,10 @@ layout(push_constant) uniform Push {
 layout(constant_id = 0) const bool HDR_EXPAND = false;
 // r_motionBlur: the pipeline blurs the scene (vk_temporal.c, compositeBlurPipeline)
 layout(constant_id = 1) const bool MOTION_BLUR = false;
+// r_dof: the depth of field's result is shown where it blurs (Shown). A
+// constant: as a uniform branch on pc.dof the motion blur's gather took
+// 0.022 ms longer without the depth of field (2560x1440, turning)
+layout(constant_id = 2) const bool DEPTH_OF_FIELD = false;
 
 layout(location = 0) out vec4 out_color;
 
@@ -98,13 +102,13 @@ vec4 ShownIn( ivec2 q, bool dof ) {
 
 // the same for a pixel whose tile isn't known
 vec4 Shown( ivec2 q ) {
-	return ShownIn( q, pc.dof.x != 0 && DofTileShown( DofTile( q ) ) );
+	return ShownIn( q, DEPTH_OF_FIELD && DofTileShown( DofTile( q ) ) );
 }
 
 // for a neighbour of a pixel whose tile is t, shown as dof says: its own
 // tile looked up only when it is another one
 vec4 ShownNear( ivec2 q, ivec2 t, bool dof ) {
-	if ( pc.dof.x != 0 ) {
+	if ( DEPTH_OF_FIELD ) {
 		ivec2 tq = DofTile( q );
 
 		if ( tq != t ) {
@@ -352,8 +356,8 @@ void main() {
 
 		c = vec3( max( v.x, 0.0 ), max( v.y, 0.0 ), max( -v.x, 0.0 ) + max( -v.y, 0.0 ) );
 	} else {
-		ivec2 tile = DofTile( p );
-		bool dof = pc.dof.x != 0 && DofTileShown( tile );
+		ivec2 tile = DEPTH_OF_FIELD ? DofTile( p ) : ivec2( 0 );
+		bool dof = DEPTH_OF_FIELD && DofTileShown( tile );
 		vec4 cs = ShownIn( p, dof );
 		// the depth of field's blur isn't sharpened
 		float sharpen = pc.sharpen * cs.a;

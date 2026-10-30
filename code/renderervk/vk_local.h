@@ -1030,6 +1030,7 @@ typedef struct {
 	VkShaderModule	prepareShader, hizShader, hizTailShader, compositeVertexShader, compositeFragmentShader;
 	VkPipeline		preparePipeline, hizPipeline, hizTailPipeline, compositePipeline;
 	VkPipeline		compositeBlurPipeline;	// the same with the motion blur's gather (MOTION_BLUR)
+	VkPipeline		compositeDofPipeline, compositeDofBlurPipeline;	// both showing the depth of field's result (DEPTH_OF_FIELD)
 	VkDescriptorPool	pool;
 	VkDescriptorSet	prepareSets[VK_MAX_FRAMES];
 	VkDescriptorSet	hizSets[VK_TEMPORAL_HISTORY][VK_TEMPORAL_MAX_PASSES];

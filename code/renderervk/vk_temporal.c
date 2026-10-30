@@ -1012,10 +1012,10 @@ static VkPipeline VK_TemporalAoHalfPipeline( VkShaderModule module ) {
 // the scene into the frame's color target: a triangle over the framebuffer
 // in vk.renderPass, no vertex input, no depth test, no blending; with
 // motionBlur the motion blur's gather (MOTION_BLUR)
-static VkPipeline VK_TemporalCompositePipeline( VkBool32 motionBlur ) {
-	VkSpecializationMapEntry specEntries[2];
+static VkPipeline VK_TemporalCompositePipeline( VkBool32 motionBlur, VkBool32 dof ) {
+	VkSpecializationMapEntry specEntries[3];
 	VkSpecializationInfo specInfo;
-	VkBool32 specData[2];
+	VkBool32 specData[3];
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly;
@@ -1042,13 +1042,17 @@ static VkPipeline VK_TemporalCompositePipeline( VkBool32 motionBlur ) {
 	// HDR output: the scene expanded toward the display's peak
 	specData[0] = vko.enabled ? VK_TRUE : VK_FALSE;
 	specData[1] = motionBlur;
+	specData[2] = dof;
 	specEntries[0].constantID = 0;
 	specEntries[0].offset = 0;
 	specEntries[0].size = sizeof( VkBool32 );
 	specEntries[1].constantID = 1;
 	specEntries[1].offset = sizeof( VkBool32 );
 	specEntries[1].size = sizeof( VkBool32 );
-	specInfo.mapEntryCount = 2;
+	specEntries[2].constantID = 2;
+	specEntries[2].offset = 2 * sizeof( VkBool32 );
+	specEntries[2].size = sizeof( VkBool32 );
+	specInfo.mapEntryCount = 3;
 	specInfo.pMapEntries = specEntries;
 	specInfo.dataSize = sizeof( specData );
 	specInfo.pData = specData;
@@ -1430,8 +1434,10 @@ void VK_TemporalInitPipelines( void ) {
 	vkt.preparePipeline = VK_TemporalComputePipeline( vkt.prepareShader, vkt.prepareLayout );
 	vkt.hizPipeline = VK_TemporalComputePipeline( vkt.hizShader, vkt.hizLayout );
 	vkt.hizTailPipeline = VK_TemporalComputePipeline( vkt.hizTailShader, vkt.hizLayout );
-	vkt.compositePipeline = VK_TemporalCompositePipeline( VK_FALSE );
-	vkt.compositeBlurPipeline = VK_TemporalCompositePipeline( VK_TRUE );
+	vkt.compositePipeline = VK_TemporalCompositePipeline( VK_FALSE, VK_FALSE );
+	vkt.compositeBlurPipeline = VK_TemporalCompositePipeline( VK_TRUE, VK_FALSE );
+	vkt.compositeDofPipeline = VK_TemporalCompositePipeline( VK_FALSE, VK_TRUE );
+	vkt.compositeDofBlurPipeline = VK_TemporalCompositePipeline( VK_TRUE, VK_TRUE );
 	vkt.taaShader = VK_CreateShaderModule( vk_spirv_taa_resolve_comp, vk_spirv_taa_resolve_comp_size );
 	vkt.taaPipeline = VK_TemporalComputePipeline( vkt.taaShader, vkt.taaLayout );
 
@@ -1540,6 +1546,7 @@ void VK_TemporalShutdownPipelines( void ) {
 	VkPipeline *pipelines[] = { &vkt.preparePipeline, &vkt.hizPipeline, &vkt.hizTailPipeline, &vkt.compositePipeline, &vkt.taaPipeline,
 		&vkt.aoPrefilterPipeline, &vkt.aoMainPipelines[0], &vkt.aoMainPipelines[1], &vkt.aoMainPipelines[2], &vkt.aoMainPipelines[3],
 		&vkt.aoTemporalPipeline, &vkt.aoDenoisePipeline, &vkt.aoApplyPipeline, &vkt.compositeBlurPipeline, &vkt.mbTilesPipeline,
+		&vkt.compositeDofPipeline, &vkt.compositeDofBlurPipeline,
 		&vkt.aoMainHalfPipelines[0], &vkt.aoMainHalfPipelines[1], &vkt.aoMainHalfPipelines[2], &vkt.aoMainHalfPipelines[3],
 		&vkt.aoPrefilterHalfPipeline, &vkt.aoTemporalHalfPipeline, &vkt.aoDenoiseHalfPipeline, &vkt.aoUpsamplePipeline,
 		&vkt.mbNeighborPipeline, &vkt.dofFocusPipeline, &vkt.dofSetupPipeline, &vkt.dofNeighborPipeline, &vkt.dofGatherPipeline,
@@ -2478,6 +2485,7 @@ The caller rebinds what it draws with next
 */
 void VK_TemporalComposite( VkCommandBuffer cmd ) {
 	vkCompositePush_t push;
+	qboolean blur;
 	VkViewport viewport;
 	VkRect2D scissor;
 
@@ -2510,8 +2518,9 @@ void VK_TemporalComposite( VkCommandBuffer cmd ) {
 	push.dofScale[0] = 1.0f / vkt.dofTileSize;
 	push.dof[2] = vkt.aoOn && vkt.aoHalf ? 1 : 0;
 
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.mbRan && vkt.mbBlur && !( vkt.dofRan && vkt.dofShow )
-		? vkt.compositeBlurPipeline : vkt.compositePipeline );
+	blur = vkt.mbRan && vkt.mbBlur && !( vkt.dofRan && vkt.dofShow );
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.dofRan ? ( blur ? vkt.compositeDofBlurPipeline : vkt.compositeDofPipeline )
+		: blur ? vkt.compositeBlurPipeline : vkt.compositePipeline );
 	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.compositeLayout, 0, 1,
 		vkt.taaRan ? &vkt.compositeTaaSets[vkt.current] : &vkt.compositeSets[vkt.current],
 		0, NULL );
