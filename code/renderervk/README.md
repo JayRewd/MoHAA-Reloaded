@@ -810,7 +810,8 @@ below are done.
   the frames are the build before's to the bit, with and without the
   anti-aliasing, and with it on so is what is in focus. Cost on the RTX
   4070 Ti, GPU time a frame in `dm/mohdm6` at 2560x1440 with the
-  anti-aliasing: 0.26 ms. See Implementation notes, Depth of field
+  anti-aliasing: 0.26 ms, 0.22 since Plan 49. See Implementation notes,
+  Depth of field
 - the anti-aliasing's gaps (2026-10-30, Plan 48, the renderer; the user's
   request: fix the gaps in the TAA). With `r_taa 1`: the effects shader's
   deforms move the vertexes in the motion vectors too, so the swaying
@@ -8877,11 +8878,15 @@ selects the sample count (see Implementation notes).
     `dofTile`, `dofNeighbor` (RG16F, a texel a tile), `dofResult`
     (RGBA16F, the framebuffer's size). `VK_TemporalResolve` runs its five
     passes after the anti-aliasing and before the motion blur; the
-    composite then binds `compositeDofSets` (`dofResult` as its color),
-    so the motion blur gathers the defocused scene. The sharpening
+    composite then shows `dofResult` (its binding 11) in the tiles whose
+    3 x 3 have blur (`dofNeighbor`, binding 12; `Shown`, the tile size in
+    `dof` of its push constants), the sharp scene elsewhere, and the
+    motion blur gathers the same: the defocused scene. The apply pass
+    writes those tiles only (before Plan 49 it copied the sharp scene into
+    the others, which the composite then read). The sharpening
     (`r_taaSharpen`, 0.8 by default) stays in the composite, for the
-    pixels the apply pass left as they were (`dofResult`'s alpha 1,
-    `mb.z` of its push constants): in focus the frames are those without
+    pixels the apply pass left as they were (`dofResult`'s alpha 1, and
+    the tiles it didn't write): in focus the frames are those without
     the depth of field to the bit, and the blur isn't sharpened (it would
     show the gather's noise). Sharpening in the apply pass instead, as
     first done, rounded the sharpened color to half floats in
@@ -8929,7 +8934,9 @@ selects the sample count (see Implementation notes).
     largest of the 3 x 3 tiles around each into `dofNeighbor`.
   - *Gather* (`GATHER`, half resolution). A golden angle spiral of 16, 32
     or 48 samples (`r_dofQuality`), turned by an interleaved gradient noise
-    fixed per texel. The background over the texel's own blur, a sample
+    fixed per texel (one `cos` and `sin` a texel; each sample's direction
+    is the last one's turned by the golden angle, its radius r sqrt((i +
+    0.5) / n): no `sin`, `cos` and division a sample since Plan 49). The background over the texel's own blur, a sample
     counting where it is background and what of min(its blur, the texel's)
     reaches the offset (with a texel of slack): what is behind doesn't
     spread over what is less blurred in front of it, and what is in focus
@@ -8938,11 +8945,18 @@ selects the sample count (see Implementation notes).
     reaches the texel, R the gather's radius and r its own: the share of
     its disc that the sample stands for, which sums to its opacity (1
     inside a blurred object, about half at its edge). A tile without blur
-    reads one texel.
-  - *Apply* (`APPLY`, the views' pixels). Where the tile has no blur, or on
-    the weapon, the sharp scene unchanged. Else the 3 x 3 half-resolution
-    texels around the nearest, a tent of 1.5 texels (which smooths the
-    gather's noise): the background from the texels that are background
+    reads one texel. `dofFar` holds the background premultiplied by the
+    texel's share of background (its blur less half a pixel, clamped to 0
+    to 1: what the apply pass's tent weighs it with), `dofNear` the
+    foreground by its opacity, so the apply pass can filter both.
+  - *Apply* (`APPLY`, the views' pixels). Where the tile has no blur
+    around it nothing is written (the composite shows the sharp scene
+    there); on the weapon the sharp scene unchanged. Else the 3 x 3
+    half-resolution texels around the nearest, a tent of 1.5 texels (which
+    smooths the gather's noise), as 2 x 2 bilinear taps of each image
+    (`vkt.linearSampler`, bindings 10 and 11; on each axis the texels' weights
+    0.5 - f, 1.5 - |f|, 0.5 + f, the middle one split between the two taps
+    as the outer ones are; 27 loads before Plan 49): the background from the texels that are background
     only (no edge of what is in focus bleeds into it), put over the pixel
     by smoothstep(0.5, 2) of its own blur; the foreground over that by its
     opacity, at least smoothstep(0.5, 2) of the pixel's own foreground blur
@@ -8978,9 +8992,22 @@ selects the sample count (see Implementation notes).
     2560x1440 with the anti-aliasing, `perf.py`, 3 runs, a third of the
     view blurred): 0.392 ms without, 0.650 at quality 1 (0.624 and 0.695
     at quality 0 and 2 with the sharpening still in the apply pass, which
-    cost about 0.01). Not optimized yet: the apply pass reads 27 texels a
-    blurred pixel at full resolution, and the passes run over the whole
-    view even where nothing is blurred.
+    cost about 0.01). Plan 49 (`perf.py`, 3 runs a build, interleaved; the
+    temporal path with the anti-aliasing 0.374 ms there): 0.256 to 0.220
+    ms. A first version saved 0.021 only: its composite looked the tile up
+    for the pixel and its 4 neighbours (0.069 ms with every pass left out);
+    once a pixel (the
+    neighbours only when they are in another tile, the tile from a float
+    product: no division) 0.009. Split by leaving passes out (`r_dofQuality
+    1`): the gather 0.075 ms, the half resolution's setup 0.040, the apply
+    pass 0.038, the neighbours 0.011, the focus 0.004, the barriers nothing
+    measurable. Frames: with `r_dofAperture 0` those before to the bit,
+    the copy left out to the bit; the bilinear taps and the spiral change
+    0.4 to 1 % of the pixels of the `mohdm6` views at `r_dofFocus 48` and
+    `r_dofAperture 1` (1280x720) by one level, none by more. Not done: the
+    setup still reads the whole view's color (a tile without blur may be
+    gathered by its neighbours: knowing which ones needs the tiles first),
+    and the gather takes as many samples for a small blur as for a large one.
 - **HDR output (Plan 43).** `r_hdrOutput` (latched; `vk_output.c`,
   `shaders/output.frag`).
   - *Why not HDR rendering.* The plan before it kept the lightmaps in
@@ -10280,6 +10307,18 @@ Done:
     `r_taaReactive` is a cheat, not saved (a fix, 0 only to compare);
     `r_taaLodBias` stays archived, a taste like `r_taaFeedback` and
     `r_taaSharpen`; neither is in the settings guide of `main`'s README.
+49. What was left of the temporal effects' performance (2026-10-30, the
+    user's request: every item of the review of the temporal effects'
+    performance but the motion blur's passes skipped in a still view).
+    Each step measured with `perf.py` against the build before in the
+    `dm/mohdm6` room at 2560x1440 and kept only if faster.
+    The depth of field (see Implementation notes, Depth of field, Cost):
+    the apply pass writes the tiles a blur reaches only and the composite
+    shows the sharp scene in the others, the apply pass's tent from 2 x 2
+    bilinear taps of premultiplied images instead of 27 loads, the
+    gather's spiral turned instead of a `sin` and `cos` a sample: 0.256 to
+    0.220 ms; with `r_dof 0`, and with `r_dofAperture 0`, the frames the
+    build before's to the bit.
 
 Remaining:
 

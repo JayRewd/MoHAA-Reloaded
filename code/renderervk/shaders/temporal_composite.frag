@@ -27,9 +27,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // sharpened here (r_taaSharpen: it stays unsharpened as the history).
 // With HDR output (r_hdrOutput, vk_output.c) the scene is expanded toward
 // the display's peak (HdrExpand). The ambient occlusion (r_ao) is in the
-// scene already (ao_apply.frag). With r_dof u_color is the depth of
-// field's result (dof.comp), whose alpha says which pixels it left as they
-// were: only those are sharpened. With r_motionBlur the scene is blurred
+// scene already (ao_apply.frag). With r_dof the depth of field's result
+// (dof.comp) is shown where a blur reaches the tile (Shown), its alpha saying
+// which pixels it left as they were: only those are sharpened. With r_motionBlur the scene is blurred
 // here (MOTION_BLUR, MotionBlur) along what motion_blur.comp made, after the
 // anti-aliasing (its history stays sharp). r_temporalShow shows one of the
 // buffers instead, with what temporal_common.glsl gives their readers (the
@@ -40,7 +40,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #extension GL_GOOGLE_include_directive : require
 #include "temporal_common.glsl"
 
-layout(set = 0, binding = 0) uniform sampler2D u_color;		// what is shown: the depth of field's result with r_dof, the anti-aliased scene with r_taa, else the scene
+layout(set = 0, binding = 0) uniform sampler2D u_color;		// what is shown: the anti-aliased scene with r_taa, else the scene (and the depth of field's result where it blurs)
 layout(set = 0, binding = 1) uniform sampler2D u_velocity;
 layout(set = 0, binding = 2) uniform sampler2D u_normal;
 layout(set = 0, binding = 3) uniform sampler2D u_hiz;		// this frame's depth pyramid (min, max), level 0 at half size
@@ -51,6 +51,8 @@ layout(set = 0, binding = 7) uniform sampler2D u_ao;		// the ambient occlusion's
 layout(set = 0, binding = 8) uniform sampler2D u_aoRaw;		// and its occlusion before the blending and the blur (r)
 layout(set = 0, binding = 9) uniform sampler2D u_mbVelocity;	// the motion blur's: each pixel's half vector in pixels, its view distance (motion_blur.comp)
 layout(set = 0, binding = 10) uniform sampler2D u_mbNeighbor;	// the longest half vector of the 3 x 3 tiles around each tile
+layout(set = 0, binding = 11) uniform sampler2D u_dof;			// the depth of field's result (dof.comp), written in the tiles a blur reaches
+layout(set = 0, binding = 12) uniform sampler2D u_dofNeighbor;	// its tiles: the largest blur of the 3 x 3 tiles around each (y)
 
 layout(push_constant) uniform Push {
 	TemporalView	view;
@@ -61,7 +63,9 @@ layout(push_constant) uniform Push {
 	ivec4	rect;		// the scene's views: x, y, width, height in framebuffer pixels
 	vec4	hdrA;		// HDR output's expansion: knee, b, the sky's b, the peak over paper white
 	vec4	hdrB;		// the boost of what is above 1, r_saturation, 1 HDR expansion / 2 the HDR look in SDR / 0 none, r_hdrBlack for the look (VK_OutputExpansion)
-	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality), 1: u_color is the depth of field's (sharpened where its alpha is 1), 0
+	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality), 0, 0
+	ivec4	dof;		// the depth of field's tile size (0: its passes didn't run), 1: r_temporalShow 13 (its result everywhere), 0, 0
+	vec4	dofScale;	// 1 / its tile size, 0, 0, 0
 } pc;
 
 // HDR output: the pipeline expands the scene (vk_output.c)
@@ -70,6 +74,44 @@ layout(constant_id = 0) const bool HDR_EXPAND = false;
 layout(constant_id = 1) const bool MOTION_BLUR = false;
 
 layout(location = 0) out vec4 out_color;
+
+// the depth of field's tile of a pixel (q + 0.5 is never on a tile's edge:
+// the float product floors as the integer division does)
+ivec2 DofTile( ivec2 q ) {
+	return ivec2( ( vec2( q ) + 0.5 ) * pc.dofScale.x );
+}
+
+// whether the depth of field's result is shown in a tile: a blur reaches it
+// (the depth of field's pass writes only those tiles: the others hold older
+// frames' values), or r_temporalShow 13
+bool DofTileShown( ivec2 t ) {
+	return pc.dof.y != 0 || texelFetch( u_dofNeighbor, t, 0 ).y >= 0.5;
+}
+
+// what is shown at a pixel: the depth of field's result where it is shown
+// (alpha 1 where it left the pixel as it was, 0 where it blurred it), else
+// the scene (alpha 1: sharpened)
+vec4 ShownIn( ivec2 q, bool dof ) {
+	return dof ? texelFetch( u_dof, q, 0 ) : vec4( texelFetch( u_color, q, 0 ).rgb, 1.0 );
+}
+
+// the same for a pixel whose tile isn't known
+vec4 Shown( ivec2 q ) {
+	return ShownIn( q, pc.dof.x != 0 && DofTileShown( DofTile( q ) ) );
+}
+
+// for a neighbour of a pixel whose tile is t, shown as dof says: its own
+// tile looked up only when it is another one
+vec4 ShownNear( ivec2 q, ivec2 t, bool dof ) {
+	if ( pc.dof.x != 0 ) {
+		ivec2 tq = DofTile( q );
+
+		if ( tq != t ) {
+			dof = DofTileShown( tq );
+		}
+	}
+	return ShownIn( q, dof );
+}
 
 // the nearest view distance around a pixel, from level 0 of the pyramid
 float Distance( ivec2 p ) {
@@ -220,8 +262,8 @@ vec3 MotionBlur( ivec2 p, vec3 center ) {
 
 		w1 = all( mirror ) ? w2 : w1;
 		w2 = any( mirror ) ? w2 : w1;
-		sum += w1 * vec4( MbLinear( texelFetch( u_color, p1, 0 ).rgb ), 1.0 );
-		sum += w2 * vec4( MbLinear( texelFetch( u_color, p2, 0 ).rgb ), 1.0 );
+		sum += w1 * vec4( MbLinear( Shown( p1 ).rgb ), 1.0 );
+		sum += w2 * vec4( MbLinear( Shown( p2 ).rgb ), 1.0 );
 	}
 	if ( sum.a <= 0.0 ) {
 		return center;
@@ -309,19 +351,21 @@ void main() {
 
 		c = vec3( max( v.x, 0.0 ), max( v.y, 0.0 ), max( -v.x, 0.0 ) + max( -v.y, 0.0 ) );
 	} else {
-		vec4 cs = texelFetch( u_color, p, 0 );
+		ivec2 tile = DofTile( p );
+		bool dof = pc.dof.x != 0 && DofTileShown( tile );
+		vec4 cs = ShownIn( p, dof );
 		// the depth of field's blur isn't sharpened
-		float sharpen = pc.mb.z != 0 ? pc.sharpen * cs.a : pc.sharpen;
+		float sharpen = pc.sharpen * cs.a;
 
 		c = cs.rgb;
 		if ( sharpen > 0.0 ) {
 			// the pixel away from the mean of its 4 neighbours, no farther
 			// than the darkest and the brightest of them (no halos)
 			ivec2 lo = pc.rect.xy, hi = pc.rect.xy + pc.rect.zw - 1;
-			vec3 l = texelFetch( u_color, clamp( p - ivec2( 1, 0 ), lo, hi ), 0 ).rgb;
-			vec3 r = texelFetch( u_color, clamp( p + ivec2( 1, 0 ), lo, hi ), 0 ).rgb;
-			vec3 u = texelFetch( u_color, clamp( p - ivec2( 0, 1 ), lo, hi ), 0 ).rgb;
-			vec3 d = texelFetch( u_color, clamp( p + ivec2( 0, 1 ), lo, hi ), 0 ).rgb;
+			vec3 l = ShownNear( clamp( p - ivec2( 1, 0 ), lo, hi ), tile, dof ).rgb;
+			vec3 r = ShownNear( clamp( p + ivec2( 1, 0 ), lo, hi ), tile, dof ).rgb;
+			vec3 u = ShownNear( clamp( p - ivec2( 0, 1 ), lo, hi ), tile, dof ).rgb;
+			vec3 d = ShownNear( clamp( p + ivec2( 0, 1 ), lo, hi ), tile, dof ).rgb;
 			vec3 nmin = min( min( min( l, r ), min( u, d ) ), c );
 			vec3 nmax = max( max( max( l, r ), max( u, d ) ), c );
 

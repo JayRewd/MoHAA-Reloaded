@@ -45,12 +45,17 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    pixel's (what is behind doesn't spread over what is in front); the
 //    foreground over the largest around the tile, each sample adding its
 //    share of the disc it spreads over, which gives its opacity. Into u_far
-//    and u_near
-//  - APPLY (full resolution): the sharp scene, the background over it by
-//    the pixel's own CoC, the foreground over that by its opacity, both
-//    upsampled with a tent; into u_result. A pixel neither covers is the
-//    scene's own value, unchanged, with alpha 1: the composite sharpens
-//    those only (r_taaSharpen; the blur would show the gather's noise)
+//    and u_near, premultiplied (the background by its texel's share of
+//    background, the foreground by its opacity), so that APPLY can filter
+//    them bilinearly
+//  - APPLY (full resolution, the tiles with blur around them only): the
+//    sharp scene, the background over it by the pixel's own CoC, the
+//    foreground over that by its opacity, both upsampled with a tent; into
+//    u_result. A pixel neither covers is the scene's own value, unchanged,
+//    with alpha 1: the composite sharpens those only (r_taaSharpen; the blur
+//    would show the gather's noise). The tiles without blur are left out:
+//    the composite shows the sharp scene there itself (temporal_composite.frag,
+//    Shown), so u_result holds older frames' values there
 
 #version 450
 #extension GL_GOOGLE_include_directive : require
@@ -67,9 +72,11 @@ layout( set = 0, binding = 3, r32f ) uniform image2D u_focus;			// 1 x 1: 1 / F,
 layout( set = 0, binding = 4, rgba16f ) uniform image2D u_half;		// half resolution: linear color, CoC in full pixels
 layout( set = 0, binding = 5, rg16f ) uniform image2D u_tile;			// the largest foreground CoC (as a radius), the largest |CoC|
 layout( set = 0, binding = 6, rg16f ) uniform image2D u_neighbor;		// the same of the 3 x 3 tiles around
-layout( set = 0, binding = 7, rgba16f ) uniform image2D u_far;		// half resolution: the background's color, 1
-layout( set = 0, binding = 8, rgba16f ) uniform image2D u_near;		// half resolution: the foreground's color, its opacity
+layout( set = 0, binding = 7, rgba16f ) uniform image2D u_far;		// half resolution: the background's color times k, k: the texel's share of background
+layout( set = 0, binding = 8, rgba16f ) uniform image2D u_near;		// half resolution: the foreground's color times its opacity, its opacity
 layout( set = 0, binding = 9, rgba16f ) uniform writeonly image2D u_result;	// the scene with the depth of field (gamma-encoded), alpha 1 where unchanged
+layout( set = 0, binding = 10 ) uniform sampler2D u_farFiltered;		// u_far and u_near, bilinear (APPLY)
+layout( set = 0, binding = 11 ) uniform sampler2D u_nearFiltered;
 
 layout( push_constant ) uniform Push {
 	TemporalView	view;
@@ -254,20 +261,26 @@ void main() {
 
 #elif defined( GATHER )
 
-const float GOLDEN_ANGLE = 2.39996323;
+// the golden angle's cosine and sine: a sample's direction is the one before
+// turned by it (no sin and cos a sample)
+const vec2 GOLDEN_TURN = vec2( -0.73736887, 0.67549029 );
 
 // fixed per pixel: nothing blends it over frames after this
 float Noise( vec2 pixel ) {
 	return fract( 52.9829189 * fract( dot( pixel, vec2( 0.06711056, 0.00583715 ) ) ) );
 }
 
-// sample i of n of a disc of radius r (half resolution texels), turned by
-// rot: a golden angle spiral, as dense at the rim as in the middle
-vec2 Disc( int i, int n, float r, float rot, out float dist ) {
-	float a = float( i ) * GOLDEN_ANGLE + rot;
+// the next sample of a golden angle spiral of n over a disc of radius r (half
+// resolution texels), as dense at the rim as in the middle: sample i at
+// angle i times the golden angle plus the texel's turn (dir: its cosine and
+// sine, turned on to the next sample's), at r sqrt((i + 0.5) / n)
+vec2 Disc( int i, float rScale, inout vec2 dir, out float dist ) {
+	vec2 o;
 
-	dist = r * sqrt( ( float( i ) + 0.5 ) / float( n ) );
-	return dist * vec2( cos( a ), sin( a ) );
+	dist = rScale * sqrt( float( i ) + 0.5 );
+	o = dist * dir;
+	dir = vec2( dir.x * GOLDEN_TURN.x - dir.y * GOLDEN_TURN.y, dir.x * GOLDEN_TURN.y + dir.y * GOLDEN_TURN.x );
+	return o;
 }
 
 void main() {
@@ -277,8 +290,8 @@ void main() {
 	ivec2 hi = ( pc.rect.xy + pc.rect.zw - 1 ) / 2;
 	int n = pc.ints.z;
 	vec4 c, far, near;
-	vec2 around;
-	float cc, rot, nearR, area;
+	vec2 around, turn, dir;
+	float cc, rot, nearR, area, invN;
 
 	if ( any( greaterThanEqual( h, size ) ) ) {
 		return;
@@ -287,14 +300,17 @@ void main() {
 	around = imageLoad( u_neighbor, h / ( int( pc.lens.y ) / 2 ) ).xy * 0.5;	// in half resolution texels
 	cc = c.a * 0.5;
 	rot = Noise( vec2( h ) ) * 6.2831853;
+	turn = vec2( cos( rot ), sin( rot ) );
+	invN = inversesqrt( float( n ) );
 	far = vec4( c.rgb, 1.0 );
 	near = vec4( 0.0 );
 
 	// the background: the pixel's own blur
 	if ( cc >= 0.5 ) {
+		dir = turn;
 		for ( int i = 0; i < n; i++ ) {
 			float r;
-			vec2 o = Disc( i, n, cc + 0.5, rot, r );
+			vec2 o = Disc( i, ( cc + 0.5 ) * invN, dir, r );
 			vec4 s = imageLoad( u_half, clamp( h + ivec2( round( o ) ), lo, hi ) );
 			float sc = s.a * 0.5;
 
@@ -310,9 +326,10 @@ void main() {
 	if ( nearR >= 0.5 ) {
 		nearR += 0.5;
 		area = nearR * nearR / float( n );
+		dir = turn;
 		for ( int i = 0; i < n; i++ ) {
 			float r;
-			vec2 o = Disc( i, n, nearR, rot, r );
+			vec2 o = Disc( i, nearR * invN, dir, r );
 			vec4 s = imageLoad( u_half, clamp( h + ivec2( round( o ) ), lo, hi ) );
 			float sr = -s.a * 0.5;
 
@@ -324,8 +341,13 @@ void main() {
 		}
 	}
 
-	imageStore( u_far, h, vec4( far.rgb / far.a, 1.0 ) );
-	imageStore( u_near, h, near.a > 0.0 ? vec4( near.rgb / near.a, min( near.a, 1.0 ) ) : vec4( 0.0 ) );
+	// premultiplied, for APPLY's bilinear taps: the background by the
+	// texel's share of background (what APPLY's tent counted it with), the
+	// foreground by its opacity
+	float k = clamp( c.a - 0.5, 0.0, 1.0 );
+
+	imageStore( u_far, h, vec4( far.rgb / far.a * k, k ) );
+	imageStore( u_near, h, near.a > 0.0 ? vec4( near.rgb / near.a * min( near.a, 1.0 ), min( near.a, 1.0 ) ) : vec4( 0.0 ) );
 }
 
 #elif defined( APPLY )
@@ -343,6 +365,12 @@ void main() {
 	bool changed;
 
 	if ( any( greaterThan( p, hi ) ) ) {
+		return;
+	}
+
+	// no blur reaches the tile: the composite shows the sharp scene itself
+	around = imageLoad( u_neighbor, p / tile ).xy;
+	if ( around.y < 0.5 && pc.params.z == 0.0 ) {
 		return;
 	}
 	sharp = texelFetch( u_color, p, 0 ).rgb;
@@ -364,33 +392,40 @@ void main() {
 		return;
 	}
 
-	around = imageLoad( u_neighbor, p / tile ).xy;
-	if ( around.y < 0.5 || d <= 0.0 ) {
+	if ( d <= 0.0 ) {
 		imageStore( u_result, p, vec4( sharp, 1.0 ) );
 		return;
 	}
 	lin = Linear( sharp );
 
 	// the 3 x 3 half resolution texels around the nearest, a tent of 1.5
-	// texels: the background only from texels that are background
+	// texels (the background only from texels that are background: u_far is
+	// premultiplied by their share of it), as 2 x 2 bilinear taps: on each
+	// axis the weights 0.5 - f, 1.5 - |f|, 0.5 + f of the texels b - 1, b,
+	// b + 1 (f the pixel's offset from b), the middle one split between the
+	// two taps as the outer ones are (they sum to 1). Taps clamped to the
+	// views' texels as the texels were
 	hp = ( vec2( p ) + 0.5 ) * 0.5 - 0.5;
 	b = ivec2( round( hp ) );
-	far = vec4( 0.0 );
-	near = vec4( 0.0 );
-	wn = 0.0;
-	for ( int y = -1; y <= 1; y++ ) {
-		for ( int x = -1; x <= 1; x++ ) {
-			ivec2 t = b + ivec2( x, y );
-			ivec2 q = clamp( t, hlo, hhi );
-			vec2 dd = abs( vec2( t ) - hp );
-			float w = max( 1.5 - dd.x, 0.0 ) * max( 1.5 - dd.y, 0.0 );
-			float wf = w * clamp( imageLoad( u_half, q ).a - 0.5, 0.0, 1.0 );
-			vec4 nr = imageLoad( u_near, q );
+	{
+		vec2 f = hp - vec2( b );
+		vec2 wl = 0.5 - f, wc = 1.5 - abs( f ), wr = 0.5 + f;
+		vec2 split = wc * wl;					// of the middle weight, to the first tap
+		vec2 w0 = wl + split, w1 = wc - split + wr;
+		vec2 t0 = vec2( b ) - 1.0 + split / max( w0, 1e-6 ), t1 = vec2( b ) + wr / max( w1, 1e-6 );
+		vec2 halfSize = vec2( textureSize( u_farFiltered, 0 ) );
+		vec2 tlo = vec2( hlo ), thi = vec2( hhi );
+		vec2 uv0 = ( clamp( t0, tlo, thi ) + 0.5 ) / halfSize, uv1 = ( clamp( t1, tlo, thi ) + 0.5 ) / halfSize;
 
-			far += wf * vec4( imageLoad( u_far, q ).rgb, 1.0 );
-			near += w * nr.a * vec4( nr.rgb, 1.0 );
-			wn += w;
-		}
+		far = textureLod( u_farFiltered, uv0, 0.0 ) * ( w0.x * w0.y )
+			+ textureLod( u_farFiltered, vec2( uv1.x, uv0.y ), 0.0 ) * ( w1.x * w0.y )
+			+ textureLod( u_farFiltered, vec2( uv0.x, uv1.y ), 0.0 ) * ( w0.x * w1.y )
+			+ textureLod( u_farFiltered, uv1, 0.0 ) * ( w1.x * w1.y );
+		near = textureLod( u_nearFiltered, uv0, 0.0 ) * ( w0.x * w0.y )
+			+ textureLod( u_nearFiltered, vec2( uv1.x, uv0.y ), 0.0 ) * ( w1.x * w0.y )
+			+ textureLod( u_nearFiltered, vec2( uv0.x, uv1.y ), 0.0 ) * ( w0.x * w1.y )
+			+ textureLod( u_nearFiltered, uv1, 0.0 ) * ( w1.x * w1.y );
+		wn = ( wl.x + wc.x + wr.x ) * ( wl.y + wc.y + wr.y );
 	}
 
 	changed = false;

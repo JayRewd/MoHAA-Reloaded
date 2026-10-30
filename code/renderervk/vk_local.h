@@ -1032,7 +1032,6 @@ typedef struct {
 	VkDescriptorSet	hizSets[VK_TEMPORAL_HISTORY][VK_TEMPORAL_MAX_PASSES];
 	VkDescriptorSet	compositeSets[VK_TEMPORAL_HISTORY];
 	VkDescriptorSet	compositeTaaSets[VK_TEMPORAL_HISTORY];	// the same, showing taa[current]
-	VkDescriptorSet	compositeDofSets[VK_TEMPORAL_HISTORY];	// the same, showing dofResult
 
 	// temporal anti-aliasing (r_taa, taa_resolve.comp): its result, this
 	// frame's and the last frame's (the history), alternating with current;
@@ -1096,7 +1095,7 @@ typedef struct {
 	// its images are GENERAL always
 	qboolean		dofOn;			// for this frame's scene (VK_TemporalUpdateFeatures): its passes run (r_dof, r_temporalShow 13)
 	qboolean		dofShow;		// r_temporalShow 13: the result shows the blur instead
-	qboolean		dofRan;			// the passes ran in this scene: the composite shows dofResult
+	qboolean		dofRan;			// the passes ran in this scene: the composite shows dofResult where they blur
 	int				dofTileSize;	// the largest blur's radius in pixels, even: max( 16, height / 20 )
 	int				dofTilesX, dofTilesY;
 	int				dofHalfWidth, dofHalfHeight;
