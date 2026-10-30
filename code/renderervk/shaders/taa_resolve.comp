@@ -268,7 +268,13 @@ void main() {
 	vec3 sigma = sqrt( max( sum2 / 9.0 - mean * mean, vec3( 0.0 ) ) );
 	vec3 boxLo = max( mean - sigma, cmin );
 	vec3 boxHi = min( mean + sigma, cmax );
-	vec3 history = FromYCoCg( ClipToBox( boxLo, boxHi, ToYCoCg( SampleHistory( prevPixel / size, size ) ) ) );
+	// at a texel's center (a still camera: the motion vectors are
+	// unjittered) Catmull-Rom's weights are 0, 1, 0, 0: the texel itself
+	vec2 ht = prevPixel - 0.5;
+	vec2 htr = round( ht );
+	vec3 sampled = all( lessThan( abs( ht - htr ), vec2( 1.0 / 1024.0 ) ) ) ? texelFetch( u_history, ivec2( htr ), 0 ).rgb
+		: SampleHistory( prevPixel / size, size );
+	vec3 history = FromYCoCg( ClipToBox( boxLo, boxHi, ToYCoCg( sampled ) ) );
 
 	// less history the faster it moves: resampling it blurs
 	float speed = length( motion * vec2( pc.view.rect.zw ) );

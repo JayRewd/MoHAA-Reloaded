@@ -8509,7 +8509,9 @@ selects the sample count (see Implementation notes).
     ladder's rung) was in it or not as the last frame's jitter had it and
     lost its history every few frames (the weapon and the sky are
     at the far distance in the pyramid, so what the weapon covered takes
-    none either). The history is read with Catmull-Rom (5 bilinear taps,
+    none either). The history is read with Catmull-Rom (5 bilinear taps; at
+    a texel's center within 1/1024, a still camera, the texel alone since
+    Plan 49: Catmull-Rom's weights are 0, 1, 0, 0 there,
     `vkt.linearSampler`), clipped in YCoCg toward the box of mean ± the
     deviation of the 3 x 3 (within their min and max), and blended with
     weights divided by 1 + luma (no flicker from bright pixels that come
@@ -8554,7 +8556,20 @@ selects the sample count (see Implementation notes).
     without that target, which would need the motion flag elsewhere), a
     10-bit scene (`A2B10G10R10`; the alpha isn't read: destination alpha
     blends are ONE and ZERO, `vk_pipeline.c`; no added shimmer, but 0.05 ms
-    instead of 0.08 saved: 0.336 ms).
+    instead of 0.08 saved: 0.336 ms). Plan 49 (2560x1440, interleaved runs
+    against the build before): the history's texel alone at a texel's
+    center, 0.378 to 0.358 ms still and 0.338 to 0.329 turning (6 runs,
+    each faster), one level off in 0.01 to 0.6 % of the pixels (a dozen by
+    4 to 15); the tile's color and the reactive share as 4 half floats in
+    a `uvec2` beside the distance (12 bytes an entry instead of 20) 0.003
+    ms slower, not kept. The motion blur's tiles made by this pass
+    (`MOTION_BLUR`: the pixels' blur from the tile it has, the tiles' as
+    atomic maxima of the workgroups' into two images that alternate, the
+    neighbour pass clearing the next one, and the neighbour pass beside
+    the depth of field's setup) took as long as the tiles pass they
+    replaced (turning with the motion blur 0.547 and 0.546 ms, with the
+    depth of field 0.870 and 0.879, the motion blur alone 0.278 and 0.288):
+    not kept.
   - *Shimmer* (8 frames of a still `dm/mohdm6` view at 640x480, the share
     of pixels whose luma changes by more than 4 of 255 between them; more
     than 16 in brackets): no jitter 0 %, the jitter alone 25.6 (2.95),
@@ -8901,8 +8916,13 @@ selects the sample count (see Implementation notes).
     (the tiles pass reads the depth and the normals and writes 8 bytes a
     pixel); the gather 0.09 turning, 0.16 with the anti-aliasing, whose
     result it reads then: a storage image in `GENERAL`, which its samples
-    seem to read slower than the scene's color attachment (not looked
-    into). Not optimized yet: the samples need only the blur's length and
+    seemed to read slower than the scene's color attachment. Plan 49
+    looked into it (turning, 2560x1440, 5 runs a build): the gather reading
+    the scene's color instead of the anti-aliased one took the same time
+    (0.543 against 0.541 ms), the anti-aliased one in
+    `SHADER_READ_ONLY_OPTIMAL` for the composite too (0.546 and 0.546), the
+    sharpening is 0.013 ms with and without the blur: the blur costs 0.21
+    ms with the anti-aliasing whatever it reads, nothing changed. Not optimized yet: the samples need only the blur's length and
     the distance, so 4 bytes a pixel (the direction packed) would halve
     what both passes move. Plan 49 split it in two images instead: the
     samples read 4 bytes (`mbSample`), the vector only the pixel itself:
@@ -10376,6 +10396,15 @@ Done:
     The motion blur (see Implementation notes, Motion blur, Cost): its
     per-pixel image split into the vector and what the samples read
     (length, distance): turning with the anti-aliasing 0.224 to 0.208 ms.
+    Its tiles made by the anti-aliasing's pass, and the neighbour pass
+    beside the depth of field's setup: measured, as slow as before, not
+    kept. Why its gather seemed slower reading the anti-aliased scene:
+    not the image nor its layout (the same time reading the scene's
+    color); nothing changed.
+    The anti-aliasing (see Implementation notes, Temporal anti-aliasing,
+    Cost): the history's texel alone where a still camera puts it on a
+    texel's center: 0.378 to 0.358 ms still, 0.338 to 0.329 turning; the
+    tile packed in half floats measured slower, not kept.
 
 Remaining:
 
