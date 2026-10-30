@@ -41,6 +41,8 @@ Both ports are built for low input latency and even frame times, measured at eve
 - **Exact frame caps.** `com_maxfps 240` runs at 240 frames a second, not 250.
 - **Their own sound mixers, no OpenAL.** `metal` mixes on Core Audio, with Apple's HRTF for headphones; `vulkan` has the Omaha mixer (miniaudio, with HRTF for headphones).
 
+Both also show what you're playing on your Discord profile while Discord is running (`cl_discordPresence 0` turns it off).
+
 They differ in much else (the window and input layers, the defaults, the sound mixers): see each README.
 
 ## Settings guide
@@ -85,6 +87,7 @@ seta r_fullscreen 1
 | `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` (new) | The crosshair, drawn as boxes in HUD pixels: by default the stock image's shape, in one draw. |
 | `r_depthClamp` | `2` (new) | **No seeing through walls you lean into.** The game cut away whatever was nearer the eye than 4 units, so leaning into a wall or a window opened it up; now its surface stays whole. `1` only the map's own surfaces, `0` stock. A cheat setting: it stays `2` online. |
 | `cl_nullbinds` | `0` (new) | `1`: opposing keys (forward and back, left and right, lean left and lean right) never cancel out: the newest press wins, and releasing it hands control back to the other. Some communities count this as an unfair advantage (like Snap Tap keyboards). |
+| `cl_discordPresence` | `1` (new) | With the Discord app running, your profile shows "Playing Medal of Honor: Reloaded", what you're doing ("Team-Match on mohdm6", "In the menus") and for how long. `0` turns it off. |
 | `ui_console` | `1` (`0`) | The console key works; the game still starts at the main menu. |
 | `cl_playintro` | `0` (`1`) | `1` plays the intro videos at startup. |
 
