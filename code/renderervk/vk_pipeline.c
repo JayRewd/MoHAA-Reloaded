@@ -135,8 +135,9 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		VkBool32	dlightBacks;
 		VkBool32	temporalNormals;	// the temporal path's shaders only
 		VkBool32	temporalMotion;
+		int32_t		temporalReactive;
 	} specData;
-	VkSpecializationMapEntry specEntries[13];
+	VkSpecializationMapEntry specEntries[14];
 	VkSpecializationInfo specInfo;
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkVertexInputBindingDescription bindings[5];
@@ -182,14 +183,36 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 	// vectors' (all their shaders read these)
 	specData.temporalNormals = VK_TemporalWritesBuffers( bits ) ? VK_TRUE : VK_FALSE;
 	specData.temporalMotion = specData.temporalNormals && ( bits & VK_PIPE_MOTION ) ? VK_TRUE : VK_FALSE;
+	// the reactive share of a blended effect in the scene's alpha
+	// (VK_PIPE_REACTIVE): how much it changes what is behind it. Its
+	// brightest channel times its alpha where it adds with its alpha (4:
+	// drawn premultiplied, ONE instead of SRC_ALPHA below, as an RGB
+	// texture's corona has the same alpha all over its quad), the surface's
+	// alpha where the blend reads it otherwise (1), its brightest channel
+	// where it adds (2), one minus its darkest where it multiplies (3)
+	specData.temporalReactive = 0;
+	if ( bits & VK_PIPE_REACTIVE ) {
+		VkBlendFactor sf = VK_SrcBlendFactor( srcBlend ), df = VK_DstBlendFactor( dstBlend );
+
+		if ( sf == VK_BLEND_FACTOR_SRC_ALPHA && df == VK_BLEND_FACTOR_ONE ) {
+			specData.temporalReactive = 4;
+		} else if ( sf == VK_BLEND_FACTOR_SRC_ALPHA || sf == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+			|| df == VK_BLEND_FACTOR_SRC_ALPHA || df == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA ) {
+			specData.temporalReactive = 1;
+		} else if ( ( sf == VK_BLEND_FACTOR_DST_COLOR || sf == VK_BLEND_FACTOR_ZERO ) && ( df == VK_BLEND_FACTOR_ZERO || df == VK_BLEND_FACTOR_SRC_COLOR ) ) {
+			specData.temporalReactive = 3;
+		} else {
+			specData.temporalReactive = 2;
+		}
+	}
 
 	for ( i = 0; i < (int)ARRAY_LEN( specEntries ); i++ ) {
 		specEntries[i].constantID = i;
 		specEntries[i].offset = i * 4;
 		specEntries[i].size = 4;
 	}
-	// the shaders without the temporal path have no constants 11 and 12
-	specInfo.mapEntryCount = temporal ? 13 : 11;
+	// the shaders without the temporal path have no constants 11 to 13
+	specInfo.mapEntryCount = temporal ? 14 : 11;
 	specInfo.pMapEntries = specEntries;
 	specInfo.dataSize = sizeof( specData );
 	specInfo.pData = &specData;
@@ -398,6 +421,22 @@ static VkPipeline VK_CreatePipeline( const vkPipelineKey_t *key ) {
 		if ( specData.temporalNormals ) {
 			blendAttachments[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT
 				| VK_COLOR_COMPONENT_A_BIT;
+		}
+		// the scene's alpha is the reactive share, 0 where nothing reactive
+		// was drawn (the draws without blending write 0, generic.frag): the
+		// effects' shares add up as coverage does, a + d ( 1 - a ), at most
+		// 1. (MAX, against the color's ADD, cost 0.027 ms more GPU time a
+		// frame on an RTX 4070 Ti at 2560x1440 with the sun's lens flare in
+		// view; this, nothing measurable)
+		if ( specData.temporalReactive ) {
+			if ( specData.temporalReactive == 4 ) {
+				// the shader multiplies by its alpha
+				blendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+			}
+			blendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+			blendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			blendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+			blendAttachments[0].colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
 		}
 		blend.attachmentCount = 3;
 	}
@@ -628,10 +667,15 @@ static int				vk_numRecordedKeys;		// read at startup
 
 // what VK_BuildPipelineKey can make on this device
 static qboolean VK_KeyValid( uint64_t bits ) {
-	if ( ( bits >> 46 ) & ~( ( VK_PIPE_DEPTHCLAMP | VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_MOTION ) >> 46 ) ) {
+	if ( ( bits >> 46 ) & ~( ( VK_PIPE_DEPTHCLAMP | VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_MOTION | VK_PIPE_REACTIVE ) >> 46 ) ) {
 		return qfalse;
 	}
-	if ( ( bits & ( VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_MOTION ) ) && !vkt.enabled ) {
+	if ( ( bits & ( VK_PIPE_TEMPORAL | VK_PIPE_NORMALS | VK_PIPE_MOTION | VK_PIPE_REACTIVE ) ) && !vkt.enabled ) {
+		return qfalse;
+	}
+	// the reactive share only for the temporal path's blended draws that
+	// write no normals
+	if ( ( bits & VK_PIPE_REACTIVE ) && ( !( bits & VK_PIPE_TEMPORAL ) || !( bits & VK_PIPE_BLEND_BITS ) || VK_TemporalWritesBuffers( bits ) ) ) {
 		return qfalse;
 	}
 	// normals and motion only for the temporal path's pipelines that write them

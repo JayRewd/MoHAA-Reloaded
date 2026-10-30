@@ -749,6 +749,7 @@ void		VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed );
 // pipeline key fields
 #define VK_PIPE_SRCBLEND_SHIFT		0		// GLS_SRCBLEND_* value, 4 bits
 #define VK_PIPE_DSTBLEND_SHIFT		4		// GLS_DSTBLEND_* value >> 4, 4 bits
+#define VK_PIPE_BLEND_BITS			0xffull	// both blend fields: not 0 when the draw blends
 #define VK_PIPE_DEPTHTEST			( 1ull << 8 )
 #define VK_PIPE_DEPTHWRITE			( 1ull << 9 )
 #define VK_PIPE_DEPTHFUNC_SHIFT		10		// vkDepthFunc_t, 2 bits
@@ -777,6 +778,7 @@ void		VK_PipelineCounts( int *total, int *prebuilt, int *prebuiltUsed );
 #define VK_PIPE_TEMPORAL			( 1ull << 48 )	// the temporal path's scene (vk_temporal.c): its render pass, layout and shaders
 #define VK_PIPE_NORMALS				( 1ull << 49 )	// temporal, writes the normals buffer, not skinned or effects: normals per vertex in binding 4 (else a constant 0)
 #define VK_PIPE_MOTION				( 1ull << 50 )	// temporal, writes the normals buffer, and the motion vectors: draws what moves
+#define VK_PIPE_REACTIVE			( 1ull << 51 )	// temporal, blended, draws what the motion vectors don't follow (effects): adds its share to the scene's alpha (r_taaReactive)
 
 typedef enum {
 	VK_DEPTHFUNC_LEQUAL,
@@ -813,7 +815,7 @@ typedef struct {
 	float	prevMvp[16];		// the last frame's projection (unjittered) * modelview
 	float	mvRow0[4];			// rows 0 and 1 of the modelview (row 2 is eyeZ)
 	float	mvRow1[4];
-	float	jitter[4];			// xy: the projection's jitter in NDC, z: VK_TEMPORAL_CLASS_*, w: 0
+	float	jitter[4];			// xy: the projection's jitter in NDC, z: VK_TEMPORAL_CLASS_*, w: the texture LOD bias (r_taaLodBias)
 } vkTemporalPush_t;
 
 #define VK_TEMPORAL_PUSH_OFFSET	( (uint32_t)sizeof( vkPushConstants_t ) )
@@ -1036,6 +1038,8 @@ typedef struct {
 	// frame's and the last frame's (the history), alternating with current;
 	// GENERAL between frames
 	qboolean		taaOn;			// r_taa for this frame's scene (vk_begin_scene): it is jittered
+	float			lodBias;		// r_taaLodBias for this frame's scene with taaOn, else 0
+	qboolean		reactiveOn;		// effects draw their reactive share (VK_PIPE_REACTIVE): r_taaReactive with taaOn, or r_temporalShow 14
 	qboolean		taaRan;			// the resolve wrote taa[current]: the composite shows it
 	vkTemporalImage_t	taa[VK_TEMPORAL_HISTORY];	// RGBA16F (taaFormat)
 	uint64_t		taaSerial[VK_TEMPORAL_HISTORY];	// the frame each was written in, 0 for none
@@ -1170,6 +1174,8 @@ extern cvar_t	*r_temporalShowScale;
 extern cvar_t	*r_taa;
 extern cvar_t	*r_taaFeedback;
 extern cvar_t	*r_taaSharpen;
+extern cvar_t	*r_taaReactive;
+extern cvar_t	*r_taaLodBias;
 extern cvar_t	*r_saturation;
 extern cvar_t	*r_ao;
 extern cvar_t	*r_motionBlur;

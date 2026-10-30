@@ -492,6 +492,9 @@ qboolean RB_ShaderDepthClamp( const shader_t *shader ) {
 
 // the batch being drawn is of sprites (RB_RenderSpriteSurfList, SF_SPRITE)
 static qboolean rb_spriteBatch;
+// the flares drawn in a 3D view: reactive whatever entity came before
+// (RB_TemporalReactive)
+static qboolean rb_flareDraws;
 
 /*
 ** RB_DrawClamped
@@ -533,9 +536,12 @@ static void RB_SubmitElements( int numVertexes, int numIndexes, const glIndex_t 
 void RB_DrawElements( int numVertexes, int numIndexes, const glIndex_t *indexes ) {
 	// the view weapon's depth hack turns it off in vk_draw
 	vk_set_depth_clamp( RB_DrawClamped() );
+	// the temporal path's reactive effects (sprites included)
+	vk_set_reactive( RB_TemporalReactive( rb_flareDraws || rb_spriteBatch ) );
 	RB_SubmitElements( numVertexes, numIndexes, indexes );
 	// not for the immediate mode draws
 	vk_set_depth_clamp( qfalse );
+	vk_set_reactive( qfalse );
 }
 
 static void RB_SubmitElements( int numVertexes, int numIndexes, const glIndex_t *indexes ) {
@@ -957,8 +963,10 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	RB_ShadowFinish();
 	if (!(backEnd.refdef.rdflags & RDF_HUD)) {
+		rb_flareDraws = qtrue;
 		RB_RenderFlares();
 		R_DrawLensFlares();
+		rb_flareDraws = qfalse;
 	}
 
 	if (g_bInfoworldtris)
@@ -974,7 +982,9 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	RB_ShadowFinish();		
 
 	// add light flares on lights that aren't obscured
+	rb_flareDraws = qtrue;
 	RB_RenderFlares();
+	rb_flareDraws = qfalse;
 }
 
 /*

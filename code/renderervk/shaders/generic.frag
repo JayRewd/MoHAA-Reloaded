@@ -110,6 +110,9 @@ layout(location = 6) in vec4 v_prevClip;
 layout(location = 7) in vec3 v_viewNormal;
 layout(location = 8) in vec3 v_viewPos;
 layout(location = 9) flat in float v_class;
+// the anti-aliasing's texture LOD bias (r_taaLodBias): the history adds the
+// detail of a finer mip level without its shimmer
+layout(location = 10) flat in float v_lodBias;
 
 // this frame's position minus the last frame's, in units of the viewport
 // (x right, y down)
@@ -122,6 +125,27 @@ layout(location = 2) out vec4 out_normal;
 // vectors
 layout(constant_id = 11) const bool TEMPORAL_NORMALS = true;
 layout(constant_id = 12) const bool TEMPORAL_MOTION = true;
+// the color's alpha is the scene's reactive share (vk_pipeline.c): 0 for the
+// draws without blending; a blended effect's (VK_PIPE_REACTIVE, added up
+// as coverage: a + d ( 1 - a )) its alpha (1), its brightest channel (2, it adds), one minus
+// its darkest (3, it multiplies), or with an additive blend by its alpha
+// the brightest channel of its color times its alpha, which it then is
+// (4: the pipeline blends ONE instead of SRC_ALPHA); the anti-aliasing
+// takes less history there (taa_resolve.comp)
+layout(constant_id = 13) const int TEMPORAL_REACTIVE = 0;
+
+void TemporalReactive( vec4 color ) {
+	if ( ALPHA_ONE ) {
+		out_color.a = 0.0;
+	} else if ( TEMPORAL_REACTIVE == 4 ) {
+		out_color.rgb = color.rgb * color.a;
+		out_color.a = clamp( max( out_color.r, max( out_color.g, out_color.b ) ), 0.0, 1.0 );
+	} else if ( TEMPORAL_REACTIVE == 2 ) {
+		out_color.a = clamp( max( color.r, max( color.g, color.b ) ), 0.0, 1.0 );
+	} else if ( TEMPORAL_REACTIVE == 3 ) {
+		out_color.a = clamp( 1.0 - min( color.r, min( color.g, color.b ) ), 0.0, 1.0 );
+	}
+}
 
 void TemporalOutputs() {
 	if ( !TEMPORAL_NORMALS ) {
@@ -154,6 +178,10 @@ void TemporalOutputs() {
 		out_normal = vec4( 0.5, 0.5, float( flags ) / 1023.0, v_class / 3.0 );
 	}
 }
+
+#define SAMPLE( tex, st ) texture( tex, st, v_lodBias )
+#else
+#define SAMPLE( tex, st ) texture( tex, st )
 #endif
 
 // GL1's R_DlightSample, per pixel on the filtered lightmap texel: each light
@@ -231,7 +259,7 @@ void main() {
 	}
 
 	if ( TEX_ENV0 != 0 ) {
-		vec4 texel = texture( u_texture0, v_st0 );
+		vec4 texel = SAMPLE( u_texture0, v_st0 );
 
 		if ( TEX0_RGB ) {
 			texel.a = 1.0;
@@ -242,7 +270,7 @@ void main() {
 		color = TexEnv( TEX_ENV0, TEX0_RGB, color, texel );
 	}
 	if ( TEX_ENV1 != 0 ) {
-		vec4 texel = texture( u_texture1, v_st1 );
+		vec4 texel = SAMPLE( u_texture1, v_st1 );
 
 		if ( TEX1_RGB ) {
 			texel.a = 1.0;
@@ -277,6 +305,7 @@ void main() {
 
 	out_color = ALPHA_ONE ? vec4( color.rgb, 1.0 ) : color;
 #ifdef TEMPORAL
+	TemporalReactive( color );
 	TemporalOutputs();
 #endif
 }

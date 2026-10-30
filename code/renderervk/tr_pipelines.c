@@ -52,6 +52,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    r_fastdlights 1 the projected pass (ProjectDlightTexture) of opaque
 //    world shaders;
 //  - every image an animated bundle binds (RGB textures change the key);
+//  - with the temporal path, blended stages as reactive effects or not
+//    (vk_set_reactive);
 //  - the sky box and the immediate mode draws that come in every frame
 //    (the color clear drawn as a quad, the UI's boxes), after whatever cull
 //    the draw before left.
@@ -290,6 +292,14 @@ static int R_PrebuildStage( const shader_t *shader, shaderStage_t *pStage, int w
 		// the generic iterator sets the shader's (the vertex-lit one is
 		// only chosen without it)
 		ds.polygonOffset = shader->polygonOffset && !vertexLit;
+		// the temporal path's reactive effects (RB_TemporalReactive): a
+		// blended stage of a 3D view whose shader changes over time always
+		// is; one of the world's is not (on a brush model entity it is: the
+		// draw creates that one); one of a model or an effect can be either
+		// (an entity's, a static model's)
+		if ( place != PB_2D && ( pStage->stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) && !ds.polygonOffset ) {
+			ds.reactive = RB_ShaderAnimated( (shader_t *)shader ) ? 1 : R_ShaderIsWorld( shader ) ? 0 : 2;
+		}
 
 		if ( multitexture ) {
 			// DrawMultitextured: no GLS_DEPTHTEST_DISABLE in 2D

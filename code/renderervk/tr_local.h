@@ -604,6 +604,7 @@ typedef struct shader_s {
 	int			needsLSpherical;
 	int			stagesWithAlphaFog;
 	int			flags;
+	int			temporalAnimated;	// 0 not known yet, 1 no, 2 it changes over time (RB_ShaderAnimated)
 
 	void		(*optimalStageIteratorFunc)( void );
 
@@ -2212,7 +2213,9 @@ typedef enum {
 qboolean RB_StaticFxOn( void );
 qboolean RB_StaticFxDeforms( const shader_t *shader );
 qboolean RB_StaticFxBundle( const textureBundle_t *bundle, qboolean entity );
-int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxUnit_t units[NUM_TEXTURE_BUNDLES], const float *constantColor );
+// motion: its deforms move the vertexes over time (drawGeometry_t::staticFxMotion)
+int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxUnit_t units[NUM_TEXTURE_BUNDLES], const float *constantColor,
+	qboolean *motion );
 void R_ClearFxTables( void );
 
 // tr_skin.c
@@ -2232,6 +2235,9 @@ void RB_TemporalBeginView( void );
 void RB_TemporalEndScene( void );
 void RB_TemporalAo( void );
 void RB_TemporalModelview( void );
+void RB_TemporalDeformTime( float *seconds, int *msec );
+qboolean RB_TemporalReactive( qboolean override );
+qboolean RB_ShaderAnimated( shader_t *shader );
 void RB_TemporalSkin( int numBones, qboolean hasMorph, uint32_t *prevBones, uint32_t *prevMorphs );
 void RB_TemporalRecordSkin( int numBones, uint32_t bones, uint32_t morphs );
 // tr_pipelines.c

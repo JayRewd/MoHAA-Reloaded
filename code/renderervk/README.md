@@ -811,6 +811,32 @@ below are done.
   anti-aliasing, and with it on so is what is in focus. Cost on the RTX
   4070 Ti, GPU time a frame in `dm/mohdm6` at 2560x1440 with the
   anti-aliasing: 0.26 ms. See Implementation notes, Depth of field
+- the anti-aliasing's gaps (2026-10-30, Plan 48, the renderer; the user's
+  request: fix the gaps in the TAA). With `r_taa 1`: the effects shader's
+  deforms move the vertexes in the motion vectors too, so the swaying
+  trees and bushes (flap), flags, curtains and seas (wave, move, bulge)
+  carry their own motion instead of the camera's; `r_taaReactive`
+  (archived, default 1, 0 to 1): blended effects (entities, sprites,
+  flares, shaders that change over time; not decals, not the sky) add
+  their share of each pixel to the scene's alpha and the resolve takes
+  that much less history there, so a muzzle flash, tracer or spark shows
+  as this frame has it and leaves no ghost (around a firing MP40, 12
+  frames: the mean error of the muzzle's region against the frames
+  without the anti-aliasing 8.6 levels of 255 before, 3.3 with it;
+  `r_temporalShow 14` shows the share); `r_taaLodBias` (archived, default
+  -0.5, -2 to 0): the 3D view's textures one half mip level finer, which
+  the history smooths (still `dm/mohdm6` views: the edge strength 76 to
+  87 % of the view without the anti-aliasing before, 86 to 100 % with it;
+  the pixels that change between frames about 0.65 % before, 0.8 %).
+  With `r_temporal 0`, with `r_temporal 1`, and with `r_taa 1`,
+  `r_taaLodBias 0` and `r_taaReactive 0`, the frames are the build
+  before's to the bit but for deforming surfaces (their motion vectors
+  are the draws' now: one level in a few % of the pixels of a still
+  view). Cost on the RTX 4070 Ti at 2560x1440, the `dm/mohdm1` square with
+  its trees and the sun's lens flare, the anti-aliasing on: GPU time
+  0.578 ms before; the deforms' motion 0.004, the reactive share 0.002,
+  the LOD bias 0.008 more. See Implementation notes, Temporal
+  anti-aliasing
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -991,6 +1017,8 @@ Cvars of the backend:
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
+| `r_taaReactive` (archived, default 1, 0 to 1) | with `r_taa 1`: how much less history the pixels of blended effects take (muzzle flashes, tracers, sparks, fire, smoke, flares, animated textures): the square of their share of the pixel (the largest of the 3 x 3) times this. 0: as before |
+| `r_taaLodBias` (archived, default -0.5, -2 to 0) | with `r_taa 1`: the mip level bias of the 3D view's textures; negative is sharper, the anti-aliasing smooths the shimmer it adds. 0: as before |
 | `r_motionBlur` (archived, default 0) | with `r_temporal 1`: motion blur of the camera's motion and of what moves, from the motion vectors and the depth (see Implementation notes, Motion blur) |
 | `r_motionBlurShutter` (archived, default 0.5, 0 to 2) | with `r_motionBlur 1`: the exposure, in frames at `r_motionBlurFps` (0.5 at 60: 1/120 s); the blur is the motion over that time |
 | `r_motionBlurFps` (archived, default 60, 0 to 1000) | with `r_motionBlur 1`: the frame rate whose frames `r_motionBlurShutter` counts, so the blur is as long at any frame rate; 0: the frames as they come (`r_motionBlurShutter` of each frame's motion: shorter the higher the frame rate) |
@@ -1003,7 +1031,7 @@ Cvars of the backend:
 | `r_dofQuality` (archived, default 1, 0 to 2) | with `r_dof 1`: 16, 32 or 48 samples a gather where something is blurred |
 | `r_temporalJitter` (default 0) | with `r_temporal 1`: the 3D views' projection moves by a sub-pixel offset every frame (Halton 2, 3; `r_temporalJitterSamples`, default 8). For the anti-aliasing (`r_taa` turns it on itself): without it the image shakes |
 | `r_temporalCutDist` (default 256) | with `r_temporal 1`: a camera or entity that moves farther in a frame has no motion (a cut, a teleport) |
-| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur, 11 the motion blur of each pixel (mode 1's colors, 1 the longest: half a streak of a tile's side), 12 the longest motion blur around each tile, 13 the depth of field's blur (red in front of the focus, blue behind it, 1 at 8 pixels, the scene in gray where in focus; the focus area's square green) |
+| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur, 11 the motion blur of each pixel (mode 1's colors, 1 the longest: half a streak of a tile's side), 12 the longest motion blur around each tile, 13 the depth of field's blur (red in front of the focus, blue behind it, 1 at 8 pixels, the scene in gray where in focus; the focus area's square green), 14 the effects' reactive share (`r_taaReactive`, red over the scene's brightness in gray; only drawn with `r_taa 1` and `r_taaReactive` above 0, or in this view) |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
@@ -8539,6 +8567,90 @@ selects the sample count (see Implementation notes).
     by up to 63), no shift (under 0.04 of a level on average, 0.1 to 0.27
     on average apart); the rest of the optimization changes 0.003 to 0.1 %
     of the pixels, by one but for a handful (the CPU's `expf`).
+  - *Deforms' motion (Plan 48).* The effects shader's draws (static
+    geometry with deforms, `shaders/effects.vert`) deformed the vertex
+    with this frame's values only, so the motion vector of a swaying tree
+    was the camera's (or its entity's) and the history of its leaves was
+    taken from where they no longer are. `RB_FxDeformMotion`
+    (`tr_shade_calc.c`) writes each deform of the record twice, the second
+    time at the game time of the primary view's last frame
+    (`RB_TemporalDeformTime`, `tr_temporal.c`: 0 in the other views and
+    without a last frame), and keeps that one's values in the words the
+    deform leaves free: wave's time * frequency at word 7, flap's scale
+    and bulge's phase at word 4, move's offset at words 4 to 6.
+    `deformPrev` does `deform`'s operations on them (`precise`, so a
+    deform that didn't change gives the same position) and the last clip
+    position is that through the last frame's transform. A record with a
+    deform that moves sets `drawGeometry_t::staticFxMotion`, which makes
+    the pipeline `VK_PIPE_MOTION` (built at load already: the variant of
+    the entities that move). In the stock data: the tree and bush shaders
+    (`trees.shader`, flap), flags and curtains (flap), the seas, streams
+    and ponds (wave, move, bulge). Not done: the CPU's deforms (autosprites,
+    light glows, `normal`, which moves no vertex) and skeletal models
+    skinned on the CPU (their entity's motion only); they are blended or
+    camera facing.
+  - *Effects (Plan 48, `r_taaReactive`).* Blended draws write no motion
+    vectors: a muzzle flash, a tracer or a spark took the history of the
+    wall behind it, which the clip box (mean +- deviation of the 3 x 3)
+    left dark at a thin or new effect, and the luma weights (1 / (1 +
+    luma)) weigh a bright current pixel less: the effect came up dimmed
+    and its ghost stayed a few frames. The scene's alpha now holds the
+    effects' share of each pixel (nothing read it: destination alpha
+    blends are ONE and ZERO): the draws without blending write 0
+    (`generic.frag`), the render pass clears it to 0, and blended draws
+    with `VK_PIPE_REACTIVE` add theirs as coverage adds up, a + d (1 - a)
+    (`vk_pipeline.c`; MAX instead, against the color's ADD, cost 0.027 ms
+    more on the RTX 4070 Ti at 2560x1440 with the sun's lens flare in
+    view). The share (specialization constant 13): with an additive blend
+    by the source alpha, the brightest channel of color times alpha (the
+    pipeline blends ONE and the shader multiplies, as the sun's corona of
+    an RGB texture has one alpha over its whole quad); where the blend
+    reads the source alpha otherwise, the alpha; adding, the brightest
+    channel; multiplying, one minus the darkest. The back end sets it per
+    draw (`RB_TemporalReactive`, `vk_set_reactive`): sprites, flares, the
+    entities' draws (not static models') and shaders that change over
+    time (`RB_ShaderAnimated`: deforms, animated images, wave and noise
+    colors, scrolling, turning or wobbling texture coordinates); never
+    decals (polygon offset) or the sky's layers (depth range [1, 1]: the
+    camera's motion moves them exactly, and the 3 x 3 would take the
+    history of the edges against the sky); only in a scene with the
+    anti-aliasing and `r_taaReactive` (`vkt.reactiveOn`; or
+    `r_temporalShow 14`), so without them the draws are as before. The
+    resolve takes the largest share of the 3 x 3 (the filtered color
+    spreads an effect over it), squares it (a thin haze of 0.3 takes 9 %
+    off, so what is behind it keeps its anti-aliasing; dense smoke, fire
+    and flashes most of it) and multiplies the history's weight by 1 -
+    share^2 * `r_taaReactive`. At load, a blended stage of a 3D view is
+    built reactive when its shader changes over time, not for the world's
+    shaders, both for the others (models and effects can be an entity's
+    or a static model's): 121 more pipelines in `dm/mohdm1`, 2 ms. Tested
+    with an MP40 firing in `dm/mohdm1` (fixed time steps, 12 frames 40 ms
+    apart, the flash in 4): the muzzle's region against the frames
+    without the anti-aliasing, the mean absolute error of its mean luma
+    8.6 levels before (always brighter: the last flashes and their smoke
+    stayed), 3.3 with it (measured with the MAX blend, which differs only
+    where effects overlap). Not done: opaque surfaces with animated
+    textures (their texture moves where the motion vectors don't say)
+    write no share.
+  - *Texture LOD bias (Plan 48, `r_taaLodBias`).* The history averages
+    the jittered frames, which softens the textures; a negative mip bias
+    gives them back detail whose shimmer the history smooths. The vertex
+    shaders pass `vkTemporalPush_t::jitter[3]` (`vkt.lodBias`, latched per
+    scene: the cvar with `r_taa`, else 0; only for jittered projections)
+    to `generic.frag` as a flat input, which samples both units with it
+    (`texture( tex, st, bias )`, the temporal path's shaders only; a bias
+    of 0 gives the frames of before to the bit). Measured in 3 still views
+    of `dm/mohdm6` at 640x480 (the edge strength: the mean absolute
+    Laplacian of the luma, against the view without the anti-aliasing;
+    the shimmer: the pixels whose color changes by more than 4 of 255
+    between two consecutive frames, the mean of two pairs): bias 0 76 to
+    87 % and 0.13 to 0.65 %, -0.25 84 to 92 % and 0.13 to 0.82 %, -0.5 86
+    to 100 % and 0.18 to 0.82 %, -0.75 91 to 105 % and 0.24 to 0.91 %, -1
+    95 to 109 % and 0.35 to 1.05 %; -0.5, the default, gives back most of
+    the detail for little shimmer. In the `dm/mohdm1` square with its trees
+    the shimmer is 11 to 20 % (the alpha-tested leaves) with or without the
+    bias and before (the trees' own motion took it down by 0.8 to 1 point).
+    GPU time 0.008 ms at 2560x1440 there.
 - **Ambient occlusion (Plan 44).** `r_ao 1` with the temporal path
   (`VK_TemporalAo`, `shaders/ao_common.glsl`, `ao_prefilter.comp`,
   `gtao_main.comp`, `ao_temporal.comp`, `ao_denoise.comp`,
@@ -10144,6 +10256,26 @@ Done:
     (2026-10-30): the scope's blur by its zoom, not its square; the focus
     from the primary view, the sky counted as far; the sharpening back in
     the composite; the half resolution's color weighted by blur.
+48. The anti-aliasing's gaps (2026-10-30, the user's request: fix the gaps
+    in the TAA; see Status and Implementation notes, Temporal
+    anti-aliasing): the effects shader's deforms in the motion vectors,
+    `r_taaReactive` and `r_temporalShow 14`, `r_taaLodBias`. With
+    `r_temporal 0` and with `r_temporal 1` the views of `mohdm6`,
+    `mp_mohdm1`, `fx_mohdm1` and `obj_team3_deepbluesea` are the build
+    before's to the bit; with `r_taa 1`, `r_taaLodBias 0` and
+    `r_taaReactive 0` (`r_temporalJitterSamples 1`) so are those of
+    `mohdm6`, and the others differ by one level in 0.6 to 5.8 % of the
+    pixels, on the deforming surfaces only (the trees, the sea, the test
+    shaders of `fx_mohdm1`): their motion vectors are the draws' now (the
+    build before against itself: 0 to 28 pixels). In a running game
+    (`r_temporalShow 1` at a scale of 2000) the trees and bushes of
+    `dm/mohdm1` move, where the build before had no motion. The views in
+    a running game were taken without a paused shot first (after one, the
+    frames of these lists showed no scene, with the build before too) and
+    with a `wait` after each `screenshot`: the screenshot is of the frame
+    the commands up to the next `wait` set up. No validation layer on this
+    machine: not run under validation. Not checked: AMD, the user's
+    matches.
 
 Remaining:
 

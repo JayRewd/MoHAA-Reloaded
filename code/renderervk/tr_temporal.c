@@ -71,6 +71,12 @@ static struct {
 	vec3_t				origin;
 	float				fovX, fovY;
 	int					time;				// backEnd.refdef.time
+	float				floatTime;			// backEnd.refdef.floatTime
+
+	// the game time from the last frame to this one, 0 without a last
+	// frame (the effects shader's deforms of the last frame)
+	int					deltaTime;
+	float				deltaFloatTime;
 
 	// the game time between frames in milliseconds, smoothed over about 8
 	// frames; 0 until there is one
@@ -217,8 +223,14 @@ static void R_TemporalPrimary( unsigned serial ) {
 			dt = Com_Clamp( 1.0f, 100.0f, dt );
 			rbt.frameMsec = rbt.frameMsec > 0.0f ? rbt.frameMsec + ( dt - rbt.frameMsec ) * 0.125f : dt;
 		}
+		rbt.deltaTime = backEnd.refdef.time - rbt.time;
+		rbt.deltaFloatTime = backEnd.refdef.floatTime - rbt.floatTime;
+	} else {
+		rbt.deltaTime = 0;
+		rbt.deltaFloatTime = 0.0f;
 	}
 	rbt.time = backEnd.refdef.time;
+	rbt.floatTime = backEnd.refdef.floatTime;
 	Com_Memcpy( rbt.view, view, sizeof( rbt.view ) );
 	Com_Memcpy( rbt.projection, backEnd.viewParms.projectionMatrix, sizeof( rbt.projection ) );
 	VectorCopy( backEnd.viewParms.ori.origin, rbt.origin );
@@ -261,6 +273,114 @@ static void R_TemporalPrimary( unsigned serial ) {
 			}
 		}
 	}
+}
+
+/*
+===============
+RB_TemporalDeformTime
+
+The game time since the primary view's last frame, for the effects
+shader's deforms of the last frame (RB_StaticFxRecord): 0 without a last
+frame and in the other views, which have no motion
+===============
+*/
+void RB_TemporalDeformTime( float *seconds, int *msec ) {
+	if ( backEnd.temporalPrimary && rbt.history ) {
+		*seconds = rbt.deltaFloatTime;
+		*msec = rbt.deltaTime;
+	} else {
+		*seconds = 0.0f;
+		*msec = 0;
+	}
+}
+
+/*
+===============
+RB_TemporalReactive
+
+Whether the draws of the back end show what the motion vectors don't
+follow, so the anti-aliasing takes less history where they are blended
+(vk_set_reactive, r_taaReactive): sprites, entities (effects, muzzle
+flashes, smoke; not static models), flares (override), and shaders that
+change over time (RB_ShaderAnimated). Decals never (vk.c)
+===============
+*/
+qboolean RB_TemporalReactive( qboolean override ) {
+	if ( !backEnd.temporalScene || backEnd.in2D ) {
+		return qfalse;
+	}
+	if ( override ) {
+		return qtrue;
+	}
+	if ( backEnd.currentEntity && backEnd.currentEntity != &tr.worldEntity && !backEnd.currentStaticModel ) {
+		return qtrue;
+	}
+	return tess.shader && RB_ShaderAnimated( tess.shader );
+}
+
+/*
+===============
+RB_ShaderAnimated
+
+Whether a shader changes over time on its own: animated images, texture
+coordinates or colors that follow a wave, scroll, turn or wobble, deforms;
+kept in the shader
+===============
+*/
+qboolean RB_ShaderAnimated( shader_t *shader ) {
+	int i, b, t;
+
+	if ( shader->temporalAnimated ) {
+		return shader->temporalAnimated == 2;
+	}
+	shader->temporalAnimated = 1;
+	for ( i = 0; i < shader->numDeforms; i++ ) {
+		switch ( shader->deforms[i].deformation ) {
+		case DEFORM_NONE:
+		case DEFORM_AUTOSPRITE:
+		case DEFORM_AUTOSPRITE2:
+		case DEFORM_LIGHTGLOW:
+			break;
+		default:
+			shader->temporalAnimated = 2;
+			break;
+		}
+	}
+	for ( i = 0; i < shader->numUnfoggedPasses && shader->temporalAnimated == 1; i++ ) {
+		const shaderStage_t *stage = shader->unfoggedStages[i];
+
+		if ( !stage ) {
+			continue;
+		}
+		if ( stage->rgbGen == CGEN_WAVEFORM || stage->rgbGen == CGEN_MULTIPLY_BY_WAVEFORM || stage->rgbGen == CGEN_NOISE
+			|| stage->alphaGen == AGEN_WAVEFORM || stage->alphaGen == AGEN_NOISE ) {
+			shader->temporalAnimated = 2;
+		}
+		for ( b = 0; b < NUM_TEXTURE_BUNDLES; b++ ) {
+			const textureBundle_t *bundle = &stage->bundle[b];
+
+			if ( bundle->numImageAnimations > 1 && bundle->imageAnimationSpeed != 0.0f ) {
+				shader->temporalAnimated = 2;
+			}
+			for ( t = 0; t < bundle->numTexMods; t++ ) {
+				switch ( bundle->texMods[t].type ) {
+				case TMOD_TURBULENT:
+				case TMOD_SCROLL:
+				case TMOD_STRETCH:
+				case TMOD_ROTATE:
+				case TMOD_NOISE:
+				case TMOD_WAVETRANS:
+				case TMOD_WAVETRANT:
+				case TMOD_BULGETRANS:
+					shader->temporalAnimated = 2;
+					break;
+				default:
+					break;
+				}
+			}
+		}
+	}
+	return shader->temporalAnimated == 2;
 }
 
 /*

@@ -102,6 +102,7 @@ typedef struct {
 	uint32_t		dlightBase;			// vkPushConstants_t's
 	uint32_t		dlightMask;
 	qboolean		dlightBacks;
+	qboolean		reactive;			// vk_set_reactive
 } vkState_t;
 
 static vkState_t	vks;
@@ -807,12 +808,12 @@ static void VK_BeginRenderPass( void ) {
 	info.framebuffer = vk.targetFramebuffer;
 	if ( vkt.active ) {
 		// the temporal path's scene (vk_temporal.c): its first render pass
-		// clears the color, the motion vectors and the normals (alpha 1, 0, 0)
+		// clears the color, the motion vectors and the normals (0, 0, 0;
+		// the color's alpha is the reactive share, VK_PIPE_REACTIVE)
 		info.renderPass = vkt.clearPending ? vkt.renderPassClear : vkt.renderPass;
 		info.framebuffer = vkt.framebuffers[vkt.current];
 		if ( vkt.clearPending ) {
 			Com_Memset( clearValues, 0, sizeof( clearValues ) );
-			clearValues[0].color.float32[3] = 1.0f;
 			info.clearValueCount = 3;
 			info.pClearValues = clearValues;
 			vkt.clearPending = qfalse;
@@ -2852,8 +2853,11 @@ static void VK_TemporalPushConstants( vkTemporalPush_t *tp ) {
 	if ( VK_JitteredProjection( vks.projection ) ) {
 		tp->jitter[0] = vkt.jitterNdc[0];
 		tp->jitter[1] = vkt.jitterNdc[1];
+		// the anti-aliasing's texture LOD bias (r_taaLodBias)
+		tp->jitter[3] = vkt.lodBias;
 	} else {
 		tp->jitter[0] = tp->jitter[1] = 0.0f;
+		tp->jitter[3] = 0.0f;
 	}
 	if ( vks.depthMin == 1.0f && vks.depthMax == 1.0f ) {
 		tp->jitter[2] = VK_TEMPORAL_CLASS_SKY;
@@ -2862,7 +2866,6 @@ static void VK_TemporalPushConstants( vkTemporalPush_t *tp ) {
 	} else {
 		tp->jitter[2] = VK_TEMPORAL_CLASS_SURFACE;
 	}
-	tp->jitter[3] = 0.0f;
 }
 
 static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
@@ -3110,8 +3113,18 @@ static void VK_BuildPipelineKey( vkPipelineKey_t *key, const vkState_t *s, primT
 		// the motion vectors of what moves: an entity with a last frame, a
 		// skeletal model's bones; the readers work out the camera's motion
 		// of the rest
-		if ( VK_TemporalWritesBuffers( bits ) && ( geometry->isSkinned || objectMotion ) ) {
+		if ( VK_TemporalWritesBuffers( bits ) && ( geometry->isSkinned || objectMotion
+			|| ( geometry->isStatic && geometry->staticFx >= 0 && geometry->staticFxMotion ) ) ) {
 			bits |= VK_PIPE_MOTION;
+		}
+		// blended effects put their share of the pixel into the scene's
+		// alpha (r_taaReactive); not decals, which lie on what is behind
+		// them, nor the sky's layers (depth range [1, 1]), which the
+		// camera's motion moves exactly: the 3 x 3 the resolve reads would
+		// take the history of the edges against the sky too
+		if ( s->reactive && ( bits & VK_PIPE_BLEND_BITS ) && !VK_TemporalWritesBuffers( bits )
+			&& !( bits & VK_PIPE_DEPTHBIAS ) && prim != PRIM_LINES && !( s->depthMin == 1.0f && s->depthMax == 1.0f ) ) {
+			bits |= VK_PIPE_REACTIVE;
 		}
 	}
 
@@ -3639,6 +3652,14 @@ qboolean vk_prebuild_pipeline( const vkDrawState_t *state ) {
 		geometry.normals = (const float *)&geometry;
 	}
 	VK_BuildPipelineKey( &key, &s, state->prim, &geometry, textures, vkt.enabled, qfalse );
+	if ( vkt.enabled && state->reactive && !VK_TemporalWritesBuffers( key.bits ) ) {
+		// a blended draw of effects (vk_set_reactive), and without it
+		qboolean built = state->reactive == 2 && VK_PrebuildPipeline( &key );
+
+		s.reactive = qtrue;
+		VK_BuildPipelineKey( &key, &s, state->prim, &geometry, textures, qtrue, qfalse );
+		return VK_PrebuildPipeline( &key ) || built;
+	}
 	if ( !vkt.enabled || state->skinned || !VK_TemporalWritesBuffers( key.bits ) ) {
 		return VK_PrebuildPipeline( &key );
 	}
@@ -4172,7 +4193,8 @@ void vk_clear( int buffers, const vec4_t color ) {
 			attachments[numAttachments].clearValue.color.float32[0] = VK_ClearComponent( color[0] );
 			attachments[numAttachments].clearValue.color.float32[1] = VK_ClearComponent( color[1] );
 			attachments[numAttachments].clearValue.color.float32[2] = VK_ClearComponent( color[2] );
-			attachments[numAttachments].clearValue.color.float32[3] = 1.0f;
+			// the temporal path's scene keeps the reactive share there (0)
+			attachments[numAttachments].clearValue.color.float32[3] = vkt.active ? 0.0f : 1.0f;
 			numAttachments++;
 		} else {
 			drawColor = qtrue;
@@ -4597,6 +4619,8 @@ qboolean vk_begin_scene( const vkSceneView_t *view ) {
 
 		// the jitter of the frame: anti-aliasing needs it
 		vkt.taaOn = r_taa->integer && ( vkt.groups & VK_TEMPORAL_GROUP_TAA );
+		vkt.lodBias = vkt.taaOn ? r_taaLodBias->value : 0.0f;
+		vkt.reactiveOn = ( vkt.taaOn && r_taaReactive->value > 0.0f ) || r_temporalShow->integer == 14;
 		vkt.jitter = r_temporalJitter->integer != 0 || vkt.taaOn;
 		sample = (int)( vk.frameSerial % (uint64_t)Q_max( r_temporalJitterSamples->integer, 1 ) ) + 1;
 		vkt.jitterPixels[0] = vkt.jitter ? VK_Halton( sample, 2 ) - 0.5f : 0.0f;
@@ -4732,6 +4756,12 @@ void vk_ao_scene( const float *fog ) {
 
 	Com_Memset( &vkb, 0, sizeof( vkb ) );
 	vk_dirty = VK_DIRTY_ALL;
+}
+
+void vk_set_reactive( qboolean reactive ) {
+	// only while the anti-aliasing reads it: without it the effects are
+	// drawn as before
+	vks.reactive = reactive && vkt.active && vkt.reactiveOn;
 }
 
 void vk_set_prev_modelview( const float *matrix ) {

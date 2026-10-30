@@ -52,7 +52,7 @@ layout(push_constant) uniform PushConstants {
 	layout(offset = 128) mat4	prevMvp;	// last frame's projection (unjittered) * modelview
 	vec4	mvRow0;			// rows 0 and 1 of the modelview (row 2 is eyeZ)
 	vec4	mvRow1;
-	vec4	jitter;			// xy: the projection's jitter in NDC, z: the surface class
+	vec4	jitter;			// xy: the projection's jitter in NDC, z: the surface class, w: the texture LOD bias
 #endif
 } pc;
 
@@ -83,6 +83,8 @@ layout(location = 6) out vec4 v_prevClip;
 layout(location = 7) out vec3 v_viewNormal;
 layout(location = 8) out vec3 v_viewPos;
 layout(location = 9) flat out float v_class;
+// the anti-aliasing's texture LOD bias (r_taaLodBias), for every pipeline
+layout(location = 10) flat out float v_lodBias;
 #endif
 
 #ifdef CLIP_DISTANCE
@@ -129,6 +131,7 @@ void main() {
 	v_position = in_position;
 
 #ifdef TEMPORAL
+	v_lodBias = pc.jitter.w;
 	if ( !TEMPORAL_NORMALS ) {
 		return;
 	}

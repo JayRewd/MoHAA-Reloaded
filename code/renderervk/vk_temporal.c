@@ -101,6 +101,8 @@ cvar_t	*r_temporalShowScale;
 cvar_t	*r_taa;
 cvar_t	*r_taaFeedback;
 cvar_t	*r_taaSharpen;
+cvar_t	*r_taaReactive;
+cvar_t	*r_taaLodBias;
 cvar_t	*r_saturation;
 cvar_t	*r_ao;
 cvar_t	*r_aoQuality;
@@ -151,7 +153,7 @@ typedef struct {
 	vkTemporalView_t	view;
 	int		rect[4];		// the scene's views (vkt.rect)
 	float	params[4];		// r_taaFeedback, 1: the history is the frame before's, 1: so is the pyramid, 1: it makes level 0 of this frame's
-	float	weights[12];	// of the 3 x 3 (9), for this frame's color at the pixel's center
+	float	weights[12];	// of the 3 x 3 (9), for this frame's color at the pixel's center; [9]: r_taaReactive
 } vkTaaPush_t;
 
 // the ambient occlusion's passes (ao_common.glsl, Push)
@@ -214,8 +216,8 @@ void VK_TemporalRegisterCvars( void ) {
 	r_temporalJitterSamples = ri.Cvar_Get( "r_temporalJitterSamples", "8", 0 );
 	ri.Cvar_CheckRange( r_temporalJitterSamples, 1, 64, qtrue );
 	r_temporalShow = ri.Cvar_Get( "r_temporalShow", "0", CVAR_CHEAT );
-	ri.Cvar_SetDescription( r_temporalShow, "with r_temporal 1, instead of the 3D view: 1 motion vectors, 2 normals, 3 classes, 4 depth pyramid level r_temporalShowMip, 5 last frame's color, 6 view distances, 7 last frame's view distances, 8 the scene without anti-aliasing, 9 the ambient occlusion, 10 one frame's ambient occlusion before denoising, 11 the motion blur of each pixel, 12 the longest motion blur around each tile, 13 the depth of field's blur (red in front of the focus, blue behind it, the focus area green)" );
-	ri.Cvar_CheckRange( r_temporalShow, 0, 13, qtrue );
+	ri.Cvar_SetDescription( r_temporalShow, "with r_temporal 1, instead of the 3D view: 1 motion vectors, 2 normals, 3 classes, 4 depth pyramid level r_temporalShowMip, 5 last frame's color, 6 view distances, 7 last frame's view distances, 8 the scene without anti-aliasing, 9 the ambient occlusion, 10 one frame's ambient occlusion before denoising, 11 the motion blur of each pixel, 12 the longest motion blur around each tile, 13 the depth of field's blur (red in front of the focus, blue behind it, the focus area green), 14 the effects the anti-aliasing takes less history for (r_taaReactive)" );
+	ri.Cvar_CheckRange( r_temporalShow, 0, 14, qtrue );
 	r_temporalShowMip = ri.Cvar_Get( "r_temporalShowMip", "0", CVAR_CHEAT );
 	ri.Cvar_CheckRange( r_temporalShowMip, 0, VK_TEMPORAL_MAX_MIPS - 1, qtrue );
 	r_temporalShowScale = ri.Cvar_Get( "r_temporalShowScale", "20", CVAR_CHEAT );
@@ -227,6 +229,12 @@ void VK_TemporalRegisterCvars( void ) {
 	r_taaSharpen = ri.Cvar_Get( "r_taaSharpen", "0.8", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_taaSharpen, "with r_taa 1: sharpens the anti-aliased image, 0 off to 1" );
 	ri.Cvar_CheckRange( r_taaSharpen, 0.0f, 1.0f, qfalse );
+	r_taaReactive = ri.Cvar_Get( "r_taaReactive", "1", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_taaReactive, "with r_taa 1: how much less history effects take (muzzle flashes, tracers, sparks, smoke, flares, animated textures), so they keep their brightness and leave no trail; 0 off to 1" );
+	ri.Cvar_CheckRange( r_taaReactive, 0.0f, 1.0f, qfalse );
+	r_taaLodBias = ri.Cvar_Get( "r_taaLodBias", "-0.5", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_taaLodBias, "with r_taa 1: the textures' mip level bias, negative for sharper textures (the anti-aliasing smooths their shimmer); 0 as without it" );
+	ri.Cvar_CheckRange( r_taaLodBias, -2.0f, 0.0f, qfalse );
 	r_saturation = ri.Cvar_Get( "r_saturation", "1.1", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_saturation, "with r_temporal 1: the 3D view's color saturation (not the HUD's), 1 unchanged; in SDR and with HDR output" );
 	ri.Cvar_CheckRange( r_saturation, 0.0f, 2.0f, qfalse );
@@ -1676,6 +1684,9 @@ static void VK_TemporalConsumers( VkCommandBuffer cmd, qboolean level0 ) {
 	for ( x = 0; x < 9; x++ ) {
 		push.weights[x] /= sum;
 	}
+	// how much the effects' share in the scene's alpha takes off the
+	// history (VK_PIPE_REACTIVE)
+	push.weights[9] = r_taaReactive->value;
 	push.params[2] = vkt.hizSerial[cur ^ 1] && vkt.hizSerial[cur ^ 1] + 1 == vk.frameSerial ? 1.0f : 0.0f;
 	push.params[3] = level0 ? 1.0f : 0.0f;
 

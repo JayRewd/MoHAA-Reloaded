@@ -289,6 +289,12 @@ void main() {
 		c = texelFetch( u_history, p, 0 ).rgb;
 	} else if ( pc.mode == 8 ) {
 		c = texelFetch( u_scene, p, 0 ).rgb;
+	} else if ( pc.mode == 14 ) {
+		// the effects' reactive share (the scene's alpha, VK_PIPE_REACTIVE)
+		// in red over the scene's brightness
+		vec4 scene = texelFetch( u_scene, p, 0 );
+
+		c = mix( vec3( dot( clamp( scene.rgb, 0.0, 1.0 ), vec3( 0.2126, 0.7152, 0.0722 ) ) * 0.5 ), vec3( 1.0, 0.0, 0.0 ), clamp( scene.a, 0.0, 1.0 ) );
 	} else if ( pc.mode == 9 ) {
 		// the factor the scene was multiplied with (gamma-encoded)
 		c = vec3( texelFetch( u_ao, p, 0 ).a );

@@ -318,6 +318,13 @@ void		vk_ao_scene( const float *fog );
 // the last frame's modelview of the following draws while the modelview is
 // the current one (vk_set_modelview); NULL: the camera's motion only
 void		vk_set_prev_modelview( const float *matrix );
+// the following draws show what the motion vectors don't follow (effects,
+// sprites, flares, animated textures): blended ones put their share of the
+// pixel into the scene's alpha, where the anti-aliasing takes less history
+// (r_taaReactive, VK_PIPE_REACTIVE); decals (polygon offset) never do.
+// Only in a scene with the anti-aliasing and r_taaReactive (or
+// r_temporalShow 14): otherwise the draws are as before
+void		vk_set_reactive( qboolean reactive );
 
 /*
 ====================================================================
@@ -381,6 +388,10 @@ typedef struct {
 	staticSt_t		staticSt[NUM_TEXTURE_BUNDLES];
 	int				staticFirstIndex;
 	int				staticFx;
+	// with staticFx >= 0: its deforms move the vertexes over time, and the
+	// record has their last frame's values too (the temporal path's motion
+	// vectors, VK_PIPE_MOTION)
+	qboolean		staticFxMotion;
 	// a skinned draw (see SKINNED DRAWS below) instead of xyz, colors and
 	// st: vertex i of the indexes is vertex record skinVertex + i of the
 	// skin data, the colors and the texture coordinates of unit 0 (when
@@ -418,6 +429,9 @@ typedef struct {
 	qboolean		colorArray;			// geometry colors per vertex (not the constant color)
 	qboolean		skinned;
 	qboolean		effects;			// from the static geometry with the effects shader (colorArray unused)
+	// a blended draw of a 3D view as vk_set_reactive will have it: 0 not
+	// reactive, 1 reactive, 2 both can happen (built twice)
+	int				reactive;
 } vkDrawState_t;
 
 qboolean	vk_prebuild_pipeline( const vkDrawState_t *state );
