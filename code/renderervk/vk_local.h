@@ -943,7 +943,7 @@ with shaders/temporal_common.glsl. Its readers: temporal anti-aliasing
 #define VK_TEMPORAL_GROUP_PYRAMID	2	// hiz[2]: the anti-aliasing, r_temporalShow's views 1, 2, 4, 6, 7
 #define VK_TEMPORAL_GROUP_AO		4	// the ambient occlusion's (r_ao)
 #define VK_TEMPORAL_GROUP_PREVCOLOR	8	// color[1], the last scene's color: r_temporalShow 5
-#define VK_TEMPORAL_GROUP_MOTIONBLUR	16	// mbVelocity, mbTile, mbNeighbor: the motion blur (r_motionBlur), r_temporalShow 11, 12
+#define VK_TEMPORAL_GROUP_MOTIONBLUR	16	// mbVelocity, mbSample, mbTile, mbNeighbor: the motion blur (r_motionBlur), r_temporalShow 11, 12
 #define VK_TEMPORAL_GROUP_DOF		32	// dofFocus, dofHalf, dofTile, dofNeighbor, dofFar, dofNear, dofResult: the depth of field (r_dof), r_temporalShow 13
 #define VK_TEMPORAL_GROUP_LAST		VK_TEMPORAL_GROUP_DOF
 
@@ -1086,7 +1086,8 @@ typedef struct {
 	float			frameMsec;		// the primary view's game time since its last frame, smoothed (vkSceneView_t)
 	int				mbTileSize;		// the longest half streak in pixels: max( 16, height / 40 )
 	int				mbTilesX, mbTilesY;
-	vkTemporalImage_t	mbVelocity;		// RGBA16F: the half vector (xy), the view distance (z; the weapon's scaled down, in front of all)
+	vkTemporalImage_t	mbVelocity;		// RG16F: the half vector
+	vkTemporalImage_t	mbSample;		// RG16F: its length, the view distance (the weapon's scaled down, in front of all): what the gather's samples read
 	vkTemporalImage_t	mbTile;			// RG16F, a texel a tile
 	vkTemporalImage_t	mbNeighbor;		// RG16F, a texel a tile
 	VkDescriptorSetLayout mbSetLayout;

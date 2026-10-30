@@ -27,7 +27,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //  - without NEIGHBOR, a workgroup a tile of K x K pixels (pc.params.z): each
 //    pixel's blur, the motion of the exposure (pc.params.x, half of it: the
 //    blur reaches as far on each side of the pixel) in pixels, its length no
-//    more than K, and its view distance, into u_mbVelocity; the longest of the
+//    more than K, into u_mbVelocity, its length and its view distance into
+//    u_mbSample (what the gather's samples read: half the bytes); the longest of the
 //    tile into u_tile. The motion: the draw's motion vector where it moves,
 //    less the camera's part that r_motionBlurCamera (pc.params.y) leaves out;
 //    elsewhere the camera's (temporal_common.glsl) times that share. The view
@@ -53,9 +54,10 @@ layout( local_size_x = GROUP, local_size_y = GROUP ) in;
 layout( set = 0, binding = 0 ) uniform sampler2D u_depth;
 layout( set = 0, binding = 1 ) uniform sampler2D u_normal;
 layout( set = 0, binding = 2 ) uniform sampler2D u_velocity;
-layout( set = 0, binding = 3, rgba16f ) uniform writeonly image2D u_mbVelocity;	// the half vector in pixels, the view distance
+layout( set = 0, binding = 3, rg16f ) uniform writeonly image2D u_mbVelocity;	// the half vector in pixels
 layout( set = 0, binding = 4, rg16f ) uniform image2D u_tile;		// the longest half vector of each tile
 layout( set = 0, binding = 5, rg16f ) uniform writeonly image2D u_neighbor;	// and of the 3 x 3 tiles around it
+layout( set = 0, binding = 6, rg16f ) uniform writeonly image2D u_mbSample;	// the half vector's length, the view distance
 
 layout( push_constant ) uniform Push {
 	TemporalView	view;
@@ -140,7 +142,8 @@ void main() {
 					h *= float( K ) / len;
 				}
 			}
-			imageStore( u_mbVelocity, p, vec4( h, d, 0.0 ) );
+			imageStore( u_mbVelocity, p, vec4( h, 0.0, 0.0 ) );
+			imageStore( u_mbSample, p, vec4( length( h ), d, 0.0, 0.0 ) );
 			if ( dot( h, h ) > bestLen ) {
 				bestLen = dot( h, h );
 				best = h;

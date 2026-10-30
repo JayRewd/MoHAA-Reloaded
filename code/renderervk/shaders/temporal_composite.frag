@@ -49,10 +49,11 @@ layout(set = 0, binding = 5) uniform sampler2D u_prevHiz;	// the last frame's de
 layout(set = 0, binding = 6) uniform sampler2D u_scene;		// this frame's scene color, unresolved
 layout(set = 0, binding = 7) uniform sampler2D u_ao;		// the ambient occlusion's factor (alpha, ao_denoise.comp)
 layout(set = 0, binding = 8) uniform sampler2D u_aoRaw;		// and its occlusion before the blending and the blur (r)
-layout(set = 0, binding = 9) uniform sampler2D u_mbVelocity;	// the motion blur's: each pixel's half vector in pixels, its view distance (motion_blur.comp)
+layout(set = 0, binding = 9) uniform sampler2D u_mbVelocity;	// the motion blur's: each pixel's half vector in pixels (motion_blur.comp)
 layout(set = 0, binding = 10) uniform sampler2D u_mbNeighbor;	// the longest half vector of the 3 x 3 tiles around each tile
 layout(set = 0, binding = 11) uniform sampler2D u_dof;			// the depth of field's result (dof.comp), written in the tiles a blur reaches
 layout(set = 0, binding = 12) uniform sampler2D u_dofNeighbor;	// its tiles: the largest blur of the 3 x 3 tiles around each (y)
+layout(set = 0, binding = 13) uniform sampler2D u_mbSample;		// the motion blur's: each pixel's half vector's length, its view distance (what the samples read)
 
 layout(push_constant) uniform Push {
 	TemporalView	view;
@@ -237,10 +238,10 @@ vec3 MotionBlur( ivec2 p, vec3 center ) {
 		return center;
 	}
 
-	vec4 cv = texelFetch( u_mbVelocity, p, 0 );
-	vec2 vc = cv.xy;
-	float cLen = length( vc );
-	float cd = cv.z;
+	vec2 vc = texelFetch( u_mbVelocity, p, 0 ).xy;
+	vec2 cs = texelFetch( u_mbSample, p, 0 ).xy;
+	float cLen = cs.x;
+	float cd = cs.y;
 	int pairs = pc.mb.y;
 	float jitter = MbNoise( gl_FragCoord.xy ) - 0.5;
 	// its own blur differs from the tile's by more than about 25 degrees
@@ -253,12 +254,12 @@ vec3 MotionBlur( ivec2 p, vec3 center ) {
 		float offsetLen = length( offset );
 		ivec2 p1 = clamp( ivec2( gl_FragCoord.xy + offset ), lo, hi );
 		ivec2 p2 = clamp( ivec2( gl_FragCoord.xy - offset ), lo, hi );
-		vec4 s1 = texelFetch( u_mbVelocity, p1, 0 );
-		vec4 s2 = texelFetch( u_mbVelocity, p2, 0 );
-		float l1 = length( s1.xy ), l2 = length( s2.xy );
-		float w1 = dot( MbDepthCompare( cd, s1.z ), MbSpread( offsetLen, vec2( cLen, l1 ) ) );
-		float w2 = dot( MbDepthCompare( cd, s2.z ), MbSpread( offsetLen, vec2( cLen, l2 ) ) );
-		bvec2 mirror = bvec2( s1.z > s2.z, l2 > l1 );
+		vec2 s1 = texelFetch( u_mbSample, p1, 0 ).xy;
+		vec2 s2 = texelFetch( u_mbSample, p2, 0 ).xy;
+		float l1 = s1.x, l2 = s2.x;
+		float w1 = dot( MbDepthCompare( cd, s1.y ), MbSpread( offsetLen, vec2( cLen, l1 ) ) );
+		float w2 = dot( MbDepthCompare( cd, s2.y ), MbSpread( offsetLen, vec2( cLen, l2 ) ) );
+		bvec2 mirror = bvec2( s1.y > s2.y, l2 > l1 );
 
 		w1 = all( mirror ) ? w2 : w1;
 		w2 = any( mirror ) ? w2 : w1;

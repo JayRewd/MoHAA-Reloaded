@@ -8821,8 +8821,9 @@ selects the sample count (see Implementation notes).
   - *When.* `VK_TemporalUpdateFeatures` latches it for the scene
     (`vkt.mbOn`: the passes, also for `r_temporalShow` 11 and 12;
     `vkt.mbBlur`: the gather) and makes its group of images
-    (`VK_TEMPORAL_GROUP_MOTIONBLUR`, `GENERAL` always): `mbVelocity`
-    (RGBA16F, the framebuffer's size) and `mbTile`, `mbNeighbor` (RG16F, a
+    (`VK_TEMPORAL_GROUP_MOTIONBLUR`, `GENERAL` always): `mbVelocity` and
+    `mbSample` (RG16F, the framebuffer's size; one RGBA16F image before
+    Plan 49) and `mbTile`, `mbNeighbor` (RG16F, a
     texel a tile). `VK_TemporalResolve` runs its two passes after the
     anti-aliasing; the composite then binds `compositeBlurPipeline` (the
     spec constant `MOTION_BLUR`) instead of `compositePipeline`. Alone,
@@ -8851,7 +8852,9 @@ selects the sample count (see Implementation notes).
     reaches as far on each side), no longer than K; with its view
     distance (the weapon's divided by 1024: in front of everything, as the
     depth hack draws it, in its own order; at most 65000, which a half
-    float holds) into `mbVelocity`. The workgroup keeps the longest of the
+    float holds): the vector into `mbVelocity`, its length and the distance
+    into `mbSample`, which the gather's samples read (the vector only at
+    the pixel itself). The workgroup keeps the longest of the
     tile (a reduction in shared memory) in `mbTile`. Then (`NEIGHBOR`, an
     invocation a tile) the longest of the 3 x 3 tiles around each into
     `mbNeighbor`: every pixel a blur of K or less can reach.
@@ -8901,7 +8904,11 @@ selects the sample count (see Implementation notes).
     seem to read slower than the scene's color attachment (not looked
     into). Not optimized yet: the samples need only the blur's length and
     the distance, so 4 bytes a pixel (the direction packed) would halve
-    what both passes move.
+    what both passes move. Plan 49 split it in two images instead: the
+    samples read 4 bytes (`mbSample`), the vector only the pixel itself:
+    turning with the anti-aliasing 0.224 to 0.208 ms (5 runs a build),
+    the turning frame one level off in 0.2 % of the pixels (the length
+    rounded to a half float once), the still ones the same to the bit.
 - **Depth of field (Plan 47).** `r_dof 1` with the temporal path
   (`VK_TemporalDof`, `shaders/dof.comp`). The gather is Jimenez's,
   "Next Generation Post Processing in Call of Duty: Advanced Warfare"
@@ -10366,6 +10373,9 @@ Done:
     switched on and off in a run, quality 3's two blurs. With
     `r_aoHalfRes 0` the frames the build before's to the bit
     (`r_aoTemporal 1`, quality 2 and 3).
+    The motion blur (see Implementation notes, Motion blur, Cost): its
+    per-pixel image split into the vector and what the samples read
+    (length, distance): turning with the anti-aliasing 0.224 to 0.208 ms.
 
 Remaining:
 

@@ -188,13 +188,13 @@ typedef struct {
 } vkDofPush_t;
 
 #define VK_TEMPORAL_PREPARE_BINDINGS	4	// depth, normals (sampled), levels 0 and 1 (storage)
-#define VK_TEMPORAL_COMPOSITE_BINDINGS	13
+#define VK_TEMPORAL_COMPOSITE_BINDINGS	14
 #define VK_TEMPORAL_TAA_BINDINGS		8	// color, motion vectors, normals, depth, history, last pyramid (sampled), result, this pyramid's level 0 (storage)
 #define VK_TEMPORAL_TAA_HISTORY_BINDING	4	// read with the bilinear sampler
 #define VK_TEMPORAL_TAA_GROUP			16	// the workgroup's width and height (taa_resolve.comp, GROUP)
 #define VK_TEMPORAL_AO_BINDINGS		21	// ao_common.glsl: 10 sampled, 11 storage
 #define VK_TEMPORAL_AO_SAMPLED			10
-#define VK_TEMPORAL_MB_BINDINGS		6	// depth, normals, motion vectors (sampled), mbVelocity, mbTile, mbNeighbor (storage)
+#define VK_TEMPORAL_MB_BINDINGS		7	// depth, normals, motion vectors (sampled), mbVelocity, mbTile, mbNeighbor, mbSample (storage)
 #define VK_TEMPORAL_MB_SAMPLED			3
 #define VK_TEMPORAL_MB_NEIGHBOR_GROUP	8	// the neighbour pass's workgroup's width and height (motion_blur.comp)
 #define VK_TEMPORAL_DOF_BINDINGS		12	// depth, normals, color (sampled), focus, half, tile, neighbor, far, near, result (storage), far, near (bilinear)
@@ -665,7 +665,9 @@ static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
 		VK_TemporalClearImage( cmd, vkt.color[1].image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, black );
 		break;
 	case VK_TEMPORAL_GROUP_MOTIONBLUR:
-		VK_TemporalCreateImage( &vkt.mbVelocity, VK_FORMAT_R16G16B16A16_SFLOAT, storage, vk.width, vk.height, 1 );
+		VK_TemporalCreateImage( &vkt.mbVelocity, VK_FORMAT_R16G16_SFLOAT, storage, vk.width, vk.height, 1 );
+		VK_TemporalCreateImage( &vkt.mbSample, VK_FORMAT_R16G16_SFLOAT, storage, vk.width, vk.height, 1 );
+		VK_TemporalClearImage( cmd, vkt.mbSample.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		VK_TemporalCreateImage( &vkt.mbTile, VK_FORMAT_R16G16_SFLOAT, storage, vkt.mbTilesX, vkt.mbTilesY, 1 );
 		VK_TemporalCreateImage( &vkt.mbNeighbor, VK_FORMAT_R16G16_SFLOAT, storage, vkt.mbTilesX, vkt.mbTilesY, 1 );
 		VK_TemporalClearImage( cmd, vkt.mbVelocity.image, VK_IMAGE_LAYOUT_GENERAL, zero );
@@ -736,6 +738,7 @@ static void VK_TemporalDestroyGroup( int group ) {
 		break;
 	case VK_TEMPORAL_GROUP_MOTIONBLUR:
 		VK_TemporalDestroyImage( &vkt.mbVelocity );
+		VK_TemporalDestroyImage( &vkt.mbSample );
 		VK_TemporalDestroyImage( &vkt.mbTile );
 		VK_TemporalDestroyImage( &vkt.mbNeighbor );
 		break;
@@ -1250,7 +1253,7 @@ static const VkDescriptorType vk_compositeTypes[VK_TEMPORAL_COMPOSITE_BINDINGS] 
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 };
 static const VkDescriptorType vk_aoTypes[VK_TEMPORAL_AO_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1265,7 +1268,7 @@ static const VkDescriptorType vk_aoTypes[VK_TEMPORAL_AO_BINDINGS] = {
 static const VkDescriptorType vk_aoApplyTypes[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
 static const VkDescriptorType vk_mbTypes[VK_TEMPORAL_MB_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
 };
 static const VkDescriptorType vk_dofTypes[VK_TEMPORAL_DOF_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1331,6 +1334,7 @@ static void VK_TemporalWriteStaticSets( void ) {
 		views[10] = mb ? vkt.mbNeighbor.view : placeholder;
 		views[11] = dof ? vkt.dofResult.view : placeholder;
 		views[12] = dof ? vkt.dofNeighbor.view : placeholder;
+		views[13] = mb ? vkt.mbSample.view : placeholder;
 		for ( l = 0; l < VK_TEMPORAL_COMPOSITE_BINDINGS; l++ ) {
 			layouts[l] = views[l] == placeholder || l == 3 || l == 5 || l >= 7 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
@@ -2143,6 +2147,7 @@ static void VK_TemporalMotionBlur( VkCommandBuffer cmd ) {
 	views[1] = vkt.normal.view;
 	views[2] = vkt.velocity.view;
 	views[3] = vkt.mbVelocity.view;
+	views[6] = vkt.mbSample.view;
 	views[4] = vkt.mbTile.view;
 	views[5] = vkt.mbNeighbor.view;
 	layouts[0] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
