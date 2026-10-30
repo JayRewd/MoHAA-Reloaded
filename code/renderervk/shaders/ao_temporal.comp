@@ -45,6 +45,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // workgroups too), then blurs its 16 x 16 from there: the same values as a
 // pass each, without writing the blend out and reading it back (two passes
 // took a sixth longer).
+// With AO_HALF (r_aoHalfRes) on the half resolution grid: a texel's motion is
+// that of its pixel (ao_common.glsl), the history read on the grid; the last
+// blur goes to o_blur2 for ao_upsample.comp.
 
 #version 450
 #include "ao_common.glsl"
@@ -60,7 +63,8 @@ shared float	s_z[RT * RT];
 shared float	s_vis[HT * HT];
 shared float	s_frames[HT * HT];
 
-// the pixel q blended with the history; r its position in the raw tile
+// the grid's texel q blended with the history; r its position in the raw
+// tile; lo and hi the views' pixels
 vec2 Blend( ivec2 q, ivec2 r, ivec2 lo, ivec2 hi ) {
 	vec2 fbSize = vec2( textureSize( u_aoDepth, 0 ) );
 	float vmin = 1.0, vmax = 0.0;
@@ -83,13 +87,14 @@ vec2 Blend( ivec2 q, ivec2 r, ivec2 lo, ivec2 hi ) {
 		return vec2( cur, 1.0 );
 	}
 
-	vec2 pixel = vec2( q ) + 0.5;
-	bool moves = ( TemporalFlags( texelFetch( u_normal, q, 0 ) ) & TEMPORAL_FLAG_MOTION ) != 0u;
+	vec2 pixel = AoGridPixel( q );
+	ivec2 fp = AO_HALF ? ivec2( pixel ) : q;		// the texel's pixel
+	bool moves = ( TemporalFlags( texelFetch( u_normal, fp, 0 ) ) & TEMPORAL_FLAG_MOTION ) != 0u;
 	vec2 motion;
 	float expected;		// the last frame's view distance of the surface
 
 	if ( moves ) {
-		motion = texelFetch( u_velocity, q, 0 ).rg;
+		motion = texelFetch( u_velocity, fp, 0 ).rg;
 		expected = d;
 	} else if ( weapon ) {
 		// a weapon without motion vectors moves with the camera
@@ -112,7 +117,7 @@ vec2 Blend( ivec2 q, ivec2 r, ivec2 lo, ivec2 hi ) {
 
 	// the 2 x 2 texels around the point, picked here (order (0, 1), (1, 1),
 	// (1, 0), (0, 0))
-	vec2 t = prevPixel - 0.5;
+	vec2 t = ( prevPixel - 0.5 ) / AO_SCALE;
 	ivec2 b0 = ivec2( floor( t ) );
 	vec2 f = t - vec2( b0 );
 	ivec2 maxT = ivec2( fbSize ) - 1;
@@ -151,8 +156,10 @@ vec2 Blend( ivec2 q, ivec2 r, ivec2 lo, ivec2 hi ) {
 }
 
 void main() {
-	ivec2 lo = pc.view.rect.xy;
-	ivec2 hi = pc.view.rect.xy + pc.view.rect.zw - 1;
+	ivec2 lo = AoGridLo();		// the grid's texels
+	ivec2 hi = AoGridHi();
+	ivec2 plo = pc.view.rect.xy;	// the views' pixels
+	ivec2 phi = pc.view.rect.xy + pc.view.rect.zw - 1;
 	ivec2 origin = lo + ivec2( gl_WorkGroupID.xy ) * GROUP;
 	ivec2 local = ivec2( gl_LocalInvocationID.xy );
 	ivec2 p = origin + local;
@@ -172,7 +179,7 @@ void main() {
 	for ( i = int( gl_LocalInvocationIndex ); i < HT * HT; i += GROUP * GROUP ) {
 		ivec2 h = ivec2( i % HT, i / HT );
 		ivec2 q = clamp( origin - 1 + h, lo, hi );
-		vec2 b = Blend( q, q - ( origin - 2 ), lo, hi );
+		vec2 b = Blend( q, q - ( origin - 2 ), plo, phi );
 
 		s_vis[i] = b.x;
 		s_frames[i] = b.y;
@@ -207,7 +214,9 @@ void main() {
 	bool final = pc.ints.w == AO_PASS_HISTORY_TO_RESULT;
 	float blurred = AoBlur( v, z, frames, final );
 
-	if ( final ) {
+	if ( final && AO_HALF ) {
+		imageStore( o_blur2, p, vec4( blurred, frames, 0.0, 0.0 ) );
+	} else if ( final ) {
 		imageStore( o_result, p, AoResult( blurred, z[4] ) );
 	} else {
 		imageStore( o_blur, p, vec4( blurred, frames, 0.0, 0.0 ) );

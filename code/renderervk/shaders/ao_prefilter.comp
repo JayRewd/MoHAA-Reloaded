@@ -33,6 +33,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // level 4. One pixel an invocation (16 x 16) was a fifth slower; its
 // level 0 written in four 8 x 8 blocks (a warp's stores next to each
 // other), or without the normals' class, took the same time.
+// With AO_HALF (r_aoHalfRes) the grid's view distances too, a texel a 2 x 2:
+// the top-left one's (ao_common.glsl).
 
 #version 450
 #include "ao_common.glsl"
@@ -71,18 +73,6 @@ float Filter( vec4 d ) {
 	return all( weapon ) ? -r : r;
 }
 
-// the view distance of a pixel from its depth and its normal's class
-float Distance( float wz, float a ) {
-	int cls = int( a * 3.0 + 0.5 );		// TemporalClass
-	bool weapon = cls == TEMPORAL_CLASS_WEAPON;
-	float d = TemporalViewDistance( pc.view, wz, weapon );
-
-	if ( cls == TEMPORAL_CLASS_NONE || cls == TEMPORAL_CLASS_SKY ) {
-		return AoFar();
-	}
-	return weapon ? -max( d, 1e-4 ) : min( d, AoFar() );
-}
-
 void main() {
 	ivec2 size = textureSize( u_depth, 0 );
 	ivec2 local = ivec2( gl_LocalInvocationID.xy );
@@ -98,10 +88,13 @@ void main() {
 	vec4 wz = textureGather( u_depth, uv, 0 );
 	vec4 cls = textureGather( u_normal, uv, 3 );
 
-	d.x = Distance( wz.w, cls.w );
-	d.y = Distance( wz.z, cls.z );
-	d.z = Distance( wz.x, cls.x );
-	d.w = Distance( wz.y, cls.y );
+	d.x = AoDistance( wz.w, cls.w );
+	d.y = AoDistance( wz.z, cls.z );
+	d.z = AoDistance( wz.x, cls.x );
+	d.w = AoDistance( wz.y, cls.y );
+	if ( AO_HALF && all( lessThan( t, imageSize( o_grid ) ) ) ) {
+		imageStore( o_grid, t, vec4( d.x ) );
+	}
 	if ( p.x < size.x && p.y < size.y ) {
 		imageStore( o_depth0, p, vec4( d.x ) );
 	}

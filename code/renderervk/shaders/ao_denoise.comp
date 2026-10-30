@@ -24,7 +24,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // ao_common.glsl): with two blurs (r_aoQuality 3, or without history: the
 // first frames after a cut are the noisiest) ao_temporal.comp's lighter
 // first one is in o_blur; this one blurs it again (AoBlur) into what
-// ao_apply.frag blends (AoResult).
+// ao_apply.frag blends (AoResult). With AO_HALF (r_aoHalfRes) on the half
+// resolution grid, into o_blur2 for ao_upsample.comp.
 
 #version 450
 #include "ao_common.glsl"
@@ -32,8 +33,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 layout( local_size_x = 8, local_size_y = 8 ) in;
 
 void main() {
-	ivec2 lo = pc.view.rect.xy;
-	ivec2 hi = pc.view.rect.xy + pc.view.rect.zw - 1;
+	ivec2 lo = AoGridLo();
+	ivec2 hi = AoGridHi();
 	ivec2 p = lo + ivec2( gl_GlobalInvocationID.xy );
 
 	if ( any( greaterThan( p, hi ) ) ) {
@@ -57,5 +58,9 @@ void main() {
 
 	float frames = texelFetch( u_blur, p, 0 ).g;
 
-	imageStore( o_result, p, AoResult( AoBlur( v, z, frames, true ), z[4] ) );
+	if ( AO_HALF ) {
+		imageStore( o_blur2, p, vec4( AoBlur( v, z, frames, true ), frames, 0.0, 0.0 ) );
+	} else {
+		imageStore( o_result, p, AoResult( AoBlur( v, z, frames, true ), z[4] ) );
+	}
 }

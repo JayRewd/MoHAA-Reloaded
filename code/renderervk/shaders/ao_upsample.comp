@@ -1,0 +1,85 @@
+/*
+===========================================================================
+Copyright (C) 2026 the OpenMoHAA team
+
+This file is part of OpenMoHAA source code.
+
+OpenMoHAA source code is free software; you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 2 of the License,
+or (at your option) any later version.
+
+OpenMoHAA source code is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with OpenMoHAA source code; if not, write to the Free Software
+Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+===========================================================================
+*/
+
+// ao_upsample.comp -- with r_aoHalfRes, the ambient occlusion of the half
+// resolution grid to the framebuffer's pixels (ao_common.glsl, AO_HALF): each
+// pixel's visibility from the 2 x 2 texels around it (the last blur's,
+// u_blur2), bilinear weights times how close each texel's view distance is
+// to the pixel's own (from the depth buffer), so the occlusion of a surface
+// doesn't spread over the one in front of it or behind; where no texel is
+// of the pixel's surface, the nearest in view distance. Then the result as
+// the passes without r_aoHalfRes make it (AoResult), into what
+// ao_apply.frag blends.
+
+#version 450
+#include "ao_common.glsl"
+
+layout( local_size_x = 8, local_size_y = 8 ) in;
+
+void main() {
+	ivec2 lo = pc.view.rect.xy;
+	ivec2 hi = pc.view.rect.xy + pc.view.rect.zw - 1;
+	ivec2 p = lo + ivec2( gl_GlobalInvocationID.xy );
+	ivec2 glo = AoGridLo(), ghi = AoGridHi();
+
+	if ( any( greaterThan( p, hi ) ) ) {
+		return;
+	}
+
+	// the pixel's view distance, as ao_prefilter.comp makes them
+	float sd = AoDistance( texelFetch( u_depth, p, 0 ).r, texelFetch( u_normal, p, 0 ).a );
+	float d = abs( sd );
+	bool weapon = sd < 0.0;
+
+	if ( AoIsFar( d ) ) {
+		imageStore( o_result, p, vec4( 0.0, 0.0, 0.0, 1.0 ) );
+		return;
+	}
+
+	// the texels around the pixel (a texel is at its top-left pixel: the
+	// pixel itself, or between two or four of them)
+	vec2 g = vec2( p ) * 0.5;
+	ivec2 b = ivec2( floor( g ) );
+	vec2 f = g - vec2( b );
+	float tolerance = 0.03 * d + 1.0;
+	float sum = 0.0, wsum = 0.0, nearestV = 1.0, nearestE = 3.4e38;
+	int x, y;
+
+	for ( y = 0; y < 2; y++ ) {
+		for ( x = 0; x < 2; x++ ) {
+			ivec2 t = clamp( b + ivec2( x, y ), glo, ghi );
+			float td = texelFetch( u_aoDepth, t, 0 ).r;
+			float v = texelFetch( u_blur2, t, 0 ).r;
+			float e = ( td < 0.0 ) == weapon ? abs( abs( td ) - d ) : 3.0e38;
+			float w = ( x == 1 ? f.x : 1.0 - f.x ) * ( y == 1 ? f.y : 1.0 - f.y ) * max( 1.0 - e / tolerance, 0.0 );
+
+			sum += w * v;
+			wsum += w;
+			if ( e < nearestE ) {
+				nearestE = e;
+				nearestV = v;
+			}
+		}
+	}
+
+	imageStore( o_result, p, AoResult( wsum > 1e-4 ? sum / wsum : nearestV, sd ) );
+}

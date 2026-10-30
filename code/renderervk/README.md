@@ -769,6 +769,10 @@ below are done.
   constants), the blend over frames and the blur in one pass: quality 2
   0.82 to 0.69 ms over the path at 2560x1440, 0.45 to 0.38 at 1920x1080,
   the frames the same but for one level in up to 4 % of the pixels.
+  Since Plan 49 `r_aoHalfRes 1` (archived, off by default, switched live)
+  computes the occlusion for one pixel of each 2 x 2 and upsamples it
+  along the depth: 0.78 to 0.31 ms at quality 2 at 2560x1440, the frames
+  of the room one level off in 3 to 10 % of the pixels.
   See Implementation notes, Ambient occlusion
 - motion blur (2026-10-27, Plan 46, the renderer; the user's request: a
   velocity motion blur from the motion vectors and the depth): with
@@ -1015,6 +1019,7 @@ Cvars of the backend:
 | `r_aoTemporal` (archived, default 16, 1 to 64) | with `r_ao 1`: the most frames blended (a quarter of it for what moves); 1: none, the noise stays put and the blur works alone |
 | `r_aoNormals` (archived, default 0) | with `r_ao 1`: 0 the normals of the depth; 1 the draws' where they are within about 25 degrees of those (smoother curved models) |
 | `r_aoMultiBounce` (archived, default 0.4, 0 to 0.9) | with `r_ao 1`: the albedo of Jimenez's multi-bounce fit: the light occluders bounce back lightens the occlusion; 0 none |
+| `r_aoHalfRes` (archived, default 0, 0 to 1) | with `r_ao 1`: 1 the occlusion, its blending over frames and its blur for one pixel of each 2 x 2, upsampled along the depth (Plan 49: 0.78 to 0.31 ms at quality 2 at 2560x1440; softer on thin things); switched live (the images made again, one GPU wait) |
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
@@ -8672,7 +8677,9 @@ selects the sample count (see Implementation notes).
     (R32F, 5 levels, the weapon's negative, the sky at `AoFar`; this
     frame's and the last one's), `aoRaw` (R8: one frame's visibility), `aoHistory[2]` (RG16F: the blended
     visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: what the
-    apply pass blends). One descriptor set and push constant block
+    apply pass blends). With `r_aoHalfRes 1` `aoRaw`, `aoHistory` and
+    `aoBlur` are at half the size, with `aoGrid[2]` (R32F) and `aoBlur2`
+    (RG16F) beside them (about 75 MB at 2560x1440). One descriptor set and push constant block
     (`vkAoPush_t`, 208 bytes) for the compute passes, written each frame.
   - *Barriers.* One call before: the depth image to
     `DEPTH_STENCIL_READ_ONLY`, the normals and the motion vectors to
@@ -8776,6 +8783,35 @@ selects the sample count (see Implementation notes).
     instead of loaded as storage images (kept), the view distances without
     the normals' class; one pixel an invocation in the view distances'
     pass was 0.03 ms slower, its level 0 written in 8 x 8 blocks the same.
+    Plan 49: levels 1 to 4 of the view distances in R16F (level 0 stays
+    32-bit: its stripes came from the nearest samples; the coarse levels'
+    samples are 14 pixels away or more, where a half float's step tilts
+    the horizon by a few degrees) changed nothing measurable (1.139
+    against 1.140 ms a frame, 5 runs each): the occlusion isn't limited by
+    the bytes of its coarse samples. Not kept.
+  - *Half resolution* (`r_aoHalfRes 1`, Plan 49; `AO_HALF`, a
+    specialization constant of every pass, so the passes without it are
+    those before to the bit, and a pipeline of each with it;
+    `vkt.aoHalf` the images' mode, `VK_TemporalUpdateFeatures` makes them
+    again when it changes). The occlusion, the blend over frames and the
+    blurs work on a grid of a texel a 2 x 2 pixels: the top-left one, its
+    position and its view distance (`aoGrid[2]`, R32F, written by the
+    prefilter beside the full resolution's levels). The main pass is
+    the full resolution's at that pixel, its samples from the full
+    resolution's view distances (`u_aoLevels`); the history, its motion
+    and the blurs' edges on the grid (the edges' tolerance doubled: a
+    texel is two pixels across); the last blur into `aoBlur2` (RG16F), then
+    `ao_upsample.comp` over the views' pixels (before the scene's render
+    pass begins again, the depth readable): each pixel's view distance from
+    the depth, the 2 x 2 texels around it weighted bilinear times 1 - their
+    distance's difference over 3 % and 1 unit (0 for the weapon against
+    the world), the texel nearest in distance where none is left, then the
+    result as without it (`AoResult`, full resolution). `r_temporalShow 10`
+    shows the grid. First tries: the nearest and the farthest of the 2 x 2
+    on alternate texels (a plane became a zigzag that occluded itself: a
+    flat ceiling went blotchy), then the main pass's nearest samples from
+    the grid (snapped up to a pixel off their slice: a wall or a floor at
+    a grazing angle occluded itself in streaks).
 - **Motion blur (Plan 46).** `r_motionBlur 1` with the temporal path
   (`VK_TemporalMotionBlur`, `shaders/motion_blur.comp`, the gather in
   `shaders/temporal_composite.frag`). McGuire, Hennessy, Bukowski and
@@ -10319,6 +10355,17 @@ Done:
     gather's spiral turned instead of a `sin` and `cos` a sample: 0.256 to
     0.220 ms; with `r_dof 0`, and with `r_dofAperture 0`, the frames the
     build before's to the bit.
+    The ambient occlusion (see Implementation notes, Ambient occlusion):
+    its coarse view distances in 16 bits measured and dropped (no
+    change); `r_aoHalfRes` (off by default): the frame 1.159 to 0.680 ms
+    at quality 2 with the anti-aliasing (the occlusion 0.78 to 0.31), the
+    final frames of the `mohdm6` views one level off in 3 to 10 % of the
+    pixels (a few hundred by 4 to 15), the occlusion's view
+    (`r_temporalShow 9`) one level in 8 to 17 %, a few by 16 or more at
+    silhouettes; still and strafing captures without streaks or halos,
+    switched on and off in a run, quality 3's two blurs. With
+    `r_aoHalfRes 0` the frames the build before's to the bit
+    (`r_aoTemporal 1`, quality 2 and 3).
 
 Remaining:
 

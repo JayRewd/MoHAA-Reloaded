@@ -33,6 +33,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // compensation lets them fade sooner along the view axis.
 // The result is noisy: ao_temporal.comp blends it over frames and
 // ao_denoise.comp blurs it within the depth edges.
+// With AO_HALF (r_aoHalfRes) an invocation a texel of the half resolution
+// grid: its pixel (ao_common.glsl) as without it, the view distances of the
+// full resolution (u_aoLevels), into the grid. Samples of level 0 snapped to
+// the grid's texels were up to a pixel off their slice: a wall or a floor
+// seen at a grazing angle occluded itself in streaks.
 
 #version 450
 #include "ao_common.glsl"
@@ -90,23 +95,39 @@ vec2 Noise( ivec2 p ) {
 	return fract( 0.5 + float( index ) * vec2( 0.75487766624669276005, 0.5698402909980532659114 ) );
 }
 
+// the view distances of the framebuffer's pixels, every level
+vec4 DepthGather( vec2 uv ) {
+	if ( AO_HALF ) {
+		return textureGather( u_aoLevels, uv, 0 );
+	}
+	return textureGather( u_aoDepth, uv, 0 );
+}
+
+float DepthFetch( ivec2 texel, int level ) {
+	if ( AO_HALF ) {
+		return texelFetch( u_aoLevels, texel, level ).r;
+	}
+	return texelFetch( u_aoDepth, texel, level ).r;
+}
+
 void main() {
 	ivec2 lo = pc.view.rect.xy;
 	ivec2 hi = pc.view.rect.xy + pc.view.rect.zw - 1;
-	ivec2 p = lo + ivec2( gl_GlobalInvocationID.xy );
-	vec2 fbSize = vec2( textureSize( u_aoDepth, 0 ) );
+	ivec2 grid = AoGridLo() + ivec2( gl_GlobalInvocationID.xy );	// the grid's texel
+	ivec2 p = AO_HALF ? clamp( grid * 2, lo, hi ) : grid;			// its pixel
+	vec2 fbSize = vec2( AO_HALF ? textureSize( u_aoLevels, 0 ) : textureSize( u_aoDepth, 0 ) );
 	vec2 pixel = vec2( p ) + 0.5;
 	float sd, z, zl, zr, zt, zb;
 	bool weapon;
 
-	if ( any( greaterThan( p, hi ) ) ) {
+	if ( any( greaterThan( grid, AoGridHi() ) ) ) {
 		return;
 	}
 
 	// the pixel and its 4 neighbours in 2 gathers (at the corners p and
 	// p + 1: (L, C, T, TL) and (B, BR, R, C))
-	vec4 g0 = textureGather( u_aoDepth, vec2( p ) / fbSize, 0 );
-	vec4 g1 = textureGather( u_aoDepth, vec2( p + 1 ) / fbSize, 0 );
+	vec4 g0 = DepthGather( vec2( p ) / fbSize );
+	vec4 g1 = DepthGather( vec2( p + 1 ) / fbSize );
 
 	sd = g0.y;
 	zl = g0.x;
@@ -117,7 +138,7 @@ void main() {
 	weapon = sd < 0.0;
 	z = abs( sd );
 	if ( AoIsFar( z ) ) {
-		imageStore( o_raw, p, vec4( 1.0 ) );
+		imageStore( o_raw, grid, vec4( 1.0 ) );
 		return;
 	}
 
@@ -178,7 +199,7 @@ void main() {
 	float minS = PIXEL_TOO_CLOSE / screenRadius;
 	const int slices = SLICES;
 	const int steps = STEPS;
-	vec2 noise = Noise( p );
+	vec2 noise = Noise( grid );
 	float visibility = 0.0;
 
 	// less occlusion when the radius covers only a few pixels (far away):
@@ -240,7 +261,7 @@ void main() {
 				// grazing angle close to the eye occluded itself
 				ivec2 texel = min( ivec2( sp ) >> l, max( ivec2( fbSize ) >> l, ivec2( 1 ) ) - 1 );
 
-				sdist = texelFetch( u_aoDepth, texel, l ).r;
+				sdist = DepthFetch( texel, l );
 				sp = l == 0 ? sp : ( vec2( texel ) + 0.5 ) * float( 1 << l );
 				// the weapon and the world don't occlude each other
 				if ( ( sdist < 0.0 ) != weapon ) {
@@ -276,5 +297,5 @@ void main() {
 	}
 	visibility = clamp( visibility / float( slices ), 0.03, 1.0 );
 
-	imageStore( o_raw, p, vec4( visibility ) );
+	imageStore( o_raw, grid, vec4( visibility ) );
 }
