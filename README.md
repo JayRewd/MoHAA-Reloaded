@@ -107,7 +107,9 @@ seta r_fullscreen 1
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64. |
 | `r_ext_multisample` | `0` | `2` to `16`: multisampling. |
 | `r_temporal` | `0` | `1` is required for anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`), depth of field (`r_dof`) and the HDR look (`r_hdrOutput`). It draws the 3D view with motion vectors, normals and the last frame's color, which those build on. Takes effect after `vid_restart`. With it and them off, the frames are the same as before. |
-| `r_taa` | `0` | With `r_temporal 1`: temporal anti-aliasing. |
+| `r_taa` | `0` | With `r_temporal 1`: temporal anti-aliasing. Swaying trees, flags and waves keep their own motion, so they stay sharp. |
+| `r_taaReactive` | `1` | With `r_taa 1`: muzzle flashes, tracers, sparks, fire and smoke keep their brightness and leave no ghost; the anti-aliasing takes less of the last frames where they are. `0` is as before. |
+| `r_taaLodBias` | `-0.5` | With `r_taa 1`: sharper textures (half a mip level finer); the anti-aliasing smooths the shimmer that adds. `0` is as before. |
 | `r_ao` | `0` | With `r_temporal 1`: ground truth ambient occlusion (GTAO), darkening corners and contact on solid surfaces only; smoke, flashes and glows keep their brightness. `r_aoQuality` `0` to `3` (default `2`). |
 | `r_motionBlur` | `0` | With `r_temporal 1`: motion blur along each pixel's motion, the same at any frame rate. `r_motionBlurQuality` `0` to `2`. The weapon in your hands and the HUD stay sharp. |
 | `r_dof` | `0` | With `r_temporal 1`: depth of field, focused on what the crosshair is on: what is nearer or farther blurs like a camera lens, more through a scope. `r_dofAperture` (`0.5`) sets how much, `r_dofFocus` a fixed distance instead, `r_dofQuality` `0` to `2`. The weapon in your hands and the HUD stay sharp. |
