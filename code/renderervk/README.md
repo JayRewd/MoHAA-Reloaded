@@ -816,7 +816,7 @@ below are done.
   deforms move the vertexes in the motion vectors too, so the swaying
   trees and bushes (flap), flags, curtains and seas (wave, move, bulge)
   carry their own motion instead of the camera's; `r_taaReactive`
-  (archived, default 1, 0 to 1): blended effects (entities, sprites,
+  (cheat, default 1, 0 to 1, for comparisons): blended effects (entities, sprites,
   flares, shaders that change over time; not decals, not the sky) add
   their share of each pixel to the scene's alpha and the resolve takes
   that much less history there, so a muzzle flash, tracer or spark shows
@@ -1017,7 +1017,7 @@ Cvars of the backend:
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
-| `r_taaReactive` (archived, default 1, 0 to 1) | with `r_taa 1`: how much less history the pixels of blended effects take (muzzle flashes, tracers, sparks, fire, smoke, flares, animated textures): the square of their share of the pixel (the largest of the 3 x 3) times this. 0: as before |
+| `r_taaReactive` (cheat, default 1, 0 to 1) | with `r_taa 1`: how much less history the pixels of blended effects take (muzzle flashes, tracers, sparks, fire, smoke, flares, animated textures): the square of their share of the pixel (the largest of the 3 x 3) times this. 0: as before, for comparisons (a fix, not a taste: not saved in configs) |
 | `r_taaLodBias` (archived, default -0.5, -2 to 0) | with `r_taa 1`: the mip level bias of the 3D view's textures; negative is sharper, the anti-aliasing smooths the shimmer it adds. 0: as before |
 | `r_motionBlur` (archived, default 0) | with `r_temporal 1`: motion blur of the camera's motion and of what moves, from the motion vectors and the depth (see Implementation notes, Motion blur) |
 | `r_motionBlurShutter` (archived, default 0.5, 0 to 2) | with `r_motionBlur 1`: the exposure, in frames at `r_motionBlurFps` (0.5 at 60: 1/120 s); the blur is the motion over that time |
@@ -10276,6 +10276,10 @@ Done:
     the commands up to the next `wait` set up. No validation layer on this
     machine: not run under validation. Not checked: AMD, the user's
     matches.
+    The same day (the user's question: would a player ever change them?):
+    `r_taaReactive` is a cheat, not saved (a fix, 0 only to compare);
+    `r_taaLodBias` stays archived, a taste like `r_taaFeedback` and
+    `r_taaSharpen`; neither is in the settings guide of `main`'s README.
 
 Remaining:
 

@@ -229,8 +229,9 @@ void VK_TemporalRegisterCvars( void ) {
 	r_taaSharpen = ri.Cvar_Get( "r_taaSharpen", "0.8", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_taaSharpen, "with r_taa 1: sharpens the anti-aliased image, 0 off to 1" );
 	ri.Cvar_CheckRange( r_taaSharpen, 0.0f, 1.0f, qfalse );
-	r_taaReactive = ri.Cvar_Get( "r_taaReactive", "1", CVAR_ARCHIVE );
-	ri.Cvar_SetDescription( r_taaReactive, "with r_taa 1: how much less history effects take (muzzle flashes, tracers, sparks, smoke, flares, animated textures), so they keep their brightness and leave no trail; 0 off to 1" );
+	// a fix rather than a taste: a cheat, for comparisons, not saved
+	r_taaReactive = ri.Cvar_Get( "r_taaReactive", "1", CVAR_CHEAT );
+	ri.Cvar_SetDescription( r_taaReactive, "with r_taa 1: how much less history effects take (muzzle flashes, tracers, sparks, smoke, flares, animated textures), so they keep their brightness and leave no trail; 0 off to 1, for comparisons" );
 	ri.Cvar_CheckRange( r_taaReactive, 0.0f, 1.0f, qfalse );
 	r_taaLodBias = ri.Cvar_Get( "r_taaLodBias", "-0.5", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_taaLodBias, "with r_taa 1: the textures' mip level bias, negative for sharper textures (the anti-aliasing smooths their shimmer); 0 as without it" );
