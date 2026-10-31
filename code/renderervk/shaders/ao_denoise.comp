@@ -24,7 +24,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // ao_common.glsl): with two blurs (r_aoQuality 3, or without history: the
 // first frames after a cut are the noisiest) ao_temporal.comp's lighter
 // first one is in o_blur; this one blurs it again (AoBlur) into what
-// ao_apply.frag blends (AoResult). With AO_HALF (r_aoHalfRes) on the half
+// ao_apply.frag blends (AoResult). With AO_HALF (always since Plan 49) on the half
 // resolution grid, into o_blur2 for ao_upsample.comp.
 
 #version 450

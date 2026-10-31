@@ -33,7 +33,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // level 4. One pixel an invocation (16 x 16) was a fifth slower; its
 // level 0 written in four 8 x 8 blocks (a warp's stores next to each
 // other), or without the normals' class, took the same time.
-// With AO_HALF (r_aoHalfRes) the grid's view distances too, a texel a 2 x 2:
+// With AO_HALF (always since Plan 49) the grid's view distances too, a texel a 2 x 2:
 // the top-left one's (ao_common.glsl).
 
 #version 450

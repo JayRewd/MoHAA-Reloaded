@@ -33,7 +33,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // compensation lets them fade sooner along the view axis.
 // The result is noisy: ao_temporal.comp blends it over frames and
 // ao_denoise.comp blurs it within the depth edges.
-// With AO_HALF (r_aoHalfRes) an invocation a texel of the half resolution
+// With AO_HALF (always since Plan 49) an invocation a texel of the half resolution
 // grid: its pixel (ao_common.glsl) as without it, the view distances of the
 // full resolution (u_aoLevels), into the grid. Samples of level 0 snapped to
 // the grid's texels were up to a pixel off their slice: a wall or a floor

@@ -65,7 +65,7 @@ layout(push_constant) uniform Push {
 	vec4	hdrA;		// HDR output's expansion: knee, b, the sky's b, the peak over paper white
 	vec4	hdrB;		// the boost of what is above 1, r_saturation, 1 HDR expansion / 2 the HDR look in SDR / 0 none, r_hdrBlack for the look (VK_OutputExpansion)
 	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality), 0, 0
-	ivec4	dof;		// the depth of field's tile size (DEPTH_OF_FIELD), 1: r_temporalShow 13 (its result everywhere), 1: the ambient occlusion at half resolution (r_aoHalfRes), 0
+	ivec4	dof;		// the depth of field's tile size (DEPTH_OF_FIELD), 1: r_temporalShow 13 (its result everywhere), 1: the ambient occlusion ran (its raw view at half resolution), 0
 	vec4	dofScale;	// 1 / its tile size, 0, 0, 0
 } pc;
 

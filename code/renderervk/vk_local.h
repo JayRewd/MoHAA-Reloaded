@@ -990,7 +990,6 @@ typedef struct {
 	int				colorIndex;		// the scene's color image: current with the last scene's kept (VK_TEMPORAL_GROUP_PREVCOLOR), else 0
 	int				showMode;		// r_temporalShow
 	qboolean		aoOn;			// r_ao
-	qboolean		aoHalf;			// the ambient occlusion's images are those of r_aoHalfRes 1 (VK_TemporalCreateGroup)
 	vkTemporalImage_t	color[VK_TEMPORAL_HISTORY];		// RGBA16F; color[1] only with VK_TEMPORAL_GROUP_PREVCOLOR
 	vkTemporalImage_t	velocity;						// written by what moves (TEMPORAL_FLAG_MOTION)
 	vkTemporalImage_t	normal;
@@ -1057,8 +1056,8 @@ typedef struct {
 	// opaque surfaces and its blended ones; its images are GENERAL always
 	qboolean		aoRan;			// this frame's scene has it
 	vkTemporalImage_t	aoDepth[VK_TEMPORAL_HISTORY];	// R32F view distances (the weapon's negative), VK_TEMPORAL_AO_LEVELS levels; the other one the last frame's
-	vkTemporalImage_t	aoGrid[VK_TEMPORAL_HISTORY];	// with aoHalf: R32F, a texel a 2 x 2 pixels: the top-left one's view distance
-	vkTemporalImage_t	aoBlur2;		// with aoHalf: RG16F, the last blur, which the upsampling reads
+	vkTemporalImage_t	aoGrid[VK_TEMPORAL_HISTORY];	// R32F, a texel a 2 x 2 pixels: the top-left one's view distance
+	vkTemporalImage_t	aoBlur2;		// RG16F, the last blur, which the upsampling reads
 	VkImageView		aoDepthLevel[VK_TEMPORAL_HISTORY][VK_TEMPORAL_AO_LEVELS];
 	uint64_t		aoDepthSerial[VK_TEMPORAL_HISTORY];	// the frame each was made in, 0 for none
 	vkTemporalImage_t	aoRaw;			// R8: one frame's visibility
@@ -1071,8 +1070,7 @@ typedef struct {
 	VkShaderModule	aoPrefilterShader, aoMainShader, aoTemporalShader, aoDenoiseShader, aoApplyShader, aoUpsampleShader;
 	VkPipeline		aoPrefilterPipeline, aoTemporalPipeline, aoDenoisePipeline, aoApplyPipeline;
 	VkPipeline		aoMainPipelines[4];	// r_aoQuality: slices and steps as specialization constants
-	VkPipeline		aoPrefilterHalfPipeline, aoTemporalHalfPipeline, aoDenoiseHalfPipeline, aoUpsamplePipeline;	// r_aoHalfRes (AO_HALF)
-	VkPipeline		aoMainHalfPipelines[4];
+	VkPipeline		aoUpsamplePipeline;	// every pass at half resolution (AO_HALF)
 	VkDescriptorSet	aoSets[VK_MAX_FRAMES];	// written in each frame
 	VkDescriptorSet	aoApplySet;
 

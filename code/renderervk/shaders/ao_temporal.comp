@@ -45,7 +45,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // workgroups too), then blurs its 16 x 16 from there: the same values as a
 // pass each, without writing the blend out and reading it back (two passes
 // took a sixth longer).
-// With AO_HALF (r_aoHalfRes) on the half resolution grid: a texel's motion is
+// With AO_HALF (always since Plan 49) on the half resolution grid: a texel's motion is
 // that of its pixel (ao_common.glsl), the history read on the grid; the last
 // blur goes to o_blur2 for ao_upsample.comp.
 

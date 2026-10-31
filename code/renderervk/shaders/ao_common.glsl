@@ -29,12 +29,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    (AoBlur) into the factor the apply pass multiplies the scene with
 //    (AoResult, ao_apply.frag), or the first of two blurs
 //  - ao_denoise.comp: the second of two blurs
-//  - ao_upsample.comp: with r_aoHalfRes, the half resolution's blurred
+//  - ao_upsample.comp: the half resolution's blurred
 //    visibility to the framebuffer's pixels, into the result
 // View distances are positive, the view weapon's negative (it is in its own
 // depth range and only occludes itself), the sky at the far distance.
 // The occlusion, its blending over frames and its blur work on a grid
-// (AO_HALF, r_aoHalfRes): the framebuffer's pixels, or one texel a 2 x 2 of
+// (AO_HALF, always true since Plan 49): the framebuffer's pixels, or one texel a 2 x 2 of
 // them, which is its top-left pixel (its view distance and its position:
 // a plane stays a plane on the grid; the nearest and the farthest of the
 // four on alternate texels made it a zigzag that occluded itself).
@@ -46,7 +46,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #define AO_LEVELS	5	// of the view distances (VK_TEMPORAL_AO_LEVELS)
 
-// r_aoHalfRes: a pipeline per value (vk_temporal.c)
+// the pipelines are made with it true (vk_temporal.c); false, the full
+// resolution of Plan 44, is kept in the code but no longer used
 layout( constant_id = 2 ) const bool AO_HALF = false;
 const int AO_SHIFT = AO_HALF ? 1 : 0;		// framebuffer pixels to the grid
 const float AO_SCALE = AO_HALF ? 2.0 : 1.0;	// the grid's texel in framebuffer pixels

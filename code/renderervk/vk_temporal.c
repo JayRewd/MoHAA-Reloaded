@@ -114,7 +114,6 @@ cvar_t	*r_aoThickness;
 cvar_t	*r_aoTemporal;
 cvar_t	*r_aoNormals;
 cvar_t	*r_aoMultiBounce;
-cvar_t	*r_aoHalfRes;
 cvar_t	*r_motionBlur;
 cvar_t	*r_motionBlurShutter;
 cvar_t	*r_motionBlurFps;
@@ -270,9 +269,6 @@ void VK_TemporalRegisterCvars( void ) {
 	r_aoMultiBounce = ri.Cvar_Get( "r_aoMultiBounce", "0.4", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_aoMultiBounce, "with r_ao 1: the albedo of the light bounced back by occluders (lightens the occlusion), 0 none" );
 	ri.Cvar_CheckRange( r_aoMultiBounce, 0.0f, 0.9f, qfalse );
-	r_aoHalfRes = ri.Cvar_Get( "r_aoHalfRes", "0", CVAR_ARCHIVE );
-	ri.Cvar_SetDescription( r_aoHalfRes, "with r_ao 1: the occlusion at half the resolution, upsampled along the depth (faster, softer on thin things)" );
-	ri.Cvar_CheckRange( r_aoHalfRes, 0, 1, qtrue );
 	r_motionBlur = ri.Cvar_Get( "r_motionBlur", "0", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_motionBlur, "with r_temporal 1: motion blur of the camera's motion and of what moves, from the motion vectors and the depth" );
 	r_motionBlurShutter = ri.Cvar_Get( "r_motionBlurShutter", "0.5", CVAR_ARCHIVE );
@@ -626,13 +622,11 @@ static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
 		Com_Memset( vkt.hizSerial, 0, sizeof( vkt.hizSerial ) );
 		break;
 	case VK_TEMPORAL_GROUP_AO:
-		// r_aoHalfRes: the occlusion, its history and its blurs on a grid of
-		// a texel a 2 x 2 pixels (aoGrid: the top-left one's view distance),
-		// the view distances' levels as without it, the result at the full
-		// resolution
-		vkt.aoHalf = r_aoHalfRes->integer != 0;
-		gridWidth = vkt.aoHalf ? ( vk.width + 1 ) / 2 : vk.width;
-		gridHeight = vkt.aoHalf ? ( vk.height + 1 ) / 2 : vk.height;
+		// the occlusion, its history and its blurs on a grid of a texel a 2 x
+		// 2 pixels (aoGrid: the top-left one's view distance), the view
+		// distances' levels at the full resolution, the result too
+		gridWidth = ( vk.width + 1 ) / 2;
+		gridHeight = ( vk.height + 1 ) / 2;
 		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
 			VK_TemporalCreateImage( &vkt.aoDepth[i], VK_FORMAT_R32_SFLOAT, storage, vk.width, vk.height, VK_TEMPORAL_AO_LEVELS );
 			for ( l = 0; l < VK_TEMPORAL_AO_LEVELS; l++ ) {
@@ -641,17 +635,13 @@ static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
 			VK_TemporalCreateImage( &vkt.aoHistory[i], VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
 			VK_TemporalClearImage( cmd, vkt.aoDepth[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
 			VK_TemporalClearImage( cmd, vkt.aoHistory[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
-			if ( vkt.aoHalf ) {
-				VK_TemporalCreateImage( &vkt.aoGrid[i], VK_FORMAT_R32_SFLOAT, storage, gridWidth, gridHeight, 1 );
-				VK_TemporalClearImage( cmd, vkt.aoGrid[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
-			}
+			VK_TemporalCreateImage( &vkt.aoGrid[i], VK_FORMAT_R32_SFLOAT, storage, gridWidth, gridHeight, 1 );
+			VK_TemporalClearImage( cmd, vkt.aoGrid[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		}
 		VK_TemporalCreateImage( &vkt.aoRaw, VK_FORMAT_R8_UNORM, storage, gridWidth, gridHeight, 1 );
 		VK_TemporalCreateImage( &vkt.aoBlur, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
-		if ( vkt.aoHalf ) {
-			VK_TemporalCreateImage( &vkt.aoBlur2, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
-			VK_TemporalClearImage( cmd, vkt.aoBlur2.image, VK_IMAGE_LAYOUT_GENERAL, zero );
-		}
+		VK_TemporalCreateImage( &vkt.aoBlur2, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
+		VK_TemporalClearImage( cmd, vkt.aoBlur2.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		VK_TemporalCreateImage( &vkt.aoResult, VK_FORMAT_R8G8B8A8_UNORM, storage, vk.width, vk.height, 1 );
 		VK_TemporalClearImage( cmd, vkt.aoRaw.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		VK_TemporalClearImage( cmd, vkt.aoBlur.image, VK_IMAGE_LAYOUT_GENERAL, zero );
@@ -993,7 +983,8 @@ static VkPipeline VK_TemporalAoMainPipeline( int q, qboolean half ) {
 	return VK_TemporalComputePipelineSpec( vkt.aoMainShader, vkt.aoLayout, &spec );
 }
 
-// an ambient occlusion pass's pipeline for r_aoHalfRes 1 (AO_HALF, ao_common.glsl)
+// an ambient occlusion pass's pipeline: at half resolution (AO_HALF, ao_common.glsl;
+// the full resolution's code, its value false, is no longer used)
 static VkPipeline VK_TemporalAoHalfPipeline( VkShaderModule module ) {
 	VkSpecializationMapEntry entry;
 	VkSpecializationInfo spec;
@@ -1452,16 +1443,12 @@ void VK_TemporalInitPipelines( void ) {
 	vkt.aoDenoiseShader = VK_CreateShaderModule( vk_spirv_ao_denoise_comp, vk_spirv_ao_denoise_comp_size );
 	vkt.aoUpsampleShader = VK_CreateShaderModule( vk_spirv_ao_upsample_comp, vk_spirv_ao_upsample_comp_size );
 	vkt.aoApplyShader = VK_CreateShaderModule( vk_spirv_ao_apply_frag, vk_spirv_ao_apply_frag_size );
-	vkt.aoPrefilterPipeline = VK_TemporalComputePipeline( vkt.aoPrefilterShader, vkt.aoLayout );
+	vkt.aoPrefilterPipeline = VK_TemporalAoHalfPipeline( vkt.aoPrefilterShader );
 	for ( i = 0; i < 4; i++ ) {
-		vkt.aoMainPipelines[i] = VK_TemporalAoMainPipeline( i, qfalse );
-		vkt.aoMainHalfPipelines[i] = VK_TemporalAoMainPipeline( i, qtrue );
+		vkt.aoMainPipelines[i] = VK_TemporalAoMainPipeline( i, qtrue );
 	}
-	vkt.aoTemporalPipeline = VK_TemporalComputePipeline( vkt.aoTemporalShader, vkt.aoLayout );
-	vkt.aoDenoisePipeline = VK_TemporalComputePipeline( vkt.aoDenoiseShader, vkt.aoLayout );
-	vkt.aoPrefilterHalfPipeline = VK_TemporalAoHalfPipeline( vkt.aoPrefilterShader );
-	vkt.aoTemporalHalfPipeline = VK_TemporalAoHalfPipeline( vkt.aoTemporalShader );
-	vkt.aoDenoiseHalfPipeline = VK_TemporalAoHalfPipeline( vkt.aoDenoiseShader );
+	vkt.aoTemporalPipeline = VK_TemporalAoHalfPipeline( vkt.aoTemporalShader );
+	vkt.aoDenoisePipeline = VK_TemporalAoHalfPipeline( vkt.aoDenoiseShader );
 	vkt.aoUpsamplePipeline = VK_TemporalAoHalfPipeline( vkt.aoUpsampleShader );
 	vkt.aoApplyPipeline = VK_TemporalAoApplyPipeline();
 
@@ -1547,8 +1534,7 @@ void VK_TemporalShutdownPipelines( void ) {
 		&vkt.aoPrefilterPipeline, &vkt.aoMainPipelines[0], &vkt.aoMainPipelines[1], &vkt.aoMainPipelines[2], &vkt.aoMainPipelines[3],
 		&vkt.aoTemporalPipeline, &vkt.aoDenoisePipeline, &vkt.aoApplyPipeline, &vkt.compositeBlurPipeline, &vkt.mbTilesPipeline,
 		&vkt.compositeDofPipeline, &vkt.compositeDofBlurPipeline,
-		&vkt.aoMainHalfPipelines[0], &vkt.aoMainHalfPipelines[1], &vkt.aoMainHalfPipelines[2], &vkt.aoMainHalfPipelines[3],
-		&vkt.aoPrefilterHalfPipeline, &vkt.aoTemporalHalfPipeline, &vkt.aoDenoiseHalfPipeline, &vkt.aoUpsamplePipeline,
+		&vkt.aoUpsamplePipeline,
 		&vkt.mbNeighborPipeline, &vkt.dofFocusPipeline, &vkt.dofSetupPipeline, &vkt.dofNeighborPipeline, &vkt.dofGatherPipeline,
 		&vkt.dofApplyPipeline };
 	VkPipelineLayout *pipelineLayouts[] = { &vkt.pipelineLayout, &vkt.prepareLayout, &vkt.hizLayout, &vkt.compositeLayout, &vkt.taaLayout,
@@ -1844,13 +1830,6 @@ void VK_TemporalUpdateFeatures( void ) {
 	}
 
 	change = need ^ vkt.groups;
-	// r_aoHalfRes changed: the ambient occlusion's images made again at the
-	// other resolution
-	if ( ( need & vkt.groups & VK_TEMPORAL_GROUP_AO ) && ( r_aoHalfRes->integer != 0 ) != vkt.aoHalf ) {
-		vk_finish();
-		VK_TemporalDestroyGroup( VK_TEMPORAL_GROUP_AO );
-		change |= VK_TEMPORAL_GROUP_AO;
-	}
 	if ( change ) {
 		vk_finish();
 		for ( group = 1, i = 0; group <= VK_TEMPORAL_GROUP_LAST; group <<= 1, i++ ) {
@@ -1936,7 +1915,6 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	VkImageMemoryBarrier barriers[3];
 	VkMemoryBarrier memory;
 	vkAoPush_t push;
-	const qboolean half = vkt.aoHalf;
 	qboolean history, twoBlurs;
 	int q, i, groupsX, groupsY, gridX, gridY;
 
@@ -1950,10 +1928,9 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	views[0] = vkt.depthView;
 	views[1] = vkt.normal.view;
 	views[2] = vkt.velocity.view;
-	// the grid's view distances: aoDepth, or aoGrid with r_aoHalfRes
-	// (aoDepth in u_aoLevels then)
-	views[3] = half ? vkt.aoGrid[cur].view : vkt.aoDepth[cur].view;
-	views[4] = half ? vkt.aoGrid[cur ^ 1].view : vkt.aoDepth[cur ^ 1].view;
+	// the grid's view distances (aoGrid); the framebuffer's in u_aoLevels
+	views[3] = vkt.aoGrid[cur].view;
+	views[4] = vkt.aoGrid[cur ^ 1].view;
 	views[5] = vkt.aoRaw.view;
 	views[6] = vkt.aoHistory[cur ^ 1].view;
 	for ( i = 0; i < VK_TEMPORAL_AO_LEVELS; i++ ) {
@@ -1965,8 +1942,8 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	views[15] = vkt.aoResult.view;
 	views[16] = vkt.aoDepth[cur].view;
 	views[17] = vkt.aoBlur.view;
-	views[18] = views[19] = half ? vkt.aoBlur2.view : vkt.placeholder.view;
-	views[20] = half ? vkt.aoGrid[cur].view : vkt.placeholder.view;
+	views[18] = views[19] = vkt.aoBlur2.view;
+	views[20] = vkt.aoGrid[cur].view;
 	for ( i = 0; i < VK_TEMPORAL_AO_BINDINGS; i++ ) {
 		layouts[i] = VK_IMAGE_LAYOUT_GENERAL;
 	}
@@ -2026,39 +2003,37 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 
 	// the view distances of the whole framebuffer (the levels line up with
 	// it), 16 x 16 pixels a workgroup
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, half ? vkt.aoPrefilterHalfPipeline : vkt.aoPrefilterPipeline );
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoPrefilterPipeline );
 	qvkCmdDispatch( cmd, ( vk.width + 15 ) / 16, ( vk.height + 15 ) / 16, 1 );
 	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
 
-	// the others over the primary view's texels of the grid (its pixels, or
-	// with r_aoHalfRes a texel a 2 x 2 of them), 8 x 8 a workgroup
-	gridX = half ? ( ( rect[0] + rect[2] - 1 ) >> 1 ) - ( rect[0] >> 1 ) + 1 : rect[2];
-	gridY = half ? ( ( rect[1] + rect[3] - 1 ) >> 1 ) - ( rect[1] >> 1 ) + 1 : rect[3];
+	// the others over the primary view's texels of the grid (a texel a 2 x
+	// 2 pixels), 8 x 8 a workgroup
+	gridX = ( ( rect[0] + rect[2] - 1 ) >> 1 ) - ( rect[0] >> 1 ) + 1;
+	gridY = ( ( rect[1] + rect[3] - 1 ) >> 1 ) - ( rect[1] >> 1 ) + 1;
 	groupsX = ( gridX + 7 ) / 8;
 	groupsY = ( gridY + 7 ) / 8;
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, half ? vkt.aoMainHalfPipelines[q] : vkt.aoMainPipelines[q] );
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoMainPipelines[q] );
 	qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
 	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
 
 	// blended over frames and blurred, 16 x 16 texels a workgroup: into the
 	// result, or, at r_aoQuality 3 and without history (the first frames
-	// after a cut are the noisiest), into o_blur for a second blur; with
-	// r_aoHalfRes the last blur into o_blur2
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, half ? vkt.aoTemporalHalfPipeline : vkt.aoTemporalPipeline );
+	// after a cut are the noisiest), into o_blur for a second blur; the last
+	// blur into o_blur2
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoTemporalPipeline );
 	qvkCmdDispatch( cmd, ( gridX + 15 ) / 16, ( gridY + 15 ) / 16, 1 );
 	if ( twoBlurs ) {
 		VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
 		push.ints[3] = 2;	// AO_PASS_BLUR_TO_RESULT
 		qvkCmdPushConstants( cmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
-		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, half ? vkt.aoDenoiseHalfPipeline : vkt.aoDenoisePipeline );
+		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoDenoisePipeline );
 		qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
 	}
-	if ( half ) {
-		// the grid's last blur to the views' pixels, into the result
-		VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
-		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoUpsamplePipeline );
-		qvkCmdDispatch( cmd, ( rect[2] + 7 ) / 8, ( rect[3] + 7 ) / 8, 1 );
-	}
+	// the grid's last blur to the views' pixels, into the result
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoUpsamplePipeline );
+	qvkCmdDispatch( cmd, ( rect[2] + 7 ) / 8, ( rect[3] + 7 ) / 8, 1 );
 
 	// the scene's images back to the draws; the result to the apply pass
 	// (and the composite's r_temporalShow views)
@@ -2519,7 +2494,7 @@ void VK_TemporalComposite( VkCommandBuffer cmd ) {
 	push.dof[0] = vkt.dofRan ? vkt.dofTileSize : 0;
 	push.dof[1] = vkt.dofRan && vkt.dofShow ? 1 : 0;
 	push.dofScale[0] = 1.0f / vkt.dofTileSize;
-	push.dof[2] = vkt.aoOn && vkt.aoHalf ? 1 : 0;
+	push.dof[2] = vkt.aoOn ? 1 : 0;
 
 	blur = vkt.mbRan && vkt.mbBlur && !( vkt.dofRan && vkt.dofShow );
 	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.dofRan ? ( blur ? vkt.compositeDofBlurPipeline : vkt.compositeDofPipeline )

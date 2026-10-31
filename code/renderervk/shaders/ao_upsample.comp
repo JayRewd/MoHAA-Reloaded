@@ -20,14 +20,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 
-// ao_upsample.comp -- with r_aoHalfRes, the ambient occlusion of the half
+// ao_upsample.comp -- the ambient occlusion of the half
 // resolution grid to the framebuffer's pixels (ao_common.glsl, AO_HALF): each
 // pixel's visibility from the 2 x 2 texels around it (the last blur's,
 // u_blur2), bilinear weights times how close each texel's view distance is
 // to the pixel's own (from the depth buffer), so the occlusion of a surface
 // doesn't spread over the one in front of it or behind; where no texel is
 // of the pixel's surface, the nearest in view distance. Then the result as
-// the passes without r_aoHalfRes make it (AoResult), into what
+// the full resolution made it (AoResult), into what
 // ao_apply.frag blends.
 
 #version 450
