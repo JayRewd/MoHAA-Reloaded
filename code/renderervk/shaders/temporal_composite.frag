@@ -77,6 +77,10 @@ layout(constant_id = 1) const bool MOTION_BLUR = false;
 // constant: as a uniform branch on pc.dof the motion blur's gather took
 // 0.022 ms longer without the depth of field (2560x1440, turning)
 layout(constant_id = 2) const bool DEPTH_OF_FIELD = false;
+// with the motion blur too the depth of field's pass writes every tile: its
+// result is shown as it is (a choice for each of the gather's samples cost
+// what the pass saved)
+const bool DOF_EVERYWHERE = DEPTH_OF_FIELD && MOTION_BLUR;
 
 layout(location = 0) out vec4 out_color;
 
@@ -90,7 +94,7 @@ ivec2 DofTile( ivec2 q ) {
 // (the depth of field's pass writes only those tiles: the others hold older
 // frames' values), or r_temporalShow 13
 bool DofTileShown( ivec2 t ) {
-	return pc.dof.y != 0 || texelFetch( u_dofNeighbor, t, 0 ).y >= 0.5;
+	return DOF_EVERYWHERE || pc.dof.y != 0 || texelFetch( u_dofNeighbor, t, 0 ).y >= 0.5;
 }
 
 // what is shown at a pixel: the depth of field's result where it is shown
@@ -108,7 +112,7 @@ vec4 Shown( ivec2 q ) {
 // for a neighbour of a pixel whose tile is t, shown as dof says: its own
 // tile looked up only when it is another one
 vec4 ShownNear( ivec2 q, ivec2 t, bool dof ) {
-	if ( DEPTH_OF_FIELD ) {
+	if ( DEPTH_OF_FIELD && !DOF_EVERYWHERE ) {
 		ivec2 tq = DofTile( q );
 
 		if ( tq != t ) {
@@ -233,7 +237,9 @@ vec2 MbSpread( float offset, vec2 spread ) {
 	return clamp( spread - offset + 0.5, 0.0, 1.0 );
 }
 
-vec3 MotionBlur( ivec2 p, vec3 center ) {
+// tile and dof: the pixel's depth of field's tile and whether its result is
+// shown there (ShownNear: a sample in the same tile looks nothing up)
+vec3 MotionBlur( ivec2 p, vec3 center, ivec2 tile, bool dof ) {
 	ivec2 lo = pc.rect.xy, hi = pc.rect.xy + pc.rect.zw - 1;
 	vec2 vn = texelFetch( u_mbNeighbor, p / pc.mb.x, 0 ).xy;
 	float nLen = length( vn );
@@ -267,8 +273,8 @@ vec3 MotionBlur( ivec2 p, vec3 center ) {
 
 		w1 = all( mirror ) ? w2 : w1;
 		w2 = any( mirror ) ? w2 : w1;
-		sum += w1 * vec4( MbLinear( Shown( p1 ).rgb ), 1.0 );
-		sum += w2 * vec4( MbLinear( Shown( p2 ).rgb ), 1.0 );
+		sum += w1 * vec4( MbLinear( ShownNear( p1, tile, dof ).rgb ), 1.0 );
+		sum += w2 * vec4( MbLinear( ShownNear( p2, tile, dof ).rgb ), 1.0 );
 	}
 	if ( sum.a <= 0.0 ) {
 		return center;
@@ -377,7 +383,7 @@ void main() {
 			c = clamp( c + ( c - 0.25 * ( l + r + u + d ) ) * sharpen, nmin, nmax );
 		}
 		if ( MOTION_BLUR ) {
-			c = MotionBlur( p, c );
+			c = MotionBlur( p, c, tile, dof );
 		}
 		if ( HDR_EXPAND && pc.hdrB.z > 0.5 && pc.hdrB.z < 1.5 ) {
 			out_color = vec4( HdrExpand( c, TemporalClass( texelFetch( u_normal, p, 0 ) ) == TEMPORAL_CLASS_SKY ), 1.0 );

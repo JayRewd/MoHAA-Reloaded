@@ -2266,6 +2266,9 @@ static void VK_TemporalDof( VkCommandBuffer cmd ) {
 	}
 	push.params[0] = 0.02f * vkt.view.rect[3];
 	push.params[2] = vkt.dofShow ? 1.0f : 0.0f;
+	// the composite with the motion blur (compositeDofBlurPipeline) reads the
+	// result everywhere
+	push.params[3] = VK_TemporalBlurs() && vkt.mbBlur && !vkt.dofShow ? 1.0f : 0.0f;
 	push.ints[0] = vkt.dofTilesX;
 	push.ints[1] = vkt.dofTilesY;
 	push.ints[2] = vk_dofSamples[Q_min( Q_max( r_dofQuality->integer, 0 ), 2 )];

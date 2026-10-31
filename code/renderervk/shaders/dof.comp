@@ -82,7 +82,7 @@ layout( push_constant ) uniform Push {
 	TemporalView	view;
 	ivec4	rect;		// the scene's views: x, y, width, height in framebuffer pixels
 	vec4	lens;		// the CoC's scale (pixels times units), the largest CoC (the tile's side), 1 / r_dofFocus (0: autofocus), the focus's step (1: at once)
-	vec4	params;		// the focus area's half side in pixels, 0, 1: r_temporalShow 13, 0
+	vec4	params;		// the focus area's half side in pixels, 0, 1: r_temporalShow 13, 1: APPLY writes every tile (the composite's motion blur reads u_result everywhere)
 	ivec4	ints;		// the tiles across and down, the gather's samples, 0
 } pc;
 
@@ -370,8 +370,9 @@ void main() {
 	}
 
 	// no blur reaches the tile: the composite shows the sharp scene itself
+	// (but with the motion blur, whose samples then read this everywhere)
 	around = imageLoad( u_neighbor, p / tile ).xy;
-	if ( around.y < 0.5 && pc.params.z == 0.0 ) {
+	if ( around.y < 0.5 && pc.params.z == 0.0 && pc.params.w == 0.0 ) {
 		return;
 	}
 	sharp = texelFetch( u_color, p, 0 ).rgb;
@@ -393,7 +394,7 @@ void main() {
 		return;
 	}
 
-	if ( d <= 0.0 ) {
+	if ( around.y < 0.5 || d <= 0.0 ) {
 		imageStore( u_result, p, vec4( sharp, 1.0 ) );
 		return;
 	}

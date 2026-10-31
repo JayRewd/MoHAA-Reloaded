@@ -8952,7 +8952,12 @@ selects the sample count (see Implementation notes).
     specialization constant of the composite (`DEPTH_OF_FIELD`,
     `compositeDofPipeline`, `compositeDofBlurPipeline`): as a branch on
     the push constants it made the motion blur's gather 0.022 ms slower
-    without the depth of field (2560x1440, turning). The apply pass
+    without the depth of field (2560x1440, turning). With the motion blur
+    too (`DOF_EVERYWHERE`) the apply pass writes every tile again (its
+    params.w) and the composite shows `dofResult` as it is: a choice for
+    each of the gather's samples cost what the pass saved (turning with
+    the anti-aliasing, the motion blur and the depth of field 0.865 ms
+    before Plan 49, 0.863 with the choice, 0.805 without it). The apply pass
     writes those tiles only (before Plan 49 it copied the sharp scene into
     the others, which the composite then read). The sharpening
     (`r_taaSharpen`, 0.8 by default) stays in the composite, for the
@@ -10424,7 +10429,10 @@ Done:
     motion blur's gather 0.022 ms slower without the depth of field
     (turning with the anti-aliasing 0.538 to 0.560 ms, found in the end
     to end run), which the steps after it had hidden; as a constant
-    0.543 to 0.521 against the start of the plan.
+    0.543 to 0.521 against the start of the plan. With the motion blur
+    and the depth of field both, the apply pass writes every tile again
+    (a choice for each of the gather's samples cost what it saved):
+    turning with the anti-aliasing 0.865 to 0.805 ms against the start.
     The anti-aliasing (see Implementation notes, Temporal anti-aliasing,
     Cost): the history's texel alone where a still camera puts it on a
     texel's center: 0.378 to 0.358 ms still, 0.338 to 0.329 turning; the
