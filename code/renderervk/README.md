@@ -10395,7 +10395,18 @@ Done:
     user's request: every item of the review of the temporal effects'
     performance but the motion blur's passes skipped in a still view).
     Each step measured with `perf.py` against the build before in the
-    `dm/mohdm6` room at 2560x1440 and kept only if faster.
+    `dm/mohdm6` room at 2560x1440 and kept only if faster. In the end,
+    against the start (cdbd31e7), GPU time a frame, 4 interleaved runs,
+    1920x1080 and 2560x1440, the user's settings (`r_taa`, `r_ao` 2,
+    `r_motionBlur`, `r_hdrOutput 2`): still 0.643 to 0.636 and 1.240 to
+    1.228 ms, turning 0.711 to 0.700 and 1.404 to 1.387; with `r_dof 1`
+    still 0.787 to 0.756 and 1.510 to 1.450, turning 0.874 to 0.842 and
+    1.683 to 1.630; with `r_aoHalfRes 1` still 0.645 to 0.416 and 1.246
+    to 0.752, turning 0.709 to 0.451 and 1.409 to 0.908. The review had
+    guessed 0.15 to 0.2 ms of the user's settings without a change of the
+    look; what was measured is 0.01 to 0.02: the occlusion's coarse levels
+    in 16 bits, the motion blur's tiles made by the anti-aliasing and the
+    normals target left out gained nothing or cost time.
     The depth of field (see Implementation notes, Depth of field, Cost):
     the apply pass writes the tiles a blur reaches only and the composite
     shows the sharp scene in the others, the apply pass's tent from 2 x 2
