@@ -148,7 +148,7 @@ typedef struct {
 	int		rect[4];		// the scene's views (vkt.rect)
 	float	hdr[8];			// HDR output's expansion (VK_OutputExpansion)
 	int		mb[4];			// the motion blur's tile size, its pairs of samples, 0, 0
-	int		dof[4];			// the depth of field's tile size (0: its passes didn't run), 1: r_temporalShow 13, 1: the ambient occlusion at half resolution, 0
+	int		dof[4];			// the depth of field's tile size (0: its passes didn't run), 1: r_temporalShow 13, 0, 0
 	float	dofScale[4];	// 1 / its tile size, 0, 0, 0
 } vkCompositePush_t;
 
@@ -959,14 +959,15 @@ static VkPipeline VK_TemporalComputePipeline( VkShaderModule module, VkPipelineL
 // side (XeGTAO's low, medium, high and ultra) as specialization constants
 static const int vk_aoQuality[4][2] = { { 1, 2 }, { 2, 2 }, { 3, 3 }, { 9, 3 } };
 
-static VkPipeline VK_TemporalAoMainPipeline( int q, qboolean half ) {
+// at half resolution (AO_HALF) as the other passes
+static VkPipeline VK_TemporalAoMainPipeline( int q ) {
 	VkSpecializationMapEntry entries[3];
 	VkSpecializationInfo spec;
 	int data[3];
 
 	data[0] = vk_aoQuality[q][0];
 	data[1] = vk_aoQuality[q][1];
-	data[2] = half ? VK_TRUE : VK_FALSE;
+	data[2] = VK_TRUE;
 	entries[0].constantID = 0;
 	entries[0].offset = 0;
 	entries[0].size = sizeof( int );
@@ -976,7 +977,7 @@ static VkPipeline VK_TemporalAoMainPipeline( int q, qboolean half ) {
 	entries[2].constantID = 2;	// AO_HALF (ao_common.glsl)
 	entries[2].offset = 2 * sizeof( int );
 	entries[2].size = sizeof( VkBool32 );
-	spec.mapEntryCount = half ? 3 : 2;
+	spec.mapEntryCount = 3;
 	spec.pMapEntries = entries;
 	spec.dataSize = sizeof( data );
 	spec.pData = data;
@@ -1445,7 +1446,7 @@ void VK_TemporalInitPipelines( void ) {
 	vkt.aoApplyShader = VK_CreateShaderModule( vk_spirv_ao_apply_frag, vk_spirv_ao_apply_frag_size );
 	vkt.aoPrefilterPipeline = VK_TemporalAoHalfPipeline( vkt.aoPrefilterShader );
 	for ( i = 0; i < 4; i++ ) {
-		vkt.aoMainPipelines[i] = VK_TemporalAoMainPipeline( i, qtrue );
+		vkt.aoMainPipelines[i] = VK_TemporalAoMainPipeline( i );
 	}
 	vkt.aoTemporalPipeline = VK_TemporalAoHalfPipeline( vkt.aoTemporalShader );
 	vkt.aoDenoisePipeline = VK_TemporalAoHalfPipeline( vkt.aoDenoiseShader );
@@ -2494,7 +2495,6 @@ void VK_TemporalComposite( VkCommandBuffer cmd ) {
 	push.dof[0] = vkt.dofRan ? vkt.dofTileSize : 0;
 	push.dof[1] = vkt.dofRan && vkt.dofShow ? 1 : 0;
 	push.dofScale[0] = 1.0f / vkt.dofTileSize;
-	push.dof[2] = vkt.aoOn ? 1 : 0;
 
 	blur = vkt.mbRan && vkt.mbBlur && !( vkt.dofRan && vkt.dofShow );
 	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.dofRan ? ( blur ? vkt.compositeDofBlurPipeline : vkt.compositeDofPipeline )

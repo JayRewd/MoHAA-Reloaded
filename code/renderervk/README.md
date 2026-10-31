@@ -769,10 +769,9 @@ below are done.
   constants), the blend over frames and the blur in one pass: quality 2
   0.82 to 0.69 ms over the path at 2560x1440, 0.45 to 0.38 at 1920x1080,
   the frames the same but for one level in up to 4 % of the pixels.
-  Since Plan 49 it always (the user's choice: no difference to see; an
-  `r_aoHalfRes` cvar for a few hours before)
-  computes the occlusion for one pixel of each 2 x 2 and upsamples it
-  along the depth: 0.78 to 0.31 ms at quality 2 at 2560x1440, the frames
+  Since Plan 49 the occlusion is computed for one pixel of each 2 x 2 and
+  upsampled along the depth, always (the user's choice, seeing no
+  difference; it was the cvar `r_aoHalfRes` for a few hours first): 0.78 to 0.31 ms at quality 2 at 2560x1440, the frames
   of the room one level off in 3 to 10 % of the pixels.
   See Implementation notes, Ambient occlusion
 - motion blur (2026-10-27, Plan 46, the renderer; the user's request: a
@@ -1012,7 +1011,7 @@ Cvars of the backend:
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
 | `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
 | `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
-| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80 |
+| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at full resolution, before Plan 49, at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80; at half resolution since, quality 2 0.31 ms at 2560x1440 |
 | `r_aoRadius` (archived, default 48, 4 to 256) | with `r_ao 1`: how far occluders reach, in world units |
 | `r_aoStrength` (archived, default 1.5, 0 to 4) | with `r_ao 1`: the visibility to this power (1: as computed) |
 | `r_aoFalloff` (archived, default 0.6, 0.05 to 1) | with `r_ao 1`: the share of the radius over which occluders fade out |
