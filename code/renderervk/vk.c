@@ -4368,22 +4368,19 @@ const float *vk_terrain_shadow_slots( void ) {
 
 /*
 ===============
-vk_sync_terrain_pool_smp
+vk_terrain_shadow_changes
 
-r_smp, the render thread: vk_sync_terrain_pool from the scene's snapshot
-of the changed slots (the shadow keeps every slot for the other copies'
-pending slots)
+r_smp, the render thread, at each scene whether it draws terrain or not
+(RB_DrawSurfs): the scene's snapshot of the changed slots into the shadow,
+and into every copy's pending slots
 ===============
 */
-qboolean vk_sync_terrain_pool_smp( const terrainSlotChange_t *changes, int count, qboolean all ) {
-	uint64_t *pending;
-	byte *data;
-	int f, w, i, written = 0;
+void vk_terrain_shadow_changes( const terrainSlotChange_t *changes, int count, qboolean all ) {
+	int f, i;
 
 	if ( !vk.device || !vk_terrain.numSlots || !vk_terrain.shadow ) {
-		return qfalse;
+		return;
 	}
-	VK_BeginFrameIfNeeded();
 	if ( all ) {
 		for ( f = 0; f < VK_MAX_FRAMES; f++ ) {
 			Com_Memset( vk_terrain.pending[f], 0xFF, sizeof( uint64_t ) * vk_terrain.words );
@@ -4405,6 +4402,25 @@ qboolean vk_sync_terrain_pool_smp( const terrainSlotChange_t *changes, int count
 			vk_terrain.anyPending[f] = qtrue;
 		}
 	}
+}
+
+/*
+===============
+vk_sync_terrain_pool_smp
+
+r_smp, the render thread: vk_sync_terrain_pool from the shadow, which keeps
+every slot for the copies' pending slots (vk_terrain_shadow_changes)
+===============
+*/
+qboolean vk_sync_terrain_pool_smp( void ) {
+	uint64_t *pending;
+	byte *data;
+	int f, w, written = 0;
+
+	if ( !vk.device || !vk_terrain.numSlots || !vk_terrain.shadow ) {
+		return qfalse;
+	}
+	VK_BeginFrameIfNeeded();
 	f = vk.frameIndex;
 	if ( !vk_terrain.anyPending[f] ) {
 		return qtrue;

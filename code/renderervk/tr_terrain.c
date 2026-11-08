@@ -2103,12 +2103,10 @@ qboolean RB_TerrainPool(void)
     if (!g_pVert || !r_staticTerrain->integer) {
         return qfalse;
     }
-    // r_smp: from the scene's snapshot of the changed slots (R_TerrainSnapshotChanges)
+    // r_smp: from the render thread's copy of the slots, which each scene's
+    // snapshot of the changed slots brought up to date (RB_DrawSurfs)
     if (glConfig.smpActive) {
-        ok = vk_sync_terrain_pool_smp(backEnd.terrainChanges, backEnd.numTerrainChanges, backEnd.terrainChangesAll);
-        backEnd.numTerrainChanges = 0;
-        backEnd.terrainChangesAll = qfalse;
-        return ok;
+        return vk_sync_terrain_pool_smp();
     }
 
     ok = vk_sync_terrain_pool(

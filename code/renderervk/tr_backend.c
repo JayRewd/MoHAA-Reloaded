@@ -1290,10 +1290,13 @@ const void	*RB_DrawSurfs( const void *data ) {
 	backEnd.in2D = qfalse;
 	backEnd.refdef = cmd->refdef;
 	backEnd.viewParms = cmd->viewParms;
-	// r_smp: the terrain slots this scene changed (RB_TerrainPool)
-	backEnd.terrainChanges = cmd->terrainChanges;
-	backEnd.numTerrainChanges = cmd->numTerrainChanges;
-	backEnd.terrainChangesAll = cmd->terrainChangesAll;
+	// r_smp: the terrain slots this scene changed go to the thread's copy of
+	// the pool now, whether it draws terrain or not: the sky portal's scene
+	// draws none and comes first, made within the main view's after its
+	// tessellation (R_Sky_Render), so it carries the main view's slots
+	if ( glConfig.smpActive ) {
+		vk_terrain_shadow_changes( cmd->terrainChanges, cmd->numTerrainChanges, cmd->terrainChangesAll );
+	}
 
 	// the temporal path's scene (tr_temporal.c)
 	RB_TemporalBeginView();
