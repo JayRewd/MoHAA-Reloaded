@@ -6,6 +6,6 @@ Name=OpenMoHAA Spearhead
 Comment=An open-source game engine compatible with Medal of Honor: Allied Assault Spearhead
 Categories=Game;Shooter;
 
-Icon=org.openmoh.openmohaa
+Icon=org.openmoh.openmohaas
 Exec=launch_openmohaa_spearhead
 Terminal=false

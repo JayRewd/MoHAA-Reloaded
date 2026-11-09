@@ -6,6 +6,6 @@ Name=OpenMoHAA Breakthrough
 Comment=An open-source game engine compatible with Medal of Honor: Allied Assault Breakthrough
 Categories=Game;Shooter;
 
-Icon=org.openmoh.openmohaa
+Icon=org.openmoh.openmohaab
 Exec=launch_openmohaa_breakthrough
 Terminal=false
