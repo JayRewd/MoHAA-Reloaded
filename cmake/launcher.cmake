@@ -31,6 +31,6 @@ function (create_launcher name type)
     #INSTALL(TARGETS omohaaded_launcher_${name} DESTINATION ${CMAKE_INSTALL_BINDIR}/${PROJECT_INSTALL_SUBDIR})
 endfunction()
 
-create_launcher(base 0)
+# No launcher for Allied Assault: it is openmohaa itself, as com_target_game defaults to 0
 create_launcher(spearhead 1)
 create_launcher(breakthrough 2)

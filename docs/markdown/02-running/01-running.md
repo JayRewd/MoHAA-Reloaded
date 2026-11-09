@@ -6,9 +6,9 @@
 
 ### Start using launchers
 
-Base game and expansions can be started from one of the 3 launchers:
+The base game starts from `openmohaa` itself, the expansions from their launchers:
 
-- `launch_openmohaa_base`, use this to play **Medal of Honor: Allied Assault**
+- `openmohaa`, use this to play **Medal of Honor: Allied Assault**
 - `launch_openmohaa_spearhead`, use this to play **Medal of Honor: Allied Assault: Spearhead**
 - `launch_openmohaa_breakthrough`, use this to play **Medal of Honor: Allied Assault: Breakthrough**
 

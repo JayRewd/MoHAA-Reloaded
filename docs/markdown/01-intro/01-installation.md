@@ -43,7 +43,7 @@ If not there, you'll need to search where you installed it.
 
 1. **Extract the .zip file** you downloaded into the game folder you found earlier.
 2. **Create desktop shortcuts** for these 3 files:
-    * `launch_openmohaa_base.exe` - *Allied Assault*
+    * `openmohaa.exe` - *Allied Assault*
     * `launch_openmohaa_spearhead.exe` - *Spearhead*
     * `launch_openmohaa_breakthrough.exe` - *Breakthrough*
 
@@ -79,12 +79,12 @@ Alternatively, you can also use [WINE](https://www.winehq.org/) to install the g
 
 - Extract the archive<sup>1</sup> into the game folder where MOHAA is installed (the folder that contains the `main` subfolder and the original game files).
   - If MOHAA is installed in `/usr/games/mohaa`, then extract all files inside `/usr/games/mohaa`.
-- Create a shortcut to each of the **launch_openmohaa_\*** executable:
-  - `launch_openmohaa_base` (Base game)
+- Create a shortcut to each of these executables:
+  - `openmohaa` (Base game)
   - `launch_openmohaa_spearhead` (Spearhead)
   - `launch_openmohaa_breakthrough` (Breakthrough)
 
-🟢 You're now ready to play! To start the game, execute one of the `launch_openmohaa_x` binaries.
+🟢 You're now ready to play! To start the game, execute `openmohaa` or one of the `launch_openmohaa_x` binaries.
 
 ----
 
