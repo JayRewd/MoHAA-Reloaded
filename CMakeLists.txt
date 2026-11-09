@@ -74,7 +74,6 @@ include(server)
 include(renderer_vulkan)
 include(client)
 include(basegame)
-include(launcher)
 
 include(post_configure)
 

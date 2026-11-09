@@ -4,14 +4,6 @@
 
 **Medal of Honor: Allied Assault** is the default game, but expansions are also supported.
 
-### Start using launchers
-
-The base game starts from `openmohaa` itself, the expansions from their launchers:
-
-- `openmohaa`, use this to play **Medal of Honor: Allied Assault**
-- `launch_openmohaa_spearhead`, use this to play **Medal of Honor: Allied Assault: Spearhead**
-- `launch_openmohaa_breakthrough`, use this to play **Medal of Honor: Allied Assault: Breakthrough**
-
 ### Start from the command-line
 
 **Spearhead** and **Breakthrough** are supported in OpenMoHAA using the `com_target_game` variable.

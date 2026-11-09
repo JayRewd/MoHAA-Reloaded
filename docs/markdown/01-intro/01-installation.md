@@ -42,12 +42,9 @@ If not there, you'll need to search where you installed it.
 #### Install
 
 1. **Extract the .zip file** you downloaded into the game folder you found earlier.
-2. **Create desktop shortcuts** for these 3 files:
-    * `openmohaa.exe` - *Allied Assault*
-    * `launch_openmohaa_spearhead.exe` - *Spearhead*
-    * `launch_openmohaa_breakthrough.exe` - *Breakthrough*
+2. **Create a desktop shortcut** for `openmohaa.exe` (*Allied Assault*).
 
-To do that, **right-click each file**, then choose **Send to → Desktop (create shortcut)**.
+To do that, **right-click the file**, then choose **Send to → Desktop (create shortcut)**. For *Spearhead* or *Breakthrough*, make another shortcut and add `+set com_target_game 1` (Spearhead) or `+set com_target_game 2` (Breakthrough) at the end of its **Target** (right-click the shortcut → **Properties**).
 
 ![](screenshots/install_guide/windows_installation_sendto.png)
 ![](../../assets/screenshots/install_guide/windows_installation_sendto.png)
@@ -79,12 +76,9 @@ Alternatively, you can also use [WINE](https://www.winehq.org/) to install the g
 
 - Extract the archive<sup>1</sup> into the game folder where MOHAA is installed (the folder that contains the `main` subfolder and the original game files).
   - If MOHAA is installed in `/usr/games/mohaa`, then extract all files inside `/usr/games/mohaa`.
-- Create a shortcut to each of these executables:
-  - `openmohaa` (Base game)
-  - `launch_openmohaa_spearhead` (Spearhead)
-  - `launch_openmohaa_breakthrough` (Breakthrough)
+- Create a shortcut to `openmohaa` (Base game). For the expansions, add `+set com_target_game 1` (Spearhead) or `+set com_target_game 2` (Breakthrough) to its command line.
 
-🟢 You're now ready to play! To start the game, execute `openmohaa` or one of the `launch_openmohaa_x` binaries.
+🟢 You're now ready to play! To start the game, execute `openmohaa`.
 
 ----
 

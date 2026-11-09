@@ -3,8 +3,6 @@ INSTALL.txt
 OMAHA-SOUND-LICENSES.txt
 cgame.so
 game.so
-launch_openmohaa_breakthrough
-launch_openmohaa_spearhead
 libSDL3.so.0
 licenses
 licenses/SDL3

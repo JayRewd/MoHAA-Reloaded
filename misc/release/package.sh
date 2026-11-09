@@ -56,7 +56,7 @@ diff <(cd "$stage" && find . -mindepth 1 | sed 's#^\./##' | LC_ALL=C sort) \
 find "$stage" -type d -exec chmod 755 {} +
 find "$stage" -type f -exec chmod 644 {} +
 if [ "$platform" = linux-amd64 ]; then
-	chmod 755 "$stage/openmohaa" "$stage/mohlauncher" "$stage"/launch_openmohaa_*
+	chmod 755 "$stage/openmohaa" "$stage/mohlauncher"
 	archive="$out/$name.tar.gz"
 	rm -f "$archive"
 	tar --sort=name --owner=0 --group=0 --numeric-owner -czf "$archive" -C "$out" "$name"

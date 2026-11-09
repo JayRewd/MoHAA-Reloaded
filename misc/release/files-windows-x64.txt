@@ -4,8 +4,6 @@ OMAHA-SOUND-LICENSES.txt
 SDL3.dll
 cgame.dll
 game.dll
-launch_openmohaa_breakthrough.exe
-launch_openmohaa_spearhead.exe
 licenses
 licenses/SDL3
 licenses/SDL3/LICENSE.txt
