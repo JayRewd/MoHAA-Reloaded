@@ -723,6 +723,12 @@ qboolean ClientGameCommandManager::TempModelPhysics(ctempmodel_t *p, float ftime
         // Set the origin
         p->cgd.origin = trace.endpos;
 
+        // A temp model thrown by the view weapon (a shell casing) inherits
+        // its depth hack, which draws it over everything. Once it touches
+        // the world it is part of it: without this, a casing on the floor
+        // shows through the walls in front of it
+        p->ent.renderfx &= ~RF_DEPTHHACK;
+
         if ((p->cgd.flags2 & T2_BOUNCE_DECAL) && (p->cgd.bouncecount < p->cgd.maxbouncecount)) {
             // Put down a bounce decal
             qhandle_t shader = cgi.R_RegisterShader(p->cgd.shadername);
